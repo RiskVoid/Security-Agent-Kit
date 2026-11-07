@@ -1,0 +1,76 @@
+# Full-stack regression tests: builds every image, starts the kit and runs the policy, console, tool, end-to-end
+# and lab tests (no model or API key needed). It takes 15-20 minutes, so it doesn't run on every pull request:
+#   - on demand: Actions > Integration > Run workflow (pick a branch)
+#   - on a pull request that has the "full-ci" label (add the label to run it; new pushes re-run it while it's there)
+#   - nightly on main
+#   - before every release (release.yml calls it and publishes only if it passes)
+# Image layers are cached between runs (GitHub Actions cache), so a run that changes little rebuilds little.
+name: Integration
+on:
+  workflow_dispatch:
+  workflow_call:
+  schedule:
+    - cron: "17 3 * * *"
+  pull_request:
+    types: [opened, synchronize, reopened, labeled]
+permissions:
+  contents: read
+concurrency:
+  group: integration-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  integration:
+    if: >-
+      github.event_name != 'pull_request' ||
+      (contains(github.event.pull_request.labels.*.name, 'full-ci') &&
+       (github.event.action != 'labeled' || github.event.label.name == 'full-ci'))
+    runs-on: ubuntu-24.04
+    timeout-minutes: 75
+    env:
+      RVKIT_YES: "1"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Free disk space
+        run: sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL && df -h /
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - name: Compose settings for the build
+        run: cp .env.example .env && echo REDIS_PASSWORD=ci >> .env   # ./rvkit setup fills in the rest
+      - name: Build images (layers cached between runs)
+        uses: docker/bake-action@59cb1203cd42bcefd40a1b6d73b589e48c86040e # v7.5.0
+        with:
+          source: .
+          files: docker-compose.yml
+          load: true
+          # worker-mcp and intel-mcp use the same image as web-mcp
+          targets: egress-proxy,web-mcp,findings-mcp,kali-mcp,lab-llm
+          set: |
+            egress-proxy.cache-from=type=gha,scope=egress-proxy
+            egress-proxy.cache-to=type=gha,scope=egress-proxy,mode=max
+            web-mcp.cache-from=type=gha,scope=web-mcp
+            web-mcp.cache-to=type=gha,scope=web-mcp,mode=max
+            kali-mcp.cache-from=type=gha,scope=kali-mcp
+            kali-mcp.cache-to=type=gha,scope=kali-mcp,mode=max
+            findings-mcp.cache-from=type=gha,scope=findings-mcp
+            findings-mcp.cache-to=type=gha,scope=findings-mcp,mode=max
+            lab-llm.cache-from=type=gha,scope=lab-llm
+            lab-llm.cache-to=type=gha,scope=lab-llm,mode=max
+      - name: Setup (uses the images built above)
+        run: rm .env && RVKIT_NO_PULL=1 ./rvkit setup --yes
+      - name: Doctor
+        run: ./rvkit doctor || true   # no worker model or OpenRouter key in CI: warnings expected
+      - name: Prepare test engagements
+        run: bash evals/ci_prepare.sh
+      - name: Policy (scope, isolation, tiers, approvals, halt)
+        run: bash evals/phase3_policy_test.sh
+      - name: Console (sign-in, CSRF, read API)
+        run: bash evals/console_test.sh
+      - name: Tool smoke test
+        run: bash evals/tools_smoke.sh
+      - name: End to end (evidence, report, close-out)
+        run: bash evals/phase5_e2e.sh
+      - name: Lab isolation
+        run: RVKIT_NO_PULL=1 ./rvkit lab up && bash evals/lab_test.sh
+      - name: Logs on failure
+        if: failure()
+        run: docker compose logs --tail 150

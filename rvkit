@@ -126,6 +126,7 @@ config_openhands() { # $1 = --quiet or empty
 start_stack() { # pulls the published images for this version; builds any that aren't published (or all of them
   # with RVKIT_BUILD=1, which you want after changing the kit's code)
   if [ -n "${RVKIT_BUILD:-}" ]; then docker compose up -d --build
+  elif [ -n "${RVKIT_NO_PULL:-}" ]; then docker compose up -d   # images already built locally (CI)
   else
     docker compose pull --ignore-pull-failures -q >/dev/null 2>&1 || true
     docker compose up -d

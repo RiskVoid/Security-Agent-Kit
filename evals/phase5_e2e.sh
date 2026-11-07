@@ -87,7 +87,8 @@ check "client and summary in report" "$xml" 'Test Client Ltd.*|demo application'
 check "cover not draft" "$(echo "$xml" | grep -c 'DRAFT')" '^0$'
 
 echo "== 4. tamper detection"
-echo " " >> "$ENGDIR/bandit.json"
+# modify it from a container: on Linux the file belongs to the engagement's sandbox user, not to us
+docker compose exec -T findings-mcp sh -c "echo ' ' >> /work/$ENG/bandit.json" </dev/null
 out="$(call $FIND generate_report "{\"engagement\": \"$ENG\"}")"
 check "tampered evidence -> DRAFT" "$out" '"status": "DRAFT"'
 check "issue names the file" "$out" 'bandit.json is MODIFIED'

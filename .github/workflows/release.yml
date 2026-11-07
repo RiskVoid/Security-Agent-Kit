@@ -1,6 +1,6 @@
 # Publishes the kit's images to GHCR for amd64 and arm64 when a version tag (v0.1.0, ...) is pushed. The tag must
 # match VERSION, which is also the default image tag in docker-compose.yml. Users' ./rvkit setup then pulls these
-# images instead of building them (it still builds any image it can't pull).
+# images instead of building them (it still builds any image it can't pull). The Integration tests run first.
 #
 # Native runners per architecture (no emulation: the Kali image takes hours under QEMU). ubuntu-24.04-arm runners
 # are free for public repositories only.
@@ -16,7 +16,11 @@ env:
   REGISTRY: ghcr.io/riskvoid/security-agent-kit
 
 jobs:
+  test:   # the full-stack tests must pass before anything is published
+    uses: ./.github/workflows/integration.yml
+
   version:
+    needs: test
     runs-on: ubuntu-24.04
     outputs:
       version: ${{ steps.v.outputs.version }}

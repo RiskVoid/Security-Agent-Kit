@@ -22,10 +22,11 @@ FID_RX = re.compile(r"^F-\d{3,}$")
 def env():
     out = {}
     try:
-        for line in open(os.path.join(KIT, ".env")):
-            if "=" in line and not line.lstrip().startswith("#"):
-                k, v = line.rstrip("\n").split("=", 1)
-                out.setdefault(k.strip(), v.strip())
+        with open(os.path.join(KIT, ".env")) as f:
+            for line in f:
+                if "=" in line and not line.lstrip().startswith("#"):
+                    k, v = line.rstrip("\n").split("=", 1)
+                    out.setdefault(k.strip(), v.strip())
     except OSError:
         pass
     return out
@@ -40,7 +41,8 @@ TOKEN_FILE = os.path.join(KIT, ".rvkit", "console.token")
 def token():
     os.makedirs(os.path.dirname(TOKEN_FILE), exist_ok=True)
     try:
-        t = open(TOKEN_FILE).read().strip()
+        with open(TOKEN_FILE) as f:
+            t = f.read().strip()
         if len(t) >= 32:
             return t
     except OSError:

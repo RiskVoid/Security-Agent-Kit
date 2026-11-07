@@ -214,11 +214,20 @@ Actions are pinned to a commit SHA, with the release tag in a comment.
 
 ## CI and releases
 
-- `.github/workflows/ci.yml` runs on every push and pull request: shellcheck, Python compile, compose validation,
-  the notebook-is-generated check, and a few unit checks. Pull requests to `main` and pushes to `main` also run
-  the integration job: `./rvkit setup --yes` with every image built from source, `evals/ci_prepare.sh`, then the
-  policy, tool, end-to-end and lab suites (about 30–45 minutes, amd64, no model or API key needed). The benchmarks
-  need models and cost money, so they don't run in CI.
+- `.github/workflows/ci.yml` runs on every push and pull request and takes about a minute: shellcheck, Python
+  compile, compose validation, the notebook-is-generated check, and the unit tests (`python3 evals/unit_test.py`:
+  tiers, rate caps, scope and rules parsing, the scope pre-check, findings, the web-fetch guard, the console). It
+  builds no images. This is the check a pull request needs.
+- `.github/workflows/integration.yml` builds every image and runs the full-stack suites: `evals/ci_prepare.sh`,
+  then policy, console, tools, end-to-end and lab (amd64, no model or API key needed). Image layers are cached
+  between runs, so a run that changes little takes much less than the first one (15–20 minutes). It runs:
+  - on demand: **Actions > Integration > Run workflow**, on any branch;
+  - on a pull request with the **`full-ci`** label (add it when a change touches the Kali image, the sandbox,
+    `rvkit`, `docker-compose.yml` or the MCP servers; later pushes re-run it while the label is on);
+  - nightly on `main`;
+  - before every release (the release workflow publishes nothing unless it passes).
+
+  The benchmarks need models and cost money, so they don't run in CI.
 - `.github/workflows/release.yml` publishes the images to GHCR for amd64 and arm64 when you push a tag `vX.Y.Z`
   that matches `VERSION`. To release: bump `VERSION` and the `RVKIT_VERSION:-…` defaults in `docker-compose.yml`
   together (CI checks they match), merge, then tag.

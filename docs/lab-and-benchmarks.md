@@ -183,10 +183,11 @@ Tips:
 
 ## Regression tests
 
-The `evals/` folder also holds the kit's own tests. They run against a live stack:
+The `evals/` folder also holds the kit's own tests. All but the first run against a live stack:
 
 | Script | Checks | Needs |
 |---|---|---|
+| `evals/unit_test.py` | tier classification, rate caps, scope and rules parsing, the scope pre-check, findings and duplicates, the web-fetch guard (no Docker needed; CI runs it on every pull request) | nothing |
 | `evals/ci_prepare.sh` | not a test: copies the test apps into your projects folder and creates the engagements `demo-code` and `net-test` the tests use | a fresh setup |
 | `evals/phase3_policy_test.sh` | scope enforcement, sandbox isolation, tiers, rate caps, approvals, halt | `demo-code`, `net-test` |
 | `evals/tools_smoke.sh` | every tool in the Kali image starts; code and supply-chain tools work through the sandbox | `demo-code` |
