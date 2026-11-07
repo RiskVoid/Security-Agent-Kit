@@ -145,7 +145,7 @@ function renderDetail() {
       <div id="confirm-slot"></div>
     </div>
     <div class="tabs" role="tablist">
-      ${["overview", "scope", "findings", "report", "audit"].map((t) => `<button role="tab" data-tab="${t}" class="${state.tab === t ? "on" : ""}">${{ overview: "Overview", scope: "Scope & rules", findings: `Findings (${d.findings.length})`, report: "Report", audit: "Audit log" }[t]}</button>`).join("")}
+      ${["overview", "scope", "findings", "tasks", "report", "audit"].map((t) => `<button role="tab" data-tab="${t}" class="${state.tab === t ? "on" : ""}">${{ overview: "Overview", scope: "Scope & rules", findings: `Findings (${d.findings.length})`, tasks: "Worker tasks", report: "Report", audit: "Audit log" }[t]}</button>`).join("")}
     </div>
     <div id="pane" class="pane"></div>`;
   $$(".tabs button").forEach((b) => b.addEventListener("click", () => { state.tab = b.dataset.tab; renderDetail(); }));
@@ -161,7 +161,7 @@ function renderDetail() {
       await act(btn, () => api(`/api/eng/${encodeURIComponent(d.engagement)}/delete`, { force: !ov.closed }), "Deleted.");
       state.current = null; location.hash = "engagements"; $("#detail").innerHTML = `<div class="empty">Pick an engagement, or create one.</div>`; refresh();
     }));
-  ({ overview: paneOverview, scope: paneScope, findings: paneFindings, report: paneReport, audit: paneAudit })[state.tab]();
+  ({ overview: paneOverview, scope: paneScope, findings: paneFindings, tasks: paneTasks, report: paneReport, audit: paneAudit })[state.tab]();
 }
 
 function confirmBox(title, text, label, fn) {
@@ -319,6 +319,29 @@ function paneReport() {
     const keep = $("#gen-out").innerHTML;
     await openEngagement(d.engagement, true); $("#gen-out").innerHTML = keep;
   });
+}
+
+async function paneTasks() {
+  const d = state.detail;
+  $("#pane").innerHTML = `<p class="hint">Tasks the planner handed to the worker model, newest first. Full output of every step is in
+    <code>evidence/tasks/&lt;task&gt;/</code>.</p><div id="tasks-out" class="hint">Loading…</div>`;
+  const load = async () => {
+    if (state.tab !== "tasks" || state.current !== d.engagement) return;
+    try {
+      const r = await api(`/api/eng/${encodeURIComponent(d.engagement)}/tasks`);
+      const chip = { done: "ok", running: "active", queued: "passive", error: "halted", interrupted: "warn" };
+      $("#tasks-out").outerHTML = `<div id="tasks-out">${r.tasks.map((t) => `<details class="appr" style="border-left-color:var(--rule)" ${t.status === "running" ? "open" : ""}>
+        <summary><span class="chip ${chip[t.status] || ""}">${esc(t.status)}</span> <span class="chip ${esc(t.tier)}">${esc(t.tier)}</span>
+          ${esc((t.goal || "").slice(0, 140))}</summary>
+        <div class="meta"><span>${esc(t.id)}</span><span>started ${fmtTime(t.started)}</span>${t.finished ? `<span>${Math.round((t.finished - t.started) / 60)} min</span>` : ""}
+          <span>${t.steps.length} step(s)</span><span>${t.candidates} candidate(s)</span>${t.models.length ? `<span>model: ${t.models.map(esc).join(", ")}</span>` : ""}</div>
+        ${t.error ? `<p class="err">${esc(t.error)}</p>` : ""}${t.summary ? `<p style="white-space:pre-wrap">${esc(t.summary)}</p>` : ""}
+        ${t.steps.length ? `<pre>${t.steps.map((s, i) => `${String(i + 1).padStart(2, " ")}  ${esc(s)}`).join("\n")}</pre>` : ""}
+      </details>`).join("") || `<p class="hint">No worker tasks yet.</p>`}</div>`;
+      if (r.tasks.some((t) => t.status === "running" || t.status === "queued")) setTimeout(load, 5000);
+    } catch (e) { $("#tasks-out").textContent = e.message; }
+  };
+  load();
 }
 
 async function paneAudit() {

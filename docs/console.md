@@ -21,6 +21,7 @@ It runs in the foreground; Ctrl-C stops it. The address is `http://127.0.0.1:810
 | Engagement **Overview** | Findings by severity, the active scope and rules, pending approvals for this engagement, and a ready prompt to paste into the agent UI. | `./rvkit show` |
 | **Scope & rules** | Edit `SCOPE.md` and `RULES.md`, **Preview changes** (a diff, the parser's warnings, and exactly what the firewall will allow), then **Apply**. Preview writes nothing. | `./rvkit scope <eng>` |
 | **Findings** | Sort by severity and filter by status. Click a finding to change its status (including `duplicate` with the finding it duplicates), severity and notes, and read the description, reproduction, remediation and evidence. **Check evidence integrity** shows a badge per evidence file: verified, code ref, not audited, or what's wrong. | the findings tools in chat |
+| **Worker tasks** | Every task the planner handed to the worker model, newest first: status, tier, which model served it, each command it ran and its summary. Refreshes every few seconds while a task is running. Tasks interrupted by a restart show as `interrupted`. | `list_tasks` in chat, `evidence/tasks/` |
 | **Report** | Edit the cover details (client, prepared by, version, classification) and the executive summary, **Generate report**, see whether it's DRAFT and why, and download the `.docx`, `.pdf` and `.xlsx`. | `./rvkit report` |
 | **Audit log** | Every command, refusal, approval, halt and scope change for the engagement, newest first. | `./rvkit audit` |
 | **Halt now / Resume / Close out / Delete** | The engagement controls, each with a confirmation step where it matters. | `./rvkit halt`, `resume`, `close`, `eng delete` |
@@ -57,8 +58,8 @@ Open the printed sign-in link on your own machine.
 
 ## Not in the console yet
 
-- Watching a run live (current command, worker tasks, which model served each step, spend per run): use the
-  OpenHands UI and `./rvkit status`.
+- Watching the planner live (its current command and spend per run): use the OpenHands UI and `./rvkit status`.
+  Worker tasks are on the engagement's **Worker tasks** tab.
 - Starting the agent: the Overview gives you the prompt; paste it into the OpenHands UI.
 - Continuing the agent automatically after an approval: tell it to run the command again.
 - Models and the worker (Colab, fallback, budget): use `./rvkit worker`, `./rvkit budget` and `/rv-start`.

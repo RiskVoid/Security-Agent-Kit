@@ -10,7 +10,7 @@ cookie. Requests with another Host header (DNS rebinding) are refused, and every
 header, which a cross-site form or link can't send.
 Python 3.9+, standard library only.
 """
-import hmac, json, mimetypes, os, re, secrets, sqlite3, subprocess, sys, threading, time, urllib.parse
+import calendar, hmac, json, mimetypes, os, re, secrets, sqlite3, subprocess, sys, threading, time, urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 KIT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -120,6 +120,35 @@ def findings(eng):
     return rows
 
 
+def transcript_task(d, tid):
+    """Rebuild a task summary from transcript.jsonl (worker versions before 0.2 kept tasks in memory only)."""
+    steps, end, first = [], {}, None
+    try:
+        for line in open(os.path.join(d, "transcript.jsonl"), errors="replace"):
+            try:
+                e = json.loads(line)
+            except ValueError:
+                continue
+            first = first or e.get("ts")
+            if "end" in e:
+                end = e
+            for c in (e.get("assistant") or {}).get("tool_calls") or []:
+                fn = c.get("function", {})
+                if fn.get("name") == "finish":
+                    continue
+                try:
+                    a = json.loads(fn.get("arguments") or "{}")
+                except ValueError:
+                    a = {}
+                steps.append({"tool": fn.get("name"), "args": a})
+    except OSError:
+        return None
+    ts = lambda v: calendar.timegm(time.strptime(v[:19], "%Y-%m-%dT%H:%M:%S")) if v else None  # noqa: E731 (UTC)
+    return {"id": tid, "status": end.get("end", "interrupted"), "tier": "", "goal": "(from the transcript)",
+            "started": ts(first), "finished": ts(end.get("ts")), "steps": steps, "result": end.get("result"),
+            "error": end.get("error"), "candidates": []}
+
+
 def counts(rows):
     c = {}
     for r in rows:
@@ -184,6 +213,25 @@ def api_get(path, q):
         n = max(1, min(int(q.get("n", ["300"])[0]), 2000))
         lines = ctl("audit", eng, str(n)).splitlines()
         return {"entries": [json.loads(l) for l in lines if l.startswith("{")][::-1]}
+    if what == "tasks":  # worker tasks, saved by worker-mcp next to their evidence
+        tdir = eng_path(eng, "evidence", "tasks")
+        out = []
+        for tid in (os.listdir(tdir) if os.path.isdir(tdir) else []):
+            try:
+                t = json.load(open(os.path.join(tdir, tid, "task.json")))
+            except (OSError, ValueError):
+                t = transcript_task(os.path.join(tdir, tid), tid)  # tasks from before task.json existed
+                if not t:
+                    continue
+            res = t.get("result") or {}
+            out.append({"id": t.get("id"), "status": t.get("status"), "tier": t.get("tier"), "goal": t.get("goal"),
+                        "started": t.get("started"), "finished": t.get("finished"), "models": t.get("served_by", []),
+                        "steps": [s.get("args", {}).get("command") or s.get("args", {}).get("query")
+                                  or s.get("args", {}).get("url") or s.get("args", {}).get("path") or s.get("tool")
+                                  for s in t.get("steps", [])],
+                        "candidates": len(t.get("candidates", [])), "summary": res.get("summary"),
+                        "confidence": res.get("confidence"), "error": t.get("error")})
+        return {"tasks": sorted(out, key=lambda t: t.get("started") or 0, reverse=True)[:100]}
     if what == "evidence":
         return findings_py(
             "import json,sys,report,findings_db as db\n"
