@@ -25,12 +25,24 @@ need_env() {
   envensure WORKER_API_KEY "$(envget COLAB_API_KEY || true)"
   envensure WORKER_MODEL_ID "openai/qwen38-27b-obl"
   envensure WORKER_FALLBACK_MODEL "openrouter/deepseek/deepseek-v4.1-flash"
+  envensure WORKER_FALLBACK "off"
+  envensure PLANNER_MODEL "openrouter/anthropic/claude-sonnet-5.5"
+  envensure PLANNER_FALLBACK_MODEL "openrouter/openai/gpt-6.1-sol"
+  envensure OPENROUTER_DAILY_BUDGET "20"
+  envensure REDIS_PASSWORD "$(rand 24)"
   envensure OPENHANDS_API_KEY "oh-rv-$(rand 24)"
   [ "$(envget OPENHANDS_API_KEY)" != "change-me" ] || envset OPENHANDS_API_KEY "oh-rv-$(rand 24)"
   # old template set AGENT_CANVAS_TAG=latest, which overrides the pinned, tested version
   [ "$(envget AGENT_CANVAS_TAG)" != "latest" ] || perl -ni -e 'print unless /^AGENT_CANVAS_TAG=latest$/' .env
+  render_litellm
 }
-recreate_litellm() { docker compose up -d --force-recreate litellm >/dev/null 2>&1; wait_litellm; }
+# litellm/config.yaml is a tracked template. The settings users change (budget, worker fallback) live in .env and
+# are rendered into .rvkit/litellm.yaml (git-ignored), which is the file the litellm container reads.
+render_litellm() {
+  mkdir -p .rvkit
+  python3 scripts/render_litellm.py || die "could not render the LiteLLM config (see above)"
+}
+recreate_litellm() { render_litellm; docker compose up -d --force-recreate litellm >/dev/null 2>&1; wait_litellm; }
 need_docker() {
   command -v docker >/dev/null || die "Docker is not installed. Install Docker Desktop: https://www.docker.com/products/docker-desktop/"
   docker info >/dev/null 2>&1 || die "Docker is not running. Start Docker Desktop and try again."
@@ -120,6 +132,7 @@ case "$cmd" in
       envset ENGAGEMENTS_DIR "$HOME/projects/engagements"
       ok "created .env with fresh secrets"
     fi
+    need_env   # fills in defaults for newer settings and renders .rvkit/litellm.yaml
     mkdir -p "$(envget PROJECTS_DIR)" "$(envget ENGAGEMENTS_DIR)"
     bold "3/3 Building and starting containers (first time ~10 min)"
     docker compose up -d --build
@@ -144,7 +157,8 @@ EOF
     docker compose ps --format 'table {{.Service}}\t{{.State}}\t{{.Status}}'
     echo; echo "Worker endpoint: $(envget WORKER_API_BASE) ($(envget WORKER_MODEL_ID))"
     test_model || true ;;
-  logs)   need_env; docker compose logs --tail 80 "${@:-}" ;;
+  logs)   need_env  # (bash 3.2 turns "${@:-}" into one empty argument, which docker compose rejects)
+          if [ $# -gt 0 ]; then docker compose logs --tail 80 "$@"; else docker compose logs --tail 80; fi ;;
   connect)
     need_env
     [ $# -ge 1 ] || die "usage: ./rvkit connect <url/v1> [key]"
@@ -161,18 +175,17 @@ EOF
     case "${1:-show}" in
       show)
         echo "worker endpoint: $(envget WORKER_API_BASE)   model: $(envget WORKER_MODEL_ID)"
-        if grep -q '{"colab-qwen": \["colab-qwen-fallback"\]}' litellm/config.yaml; then
-          echo "fallback (when the endpoint is down): $(envget WORKER_FALLBACK_MODEL), zero-data-retention providers"
-        else echo "fallback: off"; fi
+        if [ "$(envget WORKER_FALLBACK)" = "on" ]; then
+          echo "fallback (when the endpoint is down): $(envget WORKER_FALLBACK_MODEL) via OpenRouter, zero-data-retention providers"
+          echo "  while it is in use, tool output and client code go to that model"
+        else echo "fallback: off (worker calls fail while the endpoint is down; ./rvkit worker fallback on allows it)"; fi
         exit 0 ;;
       fallback)
-        case "${2:-}" in
-          off) perl -pi -e 's/, \{"colab-qwen": \["colab-qwen-fallback"\]\}//' litellm/config.yaml ;;
-          on|"") grep -q '"colab-qwen-fallback"\]' litellm/config.yaml || \
-                  perl -pi -e 's/(fallbacks: \[\{"planner": \["planner-fallback"\]\})\]/$1, {"colab-qwen": ["colab-qwen-fallback"]}]/' litellm/config.yaml ;;
-          *) envset WORKER_FALLBACK_MODEL "openrouter/${2#openrouter/}"
-             grep -q '"colab-qwen-fallback"\]' litellm/config.yaml || \
-               perl -pi -e 's/(fallbacks: \[\{"planner": \["planner-fallback"\]\})\]/$1, {"colab-qwen": ["colab-qwen-fallback"]}]/' litellm/config.yaml ;;
+        case "${2:-show}" in
+          show) "$0" worker show; exit 0 ;;
+          off)  envset WORKER_FALLBACK off ;;
+          on)   envset WORKER_FALLBACK on ;;
+          *)    envset WORKER_FALLBACK_MODEL "openrouter/${2#openrouter/}"; envset WORKER_FALLBACK on ;;
         esac
         recreate_litellm; "$0" worker show; exit 0 ;;
       colab)
@@ -190,10 +203,27 @@ EOF
     recreate_litellm; ok "Worker: $(envget WORKER_API_BASE) ($(envget WORKER_MODEL_ID))"; test_model ;;
   budget)
     need_env
-    if [ $# -eq 0 ]; then grep -E 'openrouter: \{budget_limit' litellm/config.yaml | sed 's/^ */OpenRouter daily budget: /'; exit 0; fi
+    if [ $# -eq 0 ]; then
+      echo "OpenRouter daily budget: \$$(envget OPENROUTER_DAILY_BUDGET)"
+      curl -s -m 10 http://127.0.0.1:4000/provider/budgets -H "Authorization: Bearer $(envget LITELLM_MASTER_KEY)" |
+        python3 -c 'import sys,json
+try: b=json.load(sys.stdin)["providers"]["openrouter"]
+except Exception: sys.exit()
+print("spent in the current 24 h period: $%.4f" % (b.get("spend") or 0))' || true
+      exit 0
+    fi
     [[ "$1" =~ ^[0-9]+(\.[0-9]+)?$ ]] || die "usage: ./rvkit budget <usd-per-day>"
-    B="$1" perl -pi -e 's/(openrouter: \{budget_limit: )[0-9.]+/${1}$ENV{B}/' litellm/config.yaml
-    recreate_litellm; ok "OpenRouter budget: \$$1 per day" ;;
+    envset OPENROUTER_DAILY_BUDGET "$1"
+    recreate_litellm; ok "OpenRouter budget: \$$1 per day (spend so far is kept)" ;;
+  planner)
+    need_env
+    case "${1:-show}" in
+      show) echo "planner: $(envget PLANNER_MODEL)   fallback: $(envget PLANNER_FALLBACK_MODEL)   (OpenRouter, zero-data-retention providers)"
+            exit 0 ;;
+      *)    envset PLANNER_MODEL "openrouter/${1#openrouter/}"
+            [ $# -ge 2 ] && envset PLANNER_FALLBACK_MODEL "openrouter/${2#openrouter/}"
+            recreate_litellm; "$0" planner show; test_model planner ;;
+    esac ;;
   test)   need_env; test_model "${1:-colab-qwen}" ;;
   key)
     need_env
@@ -269,7 +299,8 @@ $(bold "rvkit: RiskVoid agent kit")
   ./rvkit worker [show|colab|local|api …]   switch the worker endpoint: Colab, a local server
                                 (llama-server / LM Studio / Ollama / vLLM), or any OpenAI-compatible URL
   ./rvkit worker fallback [on|off|<model>]  OpenRouter model used while the worker endpoint is down
-  ./rvkit budget [usd]          show / set the daily OpenRouter (planner) budget
+  ./rvkit planner [<model> [fallback-model]]   show / set the planner models (OpenRouter ids)
+  ./rvkit budget [usd]          show today's OpenRouter spend / set the daily budget
   ./rvkit test [planner]        send a test prompt to the worker (or the planner)
   ./rvkit key [colab|litellm|openhands]   print a key (colab = paste into the notebook)
   ./rvkit openhands             (re)configure OpenHands: LLM profiles, MCP servers, agent profiles
