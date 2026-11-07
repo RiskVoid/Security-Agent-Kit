@@ -38,7 +38,7 @@ What survives a restart:
 | Scope, rules, approvals, audit log (`kali-control` volume) | kept | kept |
 | OpenHands conversations and settings (`openhands-data` volume) | kept | kept |
 | OpenRouter spend in the current period (`litellm-spend` volume) | kept | kept |
-| Worker task results (`get_task`) | lost: the evidence files remain | lost if `worker-mcp` restarts |
+| Worker task results (`get_task`) | kept; running tasks become `interrupted` | kept; running tasks become `interrupted` |
 | Running Kali commands | killed | killed if `kali-mcp` restarts |
 
 After a restart, a conversation that was in the middle of a tool call may show an error: start a new conversation
@@ -54,9 +54,8 @@ Everything listens on `127.0.0.1` only; nothing is reachable from your network.
 | 4000 | LiteLLM model gateway (needs `./rvkit key litellm`) |
 | 8888 | SearXNG search |
 
-If a port is taken, the best fix is to free it. `rvkit` itself expects the UI on 8000 and LiteLLM on 4000: if you
-move either one (the left number of its `ports:` line in `docker-compose.yml`), the containers work but `up`,
-`status`, `doctor` and the OpenHands configuration step can't reach them. Moving SearXNG's 8888 is safe.
+If a port is taken, set another one in `.env` and run `./rvkit up`: `GATEWAY_PORT` (UI), `LITELLM_PORT` or
+`SEARXNG_PORT`. `rvkit` follows the setting, and the UI is then at `http://localhost:<GATEWAY_PORT>/`.
 
 To use the UI from another machine, use an SSH tunnel rather than publishing the port:
 
@@ -67,11 +66,10 @@ ssh -L 8000:127.0.0.1:8000 you@kit-host
 ## Updating
 
 ```sh
-git pull
-./rvkit up
+./rvkit update
 ```
 
-`up` pulls the published images for the version in `VERSION`, starts them, migrates `.env` (new settings get
+This runs `git pull` and then `./rvkit up`, and lists what changed. (Doing the two steps by hand works too.) `up` pulls the published images for the version in `VERSION`, starts them, migrates `.env` (new settings get
 their defaults) and re-applies the OpenHands configuration, so prompt and tool changes take effect in **new**
 conversations. Read the release notes for anything that needs your action.
 

@@ -3,7 +3,7 @@
 Checks that the route answers, that the reply is a plan (not a refusal or a clarification-only reply),
 and records latency and token use in evals/results/. Run: python3 evals/planner_smoke.py [model ...]
 """
-import json, pathlib, sys, time, urllib.request
+import json, os, pathlib, sys, time, urllib.request
 
 KIT = pathlib.Path(__file__).resolve().parent.parent
 ENV = dict(l.split("=", 1) for l in (KIT / ".env").read_text().splitlines() if "=" in l and not l.startswith("#"))
@@ -21,7 +21,7 @@ REFUSAL = ["i can't help", "i cannot help", "i won't", "unable to assist", "not 
 def ask(model):
     body = {"model": model, "max_tokens": 8000,
             "messages": [{"role": "system", "content": SYSTEM}, {"role": "user", "content": BRIEF}]}
-    req = urllib.request.Request("http://127.0.0.1:4000/v1/chat/completions", data=json.dumps(body).encode(),
+    req = urllib.request.Request(os.environ.get("LITELLM_URL", "http://127.0.0.1:4000") + "/v1/chat/completions", data=json.dumps(body).encode(),
                                  headers={"Authorization": f"Bearer {ENV['LITELLM_MASTER_KEY']}",
                                           "Content-Type": "application/json"})
     t = time.time()

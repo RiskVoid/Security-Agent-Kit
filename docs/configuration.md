@@ -44,6 +44,8 @@ Set these with `./rvkit connect` and `./rvkit worker` ([models.md](models.md)), 
 | `WORKER_FALLBACK` | `off` | `on` sends worker calls to `WORKER_FALLBACK_MODEL` while the endpoint is down. |
 | `WORKER_FALLBACK_MODEL` | `openrouter/deepseek/deepseek-v4.1-flash` | The fallback model (OpenRouter). |
 | `COLAB_API_BASE`, `COLAB_MODEL` | | The last Colab URL and model, so `./rvkit worker colab` can switch back. |
+| `WORKER_PARALLEL_TASKS` | `1` | Delegated tasks the worker runs at once. Keep 1 for Colab; raise it for an API endpoint or a local server with parallel slots. |
+| `WORKER_CONTEXT_CHARS` | `90000` | Characters of task context the worker keeps (about 25K tokens, for a 32K-context model). Raise it for a model with a longer context. |
 
 ### Planner model and spend
 
@@ -75,6 +77,15 @@ Run `./rvkit up` after changing them. Details: [findings-and-reports.md](finding
 This only affects the agent's own container (installing packages from its terminal). It does not change what Kali
 commands can reach: that is the engagement's scope.
 
+| Setting | Default | Meaning |
+|---|---|---|
+| `GATEWAY_PORT` | `8000` | Port of the UI on `127.0.0.1`. |
+| `LITELLM_PORT` | `4000` | Port of the LiteLLM model gateway on `127.0.0.1`. |
+| `SEARXNG_PORT` | `8888` | Port of SearXNG on `127.0.0.1`. |
+
+Change a port when another app already uses it, then run `./rvkit up`. `rvkit` and the benchmark runner follow the
+setting.
+
 ### Optional
 
 | Setting | Default | Meaning |
@@ -95,7 +106,7 @@ commands can reach: that is the engagement's scope.
 | `prompts/planner.md`, `prompts/local.md` | The agents' instructions. `{{ORG_NAME}}` is replaced with your organisation. | `./rvkit openhands`, then start a new conversation |
 | `harness/playbooks/*.md` | Methodology playbooks ([tools-reference.md](tools-reference.md#playbooks)). | `RVKIT_BUILD=1 ./rvkit up` |
 | `litellm/config.yaml` | Model routing template. `rvkit` renders it with your `.env` into `.rvkit/litellm.yaml`, which LiteLLM reads. Don't edit the generated file. | `./rvkit up` |
-| `docker-compose.yml` | Services, ports, versions. `rvkit` expects ports 8000 and 4000 ([operations.md](operations.md#ports)). | `./rvkit up` |
+| `docker-compose.yml` | Services, versions. Ports are set in `.env` ([operations.md](operations.md#ports)). | `./rvkit up` |
 | Engagement `SCOPE.md` / `RULES.md` | Scope and rules of one engagement ([engagements.md](engagements.md)). | `./rvkit scope <engagement> --yes` |
 
 To override the infrastructure domains for one install without rebuilding, put your own list in the control volume

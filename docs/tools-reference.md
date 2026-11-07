@@ -51,18 +51,20 @@ Output notes:
 |---|---|---|
 | `delegate_task` | `goal`, `engagement`, `tier` (`passive` default, `active`, `intrusive`), `max_steps` (default 15, 1–40), `timeout_min` (default 30, 1–180), `wait_s` (default 240, max 600) | Starts one focused task on the worker model. Refuses if the engagement is halted or the tier isn't allowed by `RULES.md`. Returns the result, or a `task_id` with a note if it's still running after `wait_s`. |
 | `get_task` | `task_id`, `wait_s` (default 240, max 600) | Waits for a task and returns its result. |
-| `list_tasks` | none | The tasks of this worker session. |
+| `list_tasks` | `engagement` (optional) | Saved tasks, newest first (up to 50), including those from before a worker restart. |
 
-A result has: `task_id`, `status` (`queued`, `running`, `done`, `error`), `elapsed_s`, the `commands` it ran, the
+A result has: `task_id`, `status` (`queued`, `running`, `done`, `error`, `interrupted`), `elapsed_s`, the `commands` it ran, the
 `candidate_findings` it recorded, the `evidence_dir`, the `model` that served it (shows when the fallback model
 was used) and `result` (`summary`, `observations`, `open_questions`, `confidence`). Secrets are redacted from it.
 
 Things to know:
 
-- **One task at a time.** The worker model handles one request at a time; later tasks queue.
-- **Tasks live in memory.** `get_task` and `list_tasks` only know tasks since `worker-mcp` last started. The
-  files stay: every step's full output is in `/work/<engagement>/evidence/tasks/<task_id>/step-NN-<tool>.txt`,
-  with the whole exchange in `transcript.jsonl`.
+- **One task at a time** by default: Colab handles one request at a time, so later tasks queue. Raise
+  `WORKER_PARALLEL_TASKS` in `.env` for an endpoint that serves parallel requests.
+- **Tasks survive restarts.** Each task's state is saved in `/work/<engagement>/evidence/tasks/<task_id>/task.json`,
+  next to every step's full output (`step-NN-<tool>.txt`) and the whole exchange (`transcript.jsonl`). A task that
+  was running when `worker-mcp` restarted shows as `interrupted`; delegate it again to finish it.
+  `list_tasks(engagement)` lists one engagement's tasks, newest first.
 - **Private engagements.** With `Worker model: private` in `RULES.md`, the task runs on `private-llm`, which
   never falls back to OpenRouter. See [models.md](models.md).
 - If the worker model can't be reached, the task ends with `error: worker model unreachable …`. The planner then
@@ -76,8 +78,8 @@ Inside a task, the worker model has these tools (they aren't MCP tools; `worker-
 |---|---|
 | `kali_run` | `command`, `timeout_s` (default 600, max 3600): calls the kali `run` tool for the task's engagement. Same checks, same audit log. An intrusive command makes it stop and report the approval id. |
 | `vuln_intel` | `ids`: ranks up to 50 vulnerability ids with the intel `prioritize` tool. |
-| `web_search` | `query`: SearXNG search, 8 results. |
-| `fetch_url` | `url`: reads a public page as text. Refuses this engagement's targets and non-public addresses, on every redirect too. |
+| `web_search` | `query`: SearXNG search through `web-mcp`, 8 results. |
+| `fetch_url` | `url`: reads a public page as text through `web-mcp`. Refuses every engagement's targets and non-public addresses, on every redirect too. |
 | `read_file` | `path`, `start` (default 1), `lines` (default 200, max 500): numbered lines of a file under the engagement's in-scope code paths or its engagement folder. Nothing else. |
 | `record_candidate` | `title`, `severity`, `asset`, `description`, `evidence`, `cwe`: stores a **candidate** finding (source `worker:<task_id>`). Only the planner can confirm it. |
 | `finish` | `summary`, `observations`, `open_questions`, `confidence`: ends the task. |
@@ -91,7 +93,7 @@ the L4 profile.
 | Tool | Parameters | What it does |
 |---|---|---|
 | `record_finding` | `engagement`, `title`, `severity`, `asset`, `description`, and optional `impact`, `reproduction`, `remediation`, `evidence` (list of paths), `cvss_vector`, `cvss_score`, `cwe`, `status` (`candidate` by default; any of the five statuses is accepted), `notes` | Stores a finding and returns it with its id (`F-001`, `F-002`, …). Severity: `critical`, `high`, `medium`, `low`, `info`. |
-| `update_finding` | `engagement`, `finding_id`, then any field to change, including `status` | Changes only the fields given. Statuses: `candidate`, `confirmed`, `false-positive` (reason in `notes`), `fixed`, `accepted-risk`. |
+| `update_finding` | `engagement`, `finding_id`, then any field to change, including `status` | Changes only the fields given. Statuses: `candidate`, `confirmed`, `false-positive` (reason in `notes`), `duplicate` (needs `duplicate_of`: the finding to keep), `fixed`, `accepted-risk`. |
 | `list_findings` | `engagement`, optional `status`, `severity` | Findings, most severe first: id, title, severity, status, asset, source. |
 | `get_finding` | `engagement`, `finding_id` | One finding with every field. |
 | `write_file` | `engagement`, `path`, `content`, `append` (default false) | Writes one of: `PLAN.md`, `NOTES.md`, `notes/<name>.md` or `.txt`, `report/executive-summary.md`, `report/methodology.md`, `report/conclusion.md`, `report/meta.txt`. Anything else, or content over 1 MB, is refused. |

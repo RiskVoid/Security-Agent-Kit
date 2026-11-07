@@ -61,6 +61,11 @@ while IFS= read -r f; do
   call $FIND update_finding "{\"engagement\": \"$ENG\", \"finding_id\": \"$id\", \"status\": \"$st\", \"notes\": \"e2e\"}" >/dev/null
 done
 check "3 confirmed + 1 false positive" "$(call $FIND list_findings "{\"engagement\": \"$ENG\", \"status\": \"confirmed\"}" | grep -c '"id"')" '^3$'
+dup=$(call $FIND record_finding "{\"engagement\": \"$ENG\", \"title\": \"Same SQL injection, found twice\", \"severity\": \"high\", \"asset\": \"app.py\", \"description\": \"dup\"}" | python3 -c 'import json,sys; print(json.load(sys.stdin)["id"])' 2>/dev/null)
+j1="{\"engagement\": \"$ENG\", \"finding_id\": \"$dup\", \"status\": \"duplicate\"}"
+j2="{\"engagement\": \"$ENG\", \"finding_id\": \"$dup\", \"status\": \"duplicate\", \"duplicate_of\": \"F-001\"}"
+check "duplicate needs duplicate_of" "$(call $FIND update_finding "$j1")" 'needs duplicate_of'
+check "duplicate links the kept finding" "$(call $FIND update_finding "$j2")" '"duplicate_of": "F-001"'
 
 echo "== 3. report"
 mkdir -p "$ENGDIR/report"
@@ -73,6 +78,8 @@ DOCX="$(ls "$ENGDIR"/report/*.docx 2>/dev/null | head -1)"
 xml="$(unzip -p "$DOCX" word/document.xml 2>/dev/null)"
 for f in F-001 F-002 F-003; do check "$f in report" "$xml" "$f"; done
 check "false positive excluded" "$(echo "$xml" | grep -c 'Scanner noise')" '^0$'
+check "duplicate excluded" "$(echo "$xml" | grep -c 'found twice')" '^0$'
+check "classification on the cover" "$xml" 'Classification.*Confidential'
 passes=$(echo "$xml" | grep -o '>Pass<' | wc -l | tr -d ' ')
 check "every evidence file verified (Pass rows: $passes)" "$(echo "$xml" | grep -cE '>(Fail|Not audited)<')" '^0$'
 [ "$passes" -ge 10 ] && ok "evidence rows in detail + appendix ($passes)" || bad "evidence rows" "$passes"

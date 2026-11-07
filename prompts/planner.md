@@ -76,7 +76,8 @@ and score, CWE, affected asset, description, impact in business terms, reproduct
 paths (one per line; add a note after a space, e.g. `/work/<eng>/semgrep.json (rule sqli, app.py:14)`; for code use
 `/src/<repo>/file:line`), and a concrete remediation. Write descriptions and remediation in short markdown
 (paragraphs, `-` lists, ``` code blocks): they go into the client report as-is. Use the findings tools: `list_findings` to see candidates from the worker,
-`update_finding` to confirm them (status `confirmed`) or reject them (status `false-positive`, reason in notes),
+`update_finding` to confirm them (status `confirmed`), reject them (status `false-positive`, reason in notes) or
+merge them (status `duplicate` with `duplicate_of` = the finding you keep, after adding the duplicate's evidence to it),
 and `record_finding` for issues you find yourself. Secrets in worker summaries are redacted; read the evidence
 file if you need the exact value, and never repeat a live secret in a finding (describe and locate it instead).
 

@@ -9,7 +9,7 @@ symptom below.
 | Symptom | Cause and fix |
 |---|---|
 | `Docker is not running` / `Docker Compose v2 is missing` | Start Docker Desktop, OrbStack or Docker Engine; update Docker if `docker compose version` fails. |
-| `port is already allocated` | Another app uses 8000, 4000 or 8888. Stop it if you can. `rvkit` expects 8000 and 4000 ([operations.md](operations.md#ports)). |
+| `port is already allocated` | Another app uses 8000, 4000 or 8888. Set `GATEWAY_PORT`, `LITELLM_PORT` or `SEARXNG_PORT` in `.env` and run `./rvkit up` ([operations.md](operations.md#ports)). |
 | `setup` is slow the first time | It pulls about 18 GB of images, or builds them (about 10 minutes) if they aren't published for your version. Later starts take seconds. |
 | A service keeps restarting | `./rvkit logs <service>`. For `kali-mcp`, check that Docker allows `NET_ADMIN` / `SYS_ADMIN` (rootless Docker and some Linux security policies don't). |
 | OpenHands doesn't start; its log says `Can't locate revision` | Its data volume was used by a newer OpenHands. Set `AGENT_CANVAS_TAG` in `.env` to that version, then `./rvkit up`. |
@@ -90,8 +90,8 @@ you can change the scope. The agent's own container has no direct internet. Know
 (active tier) can send intrusive traffic without approval, against in-scope hosts only.
 
 **Can I run several engagements at the same time?**
-Yes. Each has its own sandbox user, firewall chain and DNS. Worker tasks run one at a time, so parallel
-conversations queue on the worker.
+Yes. Each has its own sandbox user, firewall chain and DNS. Worker tasks run one at a time by default, so parallel
+conversations queue on the worker (`WORKER_PARALLEL_TASKS` raises it for endpoints that allow it).
 
 **Can several people use one installation?**
 It's built for one operator: the UI and ports are on `127.0.0.1`, there are no user accounts, and approvals don't

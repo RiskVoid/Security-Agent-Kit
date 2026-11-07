@@ -26,10 +26,11 @@ is weaker than described here.
 2. **The planner's web fetch tool checks names and addresses, not content.** The `web` MCP server (`web-mcp`)
    refuses every engagement target (the union of all engagements' scope) and every non-public address, on the
    first request and on each redirect, and fails closed when it can't read the scopes. Its requests are not in the
-   audit log, and the same DNS rebinding window as item 3 applies.
-3. **The worker container's own network is not restricted.** Its `fetch_url` tool refuses in-scope targets and
-   non-public addresses (it resolves the name and checks every redirect), but the container itself can reach the
-   internet. A DNS rebinding window remains between the check and the connection.
+   audit log. A DNS rebinding window remains between the check and the connection. The worker has no internet of
+   its own: its `web_search` and `fetch_url` tools go through this server, with the same checks.
+3. **Kit services can reach the internet.** `web-mcp`, `intel-mcp`, `kali-mcp` (for its own updates and rule
+   downloads, not agent commands), LiteLLM and SearXNG have outbound access. The two agent-facing containers,
+   OpenHands and the worker, are on an internal network without it.
 4. **IPv6 targets are not supported.** All IPv6 traffic from engagement commands is dropped, and IPv6 scope
    entries are ignored with a warning.
 5. **A domain in scope includes its subdomains.** `acme.com` in `SCOPE.md` also allows `anything.acme.com`. You

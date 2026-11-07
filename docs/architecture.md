@@ -27,12 +27,14 @@ GPU, a local server or any OpenAI-compatible endpoint).
  │                       ▼          ▼                      ▼                             │
  │              egress-proxy     litellm     web-mcp  kali-mcp  worker-mcp  findings-mcp  intel-mcp
  └───────────────────┼──────────────┼──────────┼─────────┼─────────┼───────────────────────┼──────┘
-                     │              │          │         │         │                       │
- default network ────┼──────────────┼──────────┼─────────┼─────────┼───────────────────────┼──────
- (has internet)      ▼              ▼          ▼         │         ▼                       ▼
-            allowlisted       OpenRouter     searxng     │    litellm (worker model),   OSV, NVD,
-            registries and    worker endpoint            │    searxng, public pages     EPSS, KEV
-            vuln databases    (redis: spend)             │
+                     │              │          │         │   (internal only:       │
+                     │              │          │         │    litellm, kali-mcp,     │
+                     │              │          │         │    web-mcp, intel-mcp)    │
+ default network ────┼──────────────┼──────────┼─────────┼─────────────────────────────────┼──────
+ (has internet)      ▼              ▼          ▼         │                                 ▼
+            allowlisted       OpenRouter     searxng,    │                            OSV, NVD,
+            registries and    worker endpoint public     │                            EPSS, KEV
+            vuln databases    (redis: spend)  pages      │
                                                          ▼
                                         Kali sandbox (per-engagement firewall)
                                  ┌───────────────────────┼─────────────────────────┐
@@ -57,7 +59,7 @@ GPU, a local server or any OpenAI-compatible endpoint).
 | `searxng` | `searxng/searxng` (pinned) | Private metasearch for web research | `default`; **127.0.0.1:8888** | `searxng/settings.yml` |
 | `web-mcp` | kit image `-harness` | `web_search` and `fetch` for the planner; fetch refuses engagement targets and non-public addresses | `default`, `rvagent` | none |
 | `kali-mcp` | kit image `-kali` | Kali toolbox as MCP; per-engagement scope firewall, sandbox, tiers, approvals, audit log | `default`, `rvagent`, `rvlab` (10.250.0.2) | `/work` (read-write), `/src` (read-only), `kali-control`, `semgrep-rules` |
-| `worker-mcp` | kit image `-harness` | `delegate_task`: runs a tool-calling loop on the worker model | `default`, `rvagent` | `/work` (read-write), `/src` (read-only) |
+| `worker-mcp` | kit image `-harness` | `delegate_task`: runs a tool-calling loop on the worker model; search and fetch go through `web-mcp` | `rvagent` only (no internet) | `/work` (read-write), `/src` (read-only) |
 | `findings-mcp` | kit image `-report` | Findings database, playbooks, `write_file`, branded report (python-docx, LibreOffice) | `default`, `rvagent` | `/work` (read-write), your brand folder at `/brand-custom` (read-only) |
 | `intel-mcp` | kit image `-harness` | OSV, NVD, EPSS and CISA KEV lookups, cached | `default`, `rvagent` | `intel-cache` |
 | `lab-*` (profile `lab`) | Juice Shop, DVWA + MariaDB, VAmPI, DVGA, `riskvoid-lab-llm` | Deliberately vulnerable practice targets | `rvlab` only | none |
@@ -69,8 +71,8 @@ Kit images are published as `ghcr.io/riskvoid/security-agent-kit-{egress,harness
 
 | Network | Type | Members | Purpose |
 |---|---|---|---|
-| `default` | normal bridge, has internet | every service except `agent-canvas` and the lab | the kit's services talk to each other and to model providers, SearXNG engines and vulnerability databases |
-| `rvagent` | `internal: true` | `agent-canvas`, `gateway`, `egress-proxy`, `litellm` and the five MCP servers | everything OpenHands is allowed to talk to. No route to the internet or the host |
+| `default` | normal bridge, has internet | every service except `agent-canvas`, `worker-mcp` and the lab | the kit's services talk to each other and to model providers, SearXNG engines and vulnerability databases |
+| `rvagent` | `internal: true` | `agent-canvas`, `gateway`, `egress-proxy`, `litellm` and the five MCP servers | everything OpenHands and the worker are allowed to talk to. No route to the internet or the host |
 | `rvlab` | `internal: true`, `10.250.0.0/24` | `kali-mcp` (10.250.0.2) and the lab targets | practice targets. No internet, no host, and no other kit service |
 
 ### Host ports

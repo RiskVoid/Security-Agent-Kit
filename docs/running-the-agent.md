@@ -196,7 +196,7 @@ evidence files and the audit log. So you can always continue, in the same conver
 | Situation | What to do |
 |---|---|
 | You closed the browser, or come back the next day | Open the same conversation (conversations are kept) and say "continue". |
-| `./rvkit down` / `./rvkit up`, or a computer restart | Conversations and engagement files are kept. Open the conversation and say "continue". Worker task results that weren't collected yet are lost (they're kept in memory), but their evidence files under `evidence/tasks/` remain: ask the agent to read them or rerun the task. |
+| `./rvkit down` / `./rvkit up`, or a computer restart | Conversations and engagement files are kept. Open the conversation and say "continue". Finished worker tasks can still be collected with `get_task`. A task that was running shows as `interrupted`; its partial evidence is under `evidence/tasks/`, so ask the agent to read it or rerun the task. |
 | The Colab worker stopped (idle shutdown, session ended) | Start it again (`/rv-start`, or the notebook and `./rvkit connect …`), check with `./rvkit test`. Then tell the agent to retry. If the conversation shows connection errors, start a new one. |
 | A command was refused | Read the reason. `REFUSED: targets not in scope` / `tier` / `window` / `halted`: fix the scope or rules with `./rvkit scope`, or tell the agent to work within them. Don't let it rephrase the command to get around a refusal. |
 | A tool failed or timed out | Ask the agent to run it again, narrower (fewer targets, a smaller wordlist) or with a longer timeout (up to 3,600 s; delegate runs longer than 30 minutes to the worker). |

@@ -73,10 +73,17 @@ def openrouter_usage():
         return None
 
 
-def lab_running():
-    r = subprocess.run(["docker", "compose", "--profile", "lab", "ps", "lab-juice-shop", "--format", "{{.State}}"],
+LAB_SERVICES = {"10.250.0.10": ["lab-juice-shop"], "10.250.0.11": ["lab-dvwa", "lab-dvwa-db"],
+                "10.250.0.13": ["lab-vampi"], "10.250.0.14": ["lab-dvga"], "10.250.0.15": ["lab-llm"]}
+
+
+def lab_running(target):
+    """True when every lab container behind this benchmark's target is running."""
+    r = subprocess.run(["docker", "compose", "--profile", "lab", "ps", "--status", "running", "--services"],
                        cwd=KIT, capture_output=True, text=True)
-    return "running" in r.stdout
+    up = set(r.stdout.split())
+    need = LAB_SERVICES.get(str(target).split(":")[0], [s for v in LAB_SERVICES.values() for s in v])
+    return all(s in up for s in need)
 
 
 # ---------------------------------------------------------------- setup
@@ -170,8 +177,24 @@ def run_conversation(eng, b, agent, target, log):
         final = oh("GET", f"/api/conversations/{cid}/agent_final_response").get("response", "")
     except Exception:
         final = ""
+    if status == "idle" and asked_human(final):
+        status = "asked-question"  # stopped to wait for a human: an unattended run that did this has failed
     return {"conversation_id": cid, "status": status, "seconds": round(time.time() - t0),
             "approvals_auto": approved, "tokens": tok, "final_response": final[:2000]}
+
+
+ASK_RX = re.compile(r"\b(would you like me to|do you want me to|shall i|should i|please confirm|can you confirm|"
+                    r"could you (?:confirm|provide|clarify)|which (?:option|one) (?:do|would) you|awaiting your|"
+                    r"before i (?:proceed|continue)|how would you like)\b", re.I)
+
+
+def asked_human(final):
+    """True when the agent's last message ends by asking the user something instead of finishing the job."""
+    tail = (final or "").strip()[-600:]
+    if not tail:
+        return False
+    last = re.split(r"(?<=[.!?])\s+", tail)[-1]
+    return last.rstrip().endswith("?") or bool(ASK_RX.search(tail))
 
 
 # ---------------------------------------------------------------- scoring
@@ -216,6 +239,7 @@ def score(b, allf):
         "expected": len(exp), "found": len(found), "confirmed": len(conf),
         "candidates_left": sum(1 for f in allf if f["status"] == "candidate"),
         "false_positives_marked": sum(1 for f in allf if f["status"] == "false-positive"),
+        "duplicates_marked": sum(1 for f in allf if f["status"] == "duplicate"),
         "recall": round(len(found) / len(exp), 3) if exp else None,
         "weighted_recall": round(sum(SEV_W[exp[i]["severity"]] for i in found) / total_w, 3),
         "precision": round(len(owner) / len(conf), 3) if conf else None,
@@ -233,7 +257,7 @@ def models():
 
 def run_one(name, agent, log=print):
     b = json.load(open(os.path.join(BENCH, f"{name}.json")))
-    if b.get("lab") and not lab_running():
+    if b.get("lab") and not lab_running(b["target"]):
         log(f"SKIP {name}: lab not running (./rvkit lab up)")
         return None
     log(f"== {name}: {b['description']}")

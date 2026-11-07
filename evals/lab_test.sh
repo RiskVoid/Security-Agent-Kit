@@ -26,7 +26,10 @@ asyncio.run(go())' "$1" "$2" </dev/null 2>/dev/null
 }
 code() { kali "$1" "curl -s -o /dev/null -m 8 -w 'HTTP=%{http_code}' $2"; }
 
-docker compose --profile lab ps lab-juice-shop --format '{{.State}}' | grep -q running || { echo "lab not running: ./rvkit lab up"; exit 1; }
+up="$(docker compose --profile lab ps --status running --services)"
+for s in lab-juice-shop lab-dvwa lab-dvwa-db lab-vampi lab-dvga lab-llm; do
+  echo "$up" | grep -qx "$s" || { echo "lab container $s not running: ./rvkit lab up"; exit 1; }
+done
 ./rvkit engagement lab-juice --replace 10.250.0.10 >/dev/null 2>&1
 ./rvkit engagement lab-dvwa --replace 10.250.0.11 >/dev/null 2>&1
 

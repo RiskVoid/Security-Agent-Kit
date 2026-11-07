@@ -15,7 +15,7 @@ without a terminal.
 
 | Area | Commands |
 |---|---|
-| Start and check | [`setup`](#setup), [`up`](#up), [`down`](#down), [`status`](#status), [`doctor`](#doctor), [`quickstart`](#quickstart), [`logs`](#logs) |
+| Start and check | [`setup`](#setup), [`up`](#up), [`down`](#down), [`update`](#update), [`status`](#status), [`doctor`](#doctor), [`quickstart`](#quickstart), [`logs`](#logs) |
 | Models | [`connect`](#connect), [`worker`](#worker), [`planner`](#planner), [`budget`](#budget), [`test`](#test), [`key`](#key), [`openhands`](#openhands) |
 | Engagements | [`new`](#new), [`engagement`](#engagement), [`eng`](#eng), [`watch`](#watch), [`approvals`](#approvals), [`approve` / `deny`](#approve--deny), [`scope`](#scope), [`show`](#show), [`halt` / `resume`](#halt--resume), [`audit`](#audit), [`report`](#report), [`close`](#close), [`delete`](#delete) |
 | Practice and tests | [`lab`](#lab), [`bench`](#bench) |
@@ -81,6 +81,17 @@ Settings in `.env` are also migrated: settings added in newer versions get their
 Stops and removes the containers (`docker compose down`). Volumes and your files are kept: conversations,
 engagements, the audit log, the spend counter and caches all survive. See [operations.md](operations.md) for a
 full reset.
+
+### update
+
+```sh
+./rvkit update
+```
+
+Updates the kit: `git pull --ff-only`, lists the new commits and any new optional settings in `.env.example`,
+then runs the new version's `up` (pulls or builds its images, migrates `.env`, re-applies the OpenHands
+configuration). It stops without changing anything if tracked files have local changes or the branch has
+diverged. Your `.env` and data are never touched by the pull.
 
 ### status
 
@@ -246,11 +257,21 @@ activates them. It refuses a name that already has a `SCOPE.md`.
 ### engagement
 
 ```sh
-./rvkit engagement <name> [--client "Client"] [--replace] <target> [target …]
+./rvkit engagement <name> [options] <target> [target …]
 ```
 
-Creates an engagement without questions, with tiers `passive, active`, rate 100, online, and the fallback
-allowed. Options go between the name and the targets.
+Creates an engagement without questions. Options go between the name and the targets:
+
+| Option | Default | Meaning |
+|---|---|---|
+| `--client "Name"` | none | client name for the report (`report/meta.txt`) |
+| `--tiers passive,active` | `passive, active` | allowed tiers |
+| `--rate N` | `100` | max requests or packets per second |
+| `--network online\|offline` | `online` | whether package and vulnerability-database sites are reachable |
+| `--private` | off | `Worker model: private`: never use the fallback model |
+| `--replace` | off | replace the scope of an existing engagement (see below) |
+
+The rule options apply only when `RULES.md` doesn't exist yet; an existing `RULES.md` is kept.
 
 ```sh
 ./rvkit engagement acme-2026-11 --client "Acme Ltd" app.acme.com "*.acme.io" 203.0.113.0/28 /src/acme-repo

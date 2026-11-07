@@ -333,7 +333,7 @@ an FAQ: [docs/troubleshooting.md](docs/troubleshooting.md).
 
 | Problem | Fix |
 |---|---|
-| `port is already allocated` during setup | Another app uses port 8000, 4000 or 8888. Stop it if you can: `rvkit` expects the UI on 8000 and LiteLLM on 4000 ([docs/operations.md](docs/operations.md#ports)). |
+| `port is already allocated` during setup | Another app uses port 8000, 4000 or 8888. Set `GATEWAY_PORT`, `LITELLM_PORT` or `SEARXNG_PORT` in `.env` and run `./rvkit up` ([docs/operations.md](docs/operations.md#ports)). |
 | OpenHands doesn't start; its log says `Can't locate revision` | Its data volume was used by a newer OpenHands. Set `AGENT_CANVAS_TAG` in `.env` to that version, then `./rvkit up`. |
 | The agent can't install a package or reach a site it needs | Its container has no direct internet. Add the domain to `EGRESS_EXTRA_DOMAINS` in `.env`, then `./rvkit up`. Engagement targets are reached with the kali tool, not from the agent's terminal. |
 | OpenHands can't reach the model | `./rvkit status`. If the worker isn't reachable, the Colab session ended or the URL changed: start it again ([The worker model](#the-worker-model)). |

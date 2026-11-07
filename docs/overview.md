@@ -141,7 +141,7 @@ Use it only on systems you own or have written permission to test.
 | **Private worker** | `Worker model: private` in `RULES.md`: this engagement's tool work never uses the fallback, even when it's on. |
 | **Playbook** | A methodology checklist for one testing type (`harness/playbooks/`). |
 | **Candidate finding** | A lead recorded by the worker or planner, not yet verified. Candidates never appear in the report, and open ones keep it in DRAFT. |
-| **Confirmed finding** | A finding the planner has verified. Findings can also be `false-positive`, `fixed` or `accepted-risk`. |
+| **Confirmed finding** | A finding the planner has verified. Findings can also be `false-positive`, `duplicate`, `fixed` or `accepted-risk`. |
 | **Evidence provenance** | The check that an evidence file's current SHA-256 matches what an audited Kali command produced. Shown per file in the report. |
 | **Audit log** | The authoritative record of every command, refusal, approval, halt and scope change. `./rvkit audit <engagement>` shows it. |
 | **Close-out** | `./rvkit close <engagement>`: audit extract, SHA-256 manifest, archive with checksum, then halt. |

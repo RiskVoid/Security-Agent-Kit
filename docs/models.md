@@ -179,14 +179,15 @@ harmful requests: you are responsible for how you use it ([SECURITY.md](../SECUR
 
 | Limit | Value |
 |---|---|
-| Tasks at a time | one: the endpoint handles one request at a time, so delegated tasks queue |
+| Tasks at a time | one by default (`WORKER_PARALLEL_TASKS`): Colab handles one request at a time, so delegated tasks queue. Raise it for an endpoint that serves parallel requests |
 | Tool calls per task | `max_steps`, 15 by default, 1–40 |
 | Time per task | `timeout_min`, 30 by default, 1–180 minutes |
 | Context | about 90,000 characters (~25K tokens, fits the L4 profile's 32K). Older tool outputs are shrunk to keep within it; each step's full output is saved in `/work/<engagement>/evidence/tasks/<task_id>/step-NN-<tool>.txt` |
 | Tool output shown to the model | 6,000 characters per call; the rest is in the step file |
 
-The planner sets `max_steps` and `timeout_min` per task. Delegated tasks are kept in memory until the
-`worker-mcp` container restarts; their evidence files stay on disk.
+The planner sets `max_steps` and `timeout_min` per task. Each task's state is saved next to its evidence
+(`evidence/tasks/<task_id>/task.json`), so results survive a `worker-mcp` restart. A task that was running during
+the restart shows as `interrupted`, with its partial evidence kept.
 
 ## When the worker is down: the fallback
 

@@ -14,8 +14,11 @@ warn() { printf '%s!%s %s\n' "$Y" "$N" "$*"; }
 bad()  { printf '%s✘%s %s\n' "$R" "$N" "$*"; }
 die()  { printf '%s✘%s %s\n' "$R" "$N" "$*" >&2; exit 1; }
 
-UI_URL="http://localhost:8000/"
 envget() { grep -E "^$1=" .env 2>/dev/null | head -1 | cut -d= -f2-; }
+GATEWAY_PORT="$(envget GATEWAY_PORT || true)"; GATEWAY_PORT="${GATEWAY_PORT:-8000}"   # published ports (.env)
+LITELLM_PORT="$(envget LITELLM_PORT || true)"; LITELLM_PORT="${LITELLM_PORT:-4000}"
+UI_URL="http://localhost:$GATEWAY_PORT/"
+export OPENHANDS_URL="http://127.0.0.1:$GATEWAY_PORT" LITELLM_URL="http://127.0.0.1:$LITELLM_PORT"
 envset() { # portable in-place edit (macOS + Linux); adds the key if missing
   grep -qE "^$1=" .env || { printf '%s=%s\n' "$1" "$2" >> .env; return; }
   K="$1" V="$2" perl -pi -e 's/^\Q$ENV{K}\E=.*/$ENV{K}=$ENV{V}/' .env
@@ -75,14 +78,14 @@ need_docker() {
 
 wait_litellm() {
   for _ in $(seq 1 40); do
-    curl -s -o /dev/null http://127.0.0.1:4000/health/liveliness && return 0
+    curl -s -o /dev/null $LITELLM_URL/health/liveliness && return 0
     sleep 2
   done
   warn "LiteLLM is not responding yet. Check with: ./rvkit logs litellm"
 }
 
 llm() { # llm <model> -> response JSON (one short completion through LiteLLM)
-  curl -s -m 180 http://127.0.0.1:4000/v1/chat/completions \
+  curl -s -m 180 $LITELLM_URL/v1/chat/completions \
     -H "Authorization: Bearer $(envget LITELLM_MASTER_KEY)" -H "Content-Type: application/json" \
     -d '{"model":"'"$1"'","max_tokens":40,"messages":[{"role":"user","content":"Reply with one word: ready"}]}' || true
 }
@@ -110,7 +113,7 @@ worker_reachable() { # cheap check: does the worker endpoint answer /models? (no
 wait_openhands() {
   for _ in $(seq 1 60); do
     # through the gateway: a 502 means OpenHands itself isn't up yet
-    [ "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8000/openapi.json)" = 200 ] && return 0
+    [ "$(curl -s -o /dev/null -w '%{http_code}' $OPENHANDS_URL/openapi.json)" = 200 ] && return 0
     sleep 2
   done
   warn "OpenHands is not responding yet. Check with: ./rvkit logs agent-canvas (a database migration error there means the openhands-data volume was used by a newer OpenHands: set AGENT_CANVAS_TAG in .env to that version)"; return 1
@@ -280,8 +283,8 @@ cmd_doctor() {
   for v in $want; do echo "$running" | grep -qx "$v" && pass "$v running" || fail "$v not running (./rvkit up; ./rvkit logs $v)"; done
   if docker compose logs --tail 200 agent-canvas 2>/dev/null | grep -q "Can't locate revision"; then
     fail "OpenHands can't read its database (used by a newer OpenHands): set AGENT_CANVAS_TAG in .env to that version"; fi
-  curl -s -o /dev/null http://127.0.0.1:4000/health/liveliness && pass "LiteLLM answers" || fail "LiteLLM doesn't answer on 127.0.0.1:4000"
-  [ "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8000/openapi.json)" = 200 ] && pass "OpenHands answers ($UI_URL)" || fail "OpenHands doesn't answer through the gateway"
+  curl -s -o /dev/null $LITELLM_URL/health/liveliness && pass "LiteLLM answers" || fail "LiteLLM doesn't answer on 127.0.0.1:$LITELLM_PORT"
+  [ "$(curl -s -o /dev/null -w '%{http_code}' $OPENHANDS_URL/openapi.json)" = 200 ] && pass "OpenHands answers ($UI_URL)" || fail "OpenHands doesn't answer through the gateway"
   if v="$(python3 scripts/openhands_config.py --check 2>&1)"; then pass "MCP servers: $v"; else fail "MCP servers: $v"; fi
 
   bold "Isolation"
@@ -289,6 +292,9 @@ cmd_doctor() {
   if docker compose exec -T agent-canvas curl -s -m 8 -o /dev/null https://example.com/ 2>/dev/null; then
     fail "OpenHands container reached example.com: the egress lockdown is not working"
   else pass "OpenHands container has no open internet (egress proxy allowlist)"; fi
+  if docker compose exec -T worker-mcp python3 -c 'import urllib.request as u; u.urlopen("https://example.com/", timeout=8)' >/dev/null 2>&1; then
+    fail "Worker container reached example.com: it should be on the internal network only"
+  else pass "Worker container has no internet (search and fetch go through web-mcp)"; fi
 
   bold "Models"
   if worker_reachable; then pass "Worker endpoint answers: $(envget WORKER_API_BASE) ($(envget WORKER_MODEL_ID))"
@@ -315,7 +321,7 @@ cmd_status() {
   [ "$(envget WORKER_FALLBACK)" = on ] && echo "   fallback ON: $(envget WORKER_FALLBACK_MODEL) (sees client data while the worker is down)" \
                                        || echo "   fallback off"
   if [ -n "$(envget OPENROUTER_API_KEY)" ]; then ok "Planner: $(envget PLANNER_MODEL)"; else warn "Planner: no OPENROUTER_API_KEY in .env"; fi
-  spend="$(curl -s -m 5 http://127.0.0.1:4000/provider/budgets -H "Authorization: Bearer $(envget LITELLM_MASTER_KEY)" |
+  spend="$(curl -s -m 5 $LITELLM_URL/provider/budgets -H "Authorization: Bearer $(envget LITELLM_MASTER_KEY)" |
     python3 -c 'import sys,json
 try: print("%.2f" % (json.load(sys.stdin)["providers"]["openrouter"].get("spend") or 0))
 except Exception: print("?")' 2>/dev/null || echo "?")"
@@ -357,6 +363,27 @@ for r in json.load(sys.stdin): print("\t".join([r["id"], r["engagement"], r["tie
   done
 }
 
+# ---------------------------------------------------------------- update
+cmd_update() {
+  need_env; need_docker
+  { command -v git >/dev/null && [ -d .git ]; } || die "this kit isn't a git checkout: download the new release, copy your .env into it, then run ./rvkit up there"
+  git diff --quiet && git diff --cached --quiet || die "tracked files have local changes (git status). Commit or stash them, then run ./rvkit update again"
+  local before after new
+  before="$(git rev-parse HEAD)"
+  bold "Pulling the latest kit ($(git rev-parse --abbrev-ref HEAD))"
+  git pull --ff-only || die "git pull failed (your branch has diverged?). Sort it out with git, then run ./rvkit update again"
+  after="$(git rev-parse HEAD)"
+  if [ "$before" = "$after" ]; then ok "Already up to date ($(cat VERSION))"
+  else
+    ok "Updated to $(cat VERSION): $(git rev-list --count "$before..$after") commit(s)"
+    git log --oneline --no-decorate "$before..$after" | head -15 | sed 's/^/   /'
+    new="$(git diff "$before" "$after" -- .env.example | grep -E '^\+#? ?[A-Z][A-Z0-9_]*=' | sed 's/^+//; s/^# \{0,1\}//' || true)"
+    [ -z "$new" ] || { echo "   New optional settings (see .env.example and docs/configuration.md):"; echo "$new" | sed 's/^/     /'; }
+  fi
+  bold "Updating images and restarting"
+  exec "$SELF" up   # the new rvkit: it migrates .env and pulls (or builds) this version's images
+}
+
 # ---------------------------------------------------------------- engagements
 cmd_new() {
   need_env
@@ -386,12 +413,18 @@ cmd_new() {
   echo "   While it runs: ./rvkit watch (approvals)   ./rvkit audit $name   ./rvkit halt $name"
 }
 
-cmd_engagement() { # non-interactive: engagement <name> [--client NAME] [--replace] <target>...
+cmd_engagement() { # non-interactive: engagement <name> [options] <target>...
   need_env
-  [ $# -ge 2 ] || die "usage: ./rvkit engagement <name> [--client \"Client\"] [--replace] <target> [target ...]   e.g. acme app.acme.com '*.acme.io' 203.0.113.0/28 /src/acme-repo"
-  local name="$1" client="" replace=n; shift
+  [ $# -ge 2 ] || die "usage: ./rvkit engagement <name> [--client \"Client\"] [--tiers passive,active] [--rate 100] [--network online|offline] [--private] [--replace] <target> [target ...]   e.g. acme app.acme.com '*.acme.io' 203.0.113.0/28 /src/acme-repo"
+  local name="$1" client="" replace=n tiers="passive, active" rate=100 network=online private=n; shift
+  [[ "$name" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$ ]] || die "invalid engagement name: '$name'"
   while :; do case "${1:-}" in
     --client) client="${2:-}"; shift 2 ;;
+    --tiers) tiers="$(echo "${2:-}" | sed 's/ *, */, /g')"; shift 2
+             echo "$tiers" | grep -qE '^(passive|active|intrusive)(, (passive|active|intrusive))*$' || die "invalid --tiers: comma-separated passive, active, intrusive" ;;
+    --rate) rate="${2:-}"; shift 2; [[ "$rate" =~ ^[0-9]+$ ]] || die "invalid --rate: a whole number" ;;
+    --network) network="${2:-}"; shift 2; case "$network" in online|offline) ;; *) die "invalid --network: online or offline" ;; esac ;;
+    --private) private=y; shift ;;
     --replace) replace=y; shift ;;
     *) break ;;
   esac; done
@@ -399,7 +432,7 @@ cmd_engagement() { # non-interactive: engagement <name> [--client NAME] [--repla
   if [ -f "$(eng_dir "$name")/SCOPE.md" ] && [ "$replace" = n ]; then
     die "engagement $name exists. To change its scope, edit $(eng_dir "$name")/SCOPE.md and run ./rvkit scope $name (shows the diff first). To replace its whole scope with these targets: ./rvkit engagement $name --replace <targets>"
   fi
-  write_engagement "$name" "$client" "passive, active" 100 online n "$@"
+  write_engagement "$name" "$client" "$tiers" "$rate" "$network" "$private" "$@"
 }
 
 cmd_quickstart() {
@@ -477,7 +510,7 @@ cmd_worker() {
 }
 
 # ---------------------------------------------------------------- install / completion
-COMMANDS="setup up down status doctor logs connect worker planner budget test key openhands new engagement eng quickstart watch scope show approvals approve deny halt resume audit report close delete lab bench install completion help"
+COMMANDS="setup up down update status doctor logs connect worker planner budget test key openhands new engagement eng quickstart watch scope show approvals approve deny halt resume audit report close delete lab bench install completion help"
 ENG_SUB="list new show scope approvals approve deny halt resume audit report close delete"
 cmd_install() {
   local dir="${1:-$HOME/.local/bin}"
@@ -527,6 +560,7 @@ ${B}rvkit: RiskVoid agent kit${N}   UI: $UI_URL
 ${B}Start${N}
   setup [--yes]                 first-time setup: folders, keys, containers, OpenHands, worker model
   up | down                     start / stop the stack (settings are kept)
+  update                        git pull, then up: new images, .env migrated, OpenHands re-configured
   status                        one-screen overview: services, models, spend, engagements, approvals
   doctor [--models]             check everything and say what to fix
   quickstart                    practice engagement against the lab (no client data, no GPU needed)
@@ -545,8 +579,9 @@ ${B}Models${N}
 
 ${B}Engagements${N}  (also as: rvkit eng <command>)
   new [name]                    create one interactively: client, scope, rules
-  engagement <name> [--client N] [--replace] <targets…>   create one non-interactively (--replace: new
-                                scope for an existing one)
+  engagement <name> [options] <targets…>   create one non-interactively. Options: --client N,
+                                --tiers passive,active, --rate N, --network online|offline, --private,
+                                --replace (new scope for an existing one)
   eng list                      all engagements with scope and pending approvals
   watch                         approve / deny intrusive commands as they come in (desktop notification)
   approvals [eng] | approve|deny <eng> <id>   list / decide approvals
@@ -581,6 +616,7 @@ case "$cmd" in
   up)         need_env; need_docker; start_stack; wait_litellm
               config_openhands --quiet; ok "Stack is up: $UI_URL" ;;
   down)       need_env; docker compose down; ok "Stack stopped (your settings are kept)" ;;
+  update)     cmd_update ;;
   status)     need_env; need_docker; cmd_status ;;
   logs)       need_env  # (bash 3.2 turns "${@:-}" into one empty argument, which docker compose rejects)
               if [ $# -gt 0 ]; then docker compose logs --tail 80 "$@"; else docker compose logs --tail 80; fi ;;
@@ -601,7 +637,7 @@ case "$cmd" in
     need_env
     if [ $# -eq 0 ]; then
       echo "OpenRouter daily budget: \$$(envget OPENROUTER_DAILY_BUDGET)"
-      curl -s -m 10 http://127.0.0.1:4000/provider/budgets -H "Authorization: Bearer $(envget LITELLM_MASTER_KEY)" |
+      curl -s -m 10 $LITELLM_URL/provider/budgets -H "Authorization: Bearer $(envget LITELLM_MASTER_KEY)" |
         python3 -c 'import sys,json
 try: b=json.load(sys.stdin)["providers"]["openrouter"]
 except Exception: sys.exit()
@@ -649,7 +685,7 @@ print("spent in the current 24 h period: $%.4f" % (b.get("spend") or 0))' || tru
     need_env
     case "${1:-status}" in
       up)
-        docker compose --profile lab up -d --build $LAB
+        docker compose --profile lab up -d ${RVKIT_BUILD:+--build} $LAB   # builds lab-llm only when missing (RVKIT_BUILD=1: rebuild)
         lab_dvwa_init; lab_vampi_init
         ok "Lab up (isolated network 10.250.0.0/24, reachable only from engagements that have it in scope):"
         echo "   Juice Shop  http://10.250.0.10:3000"

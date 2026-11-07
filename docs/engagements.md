@@ -481,7 +481,8 @@ Engagements are fully separate: each has its own sandbox user, firewall rules, D
 command for one engagement can't see another engagement's folder or code, or reach its targets (unless the
 targets are in both scopes). Name the engagement in every conversation, and use one conversation per engagement.
 
-The worker model runs one task at a time, so tasks from parallel conversations queue up.
+The worker runs one task at a time by default, so tasks from parallel conversations queue up. With an endpoint
+that serves parallel requests, raise `WORKER_PARALLEL_TASKS` in `.env`.
 
 ## Practice engagement
 

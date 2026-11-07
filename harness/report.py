@@ -210,6 +210,7 @@ def build(eng):
     ev, issues = evidence_index(eng, findings)
     cands = [f for f in allf if f["status"] == "candidate"]
     fps = [f for f in allf if f["status"] == "false-positive"]
+    dups = [f for f in allf if f["status"] == "duplicate"]
     if not exec_md:
         issues.insert(0, "no executive summary (report/executive-summary.md)")
     if cands:
@@ -233,7 +234,8 @@ def build(eng):
           "severity, with evidence and remediation guidance.",
           [("Client", m.get("client")), ("Engagement", eng), ("Testing period", period),
            ("Report date", today), ("Prepared by", m.get("prepared by", brand.prepared_by)),
-           ("Version / status", f"{m.get('version', '1.0')} · {'DRAFT' if draft else 'Final'}")])
+           ("Version / status", f"{m.get('version', '1.0')} · {'DRAFT' if draft else 'Final'}"),
+           ("Classification", m.get("classification") or "Confidential")])
 
     if draft:
         d.guidance("DRAFT, not for client delivery. Resolve before sending: " + "; ".join(issues) + ".")
@@ -361,7 +363,8 @@ def build(eng):
          f"{act['approvals']['requested']} / {act['approvals']['approved']} / {act['approvals']['denied']}"],
         ["Emergency halts", str(act["halts"])],
         ["Scope changes", str(act["scope_changes"])],
-        ["Results triaged as false positives", str(len(fps))]], col_weights=[2.5, 3])
+        ["Results triaged as false positives", str(len(fps))],
+        ["Results merged as duplicates", str(len(dups))]], col_weights=[2.5, 3])
 
     # output
     rdir.mkdir(parents=True, exist_ok=True)
@@ -393,7 +396,7 @@ def build(eng):
                        env={**os.environ, "HOME": "/tmp"})
     return {"docx": str(docx), "pdf": str(pdf) if pdf.exists() else f"PDF conversion failed: {r.stderr[-300:]}",
             "xlsx": str(xlsx), "status": "DRAFT" if draft else "final", "issues": issues,
-            "findings": len(findings), "excluded": {"candidate": len(cands), "false-positive": len(fps)}}
+            "findings": len(findings), "excluded": {"candidate": len(cands), "false-positive": len(fps), "duplicate": len(dups)}}
 
 
 if __name__ == "__main__":

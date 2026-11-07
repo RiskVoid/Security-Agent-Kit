@@ -16,13 +16,12 @@ from mcp import ClientSession
 from mcp.client.streamable_http import streamablehttp_client
 from mcp.server.fastmcp import FastMCP
 import findings_db as db
-import webfetch
 
 LITELLM = os.environ.get("LITELLM_URL", "http://litellm:4000/v1")
 LITELLM_KEY = os.environ.get("LITELLM_MASTER_KEY", "")
 WORKER_MODEL = os.environ.get("WORKER_MODEL", "colab-qwen")
 KALI_MCP = os.environ.get("KALI_MCP_URL", "http://kali-mcp:8090/mcp")
-SEARXNG = os.environ.get("SEARXNG_URL", "http://searxng:8080")
+WEB_MCP = os.environ.get("WEB_MCP_URL", "http://web-mcp:8094/mcp")  # search + fetch (the worker has no internet)
 INTEL_MCP = os.environ.get("INTEL_MCP_URL", "http://intel-mcp:8093/mcp")
 CTX_CHARS = int(os.environ.get("WORKER_CONTEXT_CHARS", "90000"))  # ~25k tokens: fits the 32K L4 profile
 TOOL_CHARS = 6000          # tool output kept in context per call; full output goes to a file
@@ -30,7 +29,9 @@ TIERS = ("passive", "active", "intrusive")
 
 mcp = FastMCP("worker", host="0.0.0.0", port=8091)
 TASKS: dict[str, dict] = {}
-MODEL_LOCK = threading.Lock()  # the Qwen server handles one request at a time
+# How many tasks run at once. 1 (default) suits a single-slot llama-server on Colab; raise it for an endpoint that
+# serves parallel requests (an API, or llama-server with --parallel N).
+MODEL_LOCK = threading.BoundedSemaphore(max(1, int(os.environ.get("WORKER_PARALLEL_TASKS", "1") or 1)))
 
 SYSTEM = """You are a security testing worker on an authorised engagement. You carry out ONE focused task given
 by the lead consultant, using your tools, then call `finish`.
@@ -122,12 +123,16 @@ def _arun(coro):
     return box["v"]
 
 
-async def _kali(tool: str, args: dict, timeout_s: int = 60) -> str:
-    async with streamablehttp_client(KALI_MCP, timeout=30, sse_read_timeout=timeout_s + 120) as (r, w, _):
+async def _mcp(url: str, tool: str, args: dict, timeout_s: int = 60) -> str:
+    async with streamablehttp_client(url, timeout=30, sse_read_timeout=timeout_s + 120) as (r, w, _):
         async with ClientSession(r, w) as s:
             await s.initialize()
             res = await s.call_tool(tool, args)
             return "\n".join(c.text for c in res.content if getattr(c, "text", None))
+
+
+async def _kali(tool: str, args: dict, timeout_s: int = 60) -> str:
+    return await _mcp(KALI_MCP, tool, args, timeout_s)
 
 
 def engagement_info(engagement):
@@ -154,15 +159,13 @@ def vuln_intel(task, ids):
 
 
 def web_search(task, query):
-    url = f"{SEARXNG}/search?" + urllib.parse.urlencode({"q": query, "format": "json"})
-    data = json.load(urllib.request.urlopen(url, timeout=30))
-    return "\n\n".join(f"{r.get('title')}\n{r.get('url')}\n{(r.get('content') or '')[:300]}"
-                       for r in data.get("results", [])[:8]) or "no results"
+    return _arun(_mcp(WEB_MCP, "web_search", {"query": query, "max_results": 8}))
 
 
 def fetch_url(task, url):
-    sc = task["info"]["scope"]
-    return webfetch.fetch(url, sc["nets"], sc["domains"])
+    """Public pages only, through web-mcp: it refuses every engagement's targets (not only this one's) and
+    non-public addresses. Targets are tested with kali_run."""
+    return _arun(_mcp(WEB_MCP, "fetch", {"url": url, "max_chars": 100000}))
 
 
 def read_file(task, path, start=1, lines=200):
@@ -210,8 +213,44 @@ def compact(messages):
             total -= before - len(m["content"])
 
 
+def task_dir(task):
+    return os.path.join(db.WORK, task["engagement"], "evidence", "tasks", task["id"])
+
+
+def save(task):
+    """Keep the task's state next to its evidence, so get_task and list_tasks survive a worker restart."""
+    try:
+        d = task_dir(task)
+        os.makedirs(d, exist_ok=True)
+        tmp = os.path.join(d, ".task.json.tmp")
+        json.dump(task, open(tmp, "w"), indent=1, default=str)
+        os.replace(tmp, os.path.join(d, "task.json"))
+    except OSError:
+        pass  # the engagement folder may be gone (deleted); the task still runs from memory
+
+
+def load_tasks():
+    """Reload tasks saved by earlier worker runs. Tasks that were queued or running when the worker stopped can't
+    continue: they are marked interrupted, with their partial evidence kept."""
+    root = db.WORK
+    for eng in (os.listdir(root) if os.path.isdir(root) else []):
+        tdir = os.path.join(root, eng, "evidence", "tasks")
+        for tid in (os.listdir(tdir) if os.path.isdir(tdir) else []):
+            p = os.path.join(tdir, tid, "task.json")
+            try:
+                task = json.load(open(p))
+            except (OSError, ValueError):
+                continue
+            if task.get("status") in ("queued", "running"):
+                task.update(status="interrupted", finished=time.time(),
+                            error="the worker restarted while this task was running. Partial evidence is kept in "
+                                  f"{os.path.dirname(p)}; delegate the task again to finish it.")
+                save(task)
+            TASKS[task["id"]] = task
+
+
 def run_task(task):
-    edir = os.path.join(db.engagement_dir(task["engagement"]), "evidence", "tasks", task["id"])
+    edir = task_dir(task)
     os.makedirs(edir, exist_ok=True)
     log = open(os.path.join(edir, "transcript.jsonl"), "a")
     sys_prompt = SYSTEM.format(engagement=task["engagement"], tier=task["tier"], max_steps=task["max_steps"],
@@ -223,6 +262,7 @@ def run_task(task):
     try:
         with MODEL_LOCK:
             task["status"] = "running"
+            save(task)
             for step in range(1, task["max_steps"] + 2):
                 if time.time() > deadline:
                     raise TimeoutError(f"task exceeded {task['timeout_min']} min")
@@ -256,6 +296,7 @@ def run_task(task):
                     path = os.path.join(edir, f"step-{step:02d}-{name}.txt")
                     open(path, "w").write(f"# {name} {json.dumps(args)}\n\n{out}")
                     task["evidence"].append(path)
+                    save(task)
                     shown = out if len(out) <= TOOL_CHARS else out[:TOOL_CHARS] + f"\n…truncated, full output: {path}"
                     messages.append({"role": "tool", "tool_call_id": c.get("id", name), "content": shown})
             task["result"] = {"summary": "Stopped without calling finish.", "confidence": "low"}
@@ -269,6 +310,7 @@ def run_task(task):
         log.write(json.dumps({"ts": _now(), "end": task["status"], "result": task.get("result"),
                               "error": task.get("error")}) + "\n")
         log.close()
+        save(task)
 
 
 def report(task) -> str:
@@ -304,7 +346,7 @@ def delegate_task(goal: str, engagement: str, tier: str = "passive", max_steps: 
     goal: what to do and what to return, e.g. "Run semgrep (p/django) and bandit on /src/acme, check the top
           findings by reading the code, and record candidates with file:line evidence."
     tier: passive | active | intrusive. Use the lowest tier that fits; intrusive needs the user's OK first.
-    Tasks run one at a time. Returns the result, or a task_id if it is still running after wait_s seconds
+    Tasks run one at a time (unless WORKER_PARALLEL_TASKS is raised). Returns the result, or a task_id if it is still running after wait_s seconds
     (then call get_task). Raw output is saved under /work/<engagement>/evidence/tasks/<task_id>/.
     Secrets are redacted from the returned summary but kept in the evidence files."""
     db.engagement_dir(engagement)
@@ -322,6 +364,7 @@ def delegate_task(goal: str, engagement: str, tier: str = "passive", max_steps: 
             "tier": tier, "info": einfo, "max_steps": max(1, min(max_steps, 40)), "timeout_min": max(1, min(timeout_min, 180)),
             "status": "queued", "started": time.time(), "steps": [], "evidence": [], "candidates": []}
     TASKS[task["id"]] = task
+    save(task)
     threading.Thread(target=run_task, args=(task,), daemon=True).start()
     _wait(task, wait_s)
     return report(task)
@@ -332,17 +375,21 @@ def get_task(task_id: str, wait_s: int = 240) -> str:
     """Get a delegated task's result, waiting up to wait_s seconds if it is still running."""
     task = TASKS.get(task_id)
     if not task:
-        return f"unknown task {task_id} (tasks are kept in memory until the worker restarts)"
+        return f"unknown task {task_id}"
     _wait(task, wait_s)
     return report(task)
 
 
 @mcp.tool()
-def list_tasks() -> str:
-    """List delegated tasks in this worker session."""
+def list_tasks(engagement: str = "") -> str:
+    """List delegated tasks (newest first, up to 50), optionally for one engagement. Tasks are kept across worker
+    restarts; a task that was running during a restart shows as interrupted."""
+    rows = sorted((t for t in TASKS.values() if not engagement or t["engagement"] == engagement),
+                  key=lambda t: t["started"], reverse=True)[:50]
     return json.dumps([{"task_id": t["id"], "status": t["status"], "engagement": t["engagement"],
-                        "goal": t["goal"][:100]} for t in TASKS.values()], indent=1) or "no tasks"
+                        "goal": t["goal"][:100]} for t in rows], indent=1) if rows else "no tasks"
 
 
 if __name__ == "__main__":
+    load_tasks()
     mcp.run(transport="streamable-http")

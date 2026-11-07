@@ -33,18 +33,21 @@ def update_finding(engagement: str, finding_id: str, status: str | None = None, 
                    title: str | None = None, description: str | None = None, impact: str | None = None,
                    reproduction: str | None = None, remediation: str | None = None,
                    evidence: list[str] | None = None, cvss_vector: str | None = None,
-                   cvss_score: float | None = None, cwe: str | None = None, notes: str | None = None) -> str:
+                   cvss_score: float | None = None, cwe: str | None = None, notes: str | None = None,
+                   duplicate_of: str | None = None) -> str:
     """Update a finding. Use status=confirmed after verifying a candidate, status=false-positive (with the reason
-    in notes) when it doesn't hold, fixed or accepted-risk after client feedback. Only given fields change."""
+    in notes) when it doesn't hold, status=duplicate with duplicate_of=<id of the finding to keep> when it is the
+    same issue as another finding (merge its evidence into that one first), fixed or accepted-risk after client
+    feedback. Only given fields change."""
     return _out(db.update(engagement, finding_id, status=status, severity=severity, title=title,
                           description=description, impact=impact, reproduction=reproduction,
                           remediation=remediation, evidence=evidence, cvss_vector=cvss_vector,
-                          cvss_score=cvss_score, cwe=cwe, notes=notes))
+                          cvss_score=cvss_score, cwe=cwe, notes=notes, duplicate_of=duplicate_of))
 
 
 @mcp.tool()
 def list_findings(engagement: str, status: str | None = None, severity: str | None = None) -> str:
-    """List findings, most severe first. Filter by status (candidate|confirmed|false-positive|fixed|accepted-risk)
+    """List findings, most severe first. Filter by status (candidate|confirmed|false-positive|duplicate|fixed|accepted-risk)
     and/or severity. Returns id, title, severity, status, asset for each."""
     rows = db.list_(engagement, status, severity)
     return _out([{k: r[k] for k in ("id", "title", "severity", "status", "asset", "source")} for r in rows]

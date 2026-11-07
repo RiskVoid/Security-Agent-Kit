@@ -33,6 +33,7 @@ order: `F-001`, `F-002`, …
 | `candidate` | found but not verified (scanner output, worker lead) | no; untriaged candidates keep the report DRAFT |
 | `confirmed` | verified by reproducing it, reading the code path or checking the version | yes, as **Open** |
 | `false-positive` | checked and doesn't hold; the reason is in `notes` | no; counted in the activity summary |
+| `duplicate` | the same issue as another finding, named in `duplicate_of` (its evidence is merged into that one) | no; counted in the activity summary |
 | `fixed` | fixed by the client and retested | yes, as **Resolved** |
 | `accepted-risk` | the client accepts the risk | yes, as **Accepted risk** |
 
@@ -41,7 +42,8 @@ order: `F-001`, `F-002`, …
 - **The worker** records `candidate` findings only (title, severity, asset, description, evidence, CWE), with the
   evidence from its task.
 - **The planner** sees them with `list_findings` and `get_finding`, verifies each one and sets the status with
-  `update_finding` (`confirmed`, or `false-positive` with the reason in `notes`). It records issues it finds itself
+  `update_finding` (`confirmed`, `false-positive` with the reason in `notes`, or `duplicate` with `duplicate_of`
+  set to the finding it keeps). It records issues it finds itself
   with `record_finding`, and fills in CVSS, impact, reproduction and remediation.
 - **After client feedback**, the planner sets `fixed` or `accepted-risk`.
 
@@ -117,7 +119,7 @@ All in `/work/<engagement>/report/`:
 The agent writes these with the findings server's `write_file` tool. It may write only these paths:
 `PLAN.md`, `NOTES.md`, `notes/<name>.md` or `.txt`, `report/executive-summary.md`, `report/methodology.md`,
 `report/conclusion.md` and `report/meta.txt` (up to 1 MB each). You can edit them yourself in the engagement
-folder too. `Classification` is kept in `meta.txt` but isn't printed in the report at the moment.
+folder too. `Classification` (default `Confidential`) is printed on the cover.
 
 ### Contents
 

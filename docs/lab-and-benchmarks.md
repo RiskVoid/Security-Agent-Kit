@@ -8,6 +8,7 @@ targets and score what it finds. This page also lists the kit's regression tests
 
 ```sh
 ./rvkit lab up        # start the targets (builds the LLM lab image the first time)
+RVKIT_BUILD=1 ./rvkit lab up   # rebuild the LLM lab image after changing evals/targets/rv-llm-lab
 ./rvkit lab status    # what's running
 ./rvkit lab down      # stop and remove them
 ```
@@ -110,7 +111,8 @@ What a run does:
 3. **Approves intrusive commands for lab benchmarks only**, so the isolated practice targets can be tested at the
    intrusive tier without you. Engagements with a real target never get automatic approvals.
 4. **Stops** when the agent finishes, or pauses the conversation when the time limit is reached (status
-   `timeout`).
+   `timeout`). If the agent's last message asks you something ("Should I run sqlmap?") instead of finishing,
+   the run is marked `asked-question`: an unattended run that waits for a human has failed.
 5. **Scores** the engagement's `confirmed`, `fixed` and `accepted-risk` findings against the expected list.
 6. **Saves** the details to `evals/results/bench/<name>-<UTC time>.json` and one line to
    `evals/results/bench/history.jsonl`, and prints a summary with a ✔ or ✘ per expected issue.
