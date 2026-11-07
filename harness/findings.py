@@ -117,7 +117,7 @@ def get_playbook(name: str) -> str:
 
 @mcp.tool()
 async def generate_report(engagement: str) -> str:
-    """Build the branded report (brand set by REPORT_BRAND) (.docx + PDF) and findings register (.xlsx) in /work/<eng>/report/
+    """Build the branded report (brand set by REPORT_BRAND) as a web page (.html), .docx + PDF, and findings register (.xlsx) in /work/<eng>/report/
     (the same path in your workspace, read-only). Includes confirmed, fixed and accepted-risk findings, each
     with its evidence SHA-256 and the audited command that produced it. Before calling it, write
     report/executive-summary.md (and optionally methodology.md, conclusion.md); the client name is in

@@ -3,7 +3,8 @@
 # hashed evidence. Uses engagement "p5-e2e" (scope: the demo app, passive), reset on every run.
 #   1. tools run through the audited kali sandbox; their output files are hashed in the audit log
 #   2. findings recorded and confirmed through the findings MCP, citing those files
-#   3. generate_report -> final (not draft); every evidence row in the .docx says Pass; PDF + XLSX exist
+#   3. generate_report -> final (not draft); every evidence row in the .docx says Pass; PDF + XLSX exist; the HTML
+#      report is self-contained and has the same findings
 #   4. tampering with an evidence file is detected (report goes back to DRAFT); re-running the tool restores it
 #   5. ./rvkit close: manifest verifies, archive checksum verifies, engagement refuses new commands
 # Run: bash evals/phase5_e2e.sh
@@ -85,6 +86,13 @@ check "every evidence file verified (Pass rows: $passes)" "$(echo "$xml" | grep 
 [ "$passes" -ge 10 ] && ok "evidence rows in detail + appendix ($passes)" || bad "evidence rows" "$passes"
 check "client and summary in report" "$xml" 'Test Client Ltd.*|demo application'
 check "cover not draft" "$(echo "$xml" | grep -c 'DRAFT')" '^0$'
+HTML="$(ls "$ENGDIR"/report/*.html 2>/dev/null | head -1)"
+page="$(cat "$HTML" 2>/dev/null)"
+check "HTML report written" "$HTML" '\.html$'
+check "HTML: every confirmed finding" "$(for f in F-001 F-002 F-003; do echo "$page" | grep -q "id=\"$f\"" && echo "$f"; done | wc -l | tr -d ' ')" '^3$'
+check "HTML: false positive and duplicate excluded" "$(echo "$page" | grep -cE 'Scanner noise|found twice')" '^0$'
+check "HTML: no scripts, nothing fetched" "$(echo "$page" | grep -ciE '<script|src="https?:|url\(https?:')" '^0$'
+check "HTML: fonts and logo embedded" "$(echo "$page" | grep -o 'data:font/woff2\|data:image/png' | sort -u | wc -l | tr -d ' ')" '^2$'
 
 echo "== 4. tamper detection"
 # modify it from a container: on Linux the file belongs to the engagement's sandbox user, not to us

@@ -21,6 +21,9 @@ check "POST without console header refused" "$(code -b "$JAR" -X POST -d '{}' "$
 check "POST without cookie refused"       "$(code -H 'X-RV-Console: 1' -X POST -d '{}' "$B/api/eng/demo-code/halt")" '^401$'
 check "bad engagement name refused"       "$(code -b "$JAR" "$B/api/eng/..%2Fetc")" '^400$'
 check "only report files are served"      "$(code -b "$JAR" "$B/files/demo-code/findings.db")" '^404$'
+check "brand fonts served locally"        "$(curl -s -b "$JAR" -D - -o /dev/null "$B/assets/fonts/inter-latin.woff2")" 'font/woff2'
+check "only listed assets are served"     "$(code -b "$JAR" "$B/assets/../harness/report.py")" '^404$'
+check "HTML report view is locked down"   "$(curl -s -b "$JAR" -D - -o /dev/null "$B/report/demo-code/x.html")$(code -b "$JAR" "$B/report/demo-code/x.docx")" '404.*404$|^HTTP/1.0 404'
 check "preview writes nothing"            "$(curl -s -b "$JAR" -H 'X-RV-Console: 1' -H 'Content-Type: application/json' -X POST \
   -d '{"scope": "- /src/rv-demo-app\n- 198.51.100.99\n", "rules": "- Allowed tiers: passive\n"}' "$B/api/eng/demo-code/preview")" '198.51.100.99/32'
 check "scope still has no preview entry"  "$(./rvkit show demo-code | grep -c 198.51.100.99)" '^0$'

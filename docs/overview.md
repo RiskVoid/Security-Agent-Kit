@@ -24,7 +24,7 @@ dependencies and secrets". The agent then:
    that can reach only the authorised targets;
 4. records leads as **candidate** findings, verifies them, and marks each one **confirmed** or
    **false-positive**;
-5. writes an executive summary and generates a branded `.docx` / PDF report and an `.xlsx` findings register,
+5. writes an executive summary and generates a branded HTML / `.docx` / PDF report and an `.xlsx` findings register,
    with SHA-256 hashes for every evidence file and the audited command that produced each one.
 
 You watch from the browser UI at http://localhost:8000/ and from the terminal (`./rvkit watch`,

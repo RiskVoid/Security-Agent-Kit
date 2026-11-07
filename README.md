@@ -15,7 +15,7 @@ evidence and a client-ready report. Open source (Apache-2.0), from [RiskVoid](ht
   engagement files. Targets are reached only through the audited tool sandbox.
 - **Method and evidence.** Playbooks (OWASP ASVS / WSTG / API Top 10 / LLM Top 10, PTES, supply chain, secrets), a
   findings database, vulnerability intel (CISA KEV, EPSS, NVD, OSV), SHA-256-verified evidence, and a branded
-  `.docx` / PDF report with your own name and logo if you like.
+  web page, `.docx` and PDF report with your own name and logo if you like.
 - **Ready on first launch.** `./rvkit setup` asks a few questions, starts the stack and configures the OpenHands
   agent UI: models, tools and agents are set up.
 
@@ -199,7 +199,7 @@ The planner picks playbooks, copies their checklists into `PLAN.md`, works throu
 | `secrets-review` | | secrets in code and history |
 
 **4. Report.** The planner writes `report/executive-summary.md` and calls `generate_report`, or you run
-`./rvkit report acme-2026-11`. You get a branded `.docx`, a PDF and a findings register `.xlsx` in
+`./rvkit report acme-2026-11`. You get a branded web page (`.html`), a `.docx`, a PDF and a findings register `.xlsx` in
 `<engagement>/report/`. Every evidence file is listed with its SHA-256 and the audited command that produced it.
 The report says **DRAFT** and lists what's missing until it's ready to send (summary written, candidates triaged,
 evidence unchanged, client name set).

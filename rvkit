@@ -591,7 +591,7 @@ ${B}Engagements${N}  (also as: rvkit eng <command>)
   show <eng>                    active scope and rules
   halt|resume <eng>             kill running commands and block new ones / allow again
   audit [eng] [n]               last n audit-log entries
-  report <eng>                  report (.docx + .pdf) and findings register (.xlsx) in <eng>/report/
+  report <eng>                  report (.html + .docx + .pdf) and findings register (.xlsx) in <eng>/report/
   close <eng>                   close-out: audit extract + SHA-256 manifest + archive, then halt
   eng delete <eng> [--force]    unregister a closed engagement (frees its slot; folder kept, renamed)
 

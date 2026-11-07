@@ -9,6 +9,9 @@ you the terminal round-trips. You still talk to the agent in the OpenHands UI.
 ./rvkit console --no-open  # prints the sign-in link instead (for example on a remote machine over SSH)
 ```
 
+It uses the riskvoid.io dashboard design (same colours, type, sidebar, cards and form controls), with the fonts
+and logo served locally: the page makes no requests outside your machine.
+
 It runs in the foreground; Ctrl-C stops it. The address is `http://127.0.0.1:8100/` (set `CONSOLE_PORT` in
 `.env` to change it).
 
@@ -22,7 +25,7 @@ It runs in the foreground; Ctrl-C stops it. The address is `http://127.0.0.1:810
 | **Scope & rules** | Edit `SCOPE.md` and `RULES.md`, **Preview changes** (a diff, the parser's warnings, and exactly what the firewall will allow), then **Apply**. Preview writes nothing. | `./rvkit scope <eng>` |
 | **Findings** | Sort by severity and filter by status. Click a finding to change its status (including `duplicate` with the finding it duplicates), severity and notes, and read the description, reproduction, remediation and evidence. **Check evidence integrity** shows a badge per evidence file: verified, code ref, not audited, or what's wrong. | the findings tools in chat |
 | **Worker tasks** | Every task the planner handed to the worker model, newest first: status, tier, which model served it, each command it ran and its summary. Refreshes every few seconds while a task is running. Tasks interrupted by a restart show as `interrupted`. | `list_tasks` in chat, `evidence/tasks/` |
-| **Report** | Edit the cover details (client, prepared by, version, classification) and the executive summary, **Generate report**, see whether it's DRAFT and why, and download the `.docx`, `.pdf` and `.xlsx`. | `./rvkit report` |
+| **Report** | Edit the cover details (client, prepared by, version, classification) and the executive summary, **Generate report**, see whether it's DRAFT and why, **View HTML report**, and download the `.html`, `.docx`, `.pdf` and `.xlsx`. | `./rvkit report` |
 | **Audit log** | Every command, refusal, approval, halt and scope change for the engagement, newest first. | `./rvkit audit` |
 | **Halt now / Resume / Close out / Delete** | The engagement controls, each with a confirmation step where it matters. | `./rvkit halt`, `resume`, `close`, `eng delete` |
 | **Approvals** | Every pending intrusive command across engagements, with Approve and Deny. **Enable desktop notifications** alerts you when a new one arrives while the page is open. The tab title shows the count. | `./rvkit watch` |
@@ -45,7 +48,8 @@ The console can approve intrusive commands and change scope, so it is kept out o
 - **It uses the same controls as `./rvkit`**: `rvctl` in the Kali container for scope, approvals and the
   engagement lifecycle; `findings_db` and `report.py` in the findings container. It adds no new way to change
   the kit's state.
-- Report downloads are limited to `.docx`, `.pdf` and `.xlsx` files in an engagement's `report/` folder.
+- Report downloads are limited to `.html`, `.docx`, `.pdf` and `.xlsx` files in an engagement's `report/` folder.
+  The HTML report opens with a policy that blocks scripts and every network request (`sandbox`, `default-src 'none'`).
 - Text written by the agent (findings, commands, notes) is shown as text, never as HTML.
 
 To use it from another machine, forward the port over SSH rather than exposing it:

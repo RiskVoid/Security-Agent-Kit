@@ -15,6 +15,15 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 KIT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 HERE = os.path.join(KIT, "scripts", "console")
+ASSETS = os.path.join(KIT, "harness", "assets")   # brand logo and fonts, shared with the report
+STATIC = {"/app.js": (HERE, "app.js", "text/javascript"), "/app.css": (HERE, "app.css", "text/css"),
+          "/assets/riskvoid-logo.png": (ASSETS, "riskvoid-logo.png", "image/png"),
+          "/assets/fonts/inter-latin.woff2": (ASSETS, "fonts/inter-latin.woff2", "font/woff2"),
+          "/assets/fonts/jetbrains-mono-latin.woff2": (ASSETS, "fonts/jetbrains-mono-latin.woff2", "font/woff2")}
+REPORT_EXT = (".html", ".docx", ".pdf", ".xlsx")
+REPORT_NAME = re.compile(r"^[A-Za-z0-9._-]+\.(html|docx|pdf|xlsx)$")
+# the HTML report is shown as a document: no scripts, nothing loaded from anywhere (fonts and logo are embedded)
+REPORT_CSP = "default-src 'none'; style-src 'unsafe-inline'; img-src data:; font-src data:; sandbox"
 NAME_RX = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 FID_RX = re.compile(r"^F-\d{3,}$")
 
@@ -55,6 +64,11 @@ def token():
 
 
 TOKEN = token()
+try:
+    with open(os.path.join(KIT, "VERSION")) as _f:
+        VERSION = _f.read().strip()
+except OSError:
+    VERSION = ""
 
 
 # ---------------------------------------------------------------- backends
@@ -193,7 +207,7 @@ def api_get(path, q):
                 for f in os.listdir(os.path.join(ENG_DIR, "_archive")))
             e["closed"] = bool(closed and e["halted"])
         return {"engagements": engs, "approvals": json.loads(ctl("approvals", "--json") or "[]"),
-                "ui_url": f"http://localhost:{E.get('GATEWAY_PORT') or 8000}/"}
+                "ui_url": f"http://localhost:{E.get('GATEWAY_PORT') or 8000}/", "version": VERSION}
     if path == "/api/status":
         return {"text": stack_status()}
     m = re.match(r"^/api/eng/([^/]+)(?:/(\w+))?$", path)
@@ -204,7 +218,7 @@ def api_get(path, q):
     if what == "detail":
         info = json.loads(ctl("show", eng))
         rdir = eng_path(eng, "report")
-        files = sorted((f for f in os.listdir(rdir) if f.endswith((".docx", ".pdf", ".xlsx"))), reverse=True) \
+        files = sorted((f for f in os.listdir(rdir) if f.endswith(REPORT_EXT)), reverse=True) \
             if os.path.isdir(rdir) else []
         return {"engagement": eng, "info": info, "meta": meta(eng),
                 "scope_text": read(eng_path(eng, "SCOPE.md")), "rules_text": read(eng_path(eng, "RULES.md")),
@@ -345,10 +359,11 @@ class H(BaseHTTPRequestHandler):
         self.send_header("X-Content-Type-Options", "nosniff")
         self.send_header("X-Frame-Options", "DENY")
         self.send_header("Referrer-Policy", "no-referrer")
-        self.send_header("Content-Security-Policy",
-                         "default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; "
+        extra = dict(extra or {})
+        self.send_header("Content-Security-Policy", extra.pop("Content-Security-Policy", None) or
+                         "default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; "
                          "frame-ancestors 'none'; form-action 'self'")
-        for k, v in (extra or {}).items():
+        for k, v in extra.items():
             self.send_header(k, v)
         self.end_headers()
         self.wfile.write(data)
@@ -375,18 +390,23 @@ class H(BaseHTTPRequestHandler):
             return self._send(401, "Open the console with ./rvkit console (it signs you in).", "text/plain")
         if u.path in ("/", "/index.html"):
             return self._send(200, open(os.path.join(HERE, "index.html"), "rb").read(), "text/html")
-        if u.path in ("/app.js", "/app.css"):
-            return self._send(200, open(os.path.join(HERE, u.path[1:]), "rb").read(),
-                              "text/javascript" if u.path.endswith(".js") else "text/css")
-        m = re.match(r"^/files/([^/]+)/([^/]+)$", u.path)
+        if u.path in STATIC:
+            base, rel, ctype = STATIC[u.path]
+            with open(os.path.join(base, rel), "rb") as f:
+                return self._send(200, f.read(), ctype)
+        m = re.match(r"^/(files|report)/([^/]+)/([^/]+)$", u.path)
         if m:
-            eng, name = m.group(1), urllib.parse.unquote(m.group(2))
-            if not NAME_RX.match(eng) or not re.match(r"^[A-Za-z0-9._-]+\.(docx|pdf|xlsx)$", name):
+            kind, eng, name = m.group(1), m.group(2), urllib.parse.unquote(m.group(3))
+            if not NAME_RX.match(eng) or not REPORT_NAME.match(name) or (kind == "report" and not name.endswith(".html")):
                 return self._send(404, {"error": "not found"})
             p = eng_path(eng, "report", name)
             if not os.path.isfile(p):
                 return self._send(404, {"error": "not found"})
-            return self._send(200, open(p, "rb").read(), mimetypes.guess_type(name)[0] or "application/octet-stream",
+            with open(p, "rb") as f:
+                data = f.read()
+            if kind == "report":   # view in the browser, locked down
+                return self._send(200, data, "text/html", {"Content-Security-Policy": REPORT_CSP})
+            return self._send(200, data, mimetypes.guess_type(name)[0] or "application/octet-stream",
                               {"Content-Disposition": f'attachment; filename="{name}"'})
         if u.path.startswith("/api/"):
             return self._api(lambda: api_get(u.path, q))

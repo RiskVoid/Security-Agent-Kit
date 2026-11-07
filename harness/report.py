@@ -2,7 +2,8 @@
 
   python3 report.py <engagement>      (on the host: ./rvkit report <engagement>)
 
-Writes /work/<eng>/report/<eng>-report-<date>.docx, a PDF copy and a findings register (.xlsx).
+Writes /work/<eng>/report/<eng>-report-<date>.html (self-contained, the report as a web page), .docx, a PDF copy
+and a findings register (.xlsx).
 Inputs, all optional, written by the planner or the consultant:
   /work/<eng>/report/meta.txt               "Client: ...", "Prepared by: ...", "Version: ..." (template created on
                                             the first run)
@@ -26,6 +27,7 @@ from docx.oxml.ns import qn  # noqa: E402
 from mcp import ClientSession  # noqa: E402
 from mcp.client.streamable_http import streamablehttp_client  # noqa: E402
 import findings_db as db  # noqa: E402
+import report_html  # noqa: E402
 from redact import redact  # noqa: E402
 
 KALI_MCP = os.environ.get("KALI_MCP_URL", "http://kali-mcp:8090/mcp")
@@ -199,6 +201,9 @@ def build(eng):
     db.engagement_dir(eng)
     info = kali("engagement_info", {"engagement": eng})
     act = kali("engagement_activity", {"engagement": eng})
+    # program names only: the audit's first word can be a fragment of an inline script (print(json.loads(...)
+    act["tools"] = {k: v for k, v in act["tools"].items() if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._+-]*", k)
+                    and not re.fullmatch(r"[\d.]+", k)}
     m = meta(eng, brand.prepared_by)
     rdir = Path(db.WORK, eng, "report")
     exec_md, meth_md, concl_md = (read_opt(rdir / n) for n in ("executive-summary.md", "methodology.md",
@@ -229,13 +234,13 @@ def build(eng):
     for rf in d.doc.styles.element.iter(qn("w:rFonts")):
         for att in ("w:asciiTheme", "w:hAnsiTheme", "w:eastAsiaTheme", "w:cstheme"):
             rf.attrib.pop(qn(att), None)
-    cover(d, "Security Assessment Report",
-          f"Results of the security assessment of {scope_short or 'the agreed scope'}: findings ranked by "
-          "severity, with evidence and remediation guidance.",
-          [("Client", m.get("client")), ("Engagement", eng), ("Testing period", period),
-           ("Report date", today), ("Prepared by", m.get("prepared by", brand.prepared_by)),
-           ("Version / status", f"{m.get('version', '1.0')} · {'DRAFT' if draft else 'Final'}"),
-           ("Classification", m.get("classification") or "Confidential")])
+    description = (f"Results of the security assessment of {scope_short or 'the agreed scope'}: findings ranked by "
+                   "severity, with evidence and remediation guidance.")
+    cover_pairs = [("Client", m.get("client")), ("Engagement", eng), ("Testing period", period),
+                   ("Report date", today), ("Prepared by", m.get("prepared by", brand.prepared_by)),
+                   ("Version / status", f"{m.get('version', '1.0')} · {'DRAFT' if draft else 'Final'}"),
+                   ("Classification", m.get("classification") or "Confidential")]
+    cover(d, "Security Assessment Report", description, cover_pairs)
 
     if draft:
         d.guidance("DRAFT, not for client delivery. Resolve before sending: " + "; ".join(issues) + ".")
@@ -373,6 +378,13 @@ def build(eng):
         old.unlink()
     docx = rdir / f"{stem}.docx"
     d.save(str(docx))
+    html = report_html.write(rdir / f"{stem}.html", {
+        "brand": brand, "engagement": eng, "client": m.get("client") or "", "date": today, "draft": draft,
+        "issues": issues, "classification": m.get("classification") or "Confidential",
+        "version": m.get("version", "1.0"), "description": description, "cover": cover_pairs[:6],
+        "exec_md": redact(exec_md), "meth_md": redact(meth_md), "concl_md": redact(concl_md),
+        "findings": findings, "evidence": ev, "activity": act, "info": info, "period": period,
+        "status_label": STATUS_LABEL, "fmt_ts": fmt_ts, "n_fp": len(fps), "n_dup": len(dups)})
 
     cols = [("ID", 9), ("Severity", 12), ("Finding", 46), ("Asset", 28), ("CWE", 14), ("CVSS", 8),
             ("Status", 14), ("Remediation", 60)]
@@ -394,7 +406,7 @@ def build(eng):
     r = subprocess.run(["soffice", "--headless", "--convert-to", "pdf", "--outdir", str(rdir), str(docx)],
                        capture_output=True, text=True, timeout=300,
                        env={**os.environ, "HOME": "/tmp"})
-    return {"docx": str(docx), "pdf": str(pdf) if pdf.exists() else f"PDF conversion failed: {r.stderr[-300:]}",
+    return {"html": html, "docx": str(docx), "pdf": str(pdf) if pdf.exists() else f"PDF conversion failed: {r.stderr[-300:]}",
             "xlsx": str(xlsx), "status": "DRAFT" if draft else "final", "issues": issues,
             "findings": len(findings), "excluded": {"candidate": len(cands), "false-positive": len(fps), "duplicate": len(dups)}}
 

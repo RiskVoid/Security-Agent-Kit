@@ -1,7 +1,7 @@
 # Findings and reports
 
-How the kit records findings, keeps evidence verifiable, and turns both into the client report: a `.docx`, a PDF
-and a findings register `.xlsx`. It also covers what makes a report DRAFT and how to brand it.
+How the kit records findings, keeps evidence verifiable, and turns both into the client report: a self-contained web
+page (`.html`), a `.docx`, a PDF and a findings register `.xlsx`. It also covers what makes a report DRAFT and how to brand it.
 
 ---
 
@@ -167,11 +167,18 @@ in `/work/<engagement>/report/`:
 
 | File | Content |
 |---|---|
-| `<eng>-report-<date>.docx` | the report (`<eng>-report-<date>-DRAFT.docx` while it's a draft) |
+| `<eng>-report-<date>.html` | the report as one web page in the RiskVoid report design (`-DRAFT.html` while it's a draft) |
+| `<eng>-report-<date>.docx` | the report as an editable Word document (`<eng>-report-<date>-DRAFT.docx` while it's a draft) |
 | `<eng>-report-<date>.pdf` | PDF of the same |
 | `<eng>-findings-<date>.xlsx` | findings register |
 
 Generating again on the same day replaces that day's files, DRAFT or not. Reports from earlier days are kept.
+
+The `.html` report is a single file with its fonts and logo embedded: it loads nothing from the internet, so you
+can email it, archive it or open it offline. It has no scripts. Print it from a browser for a PDF with one page
+per section (cover first). With a custom or plain brand it uses your name, logo, primary and accent colours and
+font names (fonts are not embedded for custom brands: readers see them if installed, a system font otherwise).
+In the console, **Report > View HTML report** opens it in a locked-down tab.
 
 You can edit the `.docx` by hand after generating it (for example to polish wording). Do that last, or save it
 under another name: generating again the same day overwrites it. Content changes are better made in the findings
