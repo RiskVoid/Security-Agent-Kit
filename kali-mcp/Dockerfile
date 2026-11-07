@@ -1,3 +1,5 @@
+# Base is Kali rolling: apt packages track the rolling repo, so two builds a week apart can differ. Tools that
+# matter for results (API tools, osv-scanner, grype, Joern) are pinned below; record the build date with results.
 FROM kalilinux/kali-rolling
 ARG TARGETARCH
 ENV DEBIAN_FRONTEND=noninteractive

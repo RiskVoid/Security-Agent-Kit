@@ -4,9 +4,10 @@ A self-hosted AI security assistant for **authorised** security work: source cod
 review, web application, API (REST/GraphQL), AI application / agent / MCP and external network testing, with evidence and a client-ready report. Open source,
 from [RiskVoid](https://riskvoid.com).
 
-- **Planner + worker.** A frontier model (via OpenRouter) plans, triages and writes up; a local, uncensored
-  Qwen model does the hands-on tool work, so raw tool output and client code stay on hardware you control.
-  Or run everything on the local model.
+- **Planner + worker.** A frontier model (via OpenRouter) plans, triages and writes up; a separate worker model
+  (by default an abliterated Qwen on a Colab GPU, or your own GPU / endpoint) does the hands-on tool work, so raw
+  tool output and client code go to the worker, not the planner. Or run everything on the worker model. See
+  [Where your data goes](#where-your-data-goes).
 - **Real tools, safely.** 45+ tools (nmap, nuclei, ZAP, sqlmap, schemathesis, jwt_tool, garak, semgrep, Joern, trivy, …) behind a per-engagement
   sandbox: network firewall limited to the authorised scope, intensity tiers, human approval for intrusive steps,
   emergency halt, and an audit log.
@@ -62,8 +63,8 @@ configures OpenHands: LLM profiles `planner` and `colab-qwen`, the six MCP tool 
 | `riskvoid-local` | `private-llm`: your worker model only, never the fallback | nothing leaves your setup except web searches and CVE lookups |
 
 LLM profiles in OpenHands: `planner` (frontier model via OpenRouter), `colab-qwen` (the abliterated Qwen served
-from Colab by default, or your own endpoint via `./rvkit worker`, falling back to an OpenRouter model while it's
-down) and `private-llm` (the same worker endpoint with the fallback disabled — nothing leaves it, so it fails
+from Colab by default, or your own endpoint via `./rvkit worker`; optionally falls back to an OpenRouter model while it's
+down, off by default) and `private-llm` (the same worker endpoint with the fallback disabled — nothing leaves it, so it fails
 closed instead; for confidential work, point the worker at a local or self-hosted endpoint).
 
 Then:
@@ -98,29 +99,34 @@ popup, and run the `./rvkit connect https://xxxx.trycloudflare.com/v1 rv-xxxx` l
 after **30 idle minutes**. The first session takes ~25–30 min (one-time build, cached in your Drive), later ones
 3–6 min.
 
-### When Colab isn't running: fallback model
+### When Colab isn't running: fallback model (off by default)
 
-While the worker endpoint is down (Colab stopped, tunnel expired), worker calls go to a less restrictive
-OpenRouter model, by default **DeepSeek V4.1 Flash** (cheap, uses tools well, doesn't refuse authorised pentest
-tasks in our tests; Kimi K2.6, Qwen3 235B and Mistral Large 4 also passed). Only zero-data-retention providers
-are used, because the worker sees tool output and client code. As soon as the endpoint is back, calls go there
-again. Delegated task results show which model did the work.
+By default, worker calls fail while the worker endpoint is down (Colab stopped, tunnel expired): nothing is sent
+anywhere else. If you turn the fallback on, those calls go to an OpenRouter model instead, by default
+**DeepSeek V4.1 Flash** (cheap, uses tools well, doesn't refuse authorised pentest tasks in our tests; Kimi K2.6,
+Qwen3 235B and Mistral Large 4 also passed). **That model then sees tool output and client code**, so only
+zero-data-retention providers are used; check it against your client agreements before turning it on. As soon as
+the endpoint is back, calls go there again. Delegated task results show which model did the work.
 
 ```sh
-./rvkit worker show                                   # endpoint + fallback
-./rvkit worker fallback moonshotai/kimi-k2.6          # another OpenRouter model
-./rvkit worker fallback off                           # never fall back: worker calls fail while Colab is down
+./rvkit worker show                                   # endpoint + fallback state
+./rvkit worker fallback on                            # allow the fallback (DeepSeek V4.1 Flash)
+./rvkit worker fallback moonshotai/kimi-k2.6          # allow it, with another OpenRouter model
+./rvkit worker fallback off                           # back to the default: worker calls fail while it's down
 ```
 
-For a client whose data must not reach any cloud model, add `- Worker model: private` to that engagement's
-`RULES.md` (then `./rvkit scope <eng>`): its delegated tasks never use the fallback. The `riskvoid-local` agent
-never does either.
+With the fallback on, you can still keep one client's data off cloud models: add `- Worker model: private` to
+that engagement's `RULES.md` (then `./rvkit scope <eng>`), and its delegated tasks never use the fallback. The
+`riskvoid-local` agent never does either.
 
 ### Costs and limits
 
-- **Planner budget:** OpenRouter spend is capped per day (default **$20**): `./rvkit budget` to see,
-  `./rvkit budget 50` to change. Over the cap, planner calls are refused until the next day (the call that crosses
-  it still completes). The counter resets when LiteLLM restarts.
+- **Planner models:** `./rvkit planner` shows them (default Claude Sonnet 5.5, GPT-6.1 as fallback);
+  `./rvkit planner <openrouter-model> [fallback-model]` changes them.
+- **Budget:** OpenRouter spend is capped per 24 hours (default **$20**): `./rvkit budget` shows the cap and what's
+  spent, `./rvkit budget 50` changes it. Over the cap, OpenRouter calls are refused until the period ends (the
+  call that crosses it still completes). Spend is stored in the `redis` service, so restarting the stack or
+  switching the worker doesn't reset it.
 - Each planner call can produce at most 16k tokens. To see what a run costs with your models, run a benchmark
   (`./rvkit bench smoke`): it reports the OpenRouter cost.
 - Colab GPU costs: see [Which GPU?](#which-gpu-costs).
@@ -162,7 +168,7 @@ records findings:
 
 | Playbook | Standard | For |
 |---|---|---|
-| `code-review` | OWASP ASVS 4.0.3 | source code (SAST, Joern data flow, manual review) |
+| `code-review` | OWASP ASVS 5.0 | source code (SAST, Joern data flow, manual review) |
 | `web-app` | OWASP WSTG 4.2 | web applications |
 | `api-security` | OWASP API Security Top 10 2023 | REST and GraphQL APIs |
 | `ai-llm` | OWASP Top 10 for LLM Apps 2025, MITRE ATLAS | chatbots, RAG, AI agents, MCP servers |
@@ -251,8 +257,9 @@ The benchmark definitions and targets are in `evals/benchmarks/` and `evals/targ
 ./rvkit connect <url> [key]   point the worker at a running Colab model
 ./rvkit worker [colab | local [url] [model] | api <url> <model> [key]]   switch the worker endpoint
 ./rvkit worker fallback [on | off | <openrouter-model>]   model used while the endpoint is down
+./rvkit planner [<model> [fallback-model]]   show / change the planner models
 ./rvkit test [planner]        send a test prompt
-./rvkit budget [usd]          daily OpenRouter budget
+./rvkit budget [usd]          daily OpenRouter budget and today's spend
 ./rvkit key [colab|litellm|openhands]   print a key
 ./rvkit openhands             re-apply the OpenHands configuration
 ./rvkit engagement <name> <targets…>
@@ -273,21 +280,36 @@ The benchmark definitions and targets are in `evals/benchmarks/` and `evals/targ
 | Problem | Fix |
 |---|---|
 | `port is already allocated` during setup | Another app uses that port. In `docker-compose.yml`, change the left number of that service's `ports:` line (e.g. `"127.0.0.1:8001:8000"`). |
-| OpenHands can't reach the model | Run `./rvkit status`. If the model isn't reachable, the Colab session ended or the URL changed. Start it again (Part 2). |
+| OpenHands can't reach the model | Run `./rvkit status`. If the model isn't reachable, the Colab session ended or the URL changed. Start it again ([The worker model](#the-worker-model)). |
 | Colab says "No GPU" or that the GPU is too small | Go to Runtime → Change runtime type → L4 or A100, then run it again. A100s are sometimes unavailable. |
 | Error 524 or timeouts on long answers | Cloudflare quick tunnels cut responses that take over ~100 s. Use ngrok instead: add Colab secrets `NGROK_TOKEN` (free account) and optionally `NGROK_DOMAIN` (a free static domain, so the URL never changes). |
 | The agent chats but doesn't use tools | Run `./rvkit openhands` (it tests every tool server), then start a **new** conversation. |
 | Planner calls fail with "crossed budget" | The daily OpenRouter budget is used up: `./rvkit budget <usd>` raises it. |
 | Planner calls fail with "requires more credits" | Top up your OpenRouter balance. |
 | An MCP server test fails | `./rvkit logs mcp-gateway` / `./rvkit logs kali-mcp` |
-| The Kali tool says `REFUSED` | The target isn't in that engagement's `SCOPE.md`. Edit the file; no restart needed. |
+| The Kali tool says `REFUSED` | The target isn't in the engagement's active scope. Add it to `SCOPE.md`, then run `./rvkit scope <eng>` to review the diff and `./rvkit scope <eng> --yes` to apply it. Editing the file alone has no effect. |
 | `/rv-start` can't find the Colab tools | Install uv (`brew install uv`), restart `claude` in the kit folder, and allow the `colab-mcp` server. The Colab MCP works with Claude Code and Gemini CLI, but not with Claude Desktop. |
 
 ---
 
+## Where your data goes
+
+| Part | Sees | Where it runs |
+|---|---|---|
+| Worker model (`colab-qwen`, `private-llm`) | tool output, client code, evidence | **Colab** (default): processed by Google on your Colab account. **Local / your own endpoint**: stays with you |
+| Worker fallback (off by default) | the same as the worker, while the endpoint is down | OpenRouter, zero-data-retention providers only |
+| Planner (`riskvoid-planner` agent) | task descriptions, the worker's redacted summaries, findings, files it chooses to open in the OpenHands workspace | OpenRouter, zero-data-retention providers only |
+| Web search, page fetch, vulnerability intel | search queries, public URLs, CVE / package ids | SearXNG's upstream engines; NVD, EPSS, CISA KEV, OSV |
+| Everything else (findings, evidence, audit log, reports) | everything | your machine |
+
+For work where nothing may leave your machine, run the worker on a local or self-hosted endpoint
+(`./rvkit worker local|api`), use the `riskvoid-local` agent, keep the fallback off, and set `Network: offline` in
+the engagement's `RULES.md` if package and vulnerability-database lookups must not happen either. The secret
+redaction in summaries is pattern-based: treat it as a safety net, not a guarantee.
+
 ## Privacy and terms
 
-- **Client data:** the worker model sees tool output and client code: on Colab, that is processed by Google; with a local or your own endpoint, it stays with you. The planner (OpenRouter) gets task descriptions and redacted summaries, routed only to zero-data-retention providers. Check this against your client agreements.
+- **Client data:** see [Where your data goes](#where-your-data-goes), and check it against your client agreements.
 - **Colab terms:** Colab restricts some uses of tunnels and proxies. The endpoint here is protected by an API key and meant only for your own use. Check the current terms for your plan.
 - **Model:** the default model is an *abliterated* (refusal-removed) community build of Qwen3.8-27B (Apache-2.0). You're responsible for how you use it.
 - **Your `.env`** holds your keys and is git-ignored. Never commit it. Everyone runs `./rvkit setup` to get their own secrets.
@@ -310,7 +332,7 @@ scripts/openhands_config.py   configures OpenHands through its API (run by setup
 prompts/local.md          extra instructions for the local-only agent
 IMPLEMENTATION_PLAN.md    harness roadmap, phase by phase
 mcp-gateway/              web search + fetch MCP servers
-litellm/config.yaml       model routing
+litellm/config.yaml       model routing (template: ./rvkit renders it with your .env settings into .rvkit/)
 .mcp.json, .claude/       Claude Code automation (/rv-setup, /rv-start, /rv-stop)
 AGENT_PLAYBOOK.md         step-by-step procedure the agent follows
 ```

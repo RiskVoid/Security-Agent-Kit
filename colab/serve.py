@@ -29,6 +29,8 @@ SERVED_NAME = "qwen38-27b-obl"
 PORT = 8000
 BIN_DIR = "/content/llama-bin"
 DRIVE_DIR = "/content/drive/MyDrive/riskvoid-llm"
+CLOUDFLARED_VERSION = "2026.10.3"  # quick tunnel; bump together with the checksum (release notes list it)
+CLOUDFLARED_SHA256 = "053b80b0a23031a038fdbf3c073f59f82b8f1f152aa67971d7383ffafc0dbab0"  # cloudflared-linux-amd64
 PROFILES = {  # name: (quant, context, min VRAM MiB)
     "l4":      ("Q4_K_M", 32768, 21000),
     "a100-40": ("Q8_0",   65536, 39000),
@@ -216,9 +218,11 @@ def start_tunnel():
         domain = secret("NGROK_DOMAIN")
         return ngrok.connect(PORT, "http", **({"domain": domain} if domain else {})).public_url, bool(domain)
     subprocess.run("pkill -f cloudflared", shell=True)
-    if not os.path.exists("/usr/local/bin/cloudflared"):
-        sh("wget -q -O /usr/local/bin/cloudflared https://github.com/cloudflare/cloudflared/releases/latest/download/"
-           "cloudflared-linux-amd64 && chmod +x /usr/local/bin/cloudflared")
+    if not os.path.exists("/usr/local/bin/cloudflared"):  # pinned release, SHA-256 from its release notes
+        sh(f"wget -q -O /tmp/cloudflared https://github.com/cloudflare/cloudflared/releases/download/"
+           f"{CLOUDFLARED_VERSION}/cloudflared-linux-amd64 && "
+           f"echo '{CLOUDFLARED_SHA256}  /tmp/cloudflared' | sha256sum -c - && "
+           "install -m 755 /tmp/cloudflared /usr/local/bin/cloudflared")
     subprocess.Popen(["cloudflared", "tunnel", "--no-autoupdate", "--url", f"http://127.0.0.1:{PORT}"],
                      stdout=open("/content/tunnel.log", "w"), stderr=subprocess.STDOUT)
     for _ in range(60):

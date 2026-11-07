@@ -1,4 +1,6 @@
 # One OpenAI-compatible endpoint for OpenHands and the harness. ./rvkit openhands configures OpenHands with it.
+# TEMPLATE: ./rvkit renders this into .rvkit/litellm.yaml (what the container reads), applying the daily budget
+# (OPENROUTER_DAILY_BUDGET) and the worker fallback switch (WORKER_FALLBACK) from .env. Don't edit those here.
 model_list:
   # WORKER (colab-qwen): the hands-on security model. The name reflects the default and intended model — the
   # abliterated Qwen3.8-27B served from a Colab GPU (./rvkit connect <url> after /rv-start). The endpoint is
@@ -33,9 +35,10 @@ model_list:
 
   # PLANNER: frontier model via OpenRouter. Plans, triages, writes reports; delegates tool work to Qwen.
   # Provider routing: zero-data-retention endpoints only, no prompt collection.
+  # Models come from .env (PLANNER_MODEL, PLANNER_FALLBACK_MODEL): change them with ./rvkit planner <model> [fallback].
   - model_name: planner
     litellm_params:
-      model: openrouter/anthropic/claude-sonnet-5.5
+      model: os.environ/PLANNER_MODEL
       api_key: os.environ/OPENROUTER_API_KEY
       timeout: 600
       extra_body:
@@ -43,7 +46,7 @@ model_list:
 
   - model_name: planner-fallback
     litellm_params:
-      model: openrouter/openai/gpt-6.1-sol
+      model: os.environ/PLANNER_FALLBACK_MODEL
       api_key: os.environ/OPENROUTER_API_KEY
       timeout: 600
       extra_body:
@@ -54,14 +57,19 @@ litellm_settings:
 
 router_settings:
   # If the planner errors (outage, rate limit, content-policy error), retry once on the fallback.
-  # colab-qwen -> colab-qwen-fallback: when the worker endpoint (Colab) is down. ./rvkit worker fallback off removes it.
+  # colab-qwen -> colab-qwen-fallback: when the worker endpoint (Colab) is down. Removed at render time unless
+  # WORKER_FALLBACK=on (./rvkit worker fallback on): off by default, because the fallback sees client data.
   fallbacks: [{"planner": ["planner-fallback"]}, {"colab-qwen": ["colab-qwen-fallback"]}]
   content_policy_fallbacks: [{"planner": ["planner-fallback"]}, {"colab-qwen": ["colab-qwen-fallback"]}]
   num_retries: 1
-  # Cost guardrail: OpenRouter spend per day (USD), tracked in memory (resets when LiteLLM restarts).
-  # Over budget, planner calls fail with a budget error until the period ends. Change with ./rvkit budget <usd>
+  # Cost guardrail: OpenRouter spend per day (USD). Over budget, OpenRouter calls fail with a budget error until the
+  # period ends. The value comes from OPENROUTER_DAILY_BUDGET (./rvkit budget <usd>). Spend is kept in the redis
+  # service (persisted volume), so restarting or recreating LiteLLM (./rvkit connect / worker / budget) doesn't reset it.
   provider_budget_config:
     openrouter: {budget_limit: 20, time_period: 1d}
+  redis_host: redis
+  redis_port: 6379
+  redis_password: os.environ/REDIS_PASSWORD
 
 general_settings:
   master_key: os.environ/LITELLM_MASTER_KEY
