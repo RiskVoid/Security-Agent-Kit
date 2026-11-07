@@ -27,8 +27,8 @@ asyncio.run(go())' "$1" "$2" </dev/null 2>/dev/null
 code() { kali "$1" "curl -s -o /dev/null -m 8 -w 'HTTP=%{http_code}' $2"; }
 
 docker compose --profile lab ps lab-juice-shop --format '{{.State}}' | grep -q running || { echo "lab not running: ./rvkit lab up"; exit 1; }
-./rvkit engagement lab-juice 10.250.0.10 >/dev/null 2>&1
-./rvkit engagement lab-dvwa 10.250.0.11 >/dev/null 2>&1
+./rvkit engagement lab-juice --replace 10.250.0.10 >/dev/null 2>&1
+./rvkit engagement lab-dvwa --replace 10.250.0.11 >/dev/null 2>&1
 
 check "in-scope engagement reaches Juice Shop"       "$(code lab-juice http://10.250.0.10:3000/)" 'HTTP=200'
 # python is not a network tool, so the pre-check doesn't look at it: these test the firewall itself
@@ -49,8 +49,8 @@ check "lab network has no internet"                  "$(probe https://example.co
 check "lab network can't reach the kit's services"   "$(probe http://litellm:4000/)" 'BLOCKED'
 
 # API, GraphQL and LLM targets (new in Phase 6b)
-./rvkit engagement lab-api 10.250.0.13 10.250.0.14 >/dev/null 2>&1
-./rvkit engagement lab-llm 10.250.0.15 >/dev/null 2>&1
+./rvkit engagement lab-api --replace 10.250.0.13 10.250.0.14 >/dev/null 2>&1
+./rvkit engagement lab-llm --replace 10.250.0.15 >/dev/null 2>&1
 check "VAmPI answers (users from /createdb)"         "$(kali lab-api 'curl -s -m 8 http://10.250.0.13:5000/users/v1')" '"username"'
 check "DVGA GraphQL answers"                         "$(kali lab-api "curl -s -m 20 http://10.250.0.14:5013/graphql -H 'Content-Type: application/json' -d '{\"query\":\"{ __typename }\"}'")" '__typename'
 check "LLM lab chat answers"                         "$(kali lab-llm "curl -s -m 8 http://10.250.0.15:8000/api/chat -H 'Content-Type: application/json' -d '{\"message\":\"hi\"}'")" 'Ava'

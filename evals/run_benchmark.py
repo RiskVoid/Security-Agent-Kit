@@ -95,7 +95,7 @@ def prepare(name, b):
         target = f"/src/rv-bench/{b['target']}"
     else:
         target = b["target"]
-    rvkit("engagement", eng, target)
+    rvkit("engagement", eng, "--replace", target)
     with open(os.path.join(d, "RULES.md"), "w") as f:
         f.write(f"# Rules of engagement for {eng} (benchmark)\n- Allowed tiers: {b['tiers']}\n"
                 f"- Max rate: {b.get('max_rate', 50)}\n- Network: online\n")

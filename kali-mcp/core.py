@@ -245,9 +245,10 @@ def sync(eng):
             open(os.path.join(ctl_dir(eng), f), "w").write("")
     reg = registry()
     if eng not in reg:
-        reg[eng] = max(list(reg.values()) + [UID_BASE]) + 1
-        if reg[eng] > UID_BASE + 250:
-            raise ValueError("too many engagements (max 250); archive old ones")
+        free = sorted(set(range(UID_BASE + 1, UID_BASE + 251)) - set(reg.values()))  # deleted engagements free uids
+        if not free:
+            raise ValueError("too many engagements (max 250): delete closed ones with ./rvkit eng delete")
+        reg[eng] = free[0]
         json.dump(reg, open(REGISTRY, "w"), indent=1)
     apply_network()
     sc = parse_scope(read_ctl(eng, "SCOPE.md"))
@@ -626,6 +627,38 @@ def close(eng):
     _audit({"engagement": eng, "event": "closed", "archive": os.path.basename(arc), "sha256": digest,
             "files": len(rows)})
     return {"archive": f"_archive/{os.path.basename(arc)}", "sha256": digest, "files": len(rows)}
+
+
+def archives(eng):
+    d = os.path.join(WORK, "_archive")
+    return sorted(f for f in os.listdir(d) if f.startswith(eng + "-") and f.endswith(".tar.gz")) \
+        if os.path.isdir(d) else []
+
+
+def delete(eng, force=False):
+    """Unregister an engagement: kill its commands, drop its scope, approvals and firewall rules, free its uid.
+    The audit log keeps its history. Its folder is renamed to _deleted-<eng>-<time> (nothing is removed), so the
+    name can be used again. Only closed engagements (halted, with an archive), unless force."""
+    uid = require(eng)
+    closed = info(eng)["halted"] and archives(eng)
+    if not closed and not force:
+        raise ValueError(f"{eng} is not closed. Close it first (./rvkit close {eng}: archive + manifest), "
+                         "or pass --force to delete it without an archive")
+    subprocess.run(["pkill", "-KILL", "-u", str(uid)], capture_output=True)
+    reg = registry()
+    reg.pop(eng, None)
+    json.dump(reg, open(REGISTRY, "w"), indent=1)
+    shutil.rmtree(ctl_dir(eng), ignore_errors=True)
+    moved = None
+    src = os.path.join(WORK, eng)
+    if os.path.isdir(src):
+        stamp = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        moved = f"_deleted-{eng}-{stamp}"
+        os.rename(src, os.path.join(WORK, moved))
+    apply_network()
+    _audit({"engagement": eng, "event": "deleted", "uid": uid, "forced": bool(force and not closed),
+            "folder": moved})
+    return {"folder": moved, "archives": archives(eng), "closed": bool(closed)}
 
 
 # ---------------------------------------------------------------- semgrep community rules

@@ -17,7 +17,7 @@ without a terminal.
 |---|---|
 | Start and check | [`setup`](#setup), [`up`](#up), [`down`](#down), [`status`](#status), [`doctor`](#doctor), [`quickstart`](#quickstart), [`logs`](#logs) |
 | Models | [`connect`](#connect), [`worker`](#worker), [`planner`](#planner), [`budget`](#budget), [`test`](#test), [`key`](#key), [`openhands`](#openhands) |
-| Engagements | [`new`](#new), [`engagement`](#engagement), [`eng`](#eng), [`watch`](#watch), [`approvals`](#approvals), [`approve` / `deny`](#approve--deny), [`scope`](#scope), [`show`](#show), [`halt` / `resume`](#halt--resume), [`audit`](#audit), [`report`](#report), [`close`](#close) |
+| Engagements | [`new`](#new), [`engagement`](#engagement), [`eng`](#eng), [`watch`](#watch), [`approvals`](#approvals), [`approve` / `deny`](#approve--deny), [`scope`](#scope), [`show`](#show), [`halt` / `resume`](#halt--resume), [`audit`](#audit), [`report`](#report), [`close`](#close), [`delete`](#delete) |
 | Practice and tests | [`lab`](#lab), [`bench`](#bench) |
 | Shell | [`install`](#install), [`completion`](#completion), [`help`](#help) |
 
@@ -246,17 +246,19 @@ activates them. It refuses a name that already has a `SCOPE.md`.
 ### engagement
 
 ```sh
-./rvkit engagement <name> [--client "Client"] <target> [target …]
+./rvkit engagement <name> [--client "Client"] [--replace] <target> [target …]
 ```
 
-Creates (or re-scopes) an engagement without questions, with tiers `passive, active`, rate 100, online, and the
-fallback allowed. `--client` must come right after the name.
+Creates an engagement without questions, with tiers `passive, active`, rate 100, online, and the fallback
+allowed. Options go between the name and the targets.
 
 ```sh
 ./rvkit engagement acme-2026-11 --client "Acme Ltd" app.acme.com "*.acme.io" 203.0.113.0/28 /src/acme-repo
 ```
 
-If the engagement exists, `SCOPE.md` is rewritten with the new targets and applied; `RULES.md` is kept.
+If the engagement exists, the command refuses and changes nothing. To change a scope, edit `SCOPE.md` and run
+[`scope`](#scope), which shows the diff first. To replace the whole scope with the targets you give, add
+`--replace`: it rewrites `SCOPE.md`, prints the diff and applies it. `RULES.md` is kept.
 
 ### eng
 
@@ -265,7 +267,7 @@ If the engagement exists, `SCOPE.md` is rewritten with the new targets and appli
 ./rvkit eng <command> …          # same as ./rvkit <command> …
 ```
 
-`eng` alone is `eng list`. Sub-commands: `list new show scope approvals approve deny halt resume audit report close`.
+`eng` alone is `eng list`. Sub-commands: `list new show scope approvals approve deny halt resume audit report close delete`.
 
 ### watch
 
@@ -351,6 +353,21 @@ paths, `DRAFT` or `final`, and what keeps it a draft. Takes about a minute. See
 Close-out: writes `audit.jsonl` (this engagement's audit entries) and copies the active `SCOPE.md` / `RULES.md`
 into the folder, writes `MANIFEST.sha256` of every file, archives the folder to
 `<ENGAGEMENTS_DIR>/_archive/<engagement>-<UTC time>.tar.gz` with a `.sha256` next to it, and halts the engagement.
+
+### delete
+
+```sh
+./rvkit eng delete <engagement> [--force]
+```
+
+Unregisters a closed engagement (halted, with at least one archive): kills anything still running, removes its
+scope, rules, approvals and firewall rules from the control volume, and frees its sandbox user for a new
+engagement. Nothing on disk is removed: the folder is renamed to `_deleted-<engagement>-<UTC time>` in
+`ENGAGEMENTS_DIR`, archives stay in `_archive/`, and the audit log keeps the engagement's history. The name can be
+used again.
+
+`--force` deletes an engagement that isn't closed (no archive or manifest) after asking you to confirm. Use it for
+practice and test engagements.
 
 ---
 

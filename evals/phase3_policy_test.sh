@@ -83,6 +83,19 @@ check "halted engagement refuses commands"        'halted'                      
 ctl resume net-test >/dev/null
 check "resume allows commands again"              'exit=0'                      "$(run net-test 'echo hi')"
 
+echo "== engagement lifecycle (rv-del-test)"
+./rvkit engagement rv-del-test 198.51.100.7 >/dev/null 2>&1
+check "existing engagement not silently replaced" 'exists'                      "$(./rvkit engagement rv-del-test 198.51.100.8 2>&1)"
+check "scope unchanged after refusal"             '198.51.100.7/32'            "$(ctl show rv-del-test)"
+./rvkit engagement rv-del-test --replace 198.51.100.8 >/dev/null 2>&1
+check "--replace applies the new scope"           '198.51.100.8/32'            "$(ctl show rv-del-test)"
+check "delete refuses an open engagement"         'not closed'                  "$(ctl delete rv-del-test 2>&1)"
+ctl close rv-del-test >/dev/null 2>&1
+check "delete a closed engagement"                'deleted'                     "$(ctl delete rv-del-test 2>&1)"
+check "deleted engagement unregistered"           'unknown engagement'          "$(run rv-del-test 'echo hi')"
+check "deletion is audited"                       '"event": "deleted"'          "$(ctl audit rv-del-test 5)"
+docker compose exec -T kali-mcp sh -c 'rm -rf /work/_deleted-rv-del-test-* /work/_archive/rv-del-test-*' </dev/null
+
 echo "== audit"
 check "audit log records refusals and approvals"  'approval-approved'           "$(ctl audit net-test 50)"
 echo; echo "passed $pass, failed $fail"; [ "$fail" -eq 0 ]

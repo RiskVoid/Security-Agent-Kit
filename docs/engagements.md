@@ -77,14 +77,14 @@ paste into the agent UI.
 Same result without questions, with the defaults: tiers `passive, active`, max rate 100, network `online`, no
 private worker. Edit `RULES.md` afterwards to change them (see [Changing scope and rules](#changing-scope-and-rules)).
 
-If the engagement already exists, `./rvkit engagement` **replaces** its `SCOPE.md` with the targets you give and
-applies it at once. `RULES.md` is kept.
+If the engagement already exists, `./rvkit engagement` refuses and changes nothing. Add `--replace` to swap its
+whole `SCOPE.md` for the targets you give; the diff is printed and applied at once. `RULES.md` is kept.
 
 ### Limits
 
 - Engagement names must match `^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$`.
-- Each engagement gets its own unprivileged user in the Kali container. Up to 250 engagements can be registered;
-  there is no command to unregister one yet (see [Cleaning up](#cleaning-up-an-engagement)).
+- Each engagement gets its own unprivileged user in the Kali container. Up to 250 engagements can be registered
+  at once; deleting a closed one frees its slot (see [Cleaning up](#cleaning-up-an-engagement)).
 
 ---
 
@@ -457,10 +457,21 @@ archive. The earlier archive stays as it was.
 
 ### Cleaning up an engagement
 
-There is no command to delete an engagement yet. Once it's closed and archived, you can move its folder out of
-`ENGAGEMENTS_DIR`, but the engagement stays registered in the control volume: `./rvkit eng list` and the agent's
-`list_engagements` still show it (halted), and it still counts towards the 250 limit. Its scope also still
-counts for the web tool's refusal list, which only errs on the side of refusing more.
+Once an engagement is closed and archived, delete it:
+
+```sh
+./rvkit eng delete acme-2026-11
+```
+
+This removes its scope, rules, approvals and firewall rules, so it no longer shows in `./rvkit eng list` or the
+agent's `list_engagements`, no longer counts towards the 250 limit, and its targets drop off the web tool's
+refusal list. Nothing on disk is deleted: the folder is renamed to `_deleted-acme-2026-11-<UTC time>`, the
+archives stay in `_archive/`, and the audit log keeps the engagement's history. Remove or move the renamed
+folder yourself when you no longer need it. Files the sandbox wrote there may belong to another user; on Linux,
+delete them with `sudo` or from a container.
+
+`./rvkit eng delete <name> --force` deletes an engagement that was never closed, after asking you to confirm. It
+writes no archive or manifest, so keep it for practice and test engagements.
 
 ---
 

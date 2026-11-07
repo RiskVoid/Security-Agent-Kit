@@ -386,12 +386,19 @@ cmd_new() {
   echo "   While it runs: ./rvkit watch (approvals)   ./rvkit audit $name   ./rvkit halt $name"
 }
 
-cmd_engagement() { # non-interactive: engagement <name> [--client NAME] <target>...
+cmd_engagement() { # non-interactive: engagement <name> [--client NAME] [--replace] <target>...
   need_env
-  [ $# -ge 2 ] || die "usage: ./rvkit engagement <name> [--client \"Client\"] <target> [target ...]   e.g. acme app.acme.com '*.acme.io' 203.0.113.0/28 /src/acme-repo"
-  local name="$1" client=""; shift
-  if [ "${1:-}" = "--client" ]; then client="${2:-}"; shift 2; fi
+  [ $# -ge 2 ] || die "usage: ./rvkit engagement <name> [--client \"Client\"] [--replace] <target> [target ...]   e.g. acme app.acme.com '*.acme.io' 203.0.113.0/28 /src/acme-repo"
+  local name="$1" client="" replace=n; shift
+  while :; do case "${1:-}" in
+    --client) client="${2:-}"; shift 2 ;;
+    --replace) replace=y; shift ;;
+    *) break ;;
+  esac; done
   [ $# -ge 1 ] || die "no targets given"
+  if [ -f "$(eng_dir "$name")/SCOPE.md" ] && [ "$replace" = n ]; then
+    die "engagement $name exists. To change its scope, edit $(eng_dir "$name")/SCOPE.md and run ./rvkit scope $name (shows the diff first). To replace its whole scope with these targets: ./rvkit engagement $name --replace <targets>"
+  fi
   write_engagement "$name" "$client" "passive, active" 100 online n "$@"
 }
 
@@ -470,8 +477,8 @@ cmd_worker() {
 }
 
 # ---------------------------------------------------------------- install / completion
-COMMANDS="setup up down status doctor logs connect worker planner budget test key openhands new engagement eng quickstart watch scope show approvals approve deny halt resume audit report close lab bench install completion help"
-ENG_SUB="list new show scope approvals approve deny halt resume audit report close"
+COMMANDS="setup up down status doctor logs connect worker planner budget test key openhands new engagement eng quickstart watch scope show approvals approve deny halt resume audit report close delete lab bench install completion help"
+ENG_SUB="list new show scope approvals approve deny halt resume audit report close delete"
 cmd_install() {
   local dir="${1:-$HOME/.local/bin}"
   mkdir -p "$dir"; ln -sf "$SELF" "$dir/rvkit"; ok "linked $dir/rvkit → $SELF"
@@ -493,7 +500,7 @@ _rvkit() {
     eng) COMPREPLY=( \$(compgen -W "$ENG_SUB" -- "\$cur") ) ;;
     worker) COMPREPLY=( \$(compgen -W "show colab local api fallback" -- "\$cur") ) ;;
     lab) COMPREPLY=( \$(compgen -W "up down status" -- "\$cur") ) ;;
-    show|scope|approvals|approve|deny|halt|resume|audit|report|close)
+    show|scope|approvals|approve|deny|halt|resume|audit|report|close|delete)
       engs="\$(ls "\$(grep -E '^ENGAGEMENTS_DIR=' "$KIT/.env" 2>/dev/null | cut -d= -f2- | sed "s|^~|\$HOME|")" 2>/dev/null | grep -v '^_')"
       COMPREPLY=( \$(compgen -W "\$engs" -- "\$cur") ) ;;
   esac
@@ -507,7 +514,7 @@ EOF
       echo "complete -c rvkit -n '__fish_seen_subcommand_from eng' -a '$ENG_SUB'"
       echo "complete -c rvkit -n '__fish_seen_subcommand_from worker' -a 'show colab local api fallback'"
       echo "complete -c rvkit -n '__fish_seen_subcommand_from lab' -a 'up down status'"
-      echo "complete -c rvkit -n '__fish_seen_subcommand_from show scope approvals approve deny halt resume audit report close' -a \"(ls (grep -E '^ENGAGEMENTS_DIR=' $KIT/.env | cut -d= -f2- | string replace -r '^~' \$HOME) 2>/dev/null | string match -v '_*')\""
+      echo "complete -c rvkit -n '__fish_seen_subcommand_from show scope approvals approve deny halt resume audit report close delete' -a \"(ls (grep -E '^ENGAGEMENTS_DIR=' $KIT/.env | cut -d= -f2- | string replace -r '^~' \$HOME) 2>/dev/null | string match -v '_*')\""
       ;;
     *) die "usage: ./rvkit completion bash|zsh|fish" ;;
   esac
@@ -538,7 +545,8 @@ ${B}Models${N}
 
 ${B}Engagements${N}  (also as: rvkit eng <command>)
   new [name]                    create one interactively: client, scope, rules
-  engagement <name> [--client N] <targets…>   create one non-interactively
+  engagement <name> [--client N] [--replace] <targets…>   create one non-interactively (--replace: new
+                                scope for an existing one)
   eng list                      all engagements with scope and pending approvals
   watch                         approve / deny intrusive commands as they come in (desktop notification)
   approvals [eng] | approve|deny <eng> <id>   list / decide approvals
@@ -548,6 +556,7 @@ ${B}Engagements${N}  (also as: rvkit eng <command>)
   audit [eng] [n]               last n audit-log entries
   report <eng>                  report (.docx + .pdf) and findings register (.xlsx) in <eng>/report/
   close <eng>                   close-out: audit extract + SHA-256 manifest + archive, then halt
+  eng delete <eng> [--force]    unregister a closed engagement (frees its slot; folder kept, renamed)
 
 ${B}Practice and tests${N}
   lab up|down|status            vulnerable practice targets on an isolated network
@@ -660,6 +669,10 @@ print("spent in the current 24 h period: $%.4f" % (b.get("spend") or 0))' || tru
   report)     need_env; [ $# -ge 1 ] || die "usage: ./rvkit report <engagement>"
               docker compose exec -T findings-mcp python3 report.py "$1" ;;
   close)      need_env; [ $# -ge 1 ] || die "usage: ./rvkit close <engagement>"; kctl close "$1" ;;
+  delete)
+    need_env; [ $# -ge 1 ] || die "usage: ./rvkit eng delete <engagement> [--force]   (closed engagements; --force for any)"
+    case " $* " in *" --force "*) yesno "Delete $1 without closing it (no archive or manifest)? Its folder is kept, renamed" n || die "not deleted" ;; esac
+    kctl delete "$@" ;;
   install)    cmd_install "$@" ;;
   completion) cmd_completion "$@" ;;
   help|-h|--help) cmd_help ;;

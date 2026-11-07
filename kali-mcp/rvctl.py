@@ -8,6 +8,7 @@
   rvctl.py halt|resume <eng>         stop all running commands and block new ones / allow again
   rvctl.py audit [eng] [n]           last n audit entries (authoritative log)
   rvctl.py close <eng>               export audit extract, SHA-256 manifest, archive to _archive/, halt
+  rvctl.py delete <eng> [--force]    unregister a closed engagement; its folder becomes _deleted-<eng>-<time>
   rvctl.py apply                     rebuild firewall + DNS for all engagements
 """
 import json, os, sys
@@ -72,6 +73,14 @@ def main(a):
         r = core.close(rest[0])
         print(f"{rest[0]} closed and halted. {r['files']} files hashed into MANIFEST.sha256\n"
               f"archive: {r['archive']}\nsha256:  {r['sha256']}"); return 0
+    if cmd == "delete":
+        r = core.delete(rest[0], "--force" in rest)
+        print(f"{rest[0]} deleted: scope, approvals and firewall rules removed (audit history kept)")
+        if r["folder"]:
+            print(f"folder:   {r['folder']} (in the engagements folder; remove it yourself when you no longer need it)")
+        for a in r["archives"]:
+            print(f"archive:  _archive/{a}")
+        return 0
     if cmd == "apply":
         core.apply_network(); print("network policy applied"); return 0
     print(__doc__); return 1
