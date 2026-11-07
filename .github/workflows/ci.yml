@@ -77,6 +77,9 @@ jobs:
       - name: Policy (scope, isolation, tiers, approvals, halt)
         if: steps.changes.outputs.run
         run: bash evals/phase3_policy_test.sh
+      - name: Console (sign-in, CSRF, read API)
+        if: steps.changes.outputs.run
+        run: bash evals/console_test.sh
       - name: Tool smoke test
         if: steps.changes.outputs.run
         run: bash evals/tools_smoke.sh

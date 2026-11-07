@@ -17,7 +17,7 @@ without a terminal.
 |---|---|
 | Start and check | [`setup`](#setup), [`up`](#up), [`down`](#down), [`update`](#update), [`status`](#status), [`doctor`](#doctor), [`quickstart`](#quickstart), [`logs`](#logs) |
 | Models | [`connect`](#connect), [`worker`](#worker), [`planner`](#planner), [`budget`](#budget), [`test`](#test), [`key`](#key), [`openhands`](#openhands) |
-| Engagements | [`new`](#new), [`engagement`](#engagement), [`eng`](#eng), [`watch`](#watch), [`approvals`](#approvals), [`approve` / `deny`](#approve--deny), [`scope`](#scope), [`show`](#show), [`halt` / `resume`](#halt--resume), [`audit`](#audit), [`report`](#report), [`close`](#close), [`delete`](#delete) |
+| Engagements | [`new`](#new), [`engagement`](#engagement), [`eng`](#eng), [`console`](#console), [`watch`](#watch), [`approvals`](#approvals), [`approve` / `deny`](#approve--deny), [`scope`](#scope), [`show`](#show), [`halt` / `resume`](#halt--resume), [`audit`](#audit), [`report`](#report), [`close`](#close), [`delete`](#delete) |
 | Practice and tests | [`lab`](#lab), [`bench`](#bench) |
 | Shell | [`install`](#install), [`completion`](#completion), [`help`](#help) |
 
@@ -289,6 +289,15 @@ If the engagement exists, the command refuses and changes nothing. To change a s
 ```
 
 `eng` alone is `eng list`. Sub-commands: `list new show scope approvals approve deny halt resume audit report close delete`.
+
+### console
+
+```sh
+./rvkit console [--no-open]
+```
+
+Starts the RiskVoid Console on `http://127.0.0.1:<CONSOLE_PORT>/` (default 8100) and opens it signed in, or with
+`--no-open` prints the sign-in link. Runs in the foreground; Ctrl-C stops it. See [console.md](console.md).
 
 ### watch
 

@@ -1,0 +1,83 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>RiskVoid Console</title>
+<link rel="stylesheet" href="/app.css">
+</head>
+<body>
+<header class="top">
+  <div class="brand"><span class="mark" aria-hidden="true"></span>RiskVoid Console</div>
+  <nav aria-label="Main">
+    <a href="#engagements" data-view="engagements">Engagements</a>
+    <a href="#approvals" data-view="approvals">Approvals <span id="appr-badge" class="badge" hidden>0</span></a>
+    <a href="#status" data-view="status">Status</a>
+  </nav>
+  <a id="agent-ui" class="ext" href="http://localhost:8000/" target="_blank" rel="noopener">Open agent UI ↗</a>
+</header>
+
+<main>
+  <section id="view-engagements" class="view">
+    <aside class="list">
+      <div class="list-head">
+        <h2>Engagements</h2>
+        <button id="new-btn" class="primary">New engagement</button>
+      </div>
+      <input id="eng-filter" type="search" placeholder="Filter" aria-label="Filter engagements">
+      <ul id="eng-list" class="eng-list"></ul>
+    </aside>
+    <div id="detail" class="detail">
+      <div class="empty">Pick an engagement, or create one.</div>
+    </div>
+  </section>
+
+  <section id="view-approvals" class="view" hidden>
+    <div class="page-head">
+      <h2>Pending approvals</h2>
+      <button id="notify-btn">Enable desktop notifications</button>
+    </div>
+    <p class="hint">Intrusive commands wait here until you decide. Each approval works once, for this exact command.
+      After you approve, tell the agent to run the command again.</p>
+    <div id="appr-all"></div>
+  </section>
+
+  <section id="view-status" class="view" hidden>
+    <div class="page-head"><h2>Stack status</h2><button id="status-refresh">Refresh</button></div>
+    <pre id="status-text" class="status">Loading…</pre>
+  </section>
+</main>
+
+<dialog id="new-dlg">
+  <form id="new-form" method="dialog">
+    <h2>New engagement</h2>
+    <label>Name <input name="name" required pattern="[A-Za-z0-9][A-Za-z0-9._-]{0,63}" placeholder="acme-2026-11"></label>
+    <label>Client <input name="client" placeholder="Acme Ltd"></label>
+    <label>Targets, one per line
+      <textarea name="targets" rows="5" required placeholder="app.acme.com&#10;*.acme.io&#10;203.0.113.0/28&#10;/src/acme-repo"></textarea>
+    </label>
+    <fieldset>
+      <legend>Allowed tiers</legend>
+      <label class="inline"><input type="checkbox" name="tiers" value="passive" checked> passive</label>
+      <label class="inline"><input type="checkbox" name="tiers" value="active" checked> active</label>
+      <label class="inline"><input type="checkbox" name="tiers" value="intrusive"> intrusive (each command needs approval)</label>
+    </fieldset>
+    <div class="row">
+      <label>Max rate per second <input name="rate" type="number" min="1" value="100"></label>
+      <label>Network
+        <select name="network"><option value="online">online</option><option value="offline">offline</option></select>
+      </label>
+    </div>
+    <label class="inline"><input type="checkbox" name="private"> Private worker: never send this client's tool output to the fallback model</label>
+    <p id="new-err" class="err" hidden></p>
+    <div class="actions">
+      <button type="button" id="new-cancel">Cancel</button>
+      <button type="submit" class="primary">Create engagement</button>
+    </div>
+  </form>
+</dialog>
+
+<div id="toast" class="toast" role="status" hidden></div>
+<script src="/app.js"></script>
+</body>
+</html>

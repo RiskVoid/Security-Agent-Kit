@@ -152,6 +152,7 @@ itself. More on the agents and models: [running-the-agent.md](running-the-agent.
 | Where | Who can change it | What it holds |
 |---|---|---|
 | `/control` (volume `kali-control`, root-only in `kali-mcp`) | only `rvctl.py`, which only `./rvkit` runs (`docker compose exec`) | the active `SCOPE.md` / `RULES.md` per engagement, approvals, `HALT` flags, the engagement registry (name → uid), the authoritative `audit.log`, optional `infra_domains.txt` override |
+| RiskVoid Console (`./rvkit console`, a host process on `127.0.0.1`) | you, signed in with the token in `.rvkit/console.token` | nothing of its own: it calls the same `rvctl.py`, `findings_db` and `report.py` as `./rvkit`. The agent's containers can't reach it ([console.md](console.md#security)) |
 | `/work/<engagement>/` (host folder) | you; kali commands; the worker; `findings-mcp` (`write_file`, findings, reports) | the files you edit (`SCOPE.md`, `RULES.md`), plan, notes, evidence, findings database, report |
 
 `SCOPE.md` and `RULES.md` in the engagement folder are what you edit. They take effect only when you run

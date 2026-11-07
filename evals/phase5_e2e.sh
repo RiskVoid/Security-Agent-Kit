@@ -39,7 +39,7 @@ if [ -d "$ENGDIR" ]; then
   docker compose exec -T findings-mcp sh -c "cd /work/$ENG && rm -rf findings.db report evidence *.json *.jsonl *.txt MANIFEST.sha256" </dev/null
 fi
 ./rvkit engagement $ENG --replace /src/rv-demo-app >/dev/null 2>&1
-sed -i.bak 's/^Allowed tiers:.*/Allowed tiers: passive/' "$ENGDIR/RULES.md" && rm -f "$ENGDIR/RULES.md.bak"
+sed -i.bak 's/^- Allowed tiers:.*/- Allowed tiers: passive/' "$ENGDIR/RULES.md" && rm -f "$ENGDIR/RULES.md.bak"
 ./rvkit scope $ENG --yes >/dev/null 2>&1
 check "engagement ready" "$(call $KALI engagement_info "{\"engagement\": \"$ENG\"}")" '"passive"'
 

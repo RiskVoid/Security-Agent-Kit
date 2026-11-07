@@ -510,7 +510,7 @@ cmd_worker() {
 }
 
 # ---------------------------------------------------------------- install / completion
-COMMANDS="setup up down update status doctor logs connect worker planner budget test key openhands new engagement eng quickstart watch scope show approvals approve deny halt resume audit report close delete lab bench install completion help"
+COMMANDS="setup up down update console status doctor logs connect worker planner budget test key openhands new engagement eng quickstart watch scope show approvals approve deny halt resume audit report close delete lab bench install completion help"
 ENG_SUB="list new show scope approvals approve deny halt resume audit report close delete"
 cmd_install() {
   local dir="${1:-$HOME/.local/bin}"
@@ -561,6 +561,7 @@ ${B}Start${N}
   setup [--yes]                 first-time setup: folders, keys, containers, OpenHands, worker model
   up | down                     start / stop the stack (settings are kept)
   update                        git pull, then up: new images, .env migrated, OpenHands re-configured
+  console [--no-open]           local web console: engagements, approvals, findings, reports, audit
   status                        one-screen overview: services, models, spend, engagements, approvals
   doctor [--models]             check everything and say what to fix
   quickstart                    practice engagement against the lab (no client data, no GPU needed)
@@ -617,6 +618,11 @@ case "$cmd" in
               config_openhands --quiet; ok "Stack is up: $UI_URL" ;;
   down)       need_env; docker compose down; ok "Stack stopped (your settings are kept)" ;;
   update)     cmd_update ;;
+  console)    need_env; need_docker
+              bold "RiskVoid Console: engagements, approvals, findings, reports"
+              echo "   Runs on this computer only (127.0.0.1); the agent's containers can't reach it. Ctrl-C stops it."
+              if [ "${1:-}" = "--no-open" ]; then echo "   Sign-in link: $(python3 scripts/console.py --print-url-only)"; exec python3 scripts/console.py
+              else exec python3 scripts/console.py --open; fi ;;
   status)     need_env; need_docker; cmd_status ;;
   logs)       need_env  # (bash 3.2 turns "${@:-}" into one empty argument, which docker compose rejects)
               if [ $# -gt 0 ]; then docker compose logs --tail 80 "$@"; else docker compose logs --tail 80; fi ;;

@@ -2,6 +2,7 @@
 
   rvctl.py sync <eng> [--yes]        import /work/<eng>/SCOPE.md + RULES.md as authoritative (shows diff first)
   rvctl.py show <eng>                active scope and rules
+  rvctl.py preview <eng>             diff + warnings for {"scope": ..., "rules": ...} on stdin (writes nothing)
   rvctl.py approvals [eng] [--json]  pending approvals (all engagements if none given)
   rvctl.py list [--json]             engagements: scope summary, halt state, pending approvals
   rvctl.py approve|deny <eng> <id>   decide an approval
@@ -31,6 +32,9 @@ def main(a):
         for w in core.sync(eng):
             print("warning:", w)
         print(f"applied. {eng} uses uid {core.registry()[eng]}"); return 0
+    if cmd == "preview":
+        d = json.load(sys.stdin)
+        print(json.dumps(core.preview(rest[0], d.get("scope", ""), d.get("rules", "")))); return 0
     if cmd == "show":
         print(json.dumps(core.info(rest[0]), indent=1)); return 0
     if cmd == "approvals":  # approvals [eng] [--json]: one engagement, or all of them

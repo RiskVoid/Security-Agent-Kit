@@ -230,6 +230,20 @@ def diff(eng):
     return "\n".join(out)
 
 
+def preview(eng, scope_text, rules_text):
+    """What applying this SCOPE.md / RULES.md would change, without writing anything: unified diff against the
+    active copies, the parsed result and the parser's warnings."""
+    if not _name_ok(eng):
+        raise ValueError(f"invalid engagement name: {eng}")
+    out = []
+    for f, new in (("SCOPE.md", scope_text), ("RULES.md", rules_text)):
+        old = read_ctl(eng, f) if eng in registry() else ""
+        out += difflib.unified_diff(old.splitlines(), new.splitlines(), f"active/{f}", f"proposed/{f}", lineterm="")
+    sc, rules = parse_scope(scope_text), parse_rules(rules_text)
+    return {"diff": "\n".join(out), "warnings": sc["warnings"], "rules": rules,
+            "scope": {k: sc[k] for k in ("nets", "domains", "paths")}}
+
+
 def sync(eng):
     """Import the host's SCOPE.md/RULES.md as the authoritative copy (rvkit only), then rebuild the firewall."""
     if not _name_ok(eng):

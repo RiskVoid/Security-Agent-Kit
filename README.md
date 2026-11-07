@@ -40,7 +40,7 @@ YOUR COMPUTER (Docker)                                                       WOR
 
 **Documentation:** [docs/](docs/README.md) has the full guides: [what the kit is](docs/overview.md),
 [getting started](docs/getting-started.md), [engagements](docs/engagements.md),
-[working with the agent](docs/running-the-agent.md), [findings and reports](docs/findings-and-reports.md),
+[working with the agent](docs/running-the-agent.md), [the console](docs/console.md), [findings and reports](docs/findings-and-reports.md),
 [models](docs/models.md), [architecture](docs/architecture.md), [tools](docs/tools-reference.md),
 [commands](docs/cli-reference.md), [configuration](docs/configuration.md), [operations](docs/operations.md) and
 [troubleshooting](docs/troubleshooting.md). This README is the short version.
@@ -182,8 +182,9 @@ applies). Edits that aren't applied with `./rvkit scope` have no effect, so an a
 > Engagement `acme-2026-11`: source code review of `/src/acme-repo`, including dependencies and secrets. Follow
 > the matching playbooks, then write the executive summary and generate the report.
 
-In another terminal, run **`./rvkit watch`**: when the agent wants to run an intrusive command, you get a desktop
-notification and approve or deny it right there.
+In another terminal, run **`./rvkit console`**: a local web page with your engagements, the approval queue,
+findings triage, the report and the audit log ([docs/console.md](docs/console.md)). Or run **`./rvkit watch`**
+to approve intrusive commands from the terminal, with a desktop notification for each.
 
 The planner picks playbooks, copies their checklists into `PLAN.md`, works through them and records findings:
 

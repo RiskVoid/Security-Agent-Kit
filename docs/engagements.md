@@ -335,6 +335,9 @@ The agent should show you the command and say why it needs it. You decide on the
 for each new request: `a` approve, `d` deny, `s` skip for now (the default; it stays pending). It needs a
 terminal. Stop it with Ctrl-C.
 
+Or use the **Approvals** page of the [console](console.md) (`./rvkit console`): every pending command across
+engagements, with Approve and Deny buttons and optional desktop notifications.
+
 After you approve, **tell the agent it's approved** (for example "approved, go ahead"). It must call the Kali tool
 again with the identical command and the `approval_id`.
 

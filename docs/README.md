@@ -29,6 +29,7 @@ New here? Read [What the kit is](overview.md), then [Getting started](getting-st
 |---|---|
 | [Your first engagement](first-engagement.md) | A guided run against OWASP Juice Shop in the isolated lab |
 | [Engagements](engagements.md) | Creating engagements, scope and rules, tiers, approvals, halting, the audit log, close-out |
+| [The console](console.md) | The local web page for engagements, approvals, findings triage, reports and the audit log |
 | [Working with the agent](running-the-agent.md) | Prompts for each kind of test, what the agent does, monitoring, steering, resuming and re-running |
 | [Findings and reports](findings-and-reports.md) | Finding statuses, evidence and its verification, the report, DRAFT checks, branding |
 | [Tools reference](tools-reference.md) | Every agent tool, the Kali toolbox with tiers, `rv-llm`, Joern, playbooks, adding your own |

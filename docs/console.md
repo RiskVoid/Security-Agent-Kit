@@ -1,0 +1,65 @@
+# The RiskVoid Console
+
+The console is a local web page for the operator's side of the kit: engagements, approvals, findings, reports
+and the audit log. Everything in it can also be done with `./rvkit`; the console puts it in one place and saves
+you the terminal round-trips. You still talk to the agent in the OpenHands UI.
+
+```sh
+./rvkit console            # starts it and opens it in your browser, signed in
+./rvkit console --no-open  # prints the sign-in link instead (for example on a remote machine over SSH)
+```
+
+It runs in the foreground; Ctrl-C stops it. The address is `http://127.0.0.1:8100/` (set `CONSOLE_PORT` in
+`.env` to change it).
+
+## What you can do
+
+| Page | What it does | Same as |
+|---|---|---|
+| **Engagements** list | Every engagement with its client, status (active, halted, closed), confirmed findings, how many wait for triage, and pending approvals. Filter by name or client. | `./rvkit eng list` |
+| **New engagement** | Name, client, targets, tiers, rate, network and the private-worker switch, validated before anything is created. | `./rvkit new` |
+| Engagement **Overview** | Findings by severity, the active scope and rules, pending approvals for this engagement, and a ready prompt to paste into the agent UI. | `./rvkit show` |
+| **Scope & rules** | Edit `SCOPE.md` and `RULES.md`, **Preview changes** (a diff, the parser's warnings, and exactly what the firewall will allow), then **Apply**. Preview writes nothing. | `./rvkit scope <eng>` |
+| **Findings** | Sort by severity and filter by status. Click a finding to change its status (including `duplicate` with the finding it duplicates), severity and notes, and read the description, reproduction, remediation and evidence. **Check evidence integrity** shows a badge per evidence file: verified, code ref, not audited, or what's wrong. | the findings tools in chat |
+| **Report** | Edit the cover details (client, prepared by, version, classification) and the executive summary, **Generate report**, see whether it's DRAFT and why, and download the `.docx`, `.pdf` and `.xlsx`. | `./rvkit report` |
+| **Audit log** | Every command, refusal, approval, halt and scope change for the engagement, newest first. | `./rvkit audit` |
+| **Halt now / Resume / Close out / Delete** | The engagement controls, each with a confirmation step where it matters. | `./rvkit halt`, `resume`, `close`, `eng delete` |
+| **Approvals** | Every pending intrusive command across engagements, with Approve and Deny. **Enable desktop notifications** alerts you when a new one arrives while the page is open. The tab title shows the count. | `./rvkit watch` |
+| **Status** | The output of `./rvkit status`: services, worker, planner, spend, engagements. | `./rvkit status` |
+
+After you approve a command, tell the agent to run it again (the approval is for that exact command, once).
+
+## Security
+
+The console can approve intrusive commands and change scope, so it is kept out of the agent's reach:
+
+- **It runs on your computer, not in Docker**, and listens on `127.0.0.1` only. The agent's containers
+  (OpenHands and the worker) are on an internal network with no route to the host, and Kali commands can only reach
+  in-scope targets.
+- **It needs a session token.** `./rvkit console` opens a sign-in link that sets an `HttpOnly`,
+  `SameSite=Strict` cookie. The token is in `.rvkit/console.token` (readable only by you, not mounted into any
+  container). Delete that file to make a new one; old sign-ins stop working.
+- **Requests for another host name are refused** (protection against DNS rebinding), and **every change needs a
+  header a web page on another site can't send**, so a malicious page can't make your browser act on the console.
+- **It uses the same controls as `./rvkit`**: `rvctl` in the Kali container for scope, approvals and the
+  engagement lifecycle; `findings_db` and `report.py` in the findings container. It adds no new way to change
+  the kit's state.
+- Report downloads are limited to `.docx`, `.pdf` and `.xlsx` files in an engagement's `report/` folder.
+- Text written by the agent (findings, commands, notes) is shown as text, never as HTML.
+
+To use it from another machine, forward the port over SSH rather than exposing it:
+
+```sh
+ssh -L 8100:127.0.0.1:8100 you@kit-host     # then, on the kit host: ./rvkit console --no-open
+```
+
+Open the printed sign-in link on your own machine.
+
+## Not in the console yet
+
+- Watching a run live (current command, worker tasks, which model served each step, spend per run): use the
+  OpenHands UI and `./rvkit status`.
+- Starting the agent: the Overview gives you the prompt; paste it into the OpenHands UI.
+- Continuing the agent automatically after an approval: tell it to run the command again.
+- Models and the worker (Colab, fallback, budget): use `./rvkit worker`, `./rvkit budget` and `/rv-start`.
+- Several users: there is one token per kit and approvals don't record who approved.
