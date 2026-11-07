@@ -1,0 +1,27 @@
+# Front door for the OpenHands UI. agent-canvas runs on an internal network (no internet, and Docker can't publish
+# its port), so this gateway publishes 127.0.0.1:8000 and proxies to it, websockets included.
+{
+	admin off
+	auto_https off
+}
+
+:8000 {
+	# http://localhost:8000/ -> RiskVoid start page: marks OpenHands' generic onboarding as done, declines
+	# telemetry, then opens the canvas. Everything else goes straight to OpenHands.
+	@start path / /riskvoid /riskvoid/
+	handle @start {
+		root * /srv
+		rewrite * /start.html
+		header Cache-Control "no-store"
+		file_server
+	}
+	handle {
+		reverse_proxy agent-canvas:8000 {
+			flush_interval -1
+			transport http {
+				read_timeout 0
+				write_timeout 0
+			}
+		}
+	}
+}

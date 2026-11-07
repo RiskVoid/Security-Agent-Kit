@@ -156,7 +156,9 @@ def parse_scope(text):
             (sc["paths"].append(p) if p.startswith("/src/") or p == "/src"
              else sc["warnings"].append(f"path outside /src ignored: {s}"))
             continue
-        host = re.sub(r"^[a-z]+://", "", s.lower()).split("/")[0]
+        host = re.sub(r"^[a-z]+://", "", s.lower())
+        if not re.fullmatch(r"\d{1,3}(\.\d{1,3}){3}/\d{1,2}", host):  # keep a CIDR's prefix; drop a URL's path
+            host = host.split("/")[0]
         host = host.rsplit(":", 1)[0] if host.count(":") == 1 else host
         try:
             net = ipaddress.ip_network(host, strict=False)
@@ -624,3 +626,45 @@ def close(eng):
     _audit({"engagement": eng, "event": "closed", "archive": os.path.basename(arc), "sha256": digest,
             "files": len(rows)})
     return {"archive": f"_archive/{os.path.basename(arc)}", "sha256": digest, "files": len(rows)}
+
+
+# ---------------------------------------------------------------- semgrep community rules
+RULES_DIR = "/opt/semgrep-rules"
+
+
+def fetch_rules():
+    """Download the semgrep community rules at the pinned commit into their volume (first start only). They are
+    not baked into the image because the Semgrep Rules License doesn't allow redistributing them."""
+    commit = os.environ.get("SEMGREP_RULES_COMMIT", "")
+    marker = os.path.join(RULES_DIR, ".commit")
+    if not commit or (os.path.exists(marker) and open(marker).read().strip() == commit):
+        return
+    tmp = RULES_DIR + "/.download"
+    shutil.rmtree(tmp, ignore_errors=True); os.makedirs(tmp)
+    url = f"https://codeload.github.com/semgrep/semgrep-rules/tar.gz/{commit}"
+    r = subprocess.run(f"curl -fsSL --retry 3 '{url}' | tar xz -C '{tmp}' --strip-components 1",
+                       shell=True, capture_output=True, text=True, timeout=600)
+    if r.returncode:
+        shutil.rmtree(tmp, ignore_errors=True)
+        raise RuntimeError(f"semgrep rules download failed: {r.stderr.strip()[:300]}")
+    for name in os.listdir(RULES_DIR):  # replace the old set
+        if name != ".download":
+            p = os.path.join(RULES_DIR, name)
+            shutil.rmtree(p) if os.path.isdir(p) and not os.path.islink(p) else os.remove(p)
+    for name in os.listdir(tmp):
+        os.rename(os.path.join(tmp, name), os.path.join(RULES_DIR, name))
+    os.rmdir(tmp)
+    subprocess.run(["chmod", "-R", "a+rX", RULES_DIR])
+    open(marker, "w").write(commit + "\n")
+
+
+def fetch_rules_background():
+    import sys, threading
+
+    def go():
+        try:
+            fetch_rules()
+        except Exception as e:
+            print(f"WARNING: {e}. Offline semgrep scans need /opt/semgrep-rules; restart kali-mcp to retry.",
+                  file=sys.stderr)
+    threading.Thread(target=go, daemon=True).start()

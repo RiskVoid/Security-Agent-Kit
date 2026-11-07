@@ -1,6 +1,6 @@
 """Unattended benchmark: run the real agent (OpenHands + MCP tools) on a known target and score its findings.
 
-  python3 evals/run_benchmark.py <name|all> [--agent riskvoid-planner|riskvoid-local] [--keep]
+  python3 evals/run_benchmark.py <name|all> [--agent riskvoid-planner|riskvoid-local]
   python3 evals/run_benchmark.py --history            compare past runs
   (or ./rvkit bench ...)
 
@@ -39,8 +39,8 @@ def env():
 
 E = env()
 EXPAND = lambda p: os.path.expanduser(p or "")
-ENG_DIR = EXPAND(E.get("ENGAGEMENTS_DIR") or "~/projects/engagements")
-PROJ_DIR = EXPAND(E.get("PROJECTS_DIR") or "~/projects")
+ENG_DIR = EXPAND(E.get("ENGAGEMENTS_DIR") or "~/riskvoid/engagements")
+PROJ_DIR = EXPAND(E.get("PROJECTS_DIR") or "~/riskvoid/projects")
 
 
 def http(method, url, body=None, headers=None, timeout=120):
@@ -119,13 +119,13 @@ def preamble(eng, b, target):
 
 # ---------------------------------------------------------------- run
 def approve_pending(eng):
-    n = 0
-    for line in rvkit("approvals", eng, check=False).splitlines():
-        m = re.match(r"^([0-9a-f-]{6,})\s+\[", line.strip())
-        if m:
-            rvkit("approve", eng, m.group(1), check=False)
-            n += 1
-    return n
+    try:
+        pending = json.loads(rvkit("approvals", eng, "--json", check=False) or "[]")
+    except ValueError:
+        return 0
+    for a in pending:
+        rvkit("approve", eng, a["id"], check=False)
+    return len(pending)
 
 
 def run_conversation(eng, b, agent, target, log):
@@ -133,7 +133,7 @@ def run_conversation(eng, b, agent, target, log):
     if not prof:
         raise SystemExit(f"agent profile {agent!r} not found: run ./rvkit openhands")
     conv = oh("POST", "/api/conversations", {
-        "workspace": {"working_dir": "/projects"}, "agent_profile_id": prof["id"], "max_iterations": 300,
+        "workspace": {"working_dir": "/workspace/project"}, "agent_profile_id": prof["id"], "max_iterations": 300,
         "max_budget_per_run": b.get("max_budget_usd", 5.0), "title": f"benchmark {eng}",
         "initial_message": {"role": "user", "content": [{"type": "text", "text": preamble(eng, b, target)}]}})
     cid = conv["id"]
@@ -227,9 +227,7 @@ def score(b, allf):
 
 # ---------------------------------------------------------------- main
 def models():
-    cfg = open(os.path.join(KIT, "litellm", "config.yaml")).read()
-    m = re.search(r"model_name: planner\n\s+litellm_params:\n\s+model: (\S+)", cfg)
-    return {"planner": m.group(1) if m else None, "worker": E.get("WORKER_MODEL_ID"),
+    return {"planner": E.get("PLANNER_MODEL"), "worker": E.get("WORKER_MODEL_ID"),
             "worker_endpoint": re.sub(r"//([^/]+)\.trycloudflare\.com", "//<colab-tunnel>", E.get("WORKER_API_BASE", ""))}
 
 

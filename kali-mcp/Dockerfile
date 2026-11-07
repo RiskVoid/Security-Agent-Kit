@@ -24,7 +24,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 # Python tools in their own venv (Kali's Debian-packaged Python libs must not be overwritten by pip)
 # (linked into /usr/local/bin: the sandbox's login shell resets PATH)
-RUN python3 -m venv /opt/venv && /opt/venv/bin/pip install --no-cache-dir "mcp==1.29.0" semgrep bandit pip-audit \
+ARG SEMGREP_VERSION=1.181.1
+ARG BANDIT_VERSION=1.9.4
+ARG PIP_AUDIT_VERSION=2.10.1
+RUN python3 -m venv /opt/venv && /opt/venv/bin/pip install --no-cache-dir "mcp==1.29.0" "semgrep==${SEMGREP_VERSION}" "bandit==${BANDIT_VERSION}" "pip-audit==${PIP_AUDIT_VERSION}" \
     && for t in semgrep pysemgrep bandit pip-audit; do ln -sf /opt/venv/bin/$t /usr/local/bin/$t; done
 
 # API testing tools in their own venv. GitHub-only tools are pinned to a commit.
@@ -81,14 +84,12 @@ RUN set -eu; arch="${TARGETARCH:-$(dpkg --print-architecture)}"; eval sha=\$JOER
     echo "$sha  joern.zip" | sha512sum -c -; unzip -q joern.zip -d /opt; rm joern.zip; \
     (cd /opt/joern-cli && ./joern-scan --updatedb >/dev/null 2>&1 || true); chmod -R a+rX /opt/joern-cli
 
-# Offline rule sets, readable by every engagement user. Refresh by rebuilding the image.
-#   /opt/nuclei-templates: nuclei community templates (linked into each engagement's home)
-#   /opt/semgrep-rules:    semgrep community rules, for "Network: offline" engagements
-#                          (semgrep --config /opt/semgrep-rules/python ...). Check the Semgrep Rules License
-#                          before using them in a commercial service.
-RUN nuclei -update-template-dir /opt/nuclei-templates -update-templates -silent || true; \
-    git clone -q --depth 1 https://github.com/semgrep/semgrep-rules /opt/semgrep-rules && rm -rf /opt/semgrep-rules/.git; \
-    chmod -R a+rX /opt/nuclei-templates /opt/semgrep-rules
+# nuclei community templates (MIT), pinned by release tag, linked into each engagement's home.
+# The semgrep community rules are NOT in the image: their licence (Semgrep Rules License) doesn't allow
+# redistribution, so kali-mcp downloads them at first start into the semgrep-rules volume (see core.fetch_rules).
+ARG NUCLEI_TEMPLATES_TAG=v10.5.1
+RUN git clone -q --depth 1 --branch "${NUCLEI_TEMPLATES_TAG}" https://github.com/projectdiscovery/nuclei-templates /opt/nuclei-templates \
+    && rm -rf /opt/nuclei-templates/.git && chmod -R a+rX /opt/nuclei-templates && mkdir -p /opt/semgrep-rules
 
 COPY core.py server.py rvctl.py infra_domains.txt rv-sandbox.sh /opt/kali-mcp/
 COPY joern/ /opt/kali-mcp/joern/

@@ -36,6 +36,7 @@ check "control plane hidden"                      'exit=0'                      
 check "runs unprivileged"                         'uid=2000[0-9]'               "$(run demo-code 'id')"
 check "cannot change firewall"                    'Operation not permitted|denied' "$(run demo-code 'nft flush ruleset')"
 check "own pid namespace (no server processes)"   '^0$'                         "$(run demo-code 'ps -eo args --no-headers | grep -cE "[p]ython3 .*server.py|[d]nsmasq"')"
+check "git trusts client repos (history scans)"   'safe.directory=\*'           "$(run demo-code 'git config --list | grep safe.directory')"
 
 echo "== tiers and pre-check false positives (demo-code: passive only)"
 check "semgrep (passive) runs"                    'exit=0 tier=passive'         "$(run demo-code 'semgrep --config p/python --metrics=off -q /src/rv-demo-app/app.py --json -o semgrep.json; echo rc=$?')"
@@ -54,6 +55,11 @@ check "out-of-scope IP blocked by firewall"       'BLOCKED'                     
 check "out-of-scope name does not resolve"        'NORESOLVE'                   "$(run net-test 'getent hosts github.io || echo NORESOLVE')"
 check "internal services blocked (litellm)"       'BLOCKED'                     "$(run net-test 'curl -s -m 5 -o /dev/null http://litellm:4000/health && echo REACHED || echo BLOCKED')"
 check "loopback services blocked (kali-mcp)"      'BLOCKED'                     "$(run net-test "python3 -c 'import urllib.request as u; u.urlopen(\"http://127.0.0.1:8090/mcp\", timeout=5)' >/dev/null 2>&1 && echo REACHED || echo BLOCKED")"
+
+scope_of() { docker compose exec -T kali-mcp python3 -c 'import sys,json; sys.path.insert(0,"/opt/kali-mcp"); import core
+print(json.dumps(core.parse_scope(sys.argv[1])["nets"]))' "$1"; }
+check "CIDR scope keeps its prefix"               '"203.0.113.0/28", "10.0.0.0/24"' "$(scope_of $'- 203.0.113.0/28\n- 10.0.0.5/24')"
+check "URL scope keeps only the host"             '"10.250.0.10/32"'            "$(scope_of '- http://10.250.0.10:3000/login')"
 
 echo "== rate caps (net-test: max 20/s)"
 check "rate flag injected"                        'rate limit applied: ffuf -rate 20'  "$(run net-test 'ffuf -V')"

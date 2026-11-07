@@ -32,6 +32,17 @@ def engagement_info(engagement: str) -> str:
 
 
 @mcp.tool()
+def all_scopes() -> str:
+    """Union of every registered engagement's network scope, as JSON {"nets": [...], "domains": [...]}. Used by the
+    kit's web research tools to refuse fetching engagement targets (those are tested only through run)."""
+    nets, domains = set(), set()
+    for e in core.engagements():
+        sc = core.info(e)["scope"]
+        nets.update(sc["nets"]); domains.update(sc["domains"])
+    return json.dumps({"nets": sorted(nets), "domains": sorted(domains)})
+
+
+@mcp.tool()
 def evidence_provenance(engagement: str, paths: list[str]) -> str:
     """Verify evidence files: current SHA-256, and the audited command (with time and tier) that produced exactly
     that content. Status is verified, MODIFIED after it was produced, not produced by an audited kali command
@@ -89,4 +100,5 @@ if __name__ == "__main__":
         core.apply_network()  # restore firewall + DNS after a container restart
     except Exception as e:
         print("WARNING: could not apply network policy:", e, file=sys.stderr)
+    core.fetch_rules_background()  # semgrep community rules into their volume, first start only
     mcp.run(transport="streamable-http")

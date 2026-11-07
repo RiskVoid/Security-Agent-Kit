@@ -1,0 +1,89 @@
+# Checks on every push and pull request. The integration job builds the whole stack and runs the regression tests
+# (no model or API key needed); it takes about 30 minutes, so it runs on pull requests to main, pushes to main and
+# on demand, and skips changes that touch only documentation.
+name: CI
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: shellcheck
+        run: shellcheck -S warning rvkit egress/start.sh evals/*.sh kali-mcp/rv-sandbox.sh
+      - name: Python compiles
+        run: python3 -m compileall -q harness kali-mcp scripts colab evals
+      - name: Compose file is valid
+        run: cp .env.example .env && docker compose config -q && docker compose --profile lab config -q
+      - name: Colab notebook is generated from colab/serve.py
+        run: python3 colab/build_notebook.py && git diff --exit-code colab/rvkit_model_server.ipynb
+      - name: VERSION matches the image tag in docker-compose.yml
+        run: |
+          v="$(cat VERSION)"
+          n="$(grep -c "RVKIT_VERSION:-$v}" docker-compose.yml)"
+          [ "$n" -ge 6 ] || { echo "docker-compose.yml image tags don't default to $v (VERSION)"; exit 1; }
+      - name: Unit checks
+        run: |
+          python3 - <<'EOF'
+          import sys; sys.path[:0] = ["harness", "colab"]
+          import webfetch
+          assert webfetch.refusal("http://127.0.0.1/", [], []).startswith("REFUSED")
+          assert webfetch.refusal("https://app.example.com/x", [], ["example.com"]).startswith("REFUSED")
+          assert webfetch.refusal("file:///etc/passwd", [], []) == "only http(s) URLs"
+          print("ok")
+          EOF
+
+  integration:
+    needs: lint
+    if: github.event_name != 'pull_request' || github.base_ref == 'main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 75
+    env:
+      RVKIT_YES: "1"
+      RVKIT_BUILD: "1"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Skip documentation-only changes
+        id: changes
+        run: |
+          if [ "${{ github.event_name }}" = pull_request ]; then
+            git fetch -q --depth 1 origin "${{ github.base_ref }}"
+            if git diff --name-only FETCH_HEAD HEAD | grep -qvE '\.md$|^docs/|^LICENSE$|^NOTICE$'; then echo "run=1" >> "$GITHUB_OUTPUT"; fi
+          else echo "run=1" >> "$GITHUB_OUTPUT"; fi
+      - name: Free disk space
+        if: steps.changes.outputs.run
+        run: sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL && df -h /
+      - name: Setup (builds every image)
+        if: steps.changes.outputs.run
+        run: ./rvkit setup --yes
+      - name: Doctor
+        if: steps.changes.outputs.run
+        run: ./rvkit doctor || true   # no worker model or OpenRouter key in CI: warnings expected
+      - name: Prepare test engagements
+        if: steps.changes.outputs.run
+        run: bash evals/ci_prepare.sh
+      - name: Policy (scope, isolation, tiers, approvals, halt)
+        if: steps.changes.outputs.run
+        run: bash evals/phase3_policy_test.sh
+      - name: Tool smoke test
+        if: steps.changes.outputs.run
+        run: bash evals/tools_smoke.sh
+      - name: End to end (evidence, report, close-out)
+        if: steps.changes.outputs.run
+        run: bash evals/phase5_e2e.sh
+      - name: Lab isolation
+        if: steps.changes.outputs.run
+        run: ./rvkit lab up && bash evals/lab_test.sh
+      - name: Logs on failure
+        if: failure()
+        run: docker compose logs --tail 150

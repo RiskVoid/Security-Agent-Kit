@@ -16,6 +16,7 @@ from mcp import ClientSession
 from mcp.client.streamable_http import streamablehttp_client
 from mcp.server.fastmcp import FastMCP
 import findings_db as db
+import webfetch
 
 LITELLM = os.environ.get("LITELLM_URL", "http://litellm:4000/v1")
 LITELLM_KEY = os.environ.get("LITELLM_MASTER_KEY", "")
@@ -159,66 +160,9 @@ def web_search(task, query):
                        for r in data.get("results", [])[:8]) or "no results"
 
 
-def _in_scope(host, task):
-    sc = task["info"]["scope"]
-    if any(host == d or host.endswith("." + d) for d in sc["domains"]):
-        return True
-    try:
-        import ipaddress
-        return any(ipaddress.ip_address(host) in ipaddress.ip_network(n) for n in sc["nets"])
-    except ValueError:
-        return False
-
-
-def _fetch_refusal(url, task):
-    """Why fetch_url must not open this URL, or None. Checks the name and every address it resolves to, so another
-    DNS name for an in-scope IP is refused too, as is anything non-public (kit services, lab, metadata)."""
-    import ipaddress, socket
-    u = urllib.parse.urlparse(url)
-    if u.scheme not in ("http", "https") or not u.hostname:
-        return "only http(s) URLs"
-    host = u.hostname.lower()
-    if _in_scope(host, task):
-        return "REFUSED: this host is an engagement target. Use kali_run (scope-checked and audit-logged)."
-    try:
-        addrs = {ai[4][0] for ai in socket.getaddrinfo(host, u.port or (443 if u.scheme == "https" else 80),
-                                                       proto=socket.IPPROTO_TCP)}
-    except OSError as e:
-        return f"cannot resolve {host}: {e}"
-    for a in addrs:
-        ip = ipaddress.ip_address(a.split("%")[0])
-        if any(ip in ipaddress.ip_network(n) for n in task["info"]["scope"]["nets"]):
-            return (f"REFUSED: {host} resolves to {ip}, which is in the engagement scope. "
-                    "Use kali_run (scope-checked and audit-logged).")
-        if not ip.is_global:
-            return f"REFUSED: {host} resolves to non-public address {ip}; fetch_url is for public research only."
-    return None
-
-
-class _CheckedRedirect(urllib.request.HTTPRedirectHandler):
-    """Apply the same check to every redirect, so a public page can't bounce the fetch onto a target."""
-    def __init__(self, task):
-        self.task = task
-
-    def redirect_request(self, req, fp, code, msg, headers, newurl):
-        why = _fetch_refusal(newurl, self.task)
-        if why:
-            raise urllib.error.URLError(f"redirect to {newurl} blocked: {why}")
-        return super().redirect_request(req, fp, code, msg, headers, newurl)
-
-
 def fetch_url(task, url):
-    # Residual risk: the name is resolved again when connecting (DNS rebinding). The kali firewall is the hard
-    # boundary for targets; this check keeps the worker's research tool from becoming a way around it.
-    why = _fetch_refusal(url, task)
-    if why:
-        return why
-    req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0 (rvkit research)"})
-    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), _CheckedRedirect(task))
-    raw = opener.open(req, timeout=30).read(2_000_000).decode("utf-8", "replace")
-    text = re.sub(r"(?is)<(script|style|noscript)[^>]*>.*?</\1>", " ", raw)
-    text = html.unescape(re.sub(r"(?s)<[^>]+>", " ", text))
-    return re.sub(r"\s+\n", "\n", re.sub(r"[ \t]+", " ", text)).strip()
+    sc = task["info"]["scope"]
+    return webfetch.fetch(url, sc["nets"], sc["domains"])
 
 
 def read_file(task, path, start=1, lines=200):

@@ -2,8 +2,8 @@
 # TEMPLATE: ./rvkit renders this into .rvkit/litellm.yaml (what the container reads), applying the daily budget
 # (OPENROUTER_DAILY_BUDGET) and the worker fallback switch (WORKER_FALLBACK) from .env. Don't edit those here.
 model_list:
-  # WORKER (colab-qwen): the hands-on security model. The name reflects the default and intended model — the
-  # abliterated Qwen3.8-27B served from a Colab GPU (./rvkit connect <url> after /rv-start). The endpoint is
+  # WORKER (colab-qwen): the hands-on security model. The name reflects the default model — the
+  # mainstream Qwen3.8-27B served from a Colab GPU (./rvkit connect <url> after /rv-start). The endpoint is
   # switchable with ./rvkit worker (colab | local | api), so this alias may point at a local or API model too.
   - model_name: colab-qwen
     litellm_params:

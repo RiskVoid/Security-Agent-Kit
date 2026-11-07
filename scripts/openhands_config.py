@@ -2,13 +2,13 @@
 and ./rvkit setup / up run it automatically.
 
 Creates or updates:
-  LLM profiles    colab-qwen  (openai/colab-qwen via LiteLLM: the hands-on model — the abliterated Qwen served
+  LLM profiles    colab-qwen  (openai/colab-qwen via LiteLLM: the hands-on model — Qwen3.8-27B served
                            from Colab by default, or any endpoint via ./rvkit worker; falls back to an OpenRouter
-                           model while the endpoint is down)
+                           model while the endpoint is down, only when the fallback is on)
                   private-llm (same worker endpoint, never falls back: no egress, fails closed)
                   planner (openai/planner via LiteLLM: OpenRouter, with fallback)
-  MCP servers     search, fetch, kali, worker, findings, intel
-  Agent profiles  riskvoid-planner  planner LLM, prompts/planner.md, all six MCP servers (default)
+  MCP servers     web, kali, worker, findings, intel
+  Agent profiles  riskvoid-planner  planner LLM, prompts/planner.md, all five MCP servers (default)
                   riskvoid-local    private-llm only, no OpenRouter: prompts/planner.md + prompts/local.md
 Keys are read from .env and sent only to the local OpenHands API; nothing is printed.
 """
@@ -18,10 +18,8 @@ KIT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 BASE = os.environ.get("OPENHANDS_URL", "http://127.0.0.1:8000")
 
 MCP = {
-    "search":   {"url": "http://mcp-gateway:8081/sse", "transport": "sse",
-                 "description": "Web search (SearXNG)"},
-    "fetch":    {"url": "http://mcp-gateway:8082/sse", "transport": "sse",
-                 "description": "Fetch a web page as text"},
+    "web":      {"url": "http://web-mcp:8094/mcp", "transport": "http", "timeout": 120, "sse_read_timeout": 600,
+                 "description": "Web search and page fetch for research (refuses engagement targets)"},
     "kali":     {"url": "http://kali-mcp:8090/mcp", "transport": "http", "timeout": 120, "sse_read_timeout": 1800,
                  "description": "Kali tools in a per-engagement sandbox (scope, tiers, approvals, audit)"},
     "worker":   {"url": "http://worker-mcp:8091/mcp", "transport": "http", "timeout": 120, "sse_read_timeout": 600,
@@ -91,9 +89,23 @@ def agent_profile(name, llm_ref, mcp_refs, persona):
     return (res.get("profile") or res).get("id") or api("GET", f"/api/agent-profiles/{name}")["profile"]["id"]
 
 
+def check_mcp():
+    """Ask OpenHands to connect to every MCP server; returns a list of failures."""
+    bad = []
+    for key, cfg in MCP.items():
+        r = api("POST", "/api/mcp/test", {"server": {**cfg, "enabled": True}})
+        if not r.get("ok"):
+            bad.append(f"{key}: {r.get('error', json.dumps(r))[:160]}")
+    return bad
+
+
 def main():
     quiet = "--quiet" in sys.argv
     say = (lambda *a: None) if quiet else print
+    if "--check" in sys.argv:  # used by ./rvkit doctor: test only, change nothing
+        bad = check_mcp()
+        print("\n".join(bad) if bad else "all MCP servers answer")
+        sys.exit(1 if bad else 0)
     # 1. LLM profiles
     for name, model, max_out in (("colab-qwen", "openai/colab-qwen", 8192),
                                  ("private-llm", "openai/private-llm", 8192),
@@ -104,9 +116,14 @@ def main():
     have = set((api("GET", "/api/settings").get("agent_settings", {}).get("mcp_config") or {}).keys())
     for key, cfg in MCP.items():
         api("PATCH" if key in have else "POST", f"/api/settings/mcp/{key}", {**cfg, "enabled": True})
+    for old in ("search", "fetch"):  # replaced by "web" (scope-aware); the old servers no longer exist
+        if old in have:
+            api("DELETE", f"/api/settings/mcp/{old}", ok404=True)
     say("  MCP servers: " + ", ".join(MCP))
     # 3. agent profiles
-    planner_md = open(os.path.join(KIT, "prompts", "planner.md")).read()
+    org = (E.get("ORG_NAME") or "").strip() or \
+        ("RiskVoid" if (E.get("REPORT_BRAND") or "riskvoid") == "riskvoid" else "the security team")
+    planner_md = open(os.path.join(KIT, "prompts", "planner.md")).read().replace("{{ORG_NAME}}", org)
     local_md = open(os.path.join(KIT, "prompts", "local.md")).read()
     pid = agent_profile("riskvoid-planner", "planner", list(MCP), planner_md)
     agent_profile("riskvoid-local", "private-llm", [k for k in MCP if k != "worker"],
@@ -127,11 +144,7 @@ def main():
     api("POST", f"/api/agent-profiles/{pid}/activate")
     api("POST", "/api/profiles/planner/activate")
     # 5. check every MCP server answers
-    bad = []
-    for key, cfg in MCP.items():
-        r = api("POST", "/api/mcp/test", {"server": {**cfg, "enabled": True}})
-        if not r.get("ok"):
-            bad.append(f"{key}: {r.get('error', json.dumps(r))[:160]}")
+    bad = check_mcp()
     if bad:
         print("  MCP check failed:\n   " + "\n   ".join(bad))
         sys.exit(1)

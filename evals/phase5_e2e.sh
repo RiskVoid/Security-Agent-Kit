@@ -9,7 +9,8 @@
 # Run: bash evals/phase5_e2e.sh
 cd "$(dirname "$0")/.." || exit 1
 ENG=p5-e2e
-ENGDIR="${ENGAGEMENTS_DIR:-$HOME/projects/engagements}/$ENG"
+E="${ENGAGEMENTS_DIR:-$(grep -E '^ENGAGEMENTS_DIR=' .env 2>/dev/null | head -1 | cut -d= -f2-)}"; E="${E:-~/riskvoid/engagements}"
+ENGDIR="${E/#\~/$HOME}/$ENG"
 pass=0; fail=0
 ok()  { pass=$((pass+1)); echo "PASS  $1"; }
 bad() { fail=$((fail+1)); echo "FAIL  $1"; [ -n "${2:-}" ] && echo "$2" | head -6 | sed 's/^/      /'; }

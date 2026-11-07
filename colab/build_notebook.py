@@ -17,16 +17,20 @@ md("""
 3. When it finishes, copy the `./rvkit connect …` line into a terminal in the kit folder on your Mac.
 
 First start: ~25–30 min (one-time build). Later starts: ~3–6 min. The runtime disconnects itself after the idle timeout.
+
+Model: Qwen3.8-27B (Apache-2.0). `MODEL = "qwen"` serves Qwen's weights unchanged; `"abliterated"` serves a community build with refusals removed.
 """),
 code("""
 #@title Settings
 PROFILE = "auto"  #@param ["auto", "l4", "a100-40", "a100-80"]
+MODEL = "qwen"  #@param ["qwen", "abliterated"]
+#@markdown `qwen` is the mainstream Qwen3.8-27B. `abliterated` has its refusals removed; you are responsible for how you use it.
 THINKING = False  #@param {type:"boolean"}
 IDLE_MINUTES = 30  #@param {type:"integer"}
 API_KEY = ""  #@param {type:"string"}
 #@markdown Leave API_KEY empty for a random key, or paste the output of `./rvkit key` to keep it fixed.
 import os
-os.environ.update(RVKIT_PROFILE=PROFILE, RVKIT_THINKING="1" if THINKING else "0",
+os.environ.update(RVKIT_PROFILE=PROFILE, RVKIT_MODEL=MODEL, RVKIT_THINKING="1" if THINKING else "0",
                   RVKIT_IDLE_MINUTES=str(IDLE_MINUTES), RVKIT_API_KEY=API_KEY)
 """, hidden=True),
 code("%%writefile /content/serve.py\n" + serve, hidden=True),

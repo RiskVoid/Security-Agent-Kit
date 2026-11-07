@@ -1,0 +1,15 @@
+{
+  "org_name": "Example Security",
+  "footer": "EXAMPLE-SECURITY.TEST",
+  "show_name": true,
+  "colors": {
+    "primary": "#0F3D3E",
+    "accent": "#1F9D8B",
+    "cover_text": "#A7C4C2"
+  },
+  "fonts": {
+    "display": "DejaVu Sans",
+    "body": "DejaVu Sans",
+    "mono": "DejaVu Sans Mono"
+  }
+}

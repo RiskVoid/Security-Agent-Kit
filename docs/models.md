@@ -1,0 +1,293 @@
+# Models
+
+This page covers the models the kit uses: the planner, the worker, the optional fallback, and how to run the
+worker on Colab, your own GPU or any API endpoint. It also covers costs, budgets and where each model sends your
+data.
+
+## How the models fit together
+
+All model calls go through LiteLLM (`127.0.0.1:4000`), which gives OpenHands and the worker one endpoint and
+routes each model name to the right place:
+
+| LiteLLM name | Points at | Used by | Falls back to |
+|---|---|---|---|
+| `planner` | `PLANNER_MODEL` on OpenRouter (default `anthropic/claude-sonnet-5.5`) | the `riskvoid-planner` agent | `planner-fallback` on errors, outages and content-policy refusals |
+| `planner-fallback` | `PLANNER_FALLBACK_MODEL` on OpenRouter (default `openai/gpt-6.1-sol`) | | |
+| `colab-qwen` | the worker endpoint (`WORKER_API_BASE`, `WORKER_MODEL_ID`) | `delegate_task` in the worker MCP server | `colab-qwen-fallback`, **only** when the fallback is on |
+| `colab-qwen-fallback` | `WORKER_FALLBACK_MODEL` on OpenRouter (default `deepseek/deepseek-v4.1-flash`) | | |
+| `private-llm` | the same worker endpoint as `colab-qwen` | the `riskvoid-local` agent, and `delegate_task` for engagements with `Worker model: private` | never |
+
+`colab-qwen` keeps its name whichever endpoint you use: it may point at Colab, a local server or an API.
+
+Every OpenRouter model is called with provider routing set to zero-data-retention providers only, with prompt
+collection denied.
+
+LiteLLM's config is a template (`litellm/config.yaml`). `./rvkit` renders it with your `.env` settings into
+`.rvkit/litellm.yaml` and recreates the LiteLLM container whenever you change a model, the fallback or the
+budget. Don't edit the rendered file by hand.
+
+## Agent profiles
+
+`./rvkit setup` and `./rvkit up` create two agents in OpenHands:
+
+| Agent | LLM | Tools (MCP servers) | Instructions |
+|---|---|---|---|
+| `riskvoid-planner` (default) | `planner` | web, kali, worker, findings, intel | `prompts/planner.md` |
+| `riskvoid-local` | `private-llm` | web, kali, findings, intel (no worker: it runs the tools itself) | `prompts/planner.md` + `prompts/local.md` |
+
+Use `riskvoid-planner` for the best results. Use `riskvoid-local` when nothing may go to a cloud model: with a
+local or self-hosted worker, the only traffic that leaves your setup is web searches and vulnerability-database
+lookups. It needs no OpenRouter key.
+
+Pick the agent when you start a conversation in the UI. A conversation keeps its agent and model, so start a new
+conversation to switch.
+
+## The worker
+
+The worker carries out one focused task at a time for the planner: it runs Kali commands, reads code, searches,
+fetches public pages and records candidate findings. It sees raw tool output and client code.
+
+The kit is built and tested with **Qwen3.8-27B**. Any OpenAI-compatible model with good tool calling works, but
+results vary.
+
+```sh
+./rvkit worker            # current endpoint, model and fallback state
+./rvkit test              # send a short test prompt to the worker
+```
+
+### Option 1: Google Colab (default)
+
+The worker runs on a Colab GPU, started per session. You need Colab Pro (or a plan with GPU compute units).
+
+**With Claude Code** (one command):
+
+```
+/rv-start                 # auto profile, mainstream model, thinking off
+/rv-start l4              # pick the profile
+/rv-start a100-40 thinking
+/rv-start abliterated     # the refusal-removed build (see Which model)
+```
+
+Claude Code opens Colab in your browser through the Colab MCP server and tells you what to click: sign in, pick
+the GPU (Runtime → Change runtime type), approve the Google Drive popup. It uploads the launcher, starts the
+model and runs `./rvkit connect` for you. `/rv-stop` releases the GPU. The full procedure is in
+[AGENT_PLAYBOOK.md](../AGENT_PLAYBOOK.md#start-the-model).
+
+**By hand:**
+
+1. In Colab, **File → Upload notebook** → `colab/rvkit_model_server.ipynb`, then **File → Save a copy in Drive**.
+2. Run `./rvkit key colab` and paste the result into the notebook's **API_KEY** field. Save the notebook: the key
+   then stays the same every session. (Empty means a random key each time.)
+3. Each session: **Runtime → Change runtime type → L4** (or A100), **Runtime → Run all**, approve the Google Drive
+   popup.
+4. The last cell prints a line like this. Run it on your computer:
+
+   ```sh
+   ./rvkit connect https://xxxx.trycloudflare.com/v1 rv-xxxx qwen38-27b
+   ```
+
+   It should end with **Model reachable**.
+5. When you're done: **Runtime → Disconnect and delete runtime** (or `/rv-stop`).
+
+**Timing.** The first session takes about 25–30 minutes: llama.cpp is built once with CUDA and cached in your
+Drive (`MyDrive/riskvoid-llm/`). Later sessions take 3–6 minutes, mostly the model download. Don't start the
+launcher before Drive is mounted, or it rebuilds from scratch.
+
+**Idle shutdown.** The launcher disconnects the runtime after **30 minutes** without requests, so a forgotten
+session doesn't burn compute units.
+
+**GPU profiles.** The launcher picks a profile from the GPU it finds (`auto`), or you choose one:
+
+| Profile | GPU | Quantisation | Context | Needs |
+|---|---|---|---|---|
+| `l4` | L4 (recommended) | Q4_K_M | 32K | ~21 GB VRAM |
+| `a100-40` | A100 40 GB | Q8_0 (near-full quality) | 64K | ~39 GB |
+| `a100-80` | A100 80 GB, H100 | Q8_0 | 128K | ~78 GB |
+
+**Thinking mode** (`/rv-start <profile> thinking`, or `THINKING` in the notebook) makes the model reason before
+answering. It's slower and uses more compute units. Leave it off unless results are poor.
+
+**Notebook settings.** The notebook form fields set these environment variables for `colab/serve.py`. You only need
+the advanced ones for special cases:
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `RVKIT_PROFILE` | `auto` | `auto`, `l4`, `a100-40`, `a100-80` |
+| `RVKIT_MODEL` | `qwen` | `qwen` (mainstream) or `abliterated` |
+| `RVKIT_THINKING` | `0` | `1` for thinking mode |
+| `RVKIT_API_KEY` | Colab secret `LLM_API_KEY`, else random | the endpoint's API key |
+| `RVKIT_IDLE_MINUTES` | `30` | idle minutes before the runtime disconnects |
+| `RVKIT_TUNNEL` | `auto` | `auto`, `cloudflare` or `ngrok` (`auto` uses ngrok when `NGROK_TOKEN` is set) |
+| `RVKIT_DRIVE` | `1` | cache the llama.cpp build in Google Drive |
+| `RVKIT_REBUILD` | | `1` forces a fresh llama.cpp build |
+| `RVKIT_QUANT` | from the profile | e.g. `Q5_K_M` |
+| `RVKIT_REPO`, `RVKIT_REVISION` | pinned | serve a different GGUF repo or revision |
+| `RVKIT_LLAMA_TAG` | `b11840` | use another llama.cpp release |
+
+**Tunnels.** By default the endpoint is published through a Cloudflare quick tunnel: no account needed, but the
+URL changes every session, and Cloudflare cuts responses that take longer than about 100 seconds (error 524). For
+long answers, or a URL that never changes, add Colab secrets `NGROK_TOKEN` (free ngrok account) and optionally
+`NGROK_DOMAIN` (a free static domain). With a static domain, you only run `./rvkit connect` once.
+
+The endpoint is on the internet, protected only by its API key. Keep the key secret and stop the runtime when
+you're done.
+
+`./rvkit connect <url> [key] [model]` remembers the Colab URL, key and model. After using another worker, `./rvkit
+worker colab` switches back to the last Colab endpoint.
+
+### Option 2: a local server on this machine
+
+Run the model with Ollama, LM Studio, llama-server (llama.cpp) or vLLM, then:
+
+```sh
+./rvkit worker local
+```
+
+It looks for an OpenAI-compatible server on ports 11434 (Ollama), 1234 (LM Studio), 8080 (llama-server), 8001
+and 5000, and uses the first model it finds. To set it yourself:
+
+```sh
+./rvkit worker local http://host.docker.internal:8080/v1 <model> [api-key]
+```
+
+- Use `host.docker.internal`, not `localhost`: LiteLLM runs in a container.
+- **Linux:** the server must listen on an address containers can reach (`0.0.0.0` or the Docker bridge), not
+  only `127.0.0.1`. For Ollama, set `OLLAMA_HOST=0.0.0.0`.
+- Qwen3.8-27B needs about 24 GB of VRAM (or unified memory) at Q4. Give it at least 32K of context.
+
+### Option 3: any OpenAI-compatible endpoint
+
+For a GPU server, RunPod, Modal, vLLM or a hosted API with a fixed URL:
+
+```sh
+./rvkit worker api https://gpu.example.com/v1 <model-name> [api-key]
+```
+
+Every `worker` command recreates LiteLLM and sends a test prompt.
+
+### Which model
+
+| Choice | Served as | Weights | Notes |
+|---|---|---|---|
+| **Qwen3.8-27B** (default, `qwen`) | `qwen38-27b` | `lmstudio-community/Qwen3.8-27B-GGUF`, Qwen's weights unchanged (Apache-2.0) | may refuse some offensive-security tasks |
+| **Abliterated** (`abliterated`) | `qwen38-27b-obl` | `huihui-ai/Huihui-Qwen3.8-27B-abliterated-GGUF`, a community build with refusals removed | refuses fewer tasks; a third-party modification |
+
+Both repos are pinned to a commit, so a re-upload can't change what runs. The abliterated build will not refuse
+harmful requests: you are responsible for how you use it ([SECURITY.md](../SECURITY.md#responsible-use)).
+
+### Worker limits
+
+| Limit | Value |
+|---|---|
+| Tasks at a time | one: the endpoint handles one request at a time, so delegated tasks queue |
+| Tool calls per task | `max_steps`, 15 by default, 1–40 |
+| Time per task | `timeout_min`, 30 by default, 1–180 minutes |
+| Context | about 90,000 characters (~25K tokens, fits the L4 profile's 32K). Older tool outputs are shrunk to keep within it; each step's full output is saved in `/work/<engagement>/evidence/tasks/<task_id>/step-NN-<tool>.txt` |
+| Tool output shown to the model | 6,000 characters per call; the rest is in the step file |
+
+The planner sets `max_steps` and `timeout_min` per task. Delegated tasks are kept in memory until the
+`worker-mcp` container restarts; their evidence files stay on disk.
+
+## When the worker is down: the fallback
+
+By default, worker calls fail while the worker endpoint is down (Colab stopped, tunnel expired). Nothing is sent
+anywhere else, and the planner tells you to start the worker. For small checks, the planner can run the Kali
+tools itself in the meantime.
+
+If you turn the fallback on, worker calls go to an OpenRouter model instead while the endpoint is down:
+
+```sh
+./rvkit worker fallback on                         # DeepSeek V4.1 Flash (default)
+./rvkit worker fallback moonshotai/kimi-k2.6       # turn it on with another OpenRouter model
+./rvkit worker fallback off                        # back to the default
+./rvkit worker show                                # endpoint and fallback state
+```
+
+**While the fallback is in use, that model sees tool output and client code.** Only zero-data-retention providers
+are used, but check it against your client agreements before turning it on. DeepSeek V4.1 Flash is cheap, uses
+tools well and didn't refuse authorised pentest tasks in our tests; Kimi K2.6, Qwen3 235B and Mistral Large 4
+also passed. When a delegated task was served by the fallback, the task result names that model.
+
+`./rvkit status` and `./rvkit doctor` show a warning while the fallback is on.
+
+### Keeping one client off the fallback
+
+To keep one client's data off cloud models even with the fallback on, answer **yes** to "Keep this client's tool
+output on the worker endpoint only" in `./rvkit new`, or add this line to the engagement's `RULES.md` and apply it
+with `./rvkit scope <engagement> --yes`:
+
+```
+- Worker model: private
+```
+
+Delegated tasks for that engagement then use `private-llm`, which never falls back: they fail instead. The
+`riskvoid-local` agent never uses the fallback either.
+
+## The planner
+
+```sh
+./rvkit planner                                             # show the planner and its fallback
+./rvkit planner anthropic/claude-sonnet-5.5                 # change the planner
+./rvkit planner anthropic/claude-sonnet-5.5 openai/gpt-6.1-sol   # change both
+./rvkit test planner                                        # send a test prompt
+```
+
+Models are OpenRouter ids; the `openrouter/` prefix is optional. The fallback is used when the planner errors: an
+outage, a rate limit or a content-policy refusal. Choose a model that is good at long tool-using sessions.
+
+Without `OPENROUTER_API_KEY` in `.env`, the planner doesn't work: use `riskvoid-local`, or add the key and run
+`./rvkit up`.
+
+## Costs and budget
+
+**OpenRouter.** Spend on OpenRouter (the planner, plus the worker fallback when it's on) is capped per 24 hours.
+The default is **$20**.
+
+```sh
+./rvkit budget            # the cap and what's been spent in the current period
+./rvkit budget 50         # change the cap
+```
+
+Over the cap, OpenRouter calls fail with a budget error until the period ends. The spend counter is kept in the
+`redis` service on a volume, so restarting the stack or changing models doesn't reset it. `./rvkit status` shows
+spend against the cap. To see what a typical run costs with your models, run a benchmark (`./rvkit bench
+smoke`): it reports the OpenRouter cost ([Lab and benchmarks](lab-and-benchmarks.md)).
+
+`./rvkit doctor` doesn't call the planner (it costs a fraction of a cent); `./rvkit doctor --models` does.
+
+**Colab.**
+
+| GPU | Model quality | Speed | Compute units/hour* | Hours from 200 units |
+|---|---|---|---|---|
+| **L4** (recommended) | Q4, 32K context | ~15–20 tok/s | ~1.7 | ~115 |
+| A100 40 GB | Q8 (near-full quality), 64K | ~35–50 tok/s | ~5.4 | ~37 |
+| A100 80 GB | Q8, 128K | fast | ~7.5 | ~27 |
+
+\*Community measurements (March 2026). Check Colab's usage meter during your first session.
+
+To save units: stop the runtime when you're done (or let the 30-minute idle shutdown do it), keep thinking mode
+off, and use the L4 unless you need the longer context.
+
+## Where your data goes
+
+| Part | Sees | Where it runs |
+|---|---|---|
+| Worker model (`colab-qwen`, `private-llm`) | tool output, client code, evidence | **Colab** (default): processed by Google on your Colab account. **Local / your own endpoint**: stays with you |
+| Worker fallback (off by default) | the same as the worker, while the endpoint is down | OpenRouter, zero-data-retention providers only |
+| Planner (`riskvoid-planner` agent) | task descriptions, the worker's redacted summaries, findings, files it chooses to open | OpenRouter, zero-data-retention providers only |
+| Web search and page fetch (`web` tool) | search queries, public URLs | SearXNG's upstream search engines; the public site |
+| Vulnerability intel, package installs | CVE and package ids, package names | NVD, EPSS, CISA KEV, OSV; package registries (through the egress proxy) |
+| Everything else (findings, evidence, audit log, reports) | everything | your machine |
+
+For work where nothing may leave your machine: run the worker on a local or self-hosted endpoint (`./rvkit worker
+local|api`), use the `riskvoid-local` agent, keep the fallback off, and set the engagement to `offline` if package
+and vulnerability-database lookups must not happen either.
+
+The planner can open any file it chooses, including client code, so "the planner never sees client code" is not a
+guarantee with `riskvoid-planner`. Secret redaction in the worker's summaries is pattern-based: treat it as a safety
+net, not a guarantee.
+
+## See also
+
+[Getting started](getting-started.md) · [Configuration](configuration.md) · [Architecture](architecture.md) ·
+[Troubleshooting](troubleshooting.md)

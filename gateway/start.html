@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>RiskVoid agent kit</title>
+<style>
+  :root { color-scheme: light dark; }
+  body { margin: 0; min-height: 100vh; display: grid; place-items: center; background: #0f1115; color: #e6e8eb;
+         font: 15px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  main { max-width: 34rem; padding: 2rem 1rem; }
+  h1 { font-size: 1.25rem; margin: 0 0 .5rem; }
+  p { margin: .5rem 0; color: #b4b9c1; }
+  code { background: #1d2129; padding: .1rem .3rem; border-radius: 4px; }
+  a { color: #7aa7ff; }
+</style>
+</head>
+<body>
+<main>
+  <h1>RiskVoid agent kit</h1>
+  <p>Opening the agent UI&hellip; Start a conversation with the <code>riskvoid-planner</code> agent and name your
+     engagement (create it first with <code>./rvkit new</code>).</p>
+  <p>If nothing happens, <a href="/canvas/">open the canvas</a>.</p>
+</main>
+<script>
+  // The kit pre-configures OpenHands (models, tools, agents), so its generic first-run wizard, getting-started
+  // checklist and telemetry prompt don't apply. These are the keys the OpenHands frontend reads (agent-canvas 1.33).
+  try {
+    var set = function (k, v) { if (localStorage.getItem(k) === null) localStorage.setItem(k, v); };
+    set("openhands-onboarded", "true");
+    set("openhands-sidebar-onboarding-checklist-dismissed", "true");
+    set("openhands-telemetry-consent", "denied");
+  } catch (e) { /* storage blocked: OpenHands shows its own onboarding, which is harmless */ }
+  location.replace("/canvas/");
+</script>
+</body>
+</html>

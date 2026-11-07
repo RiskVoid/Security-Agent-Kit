@@ -6,15 +6,21 @@ Run inside a Colab GPU runtime with:   %run /content/serve.py
 What it does:
   1. picks a profile from the GPU it finds (L4 -> Q4, A100-40 -> Q8, A100-80/H100/G4 -> Q8 with long context)
   2. gets llama-server with CUDA (Drive cache -> prebuilt release -> source build), caches it in Drive
-  3. downloads the abliterated Qwen3.8-27B GGUF from Hugging Face
+  3. downloads the Qwen3.8-27B GGUF from Hugging Face at a pinned revision:
+     the mainstream build by default, or the abliterated (refusal-removed) build with RVKIT_MODEL=abliterated
   4. starts an OpenAI-compatible API on :8000, protected by an API key
   5. opens a tunnel (Cloudflare quick tunnel, or ngrok if NGROK_TOKEN is set)
-  6. prints   RVKIT_ENDPOINT {"url": ..., "key": ...}   and the ./rvkit connect line
+  6. prints   RVKIT_ENDPOINT {"url": ..., "key": ..., "model": ...}   and the ./rvkit connect <url> <key> <model> line
   7. disconnects the runtime after IDLE_MINUTES without requests (saves compute units)
 
 Settings come from environment variables (all optional):
   RVKIT_PROFILE   auto | l4 | a100-40 | a100-80     (default auto)
-  RVKIT_REPO      GGUF repo (default huihui-ai/Huihui-Qwen3.8-27B-abliterated-GGUF)
+  RVKIT_MODEL     qwen | abliterated   (default qwen)
+                    qwen         lmstudio-community/Qwen3.8-27B-GGUF, Qwen's weights unchanged, served as qwen38-27b
+                    abliterated  huihui-ai/Huihui-Qwen3.8-27B-abliterated-GGUF, refusals removed, served as qwen38-27b-obl;
+                                 you are responsible for how you use it
+  RVKIT_REPO      override the GGUF repo (the served name still follows RVKIT_MODEL)
+  RVKIT_REVISION  override the pinned revision (default: the pinned commit, or main when RVKIT_REPO is set)
   RVKIT_QUANT     override quant, e.g. Q5_K_M
   RVKIT_API_KEY   fixed API key (else Colab secret LLM_API_KEY, else random)
   RVKIT_THINKING  1 to enable thinking mode (slower, deeper)  (default 0)
@@ -22,13 +28,27 @@ Settings come from environment variables (all optional):
   RVKIT_TUNNEL    auto | cloudflare | ngrok   (default auto)
   RVKIT_DRIVE     1 to cache llama-server in Google Drive (default 1)
   RVKIT_REBUILD   1 to force a fresh llama.cpp build
+  RVKIT_LLAMA_TAG llama.cpp release to use instead of the pinned one (e.g. b11900)
 """
 import glob, json, os, re, secrets, shutil, subprocess, tarfile, threading, time, urllib.request
 
-SERVED_NAME = "qwen38-27b-obl"
+# RVKIT_MODEL: (GGUF repo, pinned commit, served name). Pinned so a re-upload can't change what runs.
+# Qwen publishes no GGUF of Qwen3.8-27B; lmstudio-community converts with stock llama.cpp, plain Q4_K_M/Q8_0 files.
+MODELS = {
+    "qwen":        ("lmstudio-community/Qwen3.8-27B-GGUF",
+                    "5a7da681f60570ab5b439a587e912d2e5eddb582", "qwen38-27b"),
+    "abliterated": ("huihui-ai/Huihui-Qwen3.8-27B-abliterated-GGUF",
+                    "1c69098e9c32db6dc06fc48f1d6cc75ad07da89e", "qwen38-27b-obl"),
+}
+DEFAULT_MODEL = "qwen"
 PORT = 8000
 BIN_DIR = "/content/llama-bin"
+# Pinned versions (each at least two weeks old when pinned). RVKIT_LLAMA_TAG overrides the llama.cpp release.
+LLAMA_CPP_TAG = "b11840"
+HF_HUB_VERSION = "2.3.0"
+PYNGROK_VERSION = "9.0.3"
 DRIVE_DIR = "/content/drive/MyDrive/riskvoid-llm"
+MODEL_DIR = "/content/model"  # one subfolder per repo, so both variants can sit side by side
 CLOUDFLARED_VERSION = "2026.10.3"  # quick tunnel; bump together with the checksum (release notes list it)
 CLOUDFLARED_SHA256 = "053b80b0a23031a038fdbf3c073f59f82b8f1f152aa67971d7383ffafc0dbab0"  # cloudflared-linux-amd64
 PROFILES = {  # name: (quant, context, min VRAM MiB)
@@ -92,6 +112,10 @@ def lib_env():
     return {**os.environ, "LD_LIBRARY_PATH": ":".join(p for p in [BIN_DIR, os.environ.get("LD_LIBRARY_PATH", "")] if p)}
 
 
+def llama_tag():
+    return env("RVKIT_LLAMA_TAG") or LLAMA_CPP_TAG
+
+
 def bin_works():
     try:
         r = subprocess.run([server_bin(), "--version"], capture_output=True, text=True, timeout=30,
@@ -102,9 +126,9 @@ def bin_works():
 
 
 def try_prebuilt():
-    """Official llama.cpp Linux CUDA release, if one is published."""
+    """Official llama.cpp Linux CUDA build of the pinned release, if one is published."""
     try:
-        rel = json.load(urllib.request.urlopen("https://api.github.com/repos/ggml-org/llama.cpp/releases/latest", timeout=20))
+        rel = json.load(urllib.request.urlopen(f"https://api.github.com/repos/ggml-org/llama.cpp/releases/tags/{llama_tag()}", timeout=20))
         assets = [a for a in rel["assets"] if re.search(r"ubuntu.*cuda.*x64|linux.*cuda.*x64", a["name"], re.I)]
         if not assets:
             return False
@@ -125,8 +149,8 @@ def try_prebuilt():
 
 
 def build_from_source():
-    print("building llama.cpp with CUDA (~10–15 min, only once if Drive caching is on) ...")
-    sh("rm -rf /content/llama.cpp && git clone -q --depth 1 https://github.com/ggml-org/llama.cpp /content/llama.cpp")
+    print(f"building llama.cpp {llama_tag()} with CUDA (~10–15 min, only once if Drive caching is on) ...")
+    sh(f"rm -rf /content/llama.cpp && git clone -q --depth 1 --branch {llama_tag()} https://github.com/ggml-org/llama.cpp /content/llama.cpp")
     sh("cd /content/llama.cpp && cmake -B build -DGGML_CUDA=ON -DBUILD_SHARED_LIBS=OFF -DLLAMA_CURL=OFF "
        "-DCMAKE_CUDA_ARCHITECTURES='80;89;90' -DCMAKE_BUILD_TYPE=Release")
     sh("cd /content/llama.cpp && cmake --build build --target llama-server -j $(nproc)")
@@ -138,7 +162,7 @@ def build_from_source():
 
 
 def get_llama_server(use_drive):
-    cache = os.path.join(DRIVE_DIR, "llama-bin.tar.gz") if use_drive else None
+    cache = os.path.join(DRIVE_DIR, f"llama-bin-{llama_tag()}.tar.gz") if use_drive else None
     rebuild = env("RVKIT_REBUILD") == "1"
     if bin_works() and not rebuild:
         print("llama-server already present"); return
@@ -156,33 +180,54 @@ def get_llama_server(use_drive):
 
 
 # ---------------------------------------------------------------- 3. model
-def download_model(repo, quant):
-    os.environ["HF_XET_HIGH_PERFORMANCE"] = "1"
-    subprocess.run("pip install -q -U huggingface_hub", shell=True)
-    if secret("HF_TOKEN"):
-        os.environ["HF_TOKEN"] = secret("HF_TOKEN")
-    from huggingface_hub import HfApi, hf_hub_download
-    all_gguf = [f for f in HfApi().list_repo_files(repo) if f.endswith(".gguf") and "mmproj" not in f.lower()]
+def pick_model():
+    """RVKIT_MODEL (+ RVKIT_REPO / RVKIT_REVISION overrides) -> (variant, repo, revision, served name)."""
+    variant = env("RVKIT_MODEL", DEFAULT_MODEL).lower() or DEFAULT_MODEL
+    if variant not in MODELS:
+        raise SystemExit(f"RVKIT_MODEL={variant!r} is unknown. Use one of: {', '.join(MODELS)}.")
+    repo, revision, alias = MODELS[variant]
+    if env("RVKIT_REPO") and env("RVKIT_REPO") != repo:
+        repo, revision = env("RVKIT_REPO"), "main"
+    revision = env("RVKIT_REVISION") or revision
+    return variant, repo, revision, alias
+
+
+def resolve_files(repo, revision, quant, list_files=None):
+    """GGUF file(s) for `quant` in the repo at `revision`: plainest name first, all parts of a split model."""
+    if list_files is None:
+        from huggingface_hub import HfApi
+        list_files = HfApi().list_repo_files
+    all_gguf = [f for f in list_files(repo, revision=revision) if f.endswith(".gguf") and "mmproj" not in f.lower()]
     files = [f for f in all_gguf if quant.lower() in f.lower()]
-    files.sort(key=lambda f: ("mtp" in f.lower() or "ud-" in f.lower(), len(f), f))  # plainest name first
+    extra = ("mtp", "ud-", "dflash")  # speculative-decoding heads and non-standard mixes go last
+    files.sort(key=lambda f: (any(x in f.lower() for x in extra), len(f), f))
     if not files:
-        raise SystemExit(f"No {quant} file in {repo}. Available:\n  " + "\n  ".join(sorted(all_gguf)))
+        raise SystemExit(f"No {quant} file in {repo}@{revision}. Available:\n  " + "\n  ".join(sorted(all_gguf)))
     first = files[0]
     if re.search(r"-\d{5}-of-\d{5}\.gguf$", first):  # split model: fetch all parts
         stem = re.sub(r"-\d{5}-of-\d{5}\.gguf$", "", first)
-        parts = sorted(f for f in files if f.startswith(stem))
-    else:
-        parts = [first]
+        return sorted(f for f in files if f.startswith(stem))
+    return [first]
+
+
+def download_model(repo, revision, quant):
+    os.environ["HF_XET_HIGH_PERFORMANCE"] = "1"
+    subprocess.run(f"pip install -q huggingface_hub=={HF_HUB_VERSION}", shell=True)
+    if secret("HF_TOKEN"):
+        os.environ["HF_TOKEN"] = secret("HF_TOKEN")
+    from huggingface_hub import hf_hub_download
+    parts = resolve_files(repo, revision, quant)
+    local = os.path.join(MODEL_DIR, repo.replace("/", "--"))
     for f in parts:
         print("downloading", f)
-        hf_hub_download(repo, f, local_dir="/content/model")
-    return f"/content/model/{parts[0]}"
+        hf_hub_download(repo, f, revision=revision, local_dir=local)
+    return os.path.join(local, parts[0])
 
 
 # ---------------------------------------------------------------- 4. server
-def start_server(model_path, ctx, key, thinking):
+def start_server(model_path, alias, ctx, key, thinking):
     subprocess.run("pkill -f llama-server", shell=True)
-    args = [server_bin(), "-m", model_path, "--alias", SERVED_NAME,
+    args = [server_bin(), "-m", model_path, "--alias", alias,
             "--host", "127.0.0.1", "--port", str(PORT), "--api-key", key,
             "-c", str(ctx), "-np", "1", "-ngl", "999", "--flash-attn", "on",
             "--cache-type-k", "q8_0", "--cache-type-v", "q8_0",
@@ -212,7 +257,7 @@ def start_tunnel():
     mode = env("RVKIT_TUNNEL", "auto").lower()
     token = secret("NGROK_TOKEN")
     if mode == "ngrok" or (mode == "auto" and token):
-        subprocess.run("pip install -q pyngrok", shell=True)
+        subprocess.run(f"pip install -q pyngrok=={PYNGROK_VERSION}", shell=True)
         from pyngrok import ngrok, conf
         conf.get_default().auth_token = token
         domain = secret("NGROK_DOMAIN")
@@ -233,12 +278,12 @@ def start_tunnel():
     raise SystemExit("tunnel failed; see /content/tunnel.log")
 
 
-def smoke_test(url, key):
+def smoke_test(url, key, alias):
     t = time.time()
     for attempt in range(10):  # quick tunnels need a few seconds to propagate
         try:
             req = urllib.request.Request(f"{url}/v1/chat/completions",
-                data=json.dumps({"model": SERVED_NAME, "max_tokens": 60,
+                data=json.dumps({"model": alias, "max_tokens": 60,
                                  "messages": [{"role": "user", "content": "Reply with: ready"}]}).encode(),
                 headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json",
                          "User-Agent": "rvkit"})
@@ -287,6 +332,10 @@ def main():
     t0 = time.time()
     step("Checking GPU")
     profile, quant, ctx = pick_profile()
+    variant, repo, revision, alias = pick_model()
+    print(f"Model: {variant} → {repo} @ {revision[:12]}, {quant}, served as '{alias}'")
+    if variant == "abliterated":
+        print("⚠ Abliterated build: refusals removed. You are responsible for how you use it.")
     key = env("RVKIT_API_KEY") or secret("LLM_API_KEY") or ("rv-" + secrets.token_urlsafe(24))
 
     use_drive = env("RVKIT_DRIVE", "1") == "1"
@@ -304,27 +353,28 @@ def main():
     get_llama_server(use_drive)
 
     step("Downloading model")
-    model = download_model(env("RVKIT_REPO", "huihui-ai/Huihui-Qwen3.8-27B-abliterated-GGUF"), quant)
+    model = download_model(repo, revision, quant)
 
-    step("Starting model server")
-    start_server(model, ctx, key, env("RVKIT_THINKING") == "1")
+    step(f"Starting model server ({alias})")
+    start_server(model, alias, ctx, key, env("RVKIT_THINKING") == "1")
 
     step("Opening tunnel")
     url, fixed = start_tunnel()
-    smoke_test(url, key)
+    smoke_test(url, key, alias)
 
     idle = int(env("RVKIT_IDLE_MINUTES", "30"))
     start_watchdog(key, idle)
 
-    info = {"url": f"{url}/v1", "key": key, "model": SERVED_NAME, "profile": profile, "quant": quant, "ctx": ctx}
+    info = {"url": f"{url}/v1", "key": key, "model": alias, "profile": profile, "quant": quant, "ctx": ctx}
     json.dump(info, open("/content/rvkit-endpoint.json", "w"))
-    print(f"\n✅ Ready in {(time.time() - t0) / 60:.1f} min. Auto-disconnect after {idle} idle minutes. Keep this tab open.")
+    print(f"\n✅ {alias} ({variant}, {repo}) ready in {(time.time() - t0) / 60:.1f} min. Auto-disconnect after {idle} idle minutes. Keep this tab open.")
     print("\n================ RUN ON YOUR MAC (in the kit folder) ================")
-    print(f"./rvkit connect {url}/v1 {key}")
+    print(f"./rvkit connect {url}/v1 {key} {alias}")
     print("======================================================================")
     if fixed:
         print("(ngrok fixed domain: if you used the same key before, you can skip this step)")
     print("RVKIT_ENDPOINT " + json.dumps(info))
 
 
-main()
+if __name__ == "__main__":  # %run executes it as __main__; importing it (for tests) does not start anything
+    main()
