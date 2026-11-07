@@ -251,10 +251,23 @@ def sync(eng):
         reg[eng] = free[0]
         json.dump(reg, open(REGISTRY, "w"), indent=1)
     apply_network()
+    _grant(eng, reg[eng])
     sc = parse_scope(read_ctl(eng, "SCOPE.md"))
     _audit({"engagement": eng, "event": "scope-sync", "scope": {k: sc[k] for k in ("nets", "domains", "paths")},
             "rules": parse_rules(read_ctl(eng, "RULES.md"))})
     return sc["warnings"]
+
+
+def _grant(eng, uid):
+    """Let the engagement's sandbox user write its own folder. On Linux the folder belongs to the host user (on
+    macOS Docker bind mounts ignore ownership): give the uid a read-write ACL, inherited by new subfolders (evidence/
+    and report/ are created by root-run services), and its own tool home (.home)."""
+    root = os.path.join(WORK, eng)
+    home = os.path.join(root, ".home")
+    os.makedirs(home, exist_ok=True)
+    subprocess.run(["chown", "-R", f"{uid}:{uid}", home], capture_output=True)
+    subprocess.run(["setfacl", "-R", "-m", f"u:{uid}:rwX", "-m", f"d:u:{uid}:rwX", "--", root],
+                   capture_output=True)  # fails harmlessly where the filesystem has no ACLs
 
 
 def _ensure_user(uid):

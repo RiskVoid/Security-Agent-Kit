@@ -91,6 +91,9 @@ ARG NUCLEI_TEMPLATES_TAG=v10.5.1
 RUN git clone -q --depth 1 --branch "${NUCLEI_TEMPLATES_TAG}" https://github.com/projectdiscovery/nuclei-templates /opt/nuclei-templates \
     && rm -rf /opt/nuclei-templates/.git && chmod -R a+rX /opt/nuclei-templates && mkdir -p /opt/semgrep-rules
 
+# acl: on Linux hosts the engagement folders belong to the host user; each engagement's sandbox user gets
+# read-write ACLs on its own folder (kept apart from the big apt layer above so adding it doesn't rebuild that)
+RUN apt-get update && apt-get install -y --no-install-recommends acl && rm -rf /var/lib/apt/lists/*
 COPY core.py server.py rvctl.py infra_domains.txt rv-sandbox.sh /opt/kali-mcp/
 COPY joern/ /opt/kali-mcp/joern/
 COPY aitools/rv-llm /usr/local/bin/rv-llm

@@ -28,7 +28,7 @@ for f in SCOPE.md RULES.md; do
   [ -e "/work/$RV_ENG/$f" ] || : > "/work/$RV_ENG/$f"
   mount --bind "/control/eng/$RV_ENG/$f" "/work/$RV_ENG/$f"; mount -o remount,bind,ro "/work/$RV_ENG/$f"
 done
-mkdir -p "$RV_HOME"
+mkdir -p "$RV_HOME"; [ "$(stat -c %u "$RV_HOME")" = "$RV_UID" ] || chown "$RV_UID:$RV_UID" "$RV_HOME"
 [ -e "$RV_HOME/nuclei-templates" ] || ln -s /opt/nuclei-templates "$RV_HOME/nuclei-templates"
 mount -t tmpfs tmpfs /control
 mount -t tmpfs -o mode=1777 tmpfs /tmp
