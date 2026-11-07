@@ -1,0 +1,113 @@
+{
+ "description": "DVWA (security level low) in the lab, with the login admin / password. Needs ./rvkit lab up.",
+ "kind": "web",
+ "lab": true,
+ "target": "10.250.0.11",
+ "url": "http://10.250.0.11",
+ "tiers": "passive, active, intrusive",
+ "max_rate": 30,
+ "max_minutes": 90,
+ "max_budget_usd": 6.0,
+ "task": "Authenticated web application test of {url} (DVWA, a practice target). Credentials: admin / password. Follow the web-app playbook.",
+ "expected": [
+  {
+   "id": "sqli",
+   "severity": "critical",
+   "cwe": [
+    "CWE-89"
+   ],
+   "any": [
+    "sql injection",
+    "sqli"
+   ]
+  },
+  {
+   "id": "command-injection",
+   "severity": "critical",
+   "cwe": [
+    "CWE-78",
+    "CWE-77"
+   ],
+   "any": [
+    "command injection",
+    "/exec"
+   ]
+  },
+  {
+   "id": "xss-reflected",
+   "severity": "high",
+   "cwe": [
+    "CWE-79"
+   ],
+   "any": [
+    "reflected (xss|cross)",
+    "xss_r"
+   ]
+  },
+  {
+   "id": "xss-stored",
+   "severity": "high",
+   "cwe": [
+    "CWE-79"
+   ],
+   "any": [
+    "stored (xss|cross)",
+    "xss_s",
+    "guestbook"
+   ]
+  },
+  {
+   "id": "file-inclusion",
+   "severity": "high",
+   "cwe": [
+    "CWE-98",
+    "CWE-22"
+   ],
+   "any": [
+    "file inclusion",
+    "\\blfi\\b",
+    "\\brfi\\b",
+    "/fi/"
+   ]
+  },
+  {
+   "id": "file-upload",
+   "severity": "high",
+   "cwe": [
+    "CWE-434"
+   ],
+   "any": [
+    "file upload",
+    "unrestricted upload",
+    "/upload"
+   ]
+  },
+  {
+   "id": "csrf",
+   "severity": "medium",
+   "cwe": [
+    "CWE-352"
+   ],
+   "any": [
+    "csrf",
+    "cross-site request forgery"
+   ]
+  },
+  {
+   "id": "default-credentials",
+   "severity": "high",
+   "cwe": [
+    "CWE-1392",
+    "CWE-798",
+    "CWE-521",
+    "CWE-307"
+   ],
+   "any": [
+    "default credential",
+    "admin/password",
+    "weak password",
+    "brute"
+   ]
+  }
+ ]
+}

@@ -1,0 +1,136 @@
+{
+ "description": "VAmPI REST API (OWASP API Top 10) in the lab; OpenAPI spec at /openapi.json. Needs ./rvkit lab up.",
+ "kind": "web",
+ "lab": true,
+ "target": "10.250.0.13",
+ "url": "http://10.250.0.13:5000",
+ "tiers": "passive, active, intrusive",
+ "max_rate": 20,
+ "max_minutes": 90,
+ "max_budget_usd": 6.0,
+ "task": "API security test of {url} (VAmPI, a practice REST API). The spec is at {url}/openapi.json. Register your own test users through the API. Follow the api-security playbook.",
+ "expected": [
+  {
+   "id": "sqli",
+   "severity": "critical",
+   "cwe": [
+    "CWE-89"
+   ],
+   "any": [
+    "sql injection",
+    "sqli"
+   ]
+  },
+  {
+   "id": "bola-books",
+   "severity": "high",
+   "cwe": [
+    "CWE-639",
+    "CWE-284"
+   ],
+   "any": [
+    "bola",
+    "broken object level",
+    "idor",
+    "other user's book",
+    "secret of another"
+   ]
+  },
+  {
+   "id": "mass-assignment-admin",
+   "severity": "high",
+   "cwe": [
+    "CWE-915"
+   ],
+   "any": [
+    "mass assignment",
+    "admin\": true",
+    "admin=true",
+    "register as admin"
+   ]
+  },
+  {
+   "id": "unauth-password-change",
+   "severity": "high",
+   "cwe": [
+    "CWE-620",
+    "CWE-639",
+    "CWE-285"
+   ],
+   "any": [
+    "password change",
+    "change another user's password",
+    "change the password of"
+   ]
+  },
+  {
+   "id": "debug-data-exposure",
+   "severity": "high",
+   "cwe": [
+    "CWE-200",
+    "CWE-213"
+   ],
+   "any": [
+    "_debug",
+    "debug endpoint",
+    "excessive data exposure",
+    "password hashes",
+    "plaintext passwords"
+   ]
+  },
+  {
+   "id": "user-enumeration",
+   "severity": "medium",
+   "cwe": [
+    "CWE-204",
+    "CWE-203"
+   ],
+   "any": [
+    "enumeration",
+    "user exists",
+    "username enumeration"
+   ]
+  },
+  {
+   "id": "weak-jwt-secret",
+   "severity": "high",
+   "cwe": [
+    "CWE-347",
+    "CWE-321",
+    "CWE-798"
+   ],
+   "any": [
+    "jwt secret",
+    "weak secret",
+    "signing key",
+    "forge"
+   ]
+  },
+  {
+   "id": "no-rate-limit",
+   "severity": "medium",
+   "cwe": [
+    "CWE-307",
+    "CWE-770"
+   ],
+   "any": [
+    "rate limit",
+    "brute force",
+    "rate-limit"
+   ]
+  },
+  {
+   "id": "redos",
+   "severity": "medium",
+   "cwe": [
+    "CWE-1333",
+    "CWE-400"
+   ],
+   "any": [
+    "redos",
+    "regular expression",
+    "regex"
+   ]
+  }
+ ]
+}

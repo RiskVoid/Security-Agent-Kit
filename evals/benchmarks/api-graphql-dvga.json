@@ -1,0 +1,122 @@
+{
+ "description": "Damn Vulnerable GraphQL Application in the lab. Needs ./rvkit lab up.",
+ "kind": "web",
+ "lab": true,
+ "target": "10.250.0.14",
+ "url": "http://10.250.0.14:5013",
+ "tiers": "passive, active, intrusive",
+ "max_rate": 20,
+ "max_minutes": 90,
+ "max_budget_usd": 6.0,
+ "task": "Security test of the GraphQL API at {url}/graphql (DVGA, a practice target). Follow the api-security playbook (GraphQL parts).",
+ "expected": [
+  {
+   "id": "introspection",
+   "severity": "low",
+   "cwe": [
+    "CWE-200"
+   ],
+   "any": [
+    "introspection"
+   ]
+  },
+  {
+   "id": "graphiql-exposed",
+   "severity": "low",
+   "cwe": [
+    "CWE-200",
+    "CWE-16"
+   ],
+   "any": [
+    "graphiql"
+   ]
+  },
+  {
+   "id": "os-command-injection",
+   "severity": "critical",
+   "cwe": [
+    "CWE-78",
+    "CWE-77"
+   ],
+   "any": [
+    "command injection",
+    "os command",
+    "systemdiagnostics",
+    "importpaste"
+   ]
+  },
+  {
+   "id": "ssrf",
+   "severity": "high",
+   "cwe": [
+    "CWE-918"
+   ],
+   "any": [
+    "ssrf",
+    "server-side request forgery"
+   ]
+  },
+  {
+   "id": "sqli",
+   "severity": "high",
+   "cwe": [
+    "CWE-89"
+   ],
+   "any": [
+    "sql injection",
+    "sqli"
+   ]
+  },
+  {
+   "id": "stored-xss",
+   "severity": "medium",
+   "cwe": [
+    "CWE-79"
+   ],
+   "any": [
+    "xss",
+    "cross-site scripting"
+   ]
+  },
+  {
+   "id": "batching-dos",
+   "severity": "medium",
+   "cwe": [
+    "CWE-770",
+    "CWE-400"
+   ],
+   "any": [
+    "batch",
+    "alias",
+    "deep recursion",
+    "depth",
+    "denial of service",
+    "dos"
+   ]
+  },
+  {
+   "id": "field-suggestions",
+   "severity": "low",
+   "cwe": [
+    "CWE-200",
+    "CWE-209"
+   ],
+   "any": [
+    "field suggestion",
+    "did you mean"
+   ]
+  },
+  {
+   "id": "path-traversal",
+   "severity": "high",
+   "cwe": [
+    "CWE-22"
+   ],
+   "any": [
+    "path traversal",
+    "directory traversal",
+    "uploadpaste"
+   ]
+  }
+ ]
+}

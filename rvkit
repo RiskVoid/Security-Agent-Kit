@@ -1,0 +1,290 @@
+#!/usr/bin/env bash
+# rvkit: control script for the RiskVoid agent kit. Works from bash, zsh, and fish.
+# Run ./rvkit help to see the commands.
+set -euo pipefail
+KIT="$(cd "$(dirname "$0")" && pwd)"
+cd "$KIT"
+
+bold() { printf '\033[1m%s\033[0m\n' "$*"; }
+ok()   { printf '\033[32m✔\033[0m %s\n' "$*"; }
+warn() { printf '\033[33m!\033[0m %s\n' "$*"; }
+die()  { printf '\033[31m✘\033[0m %s\n' "$*" >&2; exit 1; }
+
+envget() { grep -E "^$1=" .env 2>/dev/null | head -1 | cut -d= -f2-; }
+envset() { # portable in-place edit (macOS + Linux)
+  K="$1" V="$2" perl -pi -e 's/^\Q$ENV{K}\E=.*/$ENV{K}=$ENV{V}/' .env
+}
+rand() { openssl rand -hex "$1"; }
+
+envensure() { grep -qE "^$1=" .env || printf '%s=%s\n' "$1" "$2" >> .env; }
+need_env() {
+  [ -f .env ] || die "No .env yet. Run: ./rvkit setup"
+  # migrate older .env files (before the worker endpoint switch / OpenHands auto-config)
+  envensure WORKER_API_BASE "$(envget COLAB_API_BASE || true)"
+  [ -n "$(envget WORKER_API_BASE)" ] || envset WORKER_API_BASE "http://worker-not-connected.invalid/v1"
+  envensure WORKER_API_KEY "$(envget COLAB_API_KEY || true)"
+  envensure WORKER_MODEL_ID "openai/qwen38-27b-obl"
+  envensure WORKER_FALLBACK_MODEL "openrouter/deepseek/deepseek-v4.1-flash"
+  envensure OPENHANDS_API_KEY "oh-rv-$(rand 24)"
+  [ "$(envget OPENHANDS_API_KEY)" != "change-me" ] || envset OPENHANDS_API_KEY "oh-rv-$(rand 24)"
+  # old template set AGENT_CANVAS_TAG=latest, which overrides the pinned, tested version
+  [ "$(envget AGENT_CANVAS_TAG)" != "latest" ] || perl -ni -e 'print unless /^AGENT_CANVAS_TAG=latest$/' .env
+}
+recreate_litellm() { docker compose up -d --force-recreate litellm >/dev/null 2>&1; wait_litellm; }
+need_docker() {
+  command -v docker >/dev/null || die "Docker is not installed. Install Docker Desktop: https://www.docker.com/products/docker-desktop/"
+  docker info >/dev/null 2>&1 || die "Docker is not running. Start Docker Desktop and try again."
+}
+
+wait_litellm() {
+  for _ in $(seq 1 40); do
+    curl -s -o /dev/null http://127.0.0.1:4000/health/liveliness && return 0
+    sleep 2
+  done
+  warn "LiteLLM is not responding yet. Check with: ./rvkit logs litellm"
+}
+
+test_model() {
+  local key out model="${1:-colab-qwen}"
+  key="$(envget LITELLM_MASTER_KEY)"
+  out="$(curl -s -m 180 http://127.0.0.1:4000/v1/chat/completions \
+    -H "Authorization: Bearer $key" -H "Content-Type: application/json" \
+    -d '{"model":"'"$model"'","max_tokens":40,"messages":[{"role":"user","content":"Reply with one word: ready"}]}')" || true
+  if echo "$out" | grep -q '"choices"'; then
+    ok "Model reachable ($model): $(echo "$out" | python3 -c 'import sys,json;m=json.load(sys.stdin)["choices"][0]["message"];print((m.get("content") or "(thinking)").strip()[:60])')"
+  else
+    if [ "$model" = "colab-qwen" ]; then
+      warn "Worker model not reachable at $(envget WORKER_API_BASE). Colab: is the notebook running, and did you run ./rvkit connect <url>? Other endpoints: ./rvkit worker"
+    else
+      warn "Model '$model' not reachable. Check OPENROUTER_API_KEY in .env and ./rvkit logs litellm"
+    fi
+    echo "$out" | head -c 400; echo
+    return 1
+  fi
+}
+
+
+wait_openhands() {
+  for _ in $(seq 1 60); do
+    curl -s -o /dev/null http://127.0.0.1:8000/openapi.json && return 0
+    sleep 2
+  done
+  warn "OpenHands is not responding yet. Check with: ./rvkit logs agent-canvas"; return 1
+}
+config_openhands() { # $1 = --quiet or empty
+  wait_openhands || return 1
+  python3 scripts/openhands_config.py ${1:-} || { warn "OpenHands configuration failed (see above)"; return 1; }
+}
+
+lab_dvwa_init() { # DVWA creates its tables from its setup page; run it once the database accepts connections
+  local n
+  for n in $(seq 1 30); do
+    if docker compose exec -T lab-dvwa-db mariadb -udvwa -pp@ssw0rd dvwa -e 'select 1 from users limit 1' >/dev/null 2>&1; then
+      return 0
+    fi
+    docker compose exec -T lab-dvwa sh -c '
+      c=/tmp/dvwa.cookies; t=$(curl -s -c $c -b $c http://localhost/setup.php | sed -n "s/.*user_token. value=.\([a-f0-9]*\).*/\1/p" | head -1)
+      [ -n "$t" ] && curl -s -c $c -b $c -o /dev/null -d "create_db=Create+%2F+Reset+Database&user_token=$t" http://localhost/setup.php' \
+      >/dev/null 2>&1 || true
+    sleep 2
+  done
+  warn "DVWA database setup didn't complete: check ./rvkit logs lab-dvwa-db"
+}
+
+lab_vampi_init() { # VAmPI starts with an empty database: /createdb fills it with sample users and books
+  local n
+  for n in $(seq 1 30); do
+    docker compose exec -T lab-vampi python3 -c "import urllib.request; urllib.request.urlopen('http://localhost:5000/createdb', timeout=5)" \
+      >/dev/null 2>&1 && return 0
+    sleep 2
+  done
+  warn "VAmPI database setup didn't complete: check ./rvkit logs lab-vampi"
+}
+
+kctl() { docker compose exec -T kali-mcp python3 /opt/kali-mcp/rvctl.py "$@"; }
+
+cmd="${1:-help}"; shift || true
+case "$cmd" in
+  setup)
+    bold "1/3 Checking prerequisites"
+    need_docker; ok "Docker running"
+    command -v openssl >/dev/null || die "openssl missing"
+    command -v python3 >/dev/null || die "python3 missing (needed to configure OpenHands)"
+    bold "2/3 Creating .env"
+    if [ -f .env ]; then ok ".env exists, keeping it"; else
+      cp .env.example .env
+      envset LITELLM_MASTER_KEY "sk-rv-$(rand 16)"
+      envset SEARXNG_SECRET "$(rand 32)"
+      envset COLAB_API_KEY "rv-$(rand 20)"
+      envset PROJECTS_DIR "$HOME/projects"
+      envset ENGAGEMENTS_DIR "$HOME/projects/engagements"
+      ok "created .env with fresh secrets"
+    fi
+    mkdir -p "$(envget PROJECTS_DIR)" "$(envget ENGAGEMENTS_DIR)"
+    bold "3/3 Building and starting containers (first time ~10 min)"
+    docker compose up -d --build
+    wait_litellm; ok "Stack is up"
+    bold "Configuring OpenHands (LLM profiles, MCP servers, agent profiles)"
+    config_openhands && ok "OpenHands ready: http://localhost:8000/canvas (agent: riskvoid-planner)"
+    [ -n "$(envget OPENROUTER_API_KEY)" ] || warn "OPENROUTER_API_KEY is empty: add it to .env for the planner (https://openrouter.ai/keys), or use the riskvoid-local agent (local model only)"
+    cat <<EOF
+
+$(bold "Next: start the model on Colab")
+ • With Claude Code: run 'claude' in this folder and type /rv-start
+ • By hand: open colab/rvkit_model_server.ipynb in Colab, paste this into its API_KEY field:
+     $(envget COLAB_API_KEY)
+   then Run all, and run the './rvkit connect …' line it prints.
+EOF
+    ;;
+  up)     need_env; need_docker; docker compose up -d; wait_litellm
+          config_openhands --quiet; ok "Stack is up: http://localhost:8000/canvas" ;;
+  down)   need_env; docker compose down; ok "Stack stopped (your settings are kept)" ;;
+  status)
+    need_env; need_docker
+    docker compose ps --format 'table {{.Service}}\t{{.State}}\t{{.Status}}'
+    echo; echo "Worker endpoint: $(envget WORKER_API_BASE) ($(envget WORKER_MODEL_ID))"
+    test_model || true ;;
+  logs)   need_env; docker compose logs --tail 80 "${@:-}" ;;
+  connect)
+    need_env
+    [ $# -ge 1 ] || die "usage: ./rvkit connect <url/v1> [key]"
+    url="$1"; case "$url" in */v1) ;; *) url="${url%/}/v1" ;; esac
+    envset COLAB_API_BASE "$url"
+    [ $# -ge 2 ] && envset COLAB_API_KEY "$2"
+    envset WORKER_API_BASE "$url"; envset WORKER_API_KEY "$(envget COLAB_API_KEY)"
+    envset WORKER_MODEL_ID "openai/qwen38-27b-obl"
+    recreate_litellm
+    ok "Worker now points at Colab: $url"
+    test_model ;;
+  worker)
+    need_env
+    case "${1:-show}" in
+      show)
+        echo "worker endpoint: $(envget WORKER_API_BASE)   model: $(envget WORKER_MODEL_ID)"
+        if grep -q '{"colab-qwen": \["colab-qwen-fallback"\]}' litellm/config.yaml; then
+          echo "fallback (when the endpoint is down): $(envget WORKER_FALLBACK_MODEL), zero-data-retention providers"
+        else echo "fallback: off"; fi
+        exit 0 ;;
+      fallback)
+        case "${2:-}" in
+          off) perl -pi -e 's/, \{"colab-qwen": \["colab-qwen-fallback"\]\}//' litellm/config.yaml ;;
+          on|"") grep -q '"colab-qwen-fallback"\]' litellm/config.yaml || \
+                  perl -pi -e 's/(fallbacks: \[\{"planner": \["planner-fallback"\]\})\]/$1, {"colab-qwen": ["colab-qwen-fallback"]}]/' litellm/config.yaml ;;
+          *) envset WORKER_FALLBACK_MODEL "openrouter/${2#openrouter/}"
+             grep -q '"colab-qwen-fallback"\]' litellm/config.yaml || \
+               perl -pi -e 's/(fallbacks: \[\{"planner": \["planner-fallback"\]\})\]/$1, {"colab-qwen": ["colab-qwen-fallback"]}]/' litellm/config.yaml ;;
+        esac
+        recreate_litellm; "$0" worker show; exit 0 ;;
+      colab)
+        [ -n "$(envget COLAB_API_BASE)" ] || die "No Colab URL yet: start the model (/rv-start), then ./rvkit connect <url>"
+        envset WORKER_API_BASE "$(envget COLAB_API_BASE)"; envset WORKER_API_KEY "$(envget COLAB_API_KEY)"
+        envset WORKER_MODEL_ID "openai/qwen38-27b-obl" ;;
+      local) # llama-server / LM Studio / Ollama / vLLM on this machine
+        envset WORKER_API_BASE "${2:-http://host.docker.internal:8080/v1}"; envset WORKER_API_KEY "${4:-none}"
+        envset WORKER_MODEL_ID "openai/${3:-local}" ;;
+      api)   # any OpenAI-compatible endpoint with a fixed URL: RunPod, Modal, a GPU server, vLLM, ...
+        [ $# -ge 3 ] || die "usage: ./rvkit worker api <base-url/v1> <model-name> [api-key]"
+        envset WORKER_API_BASE "$2"; envset WORKER_API_KEY "${4:-none}"; envset WORKER_MODEL_ID "openai/$3" ;;
+      *) die "usage: ./rvkit worker [show | colab | local [url] [model] [key] | api <url> <model> [key] | fallback [on|off|<openrouter-model>]]" ;;
+    esac
+    recreate_litellm; ok "Worker: $(envget WORKER_API_BASE) ($(envget WORKER_MODEL_ID))"; test_model ;;
+  budget)
+    need_env
+    if [ $# -eq 0 ]; then grep -E 'openrouter: \{budget_limit' litellm/config.yaml | sed 's/^ */OpenRouter daily budget: /'; exit 0; fi
+    [[ "$1" =~ ^[0-9]+(\.[0-9]+)?$ ]] || die "usage: ./rvkit budget <usd-per-day>"
+    B="$1" perl -pi -e 's/(openrouter: \{budget_limit: )[0-9.]+/${1}$ENV{B}/' litellm/config.yaml
+    recreate_litellm; ok "OpenRouter budget: \$$1 per day" ;;
+  test)   need_env; test_model "${1:-colab-qwen}" ;;
+  key)
+    need_env
+    case "${1:-colab}" in
+      colab)     envget COLAB_API_KEY ;;
+      litellm)   envget LITELLM_MASTER_KEY ;;
+      openhands) envget OPENHANDS_API_KEY ;;
+      *) die "usage: ./rvkit key [colab|litellm|openhands]" ;;
+    esac ;;
+  openhands) need_env; bold "Configuring OpenHands"; config_openhands && ok "OpenHands ready: http://localhost:8000/canvas (agent: riskvoid-planner)" ;;
+  engagement)
+    need_env
+    [ $# -ge 2 ] || die "usage: ./rvkit engagement <name> <target> [target ...]   e.g. acme app.acme.com '*.acme.io' 203.0.113.0/28 /src/acme-repo"
+    dir="$(envget ENGAGEMENTS_DIR)"; dir="${dir/#\~/$HOME}/$1"; name="$1"; shift
+    mkdir -p "$dir"
+    { echo "# Authorised scope ($(date +%F)). One host, domain, CIDR, or /src/<repo> path per line."
+      echo "# *.example.com covers subdomains. Change it here, then run: ./rvkit scope $name"
+      for t in "$@"; do echo "- $t"; done; } > "$dir/SCOPE.md"
+    [ -f "$dir/RULES.md" ] || cat > "$dir/RULES.md" <<RULES
+# Rules of engagement for $name. Change here, then run: ./rvkit scope $name
+- Allowed tiers: passive, active
+- Max rate: 100
+- Network: online
+# - Window (UTC): 08:00-18:00
+# - Worker model: private      (never use the OpenRouter fallback model for this engagement's tool work)
+# Tiers: passive (code review, DNS, research), active (scans, crawling), intrusive (exploitation, brute force;
+# each command needs ./rvkit approve). Network: offline = no package/vulnerability-database sites either.
+RULES
+    kctl sync "$name" --yes ;;
+  scope)
+    need_env; [ $# -ge 1 ] || die "usage: ./rvkit scope <engagement> [--yes]   (apply edits to SCOPE.md / RULES.md)"
+    kctl sync "$@" || true ;;
+  show)      need_env; [ $# -ge 1 ] || die "usage: ./rvkit show <engagement>"; kctl show "$1" ;;
+  approvals) need_env; [ $# -ge 1 ] || die "usage: ./rvkit approvals <engagement>"; kctl approvals "$1" ;;
+  approve|deny)
+    need_env; [ $# -ge 2 ] || die "usage: ./rvkit $cmd <engagement> <approval-id>"; kctl "$cmd" "$1" "$2" ;;
+  halt|resume)
+    need_env; [ $# -ge 1 ] || die "usage: ./rvkit $cmd <engagement>"; kctl "$cmd" "$1" ;;
+  audit)     need_env; kctl audit "$@" ;;
+  lab)
+    need_env
+    L="lab-juice-shop lab-dvwa lab-dvwa-db lab-vampi lab-dvga lab-llm"
+    case "${1:-status}" in
+      up)
+        docker compose --profile lab up -d --build $L
+        lab_dvwa_init; lab_vampi_init
+        ok "Lab up (isolated network 10.250.0.0/24, reachable only from engagements that have it in scope):"
+        echo "   Juice Shop  http://10.250.0.10:3000"
+        echo "   DVWA        http://10.250.0.11   (admin / password, security level low)"
+        echo "   VAmPI       http://10.250.0.13:5000   REST API (OWASP API Top 10), spec at /openapi.json"
+        echo "   DVGA        http://10.250.0.14:5013/graphql   GraphQL API"
+        echo "   LLM lab     http://10.250.0.15:8000   AI support assistant (chat /api/chat, MCP /mcp)"
+        echo "   Try: ./rvkit engagement lab-juice 10.250.0.10" ;;
+      down)   docker compose --profile lab stop $L >/dev/null 2>&1; docker compose --profile lab rm -f $L >/dev/null 2>&1
+              ok "Lab stopped and removed (it resets to a clean state on the next 'lab up')" ;;
+      status) docker compose --profile lab ps $L --format 'table {{.Service}}\t{{.State}}\t{{.Status}}' ;;
+      *) die "usage: ./rvkit lab up|down|status" ;;
+    esac ;;
+  bench)
+    need_env; [ $# -ge 1 ] || die "usage: ./rvkit bench <name|all> [--agent riskvoid-planner|riskvoid-local]   (list: ls evals/benchmarks)"
+    python3 evals/run_benchmark.py "$@" ;;
+  report)    need_env; [ $# -ge 1 ] || die "usage: ./rvkit report <engagement>"
+             docker compose exec -T findings-mcp python3 report.py "$1" ;;
+  close)     need_env; [ $# -ge 1 ] || die "usage: ./rvkit close <engagement>"; kctl close "$1" ;;
+  help|*)
+    cat <<EOF
+$(bold "rvkit: RiskVoid agent kit")
+
+  ./rvkit setup                 first-time setup: secrets, build, start
+  ./rvkit up | down             start / stop the local stack
+  ./rvkit status                containers + model check
+  ./rvkit connect <url> [key]   point the worker at a running Colab model (printed by the notebook)
+  ./rvkit worker [show|colab|local|api …]   switch the worker endpoint: Colab, a local server
+                                (llama-server / LM Studio / Ollama / vLLM), or any OpenAI-compatible URL
+  ./rvkit worker fallback [on|off|<model>]  OpenRouter model used while the worker endpoint is down
+  ./rvkit budget [usd]          show / set the daily OpenRouter (planner) budget
+  ./rvkit test [planner]        send a test prompt to the worker (or the planner)
+  ./rvkit key [colab|litellm|openhands]   print a key (colab = paste into the notebook)
+  ./rvkit openhands             (re)configure OpenHands: LLM profiles, MCP servers, agent profiles
+  ./rvkit lab up|down|status    vulnerable practice targets on an isolated network (benchmarks)
+  ./rvkit bench <name|all>      run a benchmark (see evals/benchmarks/)
+  ./rvkit engagement <name> <targets…>   create an engagement (scope + default RULES.md)
+  ./rvkit scope <eng> [--yes]   apply edits to an engagement's SCOPE.md / RULES.md (shows the diff)
+  ./rvkit show <eng>            active scope and rules
+  ./rvkit approvals <eng>       pending intrusive-command approvals
+  ./rvkit approve|deny <eng> <id>   decide an approval
+  ./rvkit halt|resume <eng>     kill running commands and block new ones / allow again
+  ./rvkit audit [eng] [n]       last n audit-log entries
+  ./rvkit report <eng>          branded report (.docx + .pdf) and findings register (.xlsx) in <eng>/report/
+  ./rvkit close <eng>           close-out: audit extract + SHA-256 manifest + archive, then halt
+  ./rvkit logs [service]        recent logs
+EOF
+    ;;
+esac

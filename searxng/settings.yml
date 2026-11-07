@@ -1,0 +1,7 @@
+use_default_settings: true
+server:
+  limiter: false          # local-only instance, no rate limiting needed
+  image_proxy: false
+search:
+  safe_search: 0
+  formats: [html, json]   # json is required by the MCP search server

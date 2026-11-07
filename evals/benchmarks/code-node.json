@@ -1,0 +1,138 @@
+{
+ "description": "Express API: SQL injection, path traversal, SSRF, IDOR, JWT flaws, prototype pollution, weak hashing, vulnerable deps.",
+ "kind": "code",
+ "target": "rv-node-api",
+ "tiers": "passive",
+ "max_minutes": 60,
+ "max_budget_usd": 4.0,
+ "task": "Full source code security review of {src}, including its dependencies and secrets.",
+ "expected": [
+  {
+   "id": "sqli",
+   "severity": "critical",
+   "cwe": [
+    "CWE-89"
+   ],
+   "any": [
+    "sql injection",
+    "sqli"
+   ]
+  },
+  {
+   "id": "path-traversal",
+   "severity": "high",
+   "cwe": [
+    "CWE-22",
+    "CWE-23",
+    "CWE-73"
+   ],
+   "any": [
+    "path traversal",
+    "directory traversal",
+    "/api/files"
+   ]
+  },
+  {
+   "id": "ssrf",
+   "severity": "high",
+   "cwe": [
+    "CWE-918"
+   ],
+   "any": [
+    "ssrf",
+    "server-side request",
+    "/api/preview"
+   ]
+  },
+  {
+   "id": "idor",
+   "severity": "high",
+   "cwe": [
+    "CWE-639",
+    "CWE-284",
+    "CWE-862",
+    "CWE-863"
+   ],
+   "any": [
+    "idor",
+    "insecure direct object",
+    "/api/orders",
+    "any user's order"
+   ]
+  },
+  {
+   "id": "jwt-decode-no-verify",
+   "severity": "critical",
+   "cwe": [
+    "CWE-345",
+    "CWE-347",
+    "CWE-290",
+    "CWE-287"
+   ],
+   "any": [
+    "jwt\\.decode",
+    "without verif",
+    "unverified",
+    "/api/admin"
+   ]
+  },
+  {
+   "id": "weak-jwt-secret",
+   "severity": "high",
+   "cwe": [
+    "CWE-798",
+    "CWE-321",
+    "CWE-521",
+    "CWE-1391"
+   ],
+   "any": [
+    "jwt_secret",
+    "weak (jwt )?secret",
+    "hard-?coded (jwt )?secret"
+   ]
+  },
+  {
+   "id": "prototype-pollution",
+   "severity": "high",
+   "cwe": [
+    "CWE-1321",
+    "CWE-915"
+   ],
+   "any": [
+    "prototype pollution",
+    "_\\.merge",
+    "lodash\\.merge"
+   ]
+  },
+  {
+   "id": "weak-password-hash",
+   "severity": "medium",
+   "cwe": [
+    "CWE-327",
+    "CWE-328",
+    "CWE-916",
+    "CWE-759"
+   ],
+   "any": [
+    "md5"
+   ]
+  },
+  {
+   "id": "vulnerable-dependencies",
+   "severity": "high",
+   "cwe": [
+    "CWE-1104",
+    "CWE-1395",
+    "CWE-937"
+   ],
+   "any": [
+    "lodash 4\\.17\\.15",
+    "axios 0\\.21",
+    "jsonwebtoken 8",
+    "outdated",
+    "vulnerable (dependenc|package|component)",
+    "cve-"
+   ]
+  }
+ ]
+}

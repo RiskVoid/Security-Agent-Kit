@@ -1,0 +1,20 @@
+# Infrastructure domains every online engagement may reach on TCP 80/443 (they and their subdomains).
+# Rule packs, package registries, vulnerability databases. Not targets. Engagements with "Network: offline"
+# in RULES.md get none of these. Override per install with /control/infra_domains.txt.
+pypi.org
+files.pythonhosted.org
+osv.dev
+semgrep.dev
+nvd.nist.gov
+api.first.org
+cisa.gov
+github.com
+githubusercontent.com
+registry.npmjs.org
+proxy.golang.org
+rubygems.org
+repo.maven.apache.org
+# vulnerability databases downloaded by scanners on first use
+grype.anchore.io
+mirror.gcr.io
+ghcr.io

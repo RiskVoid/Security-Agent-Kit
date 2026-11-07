@@ -1,0 +1,17 @@
+#!/bin/bash
+# rv-joern: agent-friendly Joern (code property graph analysis). Output goes to the current directory.
+#   rv-joern taint <src-dir> [out.json]   flows from untrusted input (HTTP params/bodies, env, argv) to dangerous
+#                                         sinks (SQL, shell, deserialisation, eval, templates, files, HTTP, redirect)
+#                                         as JSON with the full path. Heuristic: review every flow in the code.
+#   rv-joern scan <src-dir> [args]        Joern's built-in query database (strongest for C/C++ and Java)
+#   rv-joern script <file.sc> [--param k=v ...]   run a custom Joern script
+# Languages: Python, Java, JavaScript/TypeScript, Go, C/C++, PHP, C#, Ruby, Kotlin, Swift, Rust (auto-detected).
+export JAVA_OPTS="${JAVA_OPTS:--Xmx4g}"
+J=/opt/joern-cli
+case "${1:-}" in
+  taint)  [ -n "${2:-}" ] || { echo "usage: rv-joern taint <src-dir> [out.json]"; exit 2; }
+          exec "$J/joern" --script /opt/kali-mcp/joern/taint.sc --param src="$2" --param out="${3:-joern-flows.json}" ;;
+  scan)   shift; exec "$J/joern-scan" "$@" ;;
+  script) shift; f="$1"; shift; exec "$J/joern" --script "$f" "$@" ;;
+  *)      sed -n '2,9p' "$0"; exit 2 ;;
+esac

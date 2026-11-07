@@ -1,0 +1,110 @@
+{
+ "description": "OWASP Juice Shop in the lab: black-box web test. Needs ./rvkit lab up.",
+ "kind": "web",
+ "lab": true,
+ "target": "10.250.0.10",
+ "url": "http://10.250.0.10:3000",
+ "tiers": "passive, active, intrusive",
+ "max_rate": 30,
+ "max_minutes": 90,
+ "max_budget_usd": 6.0,
+ "task": "Black-box web application test of {url} (OWASP Juice Shop, a practice target). Follow the web-app playbook.",
+ "expected": [
+  {
+   "id": "login-sqli",
+   "severity": "critical",
+   "cwe": [
+    "CWE-89"
+   ],
+   "any": [
+    "sql injection",
+    "sqli"
+   ]
+  },
+  {
+   "id": "xss",
+   "severity": "high",
+   "cwe": [
+    "CWE-79"
+   ],
+   "any": [
+    "xss",
+    "cross-site scripting"
+   ]
+  },
+  {
+   "id": "exposed-ftp",
+   "severity": "high",
+   "cwe": [
+    "CWE-538",
+    "CWE-548",
+    "CWE-552",
+    "CWE-200"
+   ],
+   "any": [
+    "/ftp",
+    "directory listing",
+    "confidential document",
+    "backup file"
+   ]
+  },
+  {
+   "id": "exposed-metrics",
+   "severity": "medium",
+   "cwe": [
+    "CWE-200",
+    "CWE-497"
+   ],
+   "any": [
+    "/metrics",
+    "prometheus"
+   ]
+  },
+  {
+   "id": "cors-misconfig",
+   "severity": "low",
+   "cwe": [
+    "CWE-942",
+    "CWE-346"
+   ],
+   "any": [
+    "cors",
+    "access-control-allow-origin"
+   ]
+  },
+  {
+   "id": "missing-security-headers",
+   "severity": "low",
+   "cwe": [
+    "CWE-693",
+    "CWE-1021",
+    "CWE-16"
+   ],
+   "any": [
+    "security header",
+    "content-security-policy",
+    "\\bcsp\\b",
+    "strict-transport",
+    "x-frame-options",
+    "clickjacking"
+   ]
+  },
+  {
+   "id": "broken-access-control",
+   "severity": "high",
+   "cwe": [
+    "CWE-284",
+    "CWE-639",
+    "CWE-862",
+    "CWE-285"
+   ],
+   "any": [
+    "administration",
+    "admin (panel|section|page)",
+    "basket",
+    "idor",
+    "access control"
+   ]
+  }
+ ]
+}

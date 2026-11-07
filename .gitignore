@@ -1,0 +1,10 @@
+# secrets and local state
+.env
+.claude/settings.local.json
+# your runs (benchmark and smoke-test results can contain model output about your targets)
+evals/results/
+# build / editor noise
+*.log
+__pycache__/
+*.pyc
+.DS_Store

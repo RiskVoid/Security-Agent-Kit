@@ -1,0 +1,14 @@
+{
+  "name": "rv-node-api",
+  "version": "1.0.0",
+  "private": true,
+  "description": "RiskVoid benchmark target: small Express API. Deliberately insecure test fixture. Never deploy.",
+  "main": "src/server.js",
+  "dependencies": {
+    "axios": "0.21.0",
+    "express": "4.16.0",
+    "jsonwebtoken": "8.5.1",
+    "lodash": "4.17.15",
+    "sqlite3": "5.0.0"
+  }
+}

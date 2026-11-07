@@ -1,0 +1,91 @@
+{
+ "description": "Flask service: injection, deserialisation, debug mode, hardcoded secret, vulnerable dependencies.",
+ "kind": "code",
+ "target": "rv-demo-app",
+ "tiers": "passive",
+ "max_minutes": 45,
+ "max_budget_usd": 3.0,
+ "task": "Full source code security review of {src}, including its dependencies and secrets.",
+ "expected": [
+  {
+   "id": "sqli",
+   "severity": "critical",
+   "cwe": [
+    "CWE-89"
+   ],
+   "any": [
+    "sql injection",
+    "sqli"
+   ]
+  },
+  {
+   "id": "command-injection",
+   "severity": "critical",
+   "cwe": [
+    "CWE-78",
+    "CWE-77"
+   ],
+   "any": [
+    "command injection",
+    "shell=true",
+    "os command"
+   ]
+  },
+  {
+   "id": "unsafe-yaml",
+   "severity": "critical",
+   "cwe": [
+    "CWE-502"
+   ],
+   "any": [
+    "yaml",
+    "deserial"
+   ]
+  },
+  {
+   "id": "debug-mode",
+   "severity": "high",
+   "cwe": [
+    "CWE-489",
+    "CWE-215",
+    "CWE-94",
+    "CWE-1188"
+   ],
+   "any": [
+    "debug",
+    "werkzeug"
+   ]
+  },
+  {
+   "id": "hardcoded-secret",
+   "severity": "medium",
+   "cwe": [
+    "CWE-798",
+    "CWE-321",
+    "CWE-547"
+   ],
+   "any": [
+    "secret_key",
+    "hard-?coded",
+    "secret key"
+   ]
+  },
+  {
+   "id": "vulnerable-dependencies",
+   "severity": "high",
+   "cwe": [
+    "CWE-1104",
+    "CWE-1395",
+    "CWE-937"
+   ],
+   "any": [
+    "pyyaml 5\\.3",
+    "flask 0\\.12",
+    "requests 2\\.19",
+    "outdated",
+    "vulnerable (dependenc|package|component)",
+    "cve-"
+   ]
+  }
+ ]
+}

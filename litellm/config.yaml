@@ -1,0 +1,67 @@
+# One OpenAI-compatible endpoint for OpenHands and the harness. ./rvkit openhands configures OpenHands with it.
+model_list:
+  # WORKER (colab-qwen): the hands-on security model. The name reflects the default and intended model — the
+  # abliterated Qwen3.8-27B served from a Colab GPU (./rvkit connect <url> after /rv-start). The endpoint is
+  # switchable with ./rvkit worker (colab | local | api), so this alias may point at a local or API model too.
+  - model_name: colab-qwen
+    litellm_params:
+      model: os.environ/WORKER_MODEL_ID
+      api_base: os.environ/WORKER_API_BASE
+      api_key: os.environ/WORKER_API_KEY
+      timeout: 600
+
+  # private-llm: the SAME worker endpoint as colab-qwen, but deliberately excluded from the fallback map below,
+  # so it never falls back to OpenRouter — nothing leaves the endpoint you chose (it fails closed instead).
+  # Used by the riskvoid-local agent and engagements with "Worker model: private". For confidential work, point
+  # the worker at a local or self-hosted endpoint (./rvkit worker local|api); this alias then stays fully private.
+  - model_name: private-llm
+    litellm_params:
+      model: os.environ/WORKER_MODEL_ID
+      api_base: os.environ/WORKER_API_BASE
+      api_key: os.environ/WORKER_API_KEY
+      timeout: 600
+
+  # Used when the worker endpoint is down (e.g. Colab not running). Sees tool output and code, so: zero-data-
+  # retention providers only. Change with ./rvkit worker fallback <openrouter-model> | off
+  - model_name: colab-qwen-fallback
+    litellm_params:
+      model: os.environ/WORKER_FALLBACK_MODEL
+      api_key: os.environ/OPENROUTER_API_KEY
+      timeout: 600
+      extra_body:
+        provider: {zdr: true, data_collection: deny}
+
+  # PLANNER: frontier model via OpenRouter. Plans, triages, writes reports; delegates tool work to Qwen.
+  # Provider routing: zero-data-retention endpoints only, no prompt collection.
+  - model_name: planner
+    litellm_params:
+      model: openrouter/anthropic/claude-sonnet-5.5
+      api_key: os.environ/OPENROUTER_API_KEY
+      timeout: 600
+      extra_body:
+        provider: {zdr: true, data_collection: deny}
+
+  - model_name: planner-fallback
+    litellm_params:
+      model: openrouter/openai/gpt-6.1-sol
+      api_key: os.environ/OPENROUTER_API_KEY
+      timeout: 600
+      extra_body:
+        provider: {zdr: true, data_collection: deny}
+
+litellm_settings:
+  drop_params: true
+
+router_settings:
+  # If the planner errors (outage, rate limit, content-policy error), retry once on the fallback.
+  # colab-qwen -> colab-qwen-fallback: when the worker endpoint (Colab) is down. ./rvkit worker fallback off removes it.
+  fallbacks: [{"planner": ["planner-fallback"]}, {"colab-qwen": ["colab-qwen-fallback"]}]
+  content_policy_fallbacks: [{"planner": ["planner-fallback"]}, {"colab-qwen": ["colab-qwen-fallback"]}]
+  num_retries: 1
+  # Cost guardrail: OpenRouter spend per day (USD), tracked in memory (resets when LiteLLM restarts).
+  # Over budget, planner calls fail with a budget error until the period ends. Change with ./rvkit budget <usd>
+  provider_budget_config:
+    openrouter: {budget_limit: 20, time_period: 1d}
+
+general_settings:
+  master_key: os.environ/LITELLM_MASTER_KEY

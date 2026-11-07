@@ -1,0 +1,101 @@
+"""Findings store shared by the findings MCP (planner-facing) and the worker (candidates only).
+
+One SQLite database per engagement: /work/<engagement>/findings.db
+"""
+import datetime, json, os, re, sqlite3
+
+WORK = "/work"
+SEVERITIES = ("critical", "high", "medium", "low", "info")
+STATUSES = ("candidate", "confirmed", "false-positive", "fixed", "accepted-risk")
+FIELDS = ("title", "severity", "cvss_vector", "cvss_score", "cwe", "asset", "description", "impact",
+          "reproduction", "remediation", "evidence", "status", "source", "notes")
+
+
+def engagement_dir(engagement: str) -> str:
+    if not re.fullmatch(r"[A-Za-z0-9._-]+", engagement or "") or engagement.startswith("."):
+        raise ValueError(f"invalid engagement name: {engagement!r}")
+    path = os.path.join(WORK, engagement)
+    if not os.path.isdir(path):
+        raise ValueError(f"unknown engagement '{engagement}' (create it with ./rvkit engagement)")
+    return path
+
+
+def _db(engagement: str) -> sqlite3.Connection:
+    con = sqlite3.connect(os.path.join(engagement_dir(engagement), "findings.db"))
+    con.row_factory = sqlite3.Row
+    con.execute("""CREATE TABLE IF NOT EXISTS findings (
+        id TEXT PRIMARY KEY, title TEXT NOT NULL, severity TEXT NOT NULL, cvss_vector TEXT, cvss_score REAL,
+        cwe TEXT, asset TEXT, description TEXT, impact TEXT, reproduction TEXT, remediation TEXT,
+        evidence TEXT DEFAULT '[]', status TEXT NOT NULL DEFAULT 'candidate', source TEXT, notes TEXT,
+        created TEXT, updated TEXT)""")
+    return con
+
+
+def _now() -> str:
+    return datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds")
+
+
+def _clean(fields: dict) -> dict:
+    out = {k: v for k, v in fields.items() if k in FIELDS and v is not None}
+    if "severity" in out:
+        out["severity"] = str(out["severity"]).lower()
+        if out["severity"] not in SEVERITIES:
+            raise ValueError(f"severity must be one of {SEVERITIES}")
+    if "status" in out and out["status"] not in STATUSES:
+        raise ValueError(f"status must be one of {STATUSES}")
+    if "evidence" in out and not isinstance(out["evidence"], str):
+        out["evidence"] = json.dumps(list(out["evidence"]))
+    return out
+
+
+def _row(r: sqlite3.Row) -> dict:
+    d = dict(r)
+    try:
+        d["evidence"] = json.loads(d.get("evidence") or "[]")
+    except ValueError:
+        pass
+    return d
+
+
+def record(engagement: str, **fields) -> dict:
+    f = _clean(fields)
+    if not f.get("title") or not f.get("severity"):
+        raise ValueError("title and severity are required")
+    with _db(engagement) as con:
+        n = con.execute("SELECT COUNT(*) FROM findings").fetchone()[0] + 1
+        f.update(id=f"F-{n:03d}", created=_now(), updated=_now())
+        f.setdefault("status", "candidate")
+        con.execute(f"INSERT INTO findings ({','.join(f)}) VALUES ({','.join('?' * len(f))})", list(f.values()))
+        return _row(con.execute("SELECT * FROM findings WHERE id=?", (f["id"],)).fetchone())
+
+
+def update(engagement: str, finding_id: str, **fields) -> dict:
+    f = _clean(fields)
+    if not f:
+        raise ValueError("nothing to update")
+    f["updated"] = _now()
+    with _db(engagement) as con:
+        cur = con.execute(f"UPDATE findings SET {','.join(k + '=?' for k in f)} WHERE id=?",
+                          [*f.values(), finding_id])
+        if not cur.rowcount:
+            raise ValueError(f"no finding {finding_id}")
+        return _row(con.execute("SELECT * FROM findings WHERE id=?", (finding_id,)).fetchone())
+
+
+def get(engagement: str, finding_id: str) -> dict:
+    with _db(engagement) as con:
+        r = con.execute("SELECT * FROM findings WHERE id=?", (finding_id,)).fetchone()
+        if not r:
+            raise ValueError(f"no finding {finding_id}")
+        return _row(r)
+
+
+def list_(engagement: str, status: str | None = None, severity: str | None = None) -> list[dict]:
+    q, args = "SELECT * FROM findings WHERE 1=1", []
+    if status:
+        q += " AND status=?"; args.append(status)
+    if severity:
+        q += " AND severity=?"; args.append(severity.lower())
+    q += " ORDER BY CASE severity " + " ".join(f"WHEN '{s}' THEN {i}" for i, s in enumerate(SEVERITIES)) + " END, id"
+    with _db(engagement) as con:
+        return [_row(r) for r in con.execute(q, args)]

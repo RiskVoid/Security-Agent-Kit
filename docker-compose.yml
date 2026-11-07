@@ -1,0 +1,161 @@
+# RiskVoid research agent stack (iMac, Docker Desktop)
+#   OpenHands Agent Canvas  -> http://localhost:8000/canvas
+#   LiteLLM router          -> one endpoint for Colab / local models
+#   SearXNG                 -> private web search (no API keys)
+#   mcp-gateway             -> search + fetch MCP servers (SSE)
+#   kali-mcp                -> sandboxed Kali toolbox exposed as MCP (audited)
+#   worker-mcp              -> delegate_task: focused tool work on the local Qwen model
+#   findings-mcp            -> findings store per engagement
+#   intel-mcp               -> vulnerability intelligence (OSV, NVD, EPSS, CISA KEV)
+# Everything binds to 127.0.0.1 only.
+
+services:
+  agent-canvas:
+    image: ghcr.io/openhands/agent-canvas:${AGENT_CANVAS_TAG:-1.33.0}   # pinned: ./rvkit openhands uses its API
+    ports: ["127.0.0.1:8000:8000"]
+    environment:
+      AGENT_CANVAS_ALLOW_LAN_SESSION_KEY: "true"
+      LOCAL_BACKEND_API_KEY: ${OPENHANDS_API_KEY:-}   # lets ./rvkit openhands configure profiles and MCP servers
+    volumes:
+      - openhands-data:/home/openhands/.openhands
+      - ${PROJECTS_DIR:-~/projects}:/projects
+    extra_hosts: ["host.docker.internal:host-gateway"]
+    depends_on: [litellm, mcp-gateway, kali-mcp, worker-mcp, findings-mcp, intel-mcp]
+    restart: unless-stopped
+
+  litellm:
+    image: ghcr.io/berriai/litellm:${LITELLM_TAG:-v1.106.2}
+    command: ["--config", "/app/config.yaml", "--port", "4000"]
+    ports: ["127.0.0.1:4000:4000"]
+    env_file: .env
+    volumes: ["./litellm/config.yaml:/app/config.yaml:ro"]
+    extra_hosts: ["host.docker.internal:host-gateway"]
+    restart: unless-stopped
+
+  searxng:
+    image: searxng/searxng:${SEARXNG_TAG:-2026.10.23-629368e40}
+    ports: ["127.0.0.1:8888:8080"]
+    environment:
+      SEARXNG_SECRET: ${SEARXNG_SECRET}
+    volumes: ["./searxng/settings.yml:/etc/searxng/settings.yml:ro"]
+    restart: unless-stopped
+
+  mcp-gateway:
+    build: ./mcp-gateway
+    environment:
+      SEARXNG_URL: http://searxng:8080
+    expose: ["8081", "8082"]   # internal only; OpenHands reaches it as mcp-gateway:808x
+    depends_on: [searxng]
+    restart: unless-stopped
+
+  kali-mcp:
+    build: ./kali-mcp
+    expose: ["8090"]           # internal only; OpenHands reaches it as kali-mcp:8090
+    volumes:
+      - ${ENGAGEMENTS_DIR:-~/projects/engagements}:/work       # scope, notes, audit log, outputs
+      - ${PROJECTS_DIR:-~/projects}:/src:ro                     # client source code, read-only
+      - kali-control:/control                                   # authoritative scope/rules/approvals/audit (root-only)
+    # NET_ADMIN: per-engagement firewall (nftables). SYS_ADMIN: per-command mount namespace that shows only the
+    # engagement's own folder. Agent commands run as an unprivileged per-engagement user with only CAP_NET_RAW.
+    cap_add: [NET_RAW, NET_ADMIN, SYS_ADMIN]
+    security_opt: ["apparmor:unconfined"]
+    init: true                 # reap daemonised dnsmasq / sandbox processes
+    networks:
+      default: {}
+      rvlab: {ipv4_address: 10.250.0.2}   # practice targets (./rvkit lab up); reachable only if in an engagement's scope
+    restart: unless-stopped
+
+  # Worker: runs focused tasks on the local Qwen model with Kali/search/fetch/file tools (Phase 2)
+  worker-mcp:
+    build: ./harness
+    command: ["python3", "worker.py"]
+    expose: ["8091"]           # OpenHands reaches it as worker-mcp:8091
+    environment:
+      LITELLM_MASTER_KEY: ${LITELLM_MASTER_KEY}   # only this key; the OpenRouter key stays in litellm
+      WORKER_MODEL: colab-qwen
+    volumes:
+      - ${ENGAGEMENTS_DIR:-~/projects/engagements}:/work
+      - ${PROJECTS_DIR:-~/projects}:/src:ro
+    depends_on: [litellm, kali-mcp, searxng]
+    restart: unless-stopped
+
+  # Findings store (SQLite per engagement), used by the planner (Phase 2)
+  findings-mcp:                # also generates the branded report (report.py)
+    build: {context: ./harness, dockerfile: Dockerfile.report}
+    command: ["python3", "findings.py"]
+    expose: ["8092"]           # OpenHands reaches it as findings-mcp:8092
+    volumes:
+      - ${ENGAGEMENTS_DIR:-~/projects/engagements}:/work
+    restart: unless-stopped
+
+  # Vulnerability intelligence: OSV, NVD, EPSS, CISA KEV, cached (Phase 4)
+  intel-mcp:
+    build: ./harness
+    command: ["python3", "intel.py"]
+    expose: ["8093"]           # OpenHands reaches it as intel-mcp:8093
+    environment:
+      NVD_API_KEY: ${NVD_API_KEY:-}   # optional; raises NVD's rate limit (5 → 50 requests / 30 s)
+    volumes: ["intel-cache:/cache"]
+    restart: unless-stopped
+
+  # ---------------------------------------------------------------- lab (./rvkit lab up)
+  # Intentionally vulnerable practice targets on an isolated network: no internet, and nothing else on it but
+  # kali-mcp. Never expose these ports on the host. Images pinned (tag or digest at least two weeks old).
+  lab-juice-shop:
+    image: bkimminich/juice-shop:v20.3.0
+    profiles: ["lab"]
+    networks: {rvlab: {ipv4_address: 10.250.0.10}}   # http://10.250.0.10:3000
+    restart: "no"
+
+  lab-vampi:   # vulnerable REST API (OWASP API Top 10)
+    image: erev0s/vampi@sha256:0a5a224b6e14ae7da6a6ea265178ff71286ff903aec74adee98f660bb0e4ca12
+    profiles: ["lab"]
+    environment: {vulnerable: "1", tokentimetolive: "3600"}
+    networks: {rvlab: {ipv4_address: 10.250.0.13}}    # http://10.250.0.13:5000 (OpenAPI: /openapi.json)
+    restart: "no"
+
+  lab-dvga:    # vulnerable GraphQL API (amd64 image; emulated on Apple Silicon)
+    image: dolevf/dvga@sha256:040aa33c199d99f3380c9ff9a1ee5d725e9abca7b189c63a35a2a73bda79c957
+    platform: linux/amd64
+    profiles: ["lab"]
+    environment: {WEB_HOST: "0.0.0.0"}
+    networks: {rvlab: {ipv4_address: 10.250.0.14}}    # http://10.250.0.14:5013/graphql
+    restart: "no"
+
+  lab-llm:     # vulnerable LLM support assistant + MCP server (simulated model, evals/targets/rv-llm-lab)
+    build: ./evals/targets/rv-llm-lab
+    image: riskvoid-lab-llm:local
+    profiles: ["lab"]
+    networks: {rvlab: {ipv4_address: 10.250.0.15}}    # http://10.250.0.15:8000  MCP: /mcp
+    restart: "no"
+
+  lab-dvwa:
+    image: ghcr.io/digininja/dvwa@sha256:8029450682bd70e2e8cd1ffe8e46dd1885ff2a913296091cebfa8ba0a7d36498
+    profiles: ["lab"]
+    environment:
+      DB_SERVER: lab-dvwa-db
+      DEFAULT_SECURITY_LEVEL: low
+    depends_on: [lab-dvwa-db]
+    networks: {rvlab: {ipv4_address: 10.250.0.11}}   # http://10.250.0.11 (admin / password)
+    restart: "no"
+
+  lab-dvwa-db:
+    image: mariadb:11.4.12
+    profiles: ["lab"]
+    environment:
+      MYSQL_ROOT_PASSWORD: dvwa
+      MYSQL_DATABASE: dvwa
+      MYSQL_USER: dvwa
+      MYSQL_PASSWORD: p@ssw0rd
+    networks: {rvlab: {ipv4_address: 10.250.0.12}}
+    restart: "no"
+
+networks:
+  rvlab:
+    internal: true            # no route to the internet or the host
+    ipam: {config: [{subnet: 10.250.0.0/24}]}
+
+volumes:
+  openhands-data:
+  intel-cache:
+  kali-control:
