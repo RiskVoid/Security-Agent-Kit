@@ -147,7 +147,7 @@ rvkit completion fish > ~/.config/fish/completions/rvkit.fish       # fish
 Completion knows the commands, the `eng`, `worker` and `lab` subcommands, and your engagement names. `rvkit` runs
 under bash, so it works the same from bash, zsh and fish.
 
-## With Claude Code
+## With Claude Code or another coding agent
 
 In the kit folder, start `claude` and type:
 
@@ -162,6 +162,12 @@ In the kit folder, start `claude` and type:
 Gemini CLI, not with Claude Desktop. The steps it follows are in [AGENT_PLAYBOOK.md](../AGENT_PLAYBOOK.md).
 
 Claude Code never asks you to paste your OpenRouter key into the chat: add it to `.env` yourself.
+
+**Other coding agents** (Codex, Gemini CLI, Cursor, GitHub Copilot…) work the same way without the slash
+commands: open the kit folder and say "Set up the RiskVoid kit. Follow AGENT_PLAYBOOK.md." Agents that read
+`AGENTS.md` find the playbook by themselves. To let them start Colab, add the `colab-mcp` entry from `.mcp.json`
+to that agent's MCP settings. After setup you can keep asking in plain words ("what's waiting for my approval?",
+"build the report for acme-2026-11"); the playbook maps those requests to `./rvkit` commands.
 
 ## Your first real engagement
 

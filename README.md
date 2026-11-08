@@ -26,6 +26,7 @@
   <a href="#what-it-can-do">What it can do</a> ·
   <a href="#where-the-worker-model-runs">No GPU? Fine</a> ·
   <a href="#the-console">Console</a> ·
+  <a href="#run-it-from-claude-code-or-another-coding-agent">With Claude Code</a> ·
   <a href="#how-it-works">How it works</a> ·
   <a href="#safety-built-in">Safety</a> ·
   <a href="docs/README.md">Documentation</a>
@@ -145,8 +146,9 @@ You now have two pages:
 | **RiskVoid Console** | **`./rvkit console`** (opens http://127.0.0.1:8100, signed in) | Watch and control the work: approvals, live view, findings, reports ([below](#the-console)) |
 
 > [!TIP]
-> Using **Claude Code**? Type `/rv-setup`, then `/rv-start`, in the kit folder, and it does all of the above,
-> including starting the Colab GPU.
+> **Prefer to just ask?** Open the kit folder in **Claude Code** (or Codex, Gemini CLI, Cursor…) and type
+> `/rv-setup`, or say "set up the kit". It runs all of the above for you, including starting the Colab GPU.
+> [How it works](#run-it-from-claude-code-or-another-coding-agent).
 
 **Next:** [Your first engagement](docs/first-engagement.md), a guided 20-minute run against OWASP Juice Shop.
 
@@ -209,6 +211,58 @@ approve its own requests. Ctrl-C stops it.
 </details>
 
 Everything in the console can also be done with `./rvkit` in a terminal. Full guide: [The console](docs/console.md).
+
+---
+
+## Run it from Claude Code or another coding agent
+
+You don't have to learn the commands. Open the kit folder in a coding agent and ask in plain words. The agent
+runs `./rvkit` for you and tells you what happened. The repo already includes its instructions:
+
+| File | Read by | What it gives the agent |
+|---|---|---|
+| [`CLAUDE.md`](CLAUDE.md) + [`.claude/commands/`](.claude/commands) | Claude Code | the kit overview and the `/rv-setup`, `/rv-start`, `/rv-stop` commands |
+| [`AGENTS.md`](AGENTS.md) | Codex, Cursor, GitHub Copilot and other agents that read `AGENTS.md` | the same overview, pointing to the playbook |
+| [`AGENT_PLAYBOOK.md`](AGENT_PLAYBOOK.md) | all of them | step-by-step procedures and the safety rules |
+| [`.mcp.json`](.mcp.json) | Claude Code (other agents: add the same entry) | the Colab MCP server, so the agent can start the Colab GPU for you |
+
+**With Claude Code**
+
+```sh
+cd Security-Agent-Kit
+claude
+```
+
+Then type:
+
+- **`/rv-setup`**: first-time setup. It asks two questions, installs and starts everything, helps you choose a
+  worker and runs the checks.
+- **`/rv-start`**: starts the worker on a Colab GPU and connects it (`/rv-start a100-40`, `/rv-start l4 thinking`).
+  Allow the `colab-mcp` server when asked; it needs [`uv`](https://docs.astral.sh/uv/) (`brew install uv`).
+- **`/rv-stop`**: releases the Colab GPU so it stops costing compute units.
+
+**With another coding agent** (Codex, Gemini CLI, Cursor, Copilot…), open the kit folder and say:
+
+> Set up the RiskVoid kit. Follow AGENT_PLAYBOOK.md.
+
+Agents that read `AGENTS.md` find the playbook on their own. To let them start Colab too, add the Colab MCP server
+from `.mcp.json` to that agent's MCP settings. Otherwise pick a worker that needs no Colab
+([options](#where-the-worker-model-runs)).
+
+**Then just ask.** For example:
+
+> Is everything working?
+>
+> Create an engagement for Acme Ltd with scope app.acme.com and /src/acme-repo.
+>
+> What's waiting for my approval? &nbsp;·&nbsp; Approve 3f9a2c1e. &nbsp;·&nbsp; Stop everything on acme-2026-11.
+>
+> Switch the worker to OpenRouter. &nbsp;·&nbsp; Build the report for acme-2026-11 and close it out.
+
+> [!IMPORTANT]
+> The coding agent **operates** the kit; the security testing itself happens in the agent UI with
+> `riskvoid-planner`. The playbook's rules keep it safe: it never asks you to paste API keys into chat, it only
+> approves a command when you say so for that exact approval id, and it doesn't widen scope unless you ask.
 
 ---
 

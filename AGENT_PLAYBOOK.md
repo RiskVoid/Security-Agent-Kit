@@ -1,4 +1,4 @@
-# Agent playbook (for Claude Code or any agent that has the Colab MCP server)
+# Agent playbook (for Claude Code, Codex, Gemini CLI, Cursor or any coding agent)
 
 You are operating the RiskVoid agent kit for the user. Use `./rvkit` for everything on this machine.
 Keep the user informed in one short line per step. When the user has to act, say exactly what to click.
@@ -17,8 +17,9 @@ Keep the user informed in one short line per step. When the user has to act, say
    the `riskvoid-local` agent works with the worker model alone.
 3. Ask which worker model to use: Google Colab (default; continue with "Start the model"), a server on this machine
    (`./rvkit worker local` finds Ollama, LM Studio or llama-server by itself), or another OpenAI-compatible
-   endpoint (`./rvkit worker api <url> <model>`; the user types the API key into the command themselves). Check
-   with `./rvkit test`.
+   endpoint (`./rvkit worker api <url> <model>`; the user types the API key into the command themselves), or, with
+   no GPU at all, a hosted model on OpenRouter (`./rvkit worker openrouter`; tell the user in one line that tool
+   output and client code then go to OpenRouter). Check with `./rvkit test`.
 4. Run `./rvkit doctor` and explain any problem it reports. Then tell the user to open http://localhost:8000/ and
    start a conversation with the `riskvoid-planner` agent. Suggest `./rvkit quickstart` for a safe first try (a
    practice engagement against the isolated lab), and `./rvkit watch` in a terminal to approve intrusive commands.
@@ -74,7 +75,29 @@ before starting it, tell the user in one line that its refusals are removed and 
 2. Otherwise tell the user: "In the Colab tab: Runtime → Disconnect and delete runtime."
 3. Confirm. The local stack can keep running. `./rvkit down` stops it if the user wants.
 
+## Everyday operation
+
+The user may ask in plain words. Map the request to `./rvkit`, run it, and summarise the result in a line or two:
+
+| The user asks | Run |
+|---|---|
+| "Is everything working?" | `./rvkit status`, then `./rvkit doctor` if something is wrong |
+| "Create an engagement for <client>, scope <targets>" | `./rvkit engagement <name> --client "<client>" <targets…>` (confirm the targets with the user first) |
+| "What's waiting for me?" | `./rvkit approvals`; show each command, its tier and id |
+| "Approve <id>" / "Deny <id>" | `./rvkit approve <eng> <id>` / `./rvkit deny <eng> <id>` |
+| "Stop everything on <eng>" | `./rvkit halt <eng>` (`./rvkit resume <eng>` undoes it) |
+| "Show me the findings / the audit log" | `./rvkit show <eng>`, `./rvkit audit <eng>` |
+| "Build the report" / "Close it out" | `./rvkit report <eng>` / `./rvkit close <eng>` (confirm before closing) |
+| "Open the console" | `./rvkit console --no-open`, and give the user the sign-in link |
+| "Use another worker / planner model" | `./rvkit worker …` / `./rvkit planner …` |
+
+The security testing itself happens in the agent UI (http://localhost:8000/, `riskvoid-planner` agent), not here:
+suggest a prompt for it when the user wants to start testing. `./rvkit help` lists every command.
+
 ## Rules
 
 - Only run the kit's commands, the cells described here, and diagnostic `tail`/`ls` cells. Don't run anything else in Colab.
 - Don't change `.env` except through `./rvkit`.
+- Never ask the user to paste an API key into chat. They add keys to `.env` themselves or type them into the command.
+- Approve or deny a command only when the user explicitly tells you to for that approval id. Never approve on your own.
+- Don't widen an engagement's scope or rules unless the user asked for that exact change; show the diff first.
