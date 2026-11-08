@@ -14,7 +14,7 @@
 
 services:
   agent-canvas:
-    image: ghcr.io/openhands/agent-canvas:${AGENT_CANVAS_TAG:-1.33.0}   # pinned: ./rvkit openhands uses its API
+    image: ghcr.io/openhands/agent-canvas:${AGENT_CANVAS_TAG:-1.37.0}   # pinned: ./rvkit openhands uses its API
     # No published port and no internet: it is only on the internal rvagent network. The UI is served through
     # the gateway (127.0.0.1:8000); outbound HTTP(S) goes through egress-proxy (allowlisted registries only).
     # Engagement targets are reachable only through the kali tool, which enforces the engagement scope.
