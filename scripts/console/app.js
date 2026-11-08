@@ -8,7 +8,7 @@ const esc = (v) => String(v ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "
 const enc = encodeURIComponent;
 const SEV = ["critical", "high", "medium", "low", "info"];
 const STATUSES = ["candidate", "confirmed", "false-positive", "duplicate", "fixed", "accepted-risk"];
-const TABS = { overview: "Overview", live: "Live", scope: "Scope & rules", findings: "Findings", tasks: "Worker tasks", report: "Report", audit: "Audit log" };
+const TABS = { overview: "Overview", live: "Live", scope: "Scope & rules", findings: "Findings", tasks: "Worker tasks", report: "Report", audit: "Audit log", models: "Model log" };
 
 const state = { overview: null, current: null, detail: null, tab: "overview", seenApprovals: null, findingFilter: "all", openFinding: null, preview: null, evidence: null, view: "engagements" };
 
@@ -57,16 +57,17 @@ function crumbs(parts) {
 }
 function show(view) {
   state.view = view;
-  for (const v of ["engagements", "approvals", "status"]) $(`#view-${v}`).hidden = v !== view;
+  for (const v of ["engagements", "approvals", "status", "models"]) $(`#view-${v}`).hidden = v !== view;
   $$(".rv-sidebar-item[data-view]").forEach((a) => a.classList.toggle("active", a.dataset.view === view));
   document.body.classList.remove("nav-open");
   if (view === "status") { crumbs([["Console", "#engagements"], ["Stack status"]]); loadStatus(); }
+  else if (view === "models") { crumbs([["Console", "#engagements"], ["Model log"]]); loadModels(); }
   else if (view === "approvals") crumbs([["Console", "#engagements"], ["Approvals"]]);
   else crumbs(state.current ? [["Console", "#engagements"], ["Engagements", "#engagements"], [state.current]] : [["Console", "#engagements"], ["Engagements"]]);
 }
 function route() {
   const h = location.hash.replace("#", "");
-  if (h === "approvals" || h === "status") return show(h);
+  if (h === "approvals" || h === "status" || h === "models") return show(h);
   if (h.startsWith("eng-")) { const name = h.slice(4); if (name !== state.current) { state.current = name; openEngagement(name); } }
   show("engagements");
 }
@@ -82,6 +83,8 @@ async function refresh() {
     if (o.version) $("#side-version").textContent = "kit " + o.version;
     $("#eng-count").textContent = o.engagements.length || "";
     renderList(); renderApprovals();
+    const mb = $("#model-badge"); mb.textContent = o.model_problems || 0; mb.hidden = !o.model_problems;
+    mb.title = "failed model calls in the last 24 hours";
     const ids = new Set(o.approvals.map((a) => a.id));
     if (state.seenApprovals) {
       const fresh = o.approvals.filter((a) => !state.seenApprovals.has(a.id));
@@ -163,6 +166,7 @@ function renderDetail() {
   const ov = (state.overview?.engagements || []).find((e) => e.engagement === d.engagement) || {};
   const [label, , cls] = engState({ ...ov, halted: i.halted });
   const counts = { findings: d.findings.length };
+  if (ov.model_problems) counts.models = ov.model_problems;
   $("#detail").innerHTML = `
     <div class="rv-detail-head">
       <div class="rv-detail-title"><h1 class="rv-h-display">${esc(d.engagement)}</h1>${tag(label, cls)} ${tierTags(r.tiers)}</div>
@@ -191,7 +195,7 @@ function renderDetail() {
       await act(btn, () => api(`/api/eng/${enc(d.engagement)}/delete`, { force: !ov.closed }), "Deleted.");
       state.current = null; location.hash = "engagements"; $("#detail").innerHTML = `<div class="rv-empty">Pick an engagement, or create one.</div>`; refresh(); show("engagements");
     }));
-  ({ overview: paneOverview, live: paneLive, scope: paneScope, findings: paneFindings, tasks: paneTasks, report: paneReport, audit: paneAudit })[state.tab]();
+  ({ overview: paneOverview, live: paneLive, scope: paneScope, findings: paneFindings, tasks: paneTasks, report: paneReport, audit: paneAudit, models: paneModels })[state.tab]();
 }
 
 function confirmBox(title, text, label, fn) {
@@ -522,6 +526,35 @@ async function paneAudit() {
         return `<tr><td class="nowrap">${fmtTime(e.ts)}</td><td>${what}</td><td>${e.tier ? tag(e.tier, TIER_CLASS[e.tier] || "") : ""}</td><td>${res}</td></tr>`;
       }).join("") || `<tr><td colspan="4"><div class="rv-empty">No activity yet.</div></td></tr>`}</tbody></table></div>`;
   } catch (e) { $("#audit-out").textContent = e.message; }
+}
+
+// ---------------------------------------------------------------- model log (litellm/rv_events.py)
+// Failed model calls (no credits, budget used up, worker down, refusals nobody recovered from) and calls another model
+// answered instead. Per engagement in its "Model log" tab; all of them on the Model log page.
+function modelTable(events, withEng) {
+  const head = `<th>Time</th>${withEng ? "<th>Engagement</th>" : ""}<th>Model</th><th>What happened</th><th>Result</th>`;
+  const rows = events.map((e) => `<tr>
+      <td class="nowrap">${fmtTime(e.ts)}</td>
+      ${withEng ? `<td class="nowrap">${e.engagement ? `<a href="#eng-${esc(e.engagement)}">${esc(e.engagement)}</a>` : `<span class="rv-dim">none</span>`}</td>` : ""}
+      <td class="nowrap"><span class="mono">${esc(e.model)}</span>${e.model_id ? `<div class="rv-dim mono sm">${esc(e.model_id.replace(/^openrouter\//, ""))}</div>` : ""}</td>
+      <td class="rv-model-text">${esc(e.text || e.message)}${e.count > 1 ? ` <span class="rv-dim mono">x${e.count}</span>` : ""}</td>
+      <td class="nowrap">${e.problem ? tag("failed", "fail") : tag("recovered", "ok")}</td></tr>`).join("");
+  const cols = withEng ? 5 : 4;
+  return `<div class="rv-table-wrap"><table class="rv-table"><thead><tr>${head}</tr></thead><tbody>${rows ||
+    `<tr><td colspan="${cols}"><div class="rv-empty">No model problems in this period.</div></td></tr>`}</tbody></table></div>`;
+}
+async function loadModels() {
+  const out = $("#models-out");
+  try { const r = await api(`/api/models?since=${enc($("#models-since").value)}`); out.outerHTML = `<div id="models-out">${modelTable(r.events, true)}</div>`; }
+  catch (e) { out.textContent = e.message; }
+}
+$("#models-refresh").addEventListener("click", loadModels);
+$("#models-since").addEventListener("change", loadModels);
+async function paneModels() {
+  const d = state.detail;
+  $("#pane").innerHTML = `<p class="hint">Model calls for this engagement that failed, or that another model answered instead (last 7 days, newest first). Calls not matched to an engagement are on the <a href="#models">Model log</a> page.</p><div id="models-eng" class="rv-empty">Loading…</div>`;
+  try { const r = await api(`/api/models?eng=${enc(d.engagement)}`); $("#models-eng").outerHTML = modelTable(r.events, false); }
+  catch (e) { $("#models-eng").textContent = e.message; }
 }
 
 // ---------------------------------------------------------------- new engagement

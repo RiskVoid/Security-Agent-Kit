@@ -257,5 +257,80 @@ class Console(unittest.TestCase):
             self.c.eng_path("../etc", "passwd")
 
 
+class ModelEvents(unittest.TestCase):
+    """litellm/rv_events.py (error classification, the event log) and scripts/model_events.py (its reader)."""
+    @classmethod
+    def setUpClass(cls):
+        spec = importlib.util.spec_from_file_location("rv_events", os.path.join(KIT, "litellm", "rv_events.py"))
+        cls.rv = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(cls.rv)
+
+    def test_classify(self):
+        class E(Exception):
+            def __init__(self, msg, code=None):
+                super().__init__(msg)
+                self.status_code = code
+        c = lambda g, msg, code=None: self.rv.classify(g, E(msg, code))[0]
+        self.assertEqual(c("planner", "This request requires more credits", 402), "credits")
+        self.assertEqual(c("planner", "ExceededBudget: crossed budget for provider openrouter", 400), "budget")
+        self.assertEqual(c("planner", "invalid api key", 401), "auth")
+        self.assertEqual(c("planner", "temporarily rate-limited upstream", 429), "rate_limit")
+        self.assertEqual(c("colab-qwen", "Connection error"), "worker_down")
+        self.assertEqual(c("colab-qwen", "Cloudflare tunnel error", 530), "worker_down")
+        self.assertEqual(c("planner", "Connection error"), "error")              # only the worker means "Colab down"
+        self.assertEqual(c("planner", "ContextWindowExceededError: too long"), "context")
+        self.assertEqual(c("planner", "Request timed out"), "timeout")
+        kind, msg = self.rv.classify("planner", E('{"error":{"message":"Provider returned error","raw":"{\\"message\\": \\"Invalid value: x\\"}"}}', 400))
+        self.assertEqual(kind, "error")
+        self.assertIn("Invalid value: x", msg)                                    # the detailed message, not the wrapper
+        for k in ("credits", "budget", "worker_down"):                           # every message says what to do
+            self.assertTrue(any(w in self.rv.classify("colab-qwen" if k == "worker_down" else "planner",
+                                                      E({"credits": "credits", "budget": "budget exceeded",
+                                                         "worker_down": "connect"}[k], 402 if k == "credits" else None))[1]
+                                for w in ("./rvkit", "/rv-start", "openrouter.ai")))
+
+    def test_context_passes_through(self):
+        """A full context window must reach OpenHands unchanged (it summarises and continues), logged as recovered."""
+        import asyncio, model_events as me
+        class Ctx(Exception):
+            status_code = 400
+        with tempfile.TemporaryDirectory() as d:
+            self.rv.EVENTS = log = os.path.join(d, "e.jsonl")
+            err = Ctx("ContextWindowExceededError: request (81359 tokens) exceeds the available context size (65536 tokens)")
+            out = asyncio.run(self.rv.RvEvents().async_post_call_failure_hook({"model": "colab-qwen", "messages": []}, err, None))
+            self.assertIsNone(out)                                              # not rewritten
+            ev = me.read(path=log)[0]
+            self.assertEqual((ev["kind"], ev["problem"]), ("context", False))
+            self.assertIn("81K tokens, the window is 64K", ev["message"])
+
+    def test_engagement_of(self):
+        e = self.rv.engagement_of
+        self.assertEqual(e({"messages": [{"role": "user", "content": "Engagement `lab-juice`: web test"}]}), "lab-juice")
+        call = {"role": "assistant", "tool_calls": [{"function": {"arguments": '{"engagement": "acme-2026", "command": "id"}'}}]}
+        self.assertEqual(e({"messages": [{"role": "user", "content": [{"type": "text", "text": "Engagement `old`"}]}, call]}),
+                         "acme-2026")                                         # the newest tool call wins over the brief
+        self.assertIsNone(e({"messages": [{"role": "user", "content": "hello"}]}))
+        self.assertIsNone(e({}))
+
+    def test_log_and_reader(self):
+        import model_events as me
+        with tempfile.TemporaryDirectory() as d:
+            self.rv.EVENTS = log = os.path.join(d, "events", "model-events.jsonl")
+            self.rv.record("refusal", "planner", "planner refused; answered by planner-fallback", fallback="planner-fallback")
+            for _ in range(3):
+                self.rv.record("credits", "planner", "balance too low")
+            self.assertEqual(me.count(log), 4)
+            ev = me.recent(3600, path=log)
+            self.assertEqual([(e["kind"], e["count"], e["problem"]) for e in sorted(ev, key=lambda e: e["kind"])],
+                             [("credits", 3, True), ("refusal", 1, False)])       # repeats collapsed, refusal recovered
+            self.assertEqual([e["kind"] for e in me.recent(3600, problems_only=True, path=log)], ["credits"])
+            self.assertEqual(me.recent(3600, path=log, now=__import__("time").time() + 7200), [])
+            self.assertEqual(len(me.read(3, path=log)), 1)                       # --from-line, for ./rvkit watch
+            self.assertIn("(x3)", me.line(ev[0] if ev[0]["kind"] == "credits" else ev[1]))
+            self.rv.record("worker_down", "colab-qwen", "colab-qwen is not reachable", engagement="lab-juice")
+            self.assertEqual([x["kind"] for x in me.recent(3600, path=log, engagement="lab-juice")], ["worker_down"])
+            self.assertEqual(me.recent(3600, path=log, engagement="lab-juice")[0]["text"], "Is not reachable")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=1)

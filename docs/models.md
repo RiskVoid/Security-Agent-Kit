@@ -11,8 +11,8 @@ routes each model name to the right place:
 
 | LiteLLM name | Points at | Used by | Falls back to |
 |---|---|---|---|
-| `planner` | `PLANNER_MODEL` on OpenRouter (default `anthropic/claude-sonnet-5.5`) | the `riskvoid-planner` agent | `planner-fallback` on errors, outages and content-policy refusals |
-| `planner-fallback` | `PLANNER_FALLBACK_MODEL` on OpenRouter (default `openai/gpt-6.1-sol`) | | |
+| `planner` | `PLANNER_MODEL` on OpenRouter (default `openai/gpt-6.1-sol`) | the `riskvoid-planner` agent | `planner-fallback` on errors, outages, refusals and empty replies |
+| `planner-fallback` | `PLANNER_FALLBACK_MODEL` on OpenRouter (default `deepseek/deepseek-v4-pro`) | | |
 | `colab-qwen` | the worker endpoint (`WORKER_API_BASE`, `WORKER_MODEL_ID`) | `delegate_task` in the worker MCP server | `colab-qwen-fallback`, **only** when the fallback is on |
 | `colab-qwen-fallback` | `WORKER_FALLBACK_MODEL` on OpenRouter (default `deepseek/deepseek-v4.1-flash`) | | |
 | `private-llm` | the same worker endpoint as `colab-qwen` | the `riskvoid-local` agent, and `delegate_task` for engagements with `Worker model: private` | never |
@@ -249,13 +249,17 @@ Delegated tasks for that engagement then use `private-llm`, which never falls ba
 
 ```sh
 ./rvkit planner                                             # show the planner and its fallback
-./rvkit planner anthropic/claude-sonnet-5.5                 # change the planner
-./rvkit planner anthropic/claude-sonnet-5.5 openai/gpt-6.1-sol   # change both
+./rvkit planner openai/gpt-6.1-sol                          # change the planner
+./rvkit planner openai/gpt-6.1-sol deepseek/deepseek-v4-pro  # change both
 ./rvkit test planner                                        # send a test prompt
 ```
 
-Models are OpenRouter ids; the `openrouter/` prefix is optional. The fallback is used when the planner errors: an
-outage, a rate limit or a content-policy refusal. Choose a model that is good at long tool-using sessions.
+Models are OpenRouter ids; the `openrouter/` prefix is optional. The fallback is used when the planner errors (an
+outage, a rate limit), refuses, or sends an empty reply. Choose a model that is good at long tool-using sessions
+and doesn't refuse authorised security work. With the kit's planner prompt and a lab engagement brief, GPT-6.1,
+DeepSeek V4 Pro and Gemini 3.1 Pro answered with a tool call, and Claude Sonnet 5.5 refused (November 2026). Check a
+candidate with `python3 evals/planner_smoke.py`. The fallback should come from another vendor, so a rate limit on
+one doesn't stop both.
 
 Without `OPENROUTER_API_KEY` in `.env`, the planner doesn't work: use `riskvoid-local`, or add the key and run
 `./rvkit up`.
@@ -284,6 +288,42 @@ What changes:
   and a provider budget would block it too. `./rvkit budget` and the console show OpenRouter and Anthropic
   spend, but not spend on a direct OpenAI model.
 - The worker and its fallback are unchanged.
+
+## When a model call fails
+
+OpenHands always streams model replies. A refusal arrives inside a reply that has already started, so LiteLLM's own
+fallback can't catch it. The kit's LiteLLM callback (`litellm/rv_events.py`) closes that gap and makes failures
+visible:
+
+- **Refusals and empty replies use the fallback.** It holds back each streamed reply until real text or a tool call
+  arrives. If the model refuses or sends nothing, the fallback model (`planner-fallback`, or `colab-qwen-fallback`
+  when the worker fallback is on) answers instead. A rate-limited fallback is retried twice.
+- **The reason shows in the chat.** When no model answers, the agent's reply is a short `[RiskVoid] ...` message
+  that says what happened and what to do, instead of an empty reply. Errors reach OpenHands with the same kind of
+  explanation, followed by the provider's original error text (OpenHands' own retry rules read it):
+
+  | Problem | What the message tells you to do |
+  |---|---|
+  | OpenRouter balance too low (402) | top up at openrouter.ai/settings/credits |
+  | Daily budget used up | `./rvkit budget <usd>`, or wait for the next UTC day |
+  | API key rejected | check the key in `.env`, then `./rvkit up`; for the worker, run the `./rvkit connect` line again |
+  | Worker not reachable (Colab stopped, tunnel changed) | `/rv-start`, or `./rvkit worker` |
+  | Rate limit, timeout | wait a minute and continue the conversation |
+  | Refused by the model and its fallback | rephrase with the engagement context, or `./rvkit planner <model> [fallback]` |
+
+- **Every problem is logged** to `.rvkit/events/model-events.jsonl` on this machine. These show it:
+  - the console's **Model log**: each engagement's tab, and a page with every call. The kit matches a call to an
+    engagement from the engagement its tool calls name, or from the brief;
+  - `./rvkit status` (the last hour);
+  - `./rvkit doctor` (the last 24 hours);
+  - `./rvkit watch`, which also raises a desktop notification.
+
+  To read the log yourself: `python3 scripts/model_events.py --since 3600`. A problem another model recovered from is
+  marked "recovered".
+- **A full context window is not an error.** When a conversation outgrows the model's context window (64K tokens
+  for the worker on an A100 40 GB), the error passes through unchanged: OpenHands then summarises older turns and
+  carries on. The log shows it as recovered. The kit's agent prompt and tools take about 24K tokens, so on the
+  worker this happens after a few long tool outputs; the planner models have much larger windows.
 
 ## Costs and budget
 

@@ -52,8 +52,8 @@ Set these with `./rvkit connect` and `./rvkit worker` ([models.md](models.md)), 
 | Setting | Default | Meaning |
 |---|---|---|
 | `OPENROUTER_API_KEY` | empty | Your OpenRouter key. Without it only the `riskvoid-local` agent works. |
-| `PLANNER_MODEL` | `openrouter/anthropic/claude-sonnet-5.5` | The planner (`./rvkit planner`). |
-| `PLANNER_FALLBACK_MODEL` | `openrouter/openai/gpt-6.1-sol` | Used when the planner call fails. |
+| `PLANNER_MODEL` | `openrouter/openai/gpt-6.1-sol` | The planner (`./rvkit planner`). |
+| `PLANNER_FALLBACK_MODEL` | `openrouter/deepseek/deepseek-v4-pro` | Used when the planner call fails, refuses or returns nothing. |
 | `ANTHROPIC_API_KEY`, `OPENAI_API_KEY` | empty | Only for a planner on Anthropic or OpenAI directly (`./rvkit planner --direct`). |
 | `OPENROUTER_DAILY_BUDGET` | `20` | USD per 24 hours, per provider: OpenRouter, and Anthropic / OpenAI when used directly (`./rvkit budget`). |
 

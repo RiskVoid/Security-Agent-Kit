@@ -33,7 +33,8 @@ symptom below.
 | Planner calls fail with "crossed budget" | The daily OpenRouter budget is used up: `./rvkit budget <usd>`, or wait for the period to end. |
 | Planner calls fail with "requires more credits" | Top up your OpenRouter balance. |
 | `Model 'planner' not reachable` | Check `OPENROUTER_API_KEY` in `.env` (then `./rvkit up`) and `./rvkit logs litellm`. |
-| The worker refuses an authorised task | The mainstream build (`qwen`) sometimes refuses offensive-security steps: start the default abliterated build with `/rv-start` ([models.md](models.md)). If the refusal comes from the planner (the `riskvoid-planner` agent answers with Claude), rephrase the goal with the engagement context. |
+| The agent replies with nothing, or OpenHands says "did not include a function call" | The model refused or sent an empty reply. The kit now answers with the fallback model, and when that fails too, the agent's reply is a `[RiskVoid] ...` message saying why. Check `./rvkit status` or the console's **Model log** for the cause. If it says the planner refused, use a planner that doesn't refuse authorised security work: `./rvkit planner openai/gpt-6.1-sol deepseek/deepseek-v4-pro` ([models.md](models.md#when-a-model-call-fails)). Start a new conversation afterwards. |
+| The worker refuses an authorised task | The mainstream build (`qwen`) sometimes refuses offensive-security steps: start the default abliterated build with `/rv-start` ([models.md](models.md)). If the refusal comes from the planner, see the row above. |
 
 ## The agent
 

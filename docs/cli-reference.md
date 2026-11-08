@@ -100,8 +100,8 @@ diverged. Your `.env` and data are never touched by the pull.
 ```
 
 One screen: how many services are running (and which aren't), lab targets that are up, whether the worker
-endpoint answers, the fallback state, the planner model, OpenRouter spend against the daily budget, the number of
-engagements (and halted ones), and pending approvals.
+endpoint answers, the fallback state, the planner model, OpenRouter spend against the daily budget, failed model calls in the last hour (and how often
+another model answered instead), the number of engagements (and halted ones), and pending approvals.
 
 ### doctor
 
@@ -110,7 +110,7 @@ engagements (and halted ones), and pending approvals.
 ```
 
 Checks everything and says what to fix. Each line is ✔ (fine), ! (warning) or ✘ (problem). Exits with status 1
-if there is any problem.
+if there is any problem. Failed model calls of the last 24 hours are listed as warnings, each with its fix.
 
 | Section | Checks |
 |---|---|
@@ -183,7 +183,7 @@ Every change recreates LiteLLM and sends a test prompt.
 
 ```sh
 ./rvkit planner                                  # show
-./rvkit planner <openrouter-model> [fallback]    # set, e.g. anthropic/claude-sonnet-5.5 openai/gpt-6.1-sol
+./rvkit planner <openrouter-model> [fallback]    # set, e.g. openai/gpt-6.1-sol deepseek/deepseek-v4-pro
 ./rvkit planner --direct anthropic/<model> [fallback]   # Anthropic or OpenAI directly, without OpenRouter
 ```
 
@@ -314,7 +314,9 @@ Starts the RiskVoid Console on `http://127.0.0.1:<CONSOLE_PORT>/` (default 8100)
 Watches every engagement for intrusive commands waiting for approval. For each new one it shows a desktop
 notification (macOS `osascript`, Linux `notify-send`), prints the engagement, approval id, tier and command, and
 asks: `a` approve, `d` deny, `s` skip (default; it stays pending). After approving, tell the agent to run the
-command again. Ctrl-C stops watching. Needs a terminal.
+command again. It also prints each failed model call with what to do (no credits, budget used up, worker
+down, refusal, ...) and raises a desktop notification for it; calls another model recovered are printed only.
+Ctrl-C stops watching. Needs a terminal.
 
 ### approvals
 

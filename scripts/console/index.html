@@ -31,6 +31,10 @@
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></svg>
         <span>Stack status</span>
       </a>
+      <a class="rv-sidebar-item" href="#models" data-view="models">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="4" y="4" width="16" height="16" rx="2"/><rect x="9" y="9" width="6" height="6"/><path d="M9 2v2M15 2v2M9 20v2M15 20v2M2 9h2M2 15h2M20 9h2M20 15h2"/></svg>
+        <span>Model log</span><span id="model-badge" class="rv-count danger" hidden>0</span>
+      </a>
     </nav>
 
     <div class="rv-side-label">Agent</div>
@@ -84,6 +88,19 @@
           <button id="notify-btn" class="rv-btn sm">Enable desktop notifications</button>
         </div>
         <div id="appr-all" class="rv-stack"></div>
+      </section>
+
+      <section id="view-models" hidden>
+        <div class="rv-card">
+          <div class="rv-card-head"><h3>Model log</h3>
+            <span class="rv-model-filters">
+              <select id="models-since" class="rv-input sm" aria-label="Period"><option value="3600">Last hour</option><option value="86400">Last 24 hours</option><option value="604800" selected>Last 7 days</option></select>
+              <button id="models-refresh" class="rv-btn sm">Refresh</button>
+            </span>
+          </div>
+          <p class="hint">Model calls that failed, and calls another model answered instead, for every engagement. Each entry says what to do.</p>
+          <div id="models-out" class="rv-empty">Loading…</div>
+        </div>
       </section>
 
       <section id="view-status" hidden>
