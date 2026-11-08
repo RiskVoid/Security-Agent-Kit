@@ -17,8 +17,12 @@ async function api(path, body) {
   const r = await fetch(path, opt);
   let data = {};
   try { data = await r.json(); } catch { /* non-JSON error page */ }
-  if (!r.ok) throw new Error(data.error || `${r.status} ${r.statusText}`);
-  if (data && data.error) throw new Error(data.error);
+  if (!r.ok || (data && data.error)) {
+    const e = new Error(data.error || `${r.status} ${r.statusText}`);
+    e.status = r.status;
+    throw e;
+  }
+  if (data && data.warning) toast(data.warning, true);
   return data;
 }
 
@@ -272,7 +276,7 @@ function paneScope() {
     $("#preview-out").innerHTML = previewHtml(r); $("#apply-btn").disabled = !r.diff;
   });
   $("#apply-btn").addEventListener("click", async (ev) => {
-    const r = await act(ev.currentTarget, () => api(`/api/eng/${enc(d.engagement)}/apply`, { scope: $("#scope-text").value, rules: $("#rules-text").value }), "Applied. The firewall now uses the new scope.");
+    const r = await act(ev.currentTarget, () => api(`/api/eng/${enc(d.engagement)}/apply`, { scope: $("#scope-text").value, rules: $("#rules-text").value, revision: d.info.revision }), "Applied. The firewall now uses the new scope.");
     if (r) { state.preview = null; await refresh(); await openEngagement(d.engagement, true); }
   });
 }
@@ -315,7 +319,9 @@ function paneFindings() {
   if (save) {
     $("#fe-status").addEventListener("change", () => { $("#fe-dup-wrap").hidden = $("#fe-status").value !== "duplicate"; });
     save.addEventListener("click", async () => {
+      const cur = d.findings.find((x) => x.id === state.openFinding) || {};
       const body = { id: state.openFinding, status: $("#fe-status").value, severity: $("#fe-sev").value, notes: $("#fe-notes").value };
+      if (Number.isInteger(cur.revision)) body.revision = cur.revision;
       if (body.status === "duplicate") body.duplicate_of = $("#fe-dup").value.trim();
       const r = await act(save, () => api(`/api/eng/${enc(d.engagement)}/finding`, body), "Saved.");
       if (r) { await openEngagement(d.engagement, true); refresh(); }
@@ -372,9 +378,15 @@ function paneReport() {
       ${files.length ? `<div class="rv-card-body flush"><table class="rv-table"><tbody>${files.map((f) => `<tr><td><span class="mono">${esc(f)}</span></td>
         <td style="text-align:right">${f.endsWith(".html") ? `<a href="/report/${enc(d.engagement)}/${enc(f)}" target="_blank" rel="noopener">View</a> · ` : ""}<a href="/files/${enc(d.engagement)}/${enc(f)}">Download</a></td></tr>`).join("")}</tbody></table></div>`
       : `<div class="rv-empty">No report yet.</div>`}</div>`;
-  $("#m-save").addEventListener("click", (e) => act(e.currentTarget, () => api(`/api/eng/${enc(d.engagement)}/meta`,
-    { client: $("#m-client").value, "prepared by": $("#m-by").value, version: $("#m-ver").value, classification: $("#m-cls").value }), "Saved.").then(refresh));
-  $("#exec-save").addEventListener("click", (e) => act(e.currentTarget, () => api(`/api/eng/${enc(d.engagement)}/summary`, { text: $("#exec").value }), "Saved."));
+  $("#m-save").addEventListener("click", async (e) => {
+    const r = await act(e.currentTarget, () => api(`/api/eng/${enc(d.engagement)}/meta`,
+      { client: $("#m-client").value, "prepared by": $("#m-by").value, version: $("#m-ver").value, classification: $("#m-cls").value, digest: d.meta_digest }), "Saved.");
+    if (r) { d.meta = r.meta; d.meta_digest = r.digest; refresh(); }
+  });
+  $("#exec-save").addEventListener("click", async (e) => {
+    const r = await act(e.currentTarget, () => api(`/api/eng/${enc(d.engagement)}/summary`, { text: $("#exec").value, digest: d.summary_digest }), "Saved.");
+    if (r) { d.executive_summary = $("#exec").value; d.summary_digest = r.digest; }
+  });
   $("#gen-btn").addEventListener("click", async (e) => {
     $("#gen-out").innerHTML = `<div class="rv-banner"><div class="rv-banner-body"><p class="rv-banner-title">Building the report</p><p class="rv-banner-sub">Checking evidence and writing the HTML, Word, PDF and Excel files. Up to a minute.</p></div></div>`;
     const r = await act(e.currentTarget, () => api(`/api/eng/${enc(d.engagement)}/report`, {}));
@@ -514,17 +526,25 @@ async function paneLive() {
   load();
 }
 
+// who did it: a person through the console or ./rvkit, or the agent (entries from before actors were recorded: none)
+function actorTag(a) {
+  if (!a) return `<span class="rv-dim">unknown</span>`;
+  const [kind, name] = String(a).split(":", 2);
+  return `<span class="rv-actor ${esc(kind)}" title="${esc(a)}">${esc(kind === "agent" ? "agent" : name || kind)}<span class="rv-dim"> ${esc(kind === "agent" ? name || "" : "via " + kind)}</span></span>`;
+}
+
 async function paneAudit() {
   const d = state.detail;
   $("#pane").innerHTML = `<p class="hint">Newest first. The authoritative log is in the kit's control volume.</p><div id="audit-out" class="rv-empty">Loading…</div>`;
   try {
     const r = await api(`/api/eng/${enc(d.engagement)}/audit?n=300`);
-    $("#audit-out").outerHTML = `<div class="rv-table-wrap"><table class="rv-table"><thead><tr><th>Time</th><th>What</th><th>Tier</th><th>Result</th></tr></thead><tbody>
+    $("#audit-out").outerHTML = `<div class="rv-table-wrap"><table class="rv-table"><thead><tr><th>Time</th><th>Who</th><th>What</th><th>Tier</th><th>Result</th></tr></thead><tbody>
       ${r.entries.map((e) => {
-        const what = e.command ? `<code>${esc(e.command)}</code>` : esc(e.event || "");
-        const res = e.refused ? `${tag("refused", "fail")} <span class="rv-dim">${esc(e.refused)}</span>` : e.exit !== undefined ? `<span class="mono">exit ${esc(e.exit)} · ${esc(e.seconds)}s</span>` : esc(e.archive || e.status || "");
-        return `<tr><td class="nowrap">${fmtTime(e.ts)}</td><td>${what}</td><td>${e.tier ? tag(e.tier, TIER_CLASS[e.tier] || "") : ""}</td><td>${res}</td></tr>`;
-      }).join("") || `<tr><td colspan="4"><div class="rv-empty">No activity yet.</div></td></tr>`}</tbody></table></div>`;
+        const what = e.command ? `<code>${esc(e.command)}</code>` : `${esc(String(e.event || "").replace(/-/g, " "))}${e.target ? ` <span class="mono">${esc(e.target)}</span>` : ""}${e.fields ? ` <span class="rv-dim">${esc([].concat(e.fields).join(", "))}</span>` : ""}`;
+        const rev = e.before !== undefined || e.after !== undefined ? `<span class="mono rv-dim">${esc(e.before ?? "new")} → ${esc(e.after ?? "")}</span>` : "";
+        const res = e.refused ? `${tag("refused", "fail")} <span class="rv-dim">${esc(e.refused)}</span>` : e.exit !== undefined ? `<span class="mono">exit ${esc(e.exit)} · ${esc(e.seconds)}s</span>` : rev || esc(e.archive || e.status || "");
+        return `<tr><td class="nowrap">${fmtTime(e.ts)}</td><td class="nowrap">${actorTag(e.actor)}</td><td>${what}</td><td>${e.tier ? tag(e.tier, TIER_CLASS[e.tier] || "") : ""}</td><td>${res}</td></tr>`;
+      }).join("") || `<tr><td colspan="5"><div class="rv-empty">No activity yet.</div></td></tr>`}</tbody></table></div>`;
   } catch (e) { $("#audit-out").textContent = e.message; }
 }
 

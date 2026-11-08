@@ -169,7 +169,10 @@ lab_vampi_init() { # VAmPI starts with an empty database: /createdb fills it wit
 }
 LAB="lab-juice-shop lab-dvwa lab-dvwa-db lab-vampi lab-dvga lab-llm"
 
-kctl() { docker compose exec -T kali-mcp python3 /opt/kali-mcp/rvctl.py "$@"; }
+# Who acts, for the audit log: cli:<login> here; the console sets RVKIT_ACTOR=console:<login> when it calls rvkit.
+actor() { local a="${RVKIT_ACTOR:-cli:$(id -un 2>/dev/null | tr -cd 'A-Za-z0-9._@-' | cut -c1-64)}"
+  case "$a" in cli:?*|console:?*) printf '%s' "$a" ;; *) printf 'cli:host' ;; esac; }
+kctl() { docker compose exec -T kali-mcp python3 /opt/kali-mcp/rvctl.py --actor "$(actor)" "$@"; }
 eng_dir() { printf '%s/%s' "$(expand "$(envget ENGAGEMENTS_DIR)")" "$1"; }
 
 write_engagement() { # write_engagement <name> <client> <tiers> <rate> <network> <private:y|n> <target>...
@@ -599,6 +602,35 @@ EOF
   esac
 }
 
+# ops <operation> <request-json>: one harness/ops.py operation in findings-mcp; a change is added to the audit log.
+ops() {
+  local out rc=0
+  out="$(printf '%s' "$2" | docker compose exec -T findings-mcp python3 ops.py "$1")" || rc=$?
+  python3 -c 'import json,sys; d=json.loads(sys.argv[1].strip().splitlines()[-1]); sys.exit(0 if "error" not in d else print("error: " + d["error"], file=sys.stderr) or 1)' "$out" || return 1
+  local ev; ev="$(python3 -c 'import json,sys; e=json.loads(sys.argv[1].strip().splitlines()[-1]).get("event"); print(json.dumps(e) if e else "")' "$out")"
+  if [ -n "$ev" ]; then printf '%s' "$ev" | kctl record "$(python3 -c 'import json,sys; print(json.loads(sys.argv[1])["engagement"])' "$2")" >/dev/null \
+    || warn "the change was saved but not added to the audit log"; fi
+  printf '%s\n' "$out" | tail -1
+  return $rc
+}
+
+cmd_finding() { # finding <eng> <F-id> key=value...
+  [ $# -ge 3 ] || die "usage: ./rvkit finding <engagement> <F-001> status=confirmed [severity=high] [notes=\"...\"]"
+  local req
+  req="$(python3 -c '
+import json, sys
+eng, fid, actor, pairs = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4:]
+fields = {}
+for p in pairs:
+    if "=" not in p:
+        sys.exit(f"expected key=value, got {p!r}")
+    k, v = p.split("=", 1)
+    fields[k.strip()] = v
+print(json.dumps({"engagement": eng, "actor": actor, "id": fid, "fields": fields}))' "$1" "$2" "$(actor)" "${@:3}")" || die "bad arguments"
+  local out; out="$(ops finding.update "$req")" || exit 1
+  printf '%s' "$out" | python3 -c 'import json,sys; f=json.loads(sys.stdin.read())["result"]; print("%s: %s, %s (revision %s) %s" % (f["id"], f["status"], f["severity"], f["revision"], f["title"]))'
+}
+
 cmd_help() {
   cat <<EOF
 ${B}rvkit: RiskVoid agent kit${N}   UI: $UI_URL
@@ -637,6 +669,7 @@ ${B}Engagements${N}  (also as: rvkit eng <command>)
   show <eng>                    active scope and rules
   halt|resume <eng>             kill running commands and block new ones / allow again
   audit [eng] [n]               last n audit-log entries
+  finding <eng> <F-id> k=v...   change a finding: status=, severity=, notes=, title=, duplicate_of= (audited)
   report <eng>                  report (.html + .docx + .pdf) and findings register (.xlsx) in <eng>/report/
   close <eng>                   close-out: audit extract + SHA-256 manifest + archive, then halt
   eng delete <eng> [--force]    unregister a closed engagement (frees its slot; folder kept, renamed)
@@ -768,6 +801,7 @@ for k, b in p.items(): print("%s: spent $%.4f in the current 24 h period" % (k, 
   bench)
     need_env; [ $# -ge 1 ] || die "usage: ./rvkit bench <name|all> [--agent riskvoid-planner|riskvoid-local]   (list: ls evals/benchmarks)"
     python3 evals/run_benchmark.py "$@" ;;
+  finding)    need_env; cmd_finding "$@" ;;
   report)     need_env; [ $# -ge 1 ] || die "usage: ./rvkit report <engagement>"
               docker compose exec -T findings-mcp python3 report.py "$1" ;;
   close)      need_env; [ $# -ge 1 ] || die "usage: ./rvkit close <engagement>"; kctl close "$1" ;;

@@ -183,7 +183,7 @@ def read_file(task, path, start=1, lines=200):
 
 
 def record_candidate(task, title, severity, asset, description, evidence, cwe=""):
-    f = db.record(task["engagement"], title=title, severity=severity, asset=asset, description=description,
+    f = db.record(task["engagement"], actor="agent:worker", title=title, severity=severity, asset=asset, description=description,
                   evidence=evidence, cwe=cwe, status="candidate", source=f"worker:{task['id']}")
     task["candidates"].append(f["id"])
     return f"recorded {f['id']} (candidate)"

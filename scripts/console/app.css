@@ -368,3 +368,7 @@ fieldset.rv-field legend { padding: 0; margin-bottom: 8px; }
 .rv-model-filters { display: flex; gap: 8px; align-items: center; }
 .rv-input.sm { padding: 4px 8px; font-size: 12px; width: auto; }
 .mono.sm { font-size: 11px; }
+
+/* audit log: who made the change */
+.rv-actor { font-size: 12px; }
+.rv-actor.agent { color: var(--rv-text-1); }

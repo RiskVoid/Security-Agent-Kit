@@ -3,14 +3,18 @@
 
 Run it with ./rvkit console. It runs on the host, not in a container, and binds 127.0.0.1 only: the agent's
 containers can't reach it, so the agent can't approve its own commands or widen its scope. Every action goes
-through the same control commands as ./rvkit (rvctl in kali-mcp, findings_db and report.py in findings-mcp).
+through the same validated operations as ./rvkit and the agent's tools: rvctl in kali-mcp for scope, approvals and
+lifecycle, harness/ops.py in findings-mcp for findings, report details and the report. Each change names its actor
+(console:<login>) and the revision it was based on; a record that changed in the meantime gives 409 Conflict.
+Changes land in the engagement's audit log.
 
 Access needs the session token: ./rvkit console opens /login?t=<token>, which sets an HttpOnly, SameSite=Strict
 cookie. Requests with another Host header (DNS rebinding) are refused, and every change needs the X-RV-Console
 header, which a cross-site form or link can't send.
 Python 3.9+, standard library only.
 """
-import calendar, hmac, json, mimetypes, os, re, secrets, sqlite3, subprocess, sys, threading, time, urllib.parse
+import calendar, getpass, hashlib, hmac, json, mimetypes, os, re, secrets, sqlite3, subprocess, sys, threading, time
+import urllib.parse
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -49,6 +53,11 @@ E = env()
 ENG_DIR = os.path.expanduser(E.get("ENGAGEMENTS_DIR") or "~/riskvoid/engagements")
 PORT = int(os.environ.get("CONSOLE_PORT") or E.get("CONSOLE_PORT") or 8100)
 TOKEN_FILE = os.path.join(KIT, ".rvkit", "console.token")
+try:
+    _login = getpass.getuser()
+except Exception:  # noqa: BLE001
+    _login = "host"
+ACTOR = "console:" + (re.sub(r"[^A-Za-z0-9._@-]", "", _login)[:64] or "host")
 
 
 def token():
@@ -82,28 +91,50 @@ class Fail(Exception):
         self.code = code
 
 
-def run(args, stdin=None, timeout=120, ok=(0,)):
-    r = subprocess.run(args, cwd=KIT, input=stdin, capture_output=True, text=True, timeout=timeout)
+def run(args, stdin=None, timeout=120, ok=(0,), env=None):
+    r = subprocess.run(args, cwd=KIT, input=stdin, capture_output=True, text=True, timeout=timeout,
+                       env={**os.environ, **(env or {})})
     if r.returncode not in ok:
         msg = (r.stderr or r.stdout).strip().splitlines()
-        raise Fail(msg[-1] if msg else f"{args[0]} failed ({r.returncode})")
+        text = msg[-1] if msg else f"{args[0]} failed ({r.returncode})"
+        if r.returncode == 3:  # rvctl: the record changed since it was read
+            raise Fail(re.sub(r"^conflict:\s*", "", text), 409)
+        raise Fail(re.sub(r"^error:\s*", "", text))
     return r.stdout
 
 
 def ctl(*args, stdin=None, ok=(0,), timeout=120):
-    return run(["docker", "compose", "exec", "-T", "kali-mcp", "python3", "/opt/kali-mcp/rvctl.py", *args],
-               stdin=stdin, ok=ok, timeout=timeout)
+    """rvctl in kali-mcp (scope, approvals, lifecycle, audit), acting as this console's user."""
+    return run(["docker", "compose", "exec", "-T", "kali-mcp", "python3", "/opt/kali-mcp/rvctl.py", "--actor", ACTOR,
+                *args], stdin=stdin, ok=ok, timeout=timeout)
 
 
-def findings_py(code, payload, timeout=600):
-    """Run Python in findings-mcp (its findings_db and report modules) with a JSON payload on stdin."""
-    out = run(["docker", "compose", "exec", "-T", "findings-mcp", "python3", "-c", code],
-              stdin=json.dumps(payload), timeout=timeout)
-    return json.loads(out.strip().splitlines()[-1])
+def ops(name, eng, timeout=120, **req):
+    """One operation of harness/ops.py in findings-mcp. A change is added to the engagement's audit log."""
+    out = run(["docker", "compose", "exec", "-T", "findings-mcp", "python3", "ops.py", name],
+              stdin=json.dumps({"engagement": eng, "actor": ACTOR, **req}), timeout=timeout, ok=(0, 1, 3))
+    try:
+        d = json.loads(out.strip().splitlines()[-1])
+    except (ValueError, IndexError):
+        raise Fail(f"{name}: no answer from findings-mcp", 502)
+    if "error" in d:
+        raise Fail(d["error"], d.get("code", 400))
+    if d.get("event"):
+        try:
+            ctl("record", eng, stdin=json.dumps(d["event"]))
+        except Fail as e:  # the change itself is saved; say that the history is missing it
+            d["result"] = {**(d["result"] if isinstance(d["result"], dict) else {"value": d["result"]}),
+                           "warning": f"saved, but not added to the audit log: {e}"}
+    return d["result"]
 
 
 def rvkit(*args, timeout=180):
-    return run([os.path.join(KIT, "rvkit"), *args], timeout=timeout)
+    return run([os.path.join(KIT, "rvkit"), *args], timeout=timeout, env={"RVKIT_ACTOR": ACTOR})
+
+
+def digest(text):
+    """Same digest as harness/ops.py, so the page can say which version of a file it edited."""
+    return hashlib.sha256((text or "").encode()).hexdigest()[:16]
 
 
 def eng_path(eng, *parts):
@@ -114,7 +145,7 @@ def eng_path(eng, *parts):
 
 def read(path, limit=1_000_000):
     try:
-        with open(path, errors="replace") as f:
+        with open(path, encoding="utf-8", errors="replace") as f:
             return f.read(limit)
     except OSError:
         return ""
@@ -278,10 +309,12 @@ def api_get(path, q):
         rdir = eng_path(eng, "report")
         files = sorted((f for f in os.listdir(rdir) if f.endswith(REPORT_EXT)), reverse=True) \
             if os.path.isdir(rdir) else []
+        summary = read(eng_path(eng, "report", "executive-summary.md"))
         return {"engagement": eng, "info": info, "meta": meta(eng),
+                "meta_digest": digest(read(eng_path(eng, "report", "meta.txt"))),
                 "scope_text": read(eng_path(eng, "SCOPE.md")), "rules_text": read(eng_path(eng, "RULES.md")),
                 "findings": findings(eng), "report_files": files,
-                "executive_summary": read(eng_path(eng, "report", "executive-summary.md")),
+                "executive_summary": summary, "summary_digest": digest(summary),
                 "approvals": [a for a in json.loads(ctl("approvals", eng, "--json") or "[]")]}
     if what == "audit":
         n = max(1, min(int(q.get("n", ["300"])[0]), 2000))
@@ -295,12 +328,7 @@ def api_get(path, q):
         return {**live, "now": time.time(), "events": live["events"][::-1], "spend": spend(),
                 "tasks": busy + [t for t in tasks if t not in busy][:3]}
     if what == "evidence":
-        return findings_py(
-            "import json,sys,report,findings_db as db\n"
-            "e=json.load(sys.stdin)['eng']\n"
-            "f=[x for x in db.list_(e) if x['status'] not in ('false-positive','duplicate')]\n"
-            "items,issues=report.evidence_index(e,f)\n"
-            "print(json.dumps({'items':items,'issues':issues}))", {"eng": eng}, timeout=120)
+        return ops("evidence.index", eng)
     raise Fail("not found", 404)
 
 
@@ -329,58 +357,32 @@ def api_post(path, body):
         if action == "preview":
             return json.loads(ctl("preview", eng, stdin=json.dumps({"scope": body.get("scope", ""),
                                                                     "rules": body.get("rules", "")})))
-        if action == "apply":
-            for f, key in (("SCOPE.md", "scope"), ("RULES.md", "rules")):
-                if key in body:
-                    with open(eng_path(eng, f), "w") as fh:
-                        fh.write(str(body[key]))
-            return {"output": ctl("sync", eng, "--yes")}
+        if action == "apply":  # write exactly what was previewed, unless the active scope changed since
+            texts = {k: body[k] for k in ("scope", "rules") if isinstance(body.get(k), str)}
+            if not texts:
+                raise Fail("nothing to apply")
+            args = ["sync", eng, "--yes", "--stdin"]
+            if body.get("revision"):
+                args += ["--expect", str(body["revision"])]
+            return {"output": ctl(*args, stdin=json.dumps(texts))}
         if action in ("halt", "resume", "close"):
             return {"output": ctl(action, eng, timeout=600)}
         if action == "delete":
             return {"output": ctl("delete", eng, *(["--force"] if body.get("force") else []))}
         if action == "report":
-            return findings_py(
-                "import json,sys,report\n"
-                "try:\n print(json.dumps(report.build(json.load(sys.stdin)['eng'])))\n"
-                "except ValueError as e:\n print(json.dumps({'error':str(e)}))", {"eng": eng}, timeout=900)
+            return ops("report.build", eng, timeout=900)
         if action == "meta":
-            p = eng_path(eng, "report", "meta.txt")
-            cur = read(p).splitlines() or []
-            keys = {"client": "Client", "prepared by": "Prepared by", "version": "Version",
-                    "classification": "Classification"}
-            vals = {k: str(body[k]).replace("\n", " ")[:200] for k in keys if k in body}
-            out, seen = [], set()
-            for line in cur:
-                k = line.split(":", 1)[0].strip().lower() if ":" in line else None
-                if k in vals:
-                    out.append(f"{keys[k]}: {vals[k]}"); seen.add(k)
-                else:
-                    out.append(line)
-            out += [f"{keys[k]}: {v}" for k, v in vals.items() if k not in seen]
-            os.makedirs(os.path.dirname(p), exist_ok=True)
-            with open(p, "w") as fh:
-                fh.write("\n".join(out) + "\n")
-            return {"meta": meta(eng)}
+            fields = {k: body[k] for k in ("client", "prepared by", "version", "classification") if k in body}
+            return ops("meta.set", eng, fields=fields, expected_digest=body.get("digest"))
         if action == "summary":
-            p = eng_path(eng, "report", "executive-summary.md")
-            os.makedirs(os.path.dirname(p), exist_ok=True)
-            with open(p, "w") as fh:
-                fh.write(str(body.get("text", ""))[:200_000])
-            return {"saved": True}
+            return ops("summary.set", eng, text=body.get("text", ""), expected_digest=body.get("digest"))
         if action == "finding":
             fid = body.get("id", "")
-            if not FID_RX.match(fid):
+            if not isinstance(fid, str) or not FID_RX.match(fid):
                 raise Fail("invalid finding id")
             fields = {k: body[k] for k in ("status", "severity", "notes", "duplicate_of", "title") if k in body}
-            if fields.get("duplicate_of") == "":
-                fields.pop("duplicate_of")
-            return findings_py(
-                "import json,sys,findings_db as db\n"
-                "d=json.load(sys.stdin)\n"
-                "try:\n print(json.dumps({'finding':db.update(d['eng'],d['id'],**d['fields'])}))\n"
-                "except ValueError as e:\n print(json.dumps({'error':str(e)}))",
-                {"eng": eng, "id": fid, "fields": fields}, timeout=60)
+            return {"finding": ops("finding.update", eng, id=fid, fields=fields,
+                                   expected_revision=body.get("revision"))}
     m = re.match(r"^/api/approvals/([^/]+)/([a-f0-9]{6,32})/(approve|deny)$", path)
     if m:
         eng, aid, action = m.groups()

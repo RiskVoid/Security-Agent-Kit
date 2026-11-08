@@ -16,7 +16,7 @@ RUN set -eu; mkdir -p /usr/share/fonts/truetype/riskvoid; cd /usr/share/fonts/tr
     fc-cache -f
 RUN pip install --no-cache-dir "mcp==1.30.0" "python-docx==1.2.0" "openpyxl==3.1.5" "pillow==12.3.0"
 WORKDIR /opt/harness
-COPY findings_db.py findings.py report.py report_html.py redact.py branding.py ./
+COPY findings_db.py ops.py findings.py report.py report_html.py redact.py branding.py ./
 COPY brand/ ./brand/
 COPY brands/ ./brands/
 COPY playbooks/ ./playbooks/
