@@ -274,11 +274,21 @@ class RvEvents(CustomLogger):
     async def async_post_call_failure_hook(self, request_data, original_exception, user_api_key_dict, traceback_str=None):
         group = request_data.get("model")
         kind, text = classify(group, original_exception)
-        record(kind, group, text, engagement=engagement_of(request_data), status=getattr(original_exception, "status_code", None))
+        eng, status = engagement_of(request_data), getattr(original_exception, "status_code", None)
+        if kind == "context":
+            # OpenHands recognises this error by its text ("exceeds the available context size", ...) and then
+            # summarises older turns and carries on: pass it through unchanged and log it as recovered.
+            used = re.search(r"\((\d+) tokens\) exceeds the available context size \((\d+) tokens\)", str(original_exception))
+            size = f" ({int(used.group(1)) // 1000}K tokens, the window is {int(used.group(2)) // 1024}K)" if used else ""
+            record("context", group, f"{model_name(group)}: the conversation outgrew the context window{size}; OpenHands "
+                   "summarised older turns and continued.", engagement=eng, status=status)
+            return None
+        record(kind, group, text, engagement=eng, status=status)
         try:
             from fastapi import HTTPException
-            code = int(getattr(original_exception, "status_code", None) or 500)
-            return HTTPException(status_code=code, detail=PREFIX + text)
+            # keep the provider's text after the explanation: OpenHands classifies errors by it (rate limit, quota, ...)
+            orig = re.sub(r"\s+", " ", str(original_exception))[:1500]
+            return HTTPException(status_code=int(status or 500), detail=f"{PREFIX}{text} | Original error: {orig}")
         except Exception:  # noqa: BLE001
             return None
 

@@ -289,6 +289,20 @@ class ModelEvents(unittest.TestCase):
                                                          "worker_down": "connect"}[k], 402 if k == "credits" else None))[1]
                                 for w in ("./rvkit", "/rv-start", "openrouter.ai")))
 
+    def test_context_passes_through(self):
+        """A full context window must reach OpenHands unchanged (it summarises and continues), logged as recovered."""
+        import asyncio, model_events as me
+        class Ctx(Exception):
+            status_code = 400
+        with tempfile.TemporaryDirectory() as d:
+            self.rv.EVENTS = log = os.path.join(d, "e.jsonl")
+            err = Ctx("ContextWindowExceededError: request (81359 tokens) exceeds the available context size (65536 tokens)")
+            out = asyncio.run(self.rv.RvEvents().async_post_call_failure_hook({"model": "colab-qwen", "messages": []}, err, None))
+            self.assertIsNone(out)                                              # not rewritten
+            ev = me.read(path=log)[0]
+            self.assertEqual((ev["kind"], ev["problem"]), ("context", False))
+            self.assertIn("81K tokens, the window is 64K", ev["message"])
+
     def test_engagement_of(self):
         e = self.rv.engagement_of
         self.assertEqual(e({"messages": [{"role": "user", "content": "Engagement `lab-juice`: web test"}]}), "lab-juice")

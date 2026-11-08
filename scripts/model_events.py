@@ -7,14 +7,15 @@ Used by ./rvkit status, doctor and watch, and by the console. Python 3.9+, stand
   python3 scripts/model_events.py --from-line N                             events from line N on (./rvkit watch)
   python3 scripts/model_events.py --count                                   number of lines in the log
 
-Kinds: "fallback" and "refusal" mean another model answered instead (recovered, shown as info). Everything else
-(no_answer, credits, budget, auth, rate_limit, worker_down, timeout, context, error) means the call failed.
+Kinds: "fallback" and "refusal" mean another model answered instead, "context" that OpenHands summarised older turns
+to fit the context window (recovered, shown as info). Everything else (no_answer, credits, budget, auth, rate_limit,
+worker_down, timeout, error) means the call failed.
 """
 import calendar, json, os, sys, time
 
 KIT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 LOG = os.path.join(KIT, ".rvkit", "events", "model-events.jsonl")
-RECOVERED = {"fallback", "refusal"}
+RECOVERED = {"fallback", "refusal", "context"}  # another model answered, or OpenHands summarised and went on
 
 
 def _epoch(ts):

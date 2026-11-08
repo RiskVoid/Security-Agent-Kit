@@ -300,7 +300,7 @@ visible:
   when the worker fallback is on) answers instead. A rate-limited fallback is retried twice.
 - **The reason shows in the chat.** When no model answers, the agent's reply is a short `[RiskVoid] ...` message
   that says what happened and what to do, instead of an empty reply. Errors reach OpenHands with the same kind of
-  explanation:
+  explanation, followed by the provider's original error text (OpenHands' own retry rules read it):
 
   | Problem | What the message tells you to do |
   |---|---|
@@ -309,7 +309,6 @@ visible:
   | API key rejected | check the key in `.env`, then `./rvkit up`; for the worker, run the `./rvkit connect` line again |
   | Worker not reachable (Colab stopped, tunnel changed) | `/rv-start`, or `./rvkit worker` |
   | Rate limit, timeout | wait a minute and continue the conversation |
-  | Context window full | start a new conversation for the next step |
   | Refused by the model and its fallback | rephrase with the engagement context, or `./rvkit planner <model> [fallback]` |
 
 - **Every problem is logged** to `.rvkit/events/model-events.jsonl` on this machine. These show it:
@@ -321,6 +320,10 @@ visible:
 
   To read the log yourself: `python3 scripts/model_events.py --since 3600`. A problem another model recovered from is
   marked "recovered".
+- **A full context window is not an error.** When a conversation outgrows the model's context window (64K tokens
+  for the worker on an A100 40 GB), the error passes through unchanged: OpenHands then summarises older turns and
+  carries on. The log shows it as recovered. The kit's agent prompt and tools take about 24K tokens, so on the
+  worker this happens after a few long tool outputs; the planner models have much larger windows.
 
 ## Costs and budget
 
