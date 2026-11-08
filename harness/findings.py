@@ -6,6 +6,9 @@ The planner records, confirms, rejects and lists findings. The worker can only a
 import json, os
 from mcp.server.fastmcp import FastMCP
 import findings_db as db
+import ops
+
+ACTOR = "agent:planner"  # changes made through this server are attributed to the planner agent
 
 mcp = FastMCP("findings", host="0.0.0.0", port=8092)
 
@@ -22,10 +25,11 @@ def record_finding(engagement: str, title: str, severity: str, asset: str, descr
     """Record a finding for an engagement. severity: critical|high|medium|low|info.
     status: candidate (default, not yet verified) or confirmed (you have reproduced or verified it).
     evidence: file paths under /work/<engagement>/evidence/. Returns the stored finding with its id (F-001...)."""
-    return _out(db.record(engagement, title=title, severity=severity, asset=asset, description=description,
-                          impact=impact, reproduction=reproduction, remediation=remediation, evidence=evidence or [],
-                          cvss_vector=cvss_vector, cvss_score=cvss_score, cwe=cwe, status=status,
-                          source="planner", notes=notes))
+    row, _ = ops.call("finding.record", {"engagement": engagement, "actor": ACTOR, "fields": dict(
+        title=title, severity=severity, asset=asset, description=description, impact=impact,
+        reproduction=reproduction, remediation=remediation, evidence=evidence or [], cvss_vector=cvss_vector,
+        cvss_score=cvss_score, cwe=cwe, status=status, source="planner", notes=notes)})
+    return _out(row)
 
 
 @mcp.tool()
@@ -39,10 +43,12 @@ def update_finding(engagement: str, finding_id: str, status: str | None = None, 
     in notes) when it doesn't hold, status=duplicate with duplicate_of=<id of the finding to keep> when it is the
     same issue as another finding (merge its evidence into that one first), fixed or accepted-risk after client
     feedback. Only given fields change."""
-    return _out(db.update(engagement, finding_id, status=status, severity=severity, title=title,
-                          description=description, impact=impact, reproduction=reproduction,
-                          remediation=remediation, evidence=evidence, cvss_vector=cvss_vector,
-                          cvss_score=cvss_score, cwe=cwe, notes=notes, duplicate_of=duplicate_of))
+    fields = dict(status=status, severity=severity, title=title, description=description, impact=impact,
+                  reproduction=reproduction, remediation=remediation, evidence=evidence, cvss_vector=cvss_vector,
+                  cvss_score=cvss_score, cwe=cwe, notes=notes, duplicate_of=duplicate_of)
+    row, _ = ops.call("finding.update", {"engagement": engagement, "actor": ACTOR, "id": finding_id,
+                                         "fields": {k: v for k, v in fields.items() if v is not None}})
+    return _out(row)
 
 
 @mcp.tool()

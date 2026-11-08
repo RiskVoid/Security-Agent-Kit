@@ -54,6 +54,10 @@ is weaker than described here.
 
 ### How the agent's network access is limited in this release
 
+- **The console** (`./rvkit console`) listens on the host's `127.0.0.1` and needs a session token that no
+  container has. Docker Desktop and OrbStack let containers on non-internal networks open that port through
+  `host.docker.internal`; without the token they get `401`. The agent's own container has no route to it and the
+  sandbox firewall blocks the host's addresses.
 - **Kali tools.** Every command runs as an unprivileged user for that engagement, in a sandbox that sees only its
   own engagement folder and in-scope code (read-only). An nftables firewall lets that user reach only in-scope IPs
   and domains, plus package and vulnerability-database sites for online engagements. Link-local and cloud metadata

@@ -370,7 +370,19 @@ engagement's sandbox user id and the infrastructure domains it may reach, as JSO
 
 The last `n` (default 20) entries of the authoritative audit log, one JSON object per line, optionally for one
 engagement. Entries record each command (with its tier, exit code, duration and the hashes of files it wrote),
-each refusal with its reason, approvals, halts, scope changes and close-out.
+each refusal with its reason, approvals, halts, scope changes and close-out, and changes to findings and report
+details. Each entry names its actor: `cli:<login>` for `./rvkit`, `console:<login>` for the console, `agent:…` for
+the agent.
+
+### finding
+
+```sh
+./rvkit finding <engagement> <F-001> status=confirmed [severity=high] [notes="..."] [title=...] [duplicate_of=F-002]
+```
+
+Changes a finding through the same operation as the console and the agent's tools, so the same checks apply. The
+change is recorded in the audit log as yours (`cli:<login>`). Statuses: `candidate`, `confirmed`,
+`false-positive`, `duplicate` (with `duplicate_of`), `fixed`, `accepted-risk`.
 
 ### report
 

@@ -17,22 +17,59 @@ async function api(path, body) {
   const r = await fetch(path, opt);
   let data = {};
   try { data = await r.json(); } catch { /* non-JSON error page */ }
-  if (!r.ok) throw new Error(data.error || `${r.status} ${r.statusText}`);
-  if (data && data.error) throw new Error(data.error);
+  if (!r.ok || (data && data.error)) {
+    const e = new Error(data.error || `${r.status} ${r.statusText}`);
+    e.status = r.status;
+    throw e;
+  }
+  if (data && data.warning) toast(data.warning, true);
   return data;
 }
 
 function toast(msg, bad = false) {
   const t = $("#toast");
   t.textContent = msg; t.className = "rv-toast" + (bad ? " bad" : ""); t.hidden = false;
+  t.setAttribute("role", bad ? "alert" : "status");
   clearTimeout(toast.timer); toast.timer = setTimeout(() => { t.hidden = true; }, bad ? 8000 : 3500);
 }
 
 async function act(btn, fn, okMsg) {
   if (btn) btn.disabled = true;
   try { const r = await fn(); if (okMsg) toast(okMsg); return r; }
-  catch (e) { toast(e.message, true); }
+  catch (e) {
+    if (e.status === 409) return conflict(e);
+    toast(e.message, true);
+  }
   finally { if (btn) btn.disabled = false; }
+}
+
+// Someone else (the agent, ./rvkit, another tab) changed the record since this page loaded it. Keep what the user typed
+// on screen, take the new revisions so a second save is a deliberate overwrite, and make scope changes preview again.
+async function conflict(e) {
+  const what = e.message.replace(/[:.]?\s*reload\b.*$/i, "");
+  toast(`${what}. Your edit is still on screen; saving again replaces the other change.`, true);
+  if (!state.current) return;
+  try {
+    const fresh = await api(`/api/eng/${enc(state.current)}`);
+    const d = state.detail;
+    if (!d || d.engagement !== fresh.engagement) return;
+    d.info = fresh.info; d.findings = fresh.findings; d.meta_digest = fresh.meta_digest; d.summary_digest = fresh.summary_digest;
+    if (state.tab === "findings" && state.openFinding) {  // show the saved version next to the user's edit
+      const keep = { status: $("#fe-status")?.value, severity: $("#fe-sev")?.value, notes: $("#fe-notes")?.value, dup: $("#fe-dup")?.value };
+      paneFindings();
+      if ($("#fe-status")) { $("#fe-status").value = keep.status; $("#fe-sev").value = keep.severity; $("#fe-notes").value = keep.notes; if ($("#fe-dup")) $("#fe-dup").value = keep.dup || ""; }
+      const f = d.findings.find((x) => x.id === state.openFinding);
+      if (f && $(".rv-editor")) $(".rv-editor").insertAdjacentHTML("afterbegin", `<div class="rv-banner warn"><div class="rv-banner-body">
+        <p class="rv-banner-title">Saved meanwhile${f.updated_by ? " by " + esc(f.updated_by) : ""} (revision ${esc(f.revision)})</p>
+        <p class="rv-banner-sub">Status ${esc(f.status)}, severity ${esc(f.severity)}${f.notes ? `, notes: ${esc(f.notes)}` : ""}. Your edit is below; Save replaces that version.</p></div></div>`);
+    }
+    if (state.tab === "scope") {
+      state.preview = null;
+      const a = $("#apply-btn"), o = $("#preview-out");
+      if (a) a.disabled = true;
+      if (o) o.innerHTML = `<div class="rv-banner warn"><div class="rv-banner-body"><p class="rv-banner-title">The active scope changed</p><p class="rv-banner-sub">Preview again to see your edit against the current scope, then apply.</p></div></div>`;
+    }
+  } catch { /* the toast already says what happened */ }
 }
 
 const TIER_CLASS = { passive: "passive", active: "active-tier", intrusive: "intrusive" };
@@ -60,6 +97,7 @@ function show(view) {
   for (const v of ["engagements", "approvals", "status", "models"]) $(`#view-${v}`).hidden = v !== view;
   $$(".rv-sidebar-item[data-view]").forEach((a) => a.classList.toggle("active", a.dataset.view === view));
   document.body.classList.remove("nav-open");
+  if (stream.es) connectStream();  // the live topic only while an engagement's Live tab shows
   if (view === "status") { crumbs([["Console", "#engagements"], ["Stack status"]]); loadStatus(); }
   else if (view === "models") { crumbs([["Console", "#engagements"], ["Model log"]]); loadModels(); }
   else if (view === "approvals") crumbs([["Console", "#engagements"], ["Approvals"]]);
@@ -74,10 +112,31 @@ function route() {
 window.addEventListener("hashchange", route);
 $("#menu-btn").addEventListener("click", () => document.body.classList.toggle("nav-open"));
 
-// ---------------------------------------------------------------- overview + approvals polling
+// ---------------------------------------------------------------- live updates
+// The console pushes changes over server-sent events (/api/stream): the overview always, and the open engagement's
+// live view while its Live tab is showing. If the stream drops, the page polls until it comes back.
+const stream = { es: null, key: null, last: 0 };
+const streamFresh = () => stream.es && stream.es.readyState === 1 && Date.now() - stream.last < 20000;
+function connectStream() {
+  const key = state.view === "engagements" && state.tab === "live" && state.current ? state.current : "";
+  if (stream.es && stream.key === key && stream.es.readyState !== 2) return;
+  if (stream.es) stream.es.close();
+  stream.key = key; stream.last = 0;
+  const es = (stream.es = new EventSource("/api/stream" + (key ? "?eng=" + enc(key) : "")));
+  const seen = () => { stream.last = Date.now(); };
+  es.addEventListener("open", seen);
+  es.addEventListener("overview", (e) => { seen(); applyOverview(JSON.parse(e.data)); });
+  es.addEventListener("live", (e) => { seen(); const d = JSON.parse(e.data); state.live = d; if (state.onLive) state.onLive(d); });
+  es.addEventListener("problem", (e) => { seen(); const d = JSON.parse(e.data); if (d.topic === "overview") showOverviewError(d.error); else if (state.onLive) state.onLive(d); });
+}
+
+// ---------------------------------------------------------------- overview + approvals
 async function refresh() {
-  try {
-    const o = await api("/api/overview");
+  try { applyOverview(await api("/api/overview")); } catch (e) { showOverviewError(e.message); }
+}
+function showOverviewError(msg) { $("#eng-list").innerHTML = `<div class="rv-empty err">${esc(msg)}</div>`; }
+function applyOverview(o) {
+  {
     state.overview = o;
     $("#agent-ui").href = o.ui_url;
     if (o.version) $("#side-version").textContent = "kit " + o.version;
@@ -93,8 +152,6 @@ async function refresh() {
     state.seenApprovals = ids;
     const b = $("#appr-badge"); b.textContent = o.approvals.length; b.hidden = !o.approvals.length;
     document.title = (o.approvals.length ? `(${o.approvals.length}) ` : "") + "RiskVoid Console";
-  } catch (e) {
-    $("#eng-list").innerHTML = `<div class="rv-empty err">${esc(e.message)}</div>`;
   }
 }
 
@@ -178,11 +235,21 @@ function renderDetail() {
       </div>
       <div id="confirm-slot"></div>
     </div>
-    <div class="rv-tabs" role="tablist">
-      ${Object.entries(TABS).map(([t, name]) => `<button role="tab" aria-selected="${state.tab === t}" data-tab="${t}" class="rv-tab ${state.tab === t ? "active" : ""}">${name}${counts[t] !== undefined ? ` <span class="n">${counts[t]}</span>` : ""}</button>`).join("")}
+    <div class="rv-tabs" role="tablist" aria-label="Engagement sections">
+      ${Object.entries(TABS).map(([t, name]) => `<button role="tab" id="tab-${t}" aria-controls="pane" aria-selected="${state.tab === t}" tabindex="${state.tab === t ? 0 : -1}" data-tab="${t}" class="rv-tab ${state.tab === t ? "active" : ""}">${name}${counts[t] !== undefined ? ` <span class="n">${counts[t]}</span>` : ""}</button>`).join("")}
     </div>
-    <div id="pane" class="rv-pane"></div>`;
+    <div id="pane" class="rv-pane" role="tabpanel" aria-labelledby="tab-${state.tab}" tabindex="-1"></div>`;
   $$(".rv-tab").forEach((b) => b.addEventListener("click", () => { state.tab = b.dataset.tab; renderDetail(); }));
+  // keyboard: arrow keys, Home and End move between tabs (WAI-ARIA tabs pattern)
+  $(".rv-tabs").addEventListener("keydown", (ev) => {
+    const keys = Object.keys(TABS), i = keys.indexOf(state.tab);
+    const next = { ArrowRight: i + 1, ArrowLeft: i - 1, Home: 0, End: keys.length - 1 }[ev.key];
+    if (next === undefined) return;
+    ev.preventDefault();
+    state.tab = keys[(next + keys.length) % keys.length]; renderDetail();
+    $(`#tab-${state.tab}`).focus();
+  });
+  connectStream();
   $("#halt-btn")?.addEventListener("click", (ev) => lifecycle(ev.currentTarget, "halt", "Halted: running commands were killed."));
   $("#resume-btn")?.addEventListener("click", (ev) => lifecycle(ev.currentTarget, "resume", "Resumed."));
   $("#close-btn").addEventListener("click", () => confirmBox("Close out " + d.engagement + "?",
@@ -202,8 +269,11 @@ function confirmBox(title, text, label, fn) {
   $("#confirm-slot").innerHTML = `<div class="rv-banner danger"><div class="rv-banner-body">
     <p class="rv-banner-title">${esc(title)}</p><p class="rv-banner-sub">${esc(text)}</p>
     <div class="rv-actions start" style="margin-top:8px"><button id="cf-yes" class="rv-btn danger">${esc(label)}</button><button id="cf-no" class="rv-btn ghost">Cancel</button></div></div></div>`;
-  $("#cf-no").addEventListener("click", () => { $("#confirm-slot").innerHTML = ""; });
+  const close = () => { $("#confirm-slot").innerHTML = ""; $("#delete-btn")?.focus(); };
+  $("#cf-no").addEventListener("click", close);
   $("#cf-yes").addEventListener("click", (ev) => fn(ev.currentTarget));
+  $("#confirm-slot").addEventListener("keydown", (ev) => { if (ev.key === "Escape") close(); });
+  $("#cf-no").focus();  // the safe choice has focus; Escape cancels
 }
 
 async function lifecycle(btn, action, msg) {
@@ -272,7 +342,7 @@ function paneScope() {
     $("#preview-out").innerHTML = previewHtml(r); $("#apply-btn").disabled = !r.diff;
   });
   $("#apply-btn").addEventListener("click", async (ev) => {
-    const r = await act(ev.currentTarget, () => api(`/api/eng/${enc(d.engagement)}/apply`, { scope: $("#scope-text").value, rules: $("#rules-text").value }), "Applied. The firewall now uses the new scope.");
+    const r = await act(ev.currentTarget, () => api(`/api/eng/${enc(d.engagement)}/apply`, { scope: $("#scope-text").value, rules: $("#rules-text").value, revision: d.info.revision }), "Applied. The firewall now uses the new scope.");
     if (r) { state.preview = null; await refresh(); await openEngagement(d.engagement, true); }
   });
 }
@@ -315,7 +385,9 @@ function paneFindings() {
   if (save) {
     $("#fe-status").addEventListener("change", () => { $("#fe-dup-wrap").hidden = $("#fe-status").value !== "duplicate"; });
     save.addEventListener("click", async () => {
+      const cur = d.findings.find((x) => x.id === state.openFinding) || {};
       const body = { id: state.openFinding, status: $("#fe-status").value, severity: $("#fe-sev").value, notes: $("#fe-notes").value };
+      if (Number.isInteger(cur.revision)) body.revision = cur.revision;
       if (body.status === "duplicate") body.duplicate_of = $("#fe-dup").value.trim();
       const r = await act(save, () => api(`/api/eng/${enc(d.engagement)}/finding`, body), "Saved.");
       if (r) { await openEngagement(d.engagement, true); refresh(); }
@@ -372,9 +444,15 @@ function paneReport() {
       ${files.length ? `<div class="rv-card-body flush"><table class="rv-table"><tbody>${files.map((f) => `<tr><td><span class="mono">${esc(f)}</span></td>
         <td style="text-align:right">${f.endsWith(".html") ? `<a href="/report/${enc(d.engagement)}/${enc(f)}" target="_blank" rel="noopener">View</a> · ` : ""}<a href="/files/${enc(d.engagement)}/${enc(f)}">Download</a></td></tr>`).join("")}</tbody></table></div>`
       : `<div class="rv-empty">No report yet.</div>`}</div>`;
-  $("#m-save").addEventListener("click", (e) => act(e.currentTarget, () => api(`/api/eng/${enc(d.engagement)}/meta`,
-    { client: $("#m-client").value, "prepared by": $("#m-by").value, version: $("#m-ver").value, classification: $("#m-cls").value }), "Saved.").then(refresh));
-  $("#exec-save").addEventListener("click", (e) => act(e.currentTarget, () => api(`/api/eng/${enc(d.engagement)}/summary`, { text: $("#exec").value }), "Saved."));
+  $("#m-save").addEventListener("click", async (e) => {
+    const r = await act(e.currentTarget, () => api(`/api/eng/${enc(d.engagement)}/meta`,
+      { client: $("#m-client").value, "prepared by": $("#m-by").value, version: $("#m-ver").value, classification: $("#m-cls").value, digest: d.meta_digest }), "Saved.");
+    if (r) { d.meta = r.meta; d.meta_digest = r.digest; refresh(); }
+  });
+  $("#exec-save").addEventListener("click", async (e) => {
+    const r = await act(e.currentTarget, () => api(`/api/eng/${enc(d.engagement)}/summary`, { text: $("#exec").value, digest: d.summary_digest }), "Saved.");
+    if (r) { d.executive_summary = $("#exec").value; d.summary_digest = r.digest; }
+  });
   $("#gen-btn").addEventListener("click", async (e) => {
     $("#gen-out").innerHTML = `<div class="rv-banner"><div class="rv-banner-body"><p class="rv-banner-title">Building the report</p><p class="rv-banner-sub">Checking evidence and writing the HTML, Word, PDF and Excel files. Up to a minute.</p></div></div>`;
     const r = await act(e.currentTarget, () => api(`/api/eng/${enc(d.engagement)}/report`, {}));
@@ -498,15 +576,19 @@ async function paneLive() {
     $$("#live-out [data-goto]").forEach((b) => b.addEventListener("click", () => { state.tab = b.dataset.goto; renderDetail(); }));
     tick();
   };
-  const load = async () => {
+  const show = (r) => {
+    if (!active() || (r.topic && r.topic !== "live:" + eng)) return;
+    if (r.error) { const o = $("#live-out"); if (o) o.textContent = r.error; return; }
+    skew = Date.now() / 1000 - r.now;
+    render(r);
+  };
+  state.onLive = show;
+  if (state.live && state.live.topic === "live:" + eng) show(state.live);
+  const load = async () => {  // only while the stream is down; otherwise "live" events call show()
     if (!active()) return;
-    if (!document.hidden) {
-      try {
-        const r = await api(`/api/eng/${enc(eng)}/live`);
-        if (!active()) return;
-        skew = Date.now() / 1000 - r.now;
-        render(r);
-      } catch (e) { const o = $("#live-out"); if (o) o.textContent = e.message; }
+    if (!document.hidden && !streamFresh()) {
+      try { show(await api(`/api/eng/${enc(eng)}/live`)); }
+      catch (e) { const o = $("#live-out"); if (o) o.textContent = e.message; }
     }
     setTimeout(load, 3000);
   };
@@ -514,17 +596,25 @@ async function paneLive() {
   load();
 }
 
+// who did it: a person through the console or ./rvkit, or the agent (entries from before actors were recorded: none)
+function actorTag(a) {
+  if (!a) return `<span class="rv-dim">unknown</span>`;
+  const [kind, name] = String(a).split(":", 2);
+  return `<span class="rv-actor ${esc(kind)}" title="${esc(a)}">${esc(kind === "agent" ? "agent" : name || kind)}<span class="rv-dim"> ${esc(kind === "agent" ? name || "" : "via " + kind)}</span></span>`;
+}
+
 async function paneAudit() {
   const d = state.detail;
   $("#pane").innerHTML = `<p class="hint">Newest first. The authoritative log is in the kit's control volume.</p><div id="audit-out" class="rv-empty">Loading…</div>`;
   try {
     const r = await api(`/api/eng/${enc(d.engagement)}/audit?n=300`);
-    $("#audit-out").outerHTML = `<div class="rv-table-wrap"><table class="rv-table"><thead><tr><th>Time</th><th>What</th><th>Tier</th><th>Result</th></tr></thead><tbody>
+    $("#audit-out").outerHTML = `<div class="rv-table-wrap"><table class="rv-table"><thead><tr><th>Time</th><th>Who</th><th>What</th><th>Tier</th><th>Result</th></tr></thead><tbody>
       ${r.entries.map((e) => {
-        const what = e.command ? `<code>${esc(e.command)}</code>` : esc(e.event || "");
-        const res = e.refused ? `${tag("refused", "fail")} <span class="rv-dim">${esc(e.refused)}</span>` : e.exit !== undefined ? `<span class="mono">exit ${esc(e.exit)} · ${esc(e.seconds)}s</span>` : esc(e.archive || e.status || "");
-        return `<tr><td class="nowrap">${fmtTime(e.ts)}</td><td>${what}</td><td>${e.tier ? tag(e.tier, TIER_CLASS[e.tier] || "") : ""}</td><td>${res}</td></tr>`;
-      }).join("") || `<tr><td colspan="4"><div class="rv-empty">No activity yet.</div></td></tr>`}</tbody></table></div>`;
+        const what = e.command ? `<code>${esc(e.command)}</code>` : `${esc(String(e.event || "").replace(/-/g, " "))}${e.target ? ` <span class="mono">${esc(e.target)}</span>` : ""}${e.fields ? ` <span class="rv-dim">${esc([].concat(e.fields).join(", "))}</span>` : ""}`;
+        const rev = e.before !== undefined || e.after !== undefined ? `<span class="mono rv-dim">${esc(e.before ?? "new")} → ${esc(e.after ?? "")}</span>` : "";
+        const res = e.refused ? `${tag("refused", "fail")} <span class="rv-dim">${esc(e.refused)}</span>` : e.exit !== undefined ? `<span class="mono">exit ${esc(e.exit)} · ${esc(e.seconds)}s</span>` : rev || esc(e.archive || e.status || "");
+        return `<tr><td class="nowrap">${fmtTime(e.ts)}</td><td class="nowrap">${actorTag(e.actor)}</td><td>${what}</td><td>${e.tier ? tag(e.tier, TIER_CLASS[e.tier] || "") : ""}</td><td>${res}</td></tr>`;
+      }).join("") || `<tr><td colspan="5"><div class="rv-empty">No activity yet.</div></td></tr>`}</tbody></table></div>`;
   } catch (e) { $("#audit-out").textContent = e.message; }
 }
 
@@ -581,5 +671,5 @@ async function loadStatus() {
 }
 $("#status-refresh").addEventListener("click", loadStatus);
 
-refresh().then(route);
-setInterval(refresh, 5000);
+refresh().then(route).then(connectStream);
+setInterval(() => { if (!streamFresh()) { refresh(); connectStream(); } }, 5000);

@@ -46,15 +46,23 @@ The console can approve intrusive commands and change scope, so it is kept out o
 
 - **It runs on your computer, not in Docker**, and listens on `127.0.0.1` only. The agent's containers
   (OpenHands and the worker) are on an internal network with no route to the host, and Kali commands can only reach
-  in-scope targets.
+  in-scope targets (the firewall also blocks the Docker host's own addresses).
+- **Other containers can open the port, but can't sign in.** Docker Desktop and OrbStack forward
+  `host.docker.internal` to your computer's loopback, so the kit's own service containers (LiteLLM, the MCP servers)
+  can connect to the console's port. Every request needs the session token, which no container has, so they get
+  `401`. On Linux Docker the port isn't reachable from containers at all. `./rvkit doctor` and `./rvkit console`
+  refuse a kit folder placed inside `PROJECTS_DIR` or `ENGAGEMENTS_DIR`, which would expose `.env` and the token.
 - **It needs a session token.** `./rvkit console` opens a sign-in link that sets an `HttpOnly`,
   `SameSite=Strict` cookie. The token is in `.rvkit/console.token` (readable only by you, not mounted into any
   container). Delete that file to make a new one; old sign-ins stop working.
-- **Requests for another host name are refused** (protection against DNS rebinding), and **every change needs a
-  header a web page on another site can't send**, so a malicious page can't make your browser act on the console.
-- **It uses the same controls as `./rvkit`**: `rvctl` in the Kali container for scope, approvals and the
-  engagement lifecycle; `findings_db` and `report.py` in the findings container. It adds no new way to change
-  the kit's state.
+- **Requests for another host name are refused** (protection against DNS rebinding), **cross-site requests are
+  refused** (`Origin` and `Sec-Fetch-Site`), and **every change needs a header a web page on another site can't
+  send** and a JSON body, so a malicious page can't make your browser act on the console. Every field is checked;
+  malformed input gets `400` with the reason.
+- **It uses the same operations as `./rvkit` and the agent's tools**: `rvctl` in the Kali container for scope,
+  approvals and the engagement lifecycle; `harness/ops.py` in the findings container for findings, the report's
+  cover details and executive summary, and the report. Only the operations listed there exist; the console can't
+  run anything else.
 - Report downloads are limited to `.html`, `.docx`, `.pdf` and `.xlsx` files in an engagement's `report/` folder.
   The HTML report opens with a policy that blocks scripts and every network request (`sandbox`, `default-src 'none'`).
 - Text written by the agent (findings, commands, notes) is shown as text, never as HTML.
@@ -66,6 +74,29 @@ ssh -L 8100:127.0.0.1:8100 you@kit-host     # then, on the kit host: ./rvkit con
 ```
 
 Open the printed sign-in link on your own machine.
+
+## Who changed what
+
+Every change made in the console is recorded in the engagement's audit log (the **Audit log** tab) with who made
+it (`console:<your login>`, `cli:<your login>` for `./rvkit`, `agent:…` for the agent) and the revision before and
+after: finding updates, cover details, the executive summary, scope and rules, approvals, halt and resume.
+
+When something changed after you opened it (the agent updated a finding, you saved from another tab, someone used
+`./rvkit`), saving doesn't overwrite it. The console says what happened, keeps your edit on screen and, for a
+finding, shows the version saved meanwhile and who saved it. Saving again replaces that version deliberately. For
+scope and rules, preview again: the diff is then against the current scope.
+
+## Live updates
+
+The page receives changes as they happen (server-sent events on `/api/stream`): new approvals, engagement state,
+and, while the **Live** tab is open, running commands and worker tasks. If the connection drops, the page polls
+every few seconds until it comes back.
+
+## Keyboard and small screens
+
+Tabs follow the usual pattern: arrow keys, Home and End move between them. A confirmation (close out, delete) puts
+focus on Cancel; Escape closes it. Errors are announced to screen readers. On a phone-width window the sidebar
+becomes a menu and the tab strip scrolls sideways; nothing scrolls the whole page sideways.
 
 ## Not in the console yet
 

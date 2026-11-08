@@ -3,14 +3,18 @@
 
 Run it with ./rvkit console. It runs on the host, not in a container, and binds 127.0.0.1 only: the agent's
 containers can't reach it, so the agent can't approve its own commands or widen its scope. Every action goes
-through the same control commands as ./rvkit (rvctl in kali-mcp, findings_db and report.py in findings-mcp).
+through the same validated operations as ./rvkit and the agent's tools: rvctl in kali-mcp for scope, approvals and
+lifecycle, harness/ops.py in findings-mcp for findings, report details and the report. Each change names its actor
+(console:<login>) and the revision it was based on; a record that changed in the meantime gives 409 Conflict.
+Changes land in the engagement's audit log.
 
 Access needs the session token: ./rvkit console opens /login?t=<token>, which sets an HttpOnly, SameSite=Strict
 cookie. Requests with another Host header (DNS rebinding) are refused, and every change needs the X-RV-Console
 header, which a cross-site form or link can't send.
 Python 3.9+, standard library only.
 """
-import calendar, hmac, json, mimetypes, os, re, secrets, sqlite3, subprocess, sys, threading, time, urllib.parse
+import calendar, getpass, hashlib, hmac, json, mimetypes, os, re, secrets, sqlite3, subprocess, sys, threading, time
+import queue, urllib.parse
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -49,6 +53,11 @@ E = env()
 ENG_DIR = os.path.expanduser(E.get("ENGAGEMENTS_DIR") or "~/riskvoid/engagements")
 PORT = int(os.environ.get("CONSOLE_PORT") or E.get("CONSOLE_PORT") or 8100)
 TOKEN_FILE = os.path.join(KIT, ".rvkit", "console.token")
+try:
+    _login = getpass.getuser()
+except Exception:  # noqa: BLE001
+    _login = "host"
+ACTOR = "console:" + (re.sub(r"[^A-Za-z0-9._@-]", "", _login)[:64] or "host")
 
 
 def token():
@@ -82,28 +91,50 @@ class Fail(Exception):
         self.code = code
 
 
-def run(args, stdin=None, timeout=120, ok=(0,)):
-    r = subprocess.run(args, cwd=KIT, input=stdin, capture_output=True, text=True, timeout=timeout)
+def run(args, stdin=None, timeout=120, ok=(0,), env=None):
+    r = subprocess.run(args, cwd=KIT, input=stdin, capture_output=True, text=True, timeout=timeout,
+                       env={**os.environ, **(env or {})})
     if r.returncode not in ok:
         msg = (r.stderr or r.stdout).strip().splitlines()
-        raise Fail(msg[-1] if msg else f"{args[0]} failed ({r.returncode})")
+        text = msg[-1] if msg else f"{args[0]} failed ({r.returncode})"
+        if r.returncode == 3:  # rvctl: the record changed since it was read
+            raise Fail(re.sub(r"^conflict:\s*", "", text), 409)
+        raise Fail(re.sub(r"^error:\s*", "", text))
     return r.stdout
 
 
 def ctl(*args, stdin=None, ok=(0,), timeout=120):
-    return run(["docker", "compose", "exec", "-T", "kali-mcp", "python3", "/opt/kali-mcp/rvctl.py", *args],
-               stdin=stdin, ok=ok, timeout=timeout)
+    """rvctl in kali-mcp (scope, approvals, lifecycle, audit), acting as this console's user."""
+    return run(["docker", "compose", "exec", "-T", "kali-mcp", "python3", "/opt/kali-mcp/rvctl.py", "--actor", ACTOR,
+                *args], stdin=stdin, ok=ok, timeout=timeout)
 
 
-def findings_py(code, payload, timeout=600):
-    """Run Python in findings-mcp (its findings_db and report modules) with a JSON payload on stdin."""
-    out = run(["docker", "compose", "exec", "-T", "findings-mcp", "python3", "-c", code],
-              stdin=json.dumps(payload), timeout=timeout)
-    return json.loads(out.strip().splitlines()[-1])
+def ops(name, eng, timeout=120, **req):
+    """One operation of harness/ops.py in findings-mcp. A change is added to the engagement's audit log."""
+    out = run(["docker", "compose", "exec", "-T", "findings-mcp", "python3", "ops.py", name],
+              stdin=json.dumps({"engagement": eng, "actor": ACTOR, **req}), timeout=timeout, ok=(0, 1, 3))
+    try:
+        d = json.loads(out.strip().splitlines()[-1])
+    except (ValueError, IndexError):
+        raise Fail(f"{name}: no answer from findings-mcp", 502)
+    if "error" in d:
+        raise Fail(d["error"], d.get("code", 400))
+    if d.get("event"):
+        try:
+            ctl("record", eng, stdin=json.dumps(d["event"]))
+        except Fail as e:  # the change itself is saved; say that the history is missing it
+            d["result"] = {**(d["result"] if isinstance(d["result"], dict) else {"value": d["result"]}),
+                           "warning": f"saved, but not added to the audit log: {e}"}
+    return d["result"]
 
 
 def rvkit(*args, timeout=180):
-    return run([os.path.join(KIT, "rvkit"), *args], timeout=timeout)
+    return run([os.path.join(KIT, "rvkit"), *args], timeout=timeout, env={"RVKIT_ACTOR": ACTOR})
+
+
+def digest(text):
+    """Same digest as harness/ops.py, so the page can say which version of a file it edited."""
+    return hashlib.sha256((text or "").encode()).hexdigest()[:16]
 
 
 def eng_path(eng, *parts):
@@ -114,7 +145,7 @@ def eng_path(eng, *parts):
 
 def read(path, limit=1_000_000):
     try:
-        with open(path, errors="replace") as f:
+        with open(path, encoding="utf-8", errors="replace") as f:
             return f.read(limit)
     except OSError:
         return ""
@@ -243,22 +274,92 @@ def spend():
 
 
 # ---------------------------------------------------------------- API
+def overview():
+    """Engagements with their state and finding counts, pending approvals, model problems of the last 24 h."""
+    engs = json.loads(ctl("list", "--json") or "[]")
+    for e in engs:
+        rows = findings(e["engagement"])
+        e["findings"] = counts(rows)
+        e["client"] = meta(e["engagement"]).get("client", "")
+        closed = os.path.isdir(os.path.join(ENG_DIR, "_archive")) and any(
+            f.startswith(e["engagement"] + "-") and f.endswith(".tar.gz")
+            for f in os.listdir(os.path.join(ENG_DIR, "_archive")))
+        e["closed"] = bool(closed and e["halted"])
+        e["model_problems"] = len(model_events.recent(86400, problems_only=True, engagement=e["engagement"]))
+    return {"engagements": engs, "approvals": json.loads(ctl("approvals", "--json") or "[]"),
+            "ui_url": f"http://localhost:{E.get('GATEWAY_PORT') or 8000}/", "version": VERSION,
+            # failed model calls of the last 24 h (litellm/rv_events.py): the Model log badges
+            "model_problems": len(model_events.recent(86400, problems_only=True))}
+
+
+def live(eng):
+    """What an engagement is doing now: running commands, worker tasks, latest events, approvals, spend."""
+    lv, tasks = json.loads(ctl("live", eng, "15")), worker_tasks(eng)
+    busy = [t for t in tasks if t["status"] in ("running", "queued")]
+    return {**lv, "now": time.time(), "events": lv["events"][::-1], "spend": spend(),
+            "tasks": busy + [t for t in tasks if t not in busy][:3]}
+
+
+class Hub:
+    """Server-sent events for the page (/api/stream): one poller per topic, shared by every open page and running
+    only while someone listens; a snapshot goes out when it differs from the last one. Topics: "overview" and
+    "live:<engagement>". The sources are the same calls the page used to poll; the transport lets later sources
+    (task runs, approvals) push without the page changing."""
+    SOURCES = {"overview": (overview, 3.0), "live": (live, 2.0)}
+
+    def __init__(self):
+        self.lock, self.topics = threading.Lock(), {}
+
+    def subscribe(self, topic):
+        q = queue.Queue(maxsize=50)
+        with self.lock:
+            t = self.topics.get(topic)
+            if not t:
+                t = self.topics[topic] = {"subs": set(), "last": None, "msg": None}
+                threading.Thread(target=self._poll, args=(topic,), daemon=True).start()
+            t["subs"].add(q)
+            if t["msg"]:
+                q.put(t["msg"])
+        return q
+
+    def unsubscribe(self, topic, q):
+        with self.lock:
+            t = self.topics.get(topic)
+            if t:
+                t["subs"].discard(q)
+
+    def _poll(self, topic):
+        kind, _, arg = topic.partition(":")
+        fn, every = self.SOURCES[kind]
+        while True:
+            with self.lock:
+                t = self.topics[topic]
+                if not t["subs"]:
+                    del self.topics[topic]
+                    return
+            try:
+                data, name = fn(arg) if arg else fn(), kind
+            except Exception as e:  # noqa: BLE001 (the page shows it; polling goes on)
+                data, name = {"error": str(e) if isinstance(e, Fail) else f"{type(e).__name__}: {e}"}, "problem"
+            key = json.dumps({k: v for k, v in data.items() if k != "now"}, sort_keys=True, default=str)
+            if key != t["last"]:
+                msg = (name, json.dumps({**data, "topic": topic}, default=str))
+                with self.lock:
+                    t["last"], t["msg"] = key, msg
+                    for q in list(t["subs"]):
+                        try:
+                            q.put_nowait(msg)
+                        except queue.Full:  # a stalled page: drop it, the browser reconnects
+                            t["subs"].discard(q)
+            time.sleep(every)
+
+
+HUB = Hub()
+
+
 def api_get(path, q):
     if path == "/api/overview":
-        engs = json.loads(ctl("list", "--json") or "[]")
-        for e in engs:
-            rows = findings(e["engagement"])
-            e["findings"] = counts(rows)
-            e["client"] = meta(e["engagement"]).get("client", "")
-            closed = os.path.isdir(os.path.join(ENG_DIR, "_archive")) and any(
-                f.startswith(e["engagement"] + "-") and f.endswith(".tar.gz")
-                for f in os.listdir(os.path.join(ENG_DIR, "_archive")))
-            e["closed"] = bool(closed and e["halted"])
-            e["model_problems"] = len(model_events.recent(86400, problems_only=True, engagement=e["engagement"]))
-        return {"engagements": engs, "approvals": json.loads(ctl("approvals", "--json") or "[]"),
-                "ui_url": f"http://localhost:{E.get('GATEWAY_PORT') or 8000}/", "version": VERSION,
-                # failed model calls of the last 24 h (litellm/rv_events.py): the Model log badges
-                "model_problems": len(model_events.recent(86400, problems_only=True))}
+        return overview()
     if path == "/api/models":  # the model log: all calls, or one engagement's (eng=<name>)
         eng = q.get("eng", [None])[0]
         if eng and not NAME_RX.match(eng):
@@ -278,49 +379,84 @@ def api_get(path, q):
         rdir = eng_path(eng, "report")
         files = sorted((f for f in os.listdir(rdir) if f.endswith(REPORT_EXT)), reverse=True) \
             if os.path.isdir(rdir) else []
+        summary = read(eng_path(eng, "report", "executive-summary.md"))
         return {"engagement": eng, "info": info, "meta": meta(eng),
+                "meta_digest": digest(read(eng_path(eng, "report", "meta.txt"))),
                 "scope_text": read(eng_path(eng, "SCOPE.md")), "rules_text": read(eng_path(eng, "RULES.md")),
                 "findings": findings(eng), "report_files": files,
-                "executive_summary": read(eng_path(eng, "report", "executive-summary.md")),
+                "executive_summary": summary, "summary_digest": digest(summary),
                 "approvals": [a for a in json.loads(ctl("approvals", eng, "--json") or "[]")]}
     if what == "audit":
-        n = max(1, min(int(q.get("n", ["300"])[0]), 2000))
+        raw = q.get("n", ["300"])[0]
+        if not raw.isdigit():
+            raise Fail("n must be a number")
+        n = max(1, min(int(raw), 2000))
         lines = ctl("audit", eng, str(n)).splitlines()
         return {"entries": [json.loads(l) for l in lines if l.startswith("{")][::-1]}
     if what == "tasks":
         return {"tasks": worker_tasks(eng)}
-    if what == "live":  # what is happening now: running commands, worker tasks, latest events, spend
-        live, tasks = json.loads(ctl("live", eng, "15")), worker_tasks(eng)
-        busy = [t for t in tasks if t["status"] in ("running", "queued")]
-        return {**live, "now": time.time(), "events": live["events"][::-1], "spend": spend(),
-                "tasks": busy + [t for t in tasks if t not in busy][:3]}
+    if what == "live":
+        return live(eng)
     if what == "evidence":
-        return findings_py(
-            "import json,sys,report,findings_db as db\n"
-            "e=json.load(sys.stdin)['eng']\n"
-            "f=[x for x in db.list_(e) if x['status'] not in ('false-positive','duplicate')]\n"
-            "items,issues=report.evidence_index(e,f)\n"
-            "print(json.dumps({'items':items,'issues':issues}))", {"eng": eng}, timeout=120)
+        return ops("evidence.index", eng)
     raise Fail("not found", 404)
+
+
+TARGET_RX = re.compile(r"^[A-Za-z0-9._:/\[\]*%@-]+$")  # IPs, CIDRs, domains (incl. *.), URLs, /src paths
+
+
+def field(body, key, kind, default):
+    """A request field of the expected JSON type (400 otherwise); default when absent or null."""
+    v = body.get(key)
+    if v is None:
+        return default
+    if kind is not bool and isinstance(v, bool) or not isinstance(v, kind):
+        names = kind.__name__ if isinstance(kind, type) else " or ".join(k.__name__ for k in kind)
+        raise Fail(f"{key}: expected {names}")
+    return v
+
+
+REV_RX = re.compile(r"^[0-9a-f]{16}$")
+
+
+def digest_field(body):
+    d = field(body, "digest", str, None)
+    if d is not None and not REV_RX.match(d):
+        raise Fail("digest: expected the value the page loaded")
+    return d
 
 
 def api_post(path, body):
     if path == "/api/engagements":  # create
-        name = body.get("name", "")
+        name = field(body, "name", str, "")
         if not NAME_RX.match(name):
             raise Fail("Name: letters, digits, dot, dash and underscore; start with a letter or digit.")
-        targets = [t.strip() for t in str(body.get("targets", "")).splitlines() if t.strip()]
+        if os.path.exists(eng_path(name)):
+            raise Fail(f"An engagement folder named {name} already exists.", 409)
+        targets = [t.strip() for t in field(body, "targets", str, "").splitlines() if t.strip()]
         if not targets:
             raise Fail("Add at least one target.")
-        tiers = [t for t in body.get("tiers", []) if t in ("passive", "active", "intrusive")] or ["passive"]
-        args = ["engagement", name, "--tiers", ",".join(tiers), "--rate", str(int(body.get("rate") or 100)),
-                "--network", "offline" if body.get("network") == "offline" else "online"]
-        if body.get("client"):
-            args += ["--client", str(body["client"])[:200]]
-        if body.get("private"):
+        if len(targets) > 500:
+            raise Fail("At most 500 targets; use networks (CIDR) or domains for larger scopes.")
+        for tg in targets:
+            if tg.startswith("-") or len(tg) > 253 or not TARGET_RX.match(tg):
+                raise Fail(f"Not a target: {tg[:80]!r}. Use an IP, a CIDR network, a domain, a URL or a /src path.")
+        tiers = field(body, "tiers", list, [])
+        if any(x not in ("passive", "active", "intrusive") for x in tiers):
+            raise Fail("Tiers are passive, active and intrusive.")
+        rate = field(body, "rate", (int, str), 100)
+        if not str(rate).strip().isdigit() or not 1 <= int(str(rate).strip()) <= 100_000:
+            raise Fail("Max rate: a whole number of requests per second, 1 to 100000.")
+        network = field(body, "network", str, "online")
+        if network not in ("online", "offline"):
+            raise Fail("Network: online or offline.")
+        client = field(body, "client", str, "").strip()
+        args = ["engagement", name, "--tiers", ",".join(tiers or ["passive"]), "--rate", str(int(str(rate).strip())),
+                "--network", network]
+        if client:
+            args += ["--client", client.replace("\n", " ")[:200]]
+        if field(body, "private", bool, False):
             args.append("--private")
-        if any(t.startswith("-") for t in targets):
-            raise Fail("A target can't start with '-'.")
         return {"output": rvkit(*args, *targets)}
     m = re.match(r"^/api/eng/([^/]+)/(\w+)$", path)
     if m:
@@ -329,58 +465,35 @@ def api_post(path, body):
         if action == "preview":
             return json.loads(ctl("preview", eng, stdin=json.dumps({"scope": body.get("scope", ""),
                                                                     "rules": body.get("rules", "")})))
-        if action == "apply":
-            for f, key in (("SCOPE.md", "scope"), ("RULES.md", "rules")):
-                if key in body:
-                    with open(eng_path(eng, f), "w") as fh:
-                        fh.write(str(body[key]))
-            return {"output": ctl("sync", eng, "--yes")}
+        if action == "apply":  # write exactly what was previewed, unless the active scope changed since
+            texts = {k: body[k] for k in ("scope", "rules") if isinstance(body.get(k), str)}
+            if not texts:
+                raise Fail("nothing to apply")
+            args = ["sync", eng, "--yes", "--stdin"]
+            rev = field(body, "revision", str, "")
+            if rev:
+                if not REV_RX.match(rev):
+                    raise Fail("revision: expected the value the page loaded")
+                args += ["--expect", rev]
+            return {"output": ctl(*args, stdin=json.dumps(texts))}
         if action in ("halt", "resume", "close"):
             return {"output": ctl(action, eng, timeout=600)}
         if action == "delete":
             return {"output": ctl("delete", eng, *(["--force"] if body.get("force") else []))}
         if action == "report":
-            return findings_py(
-                "import json,sys,report\n"
-                "try:\n print(json.dumps(report.build(json.load(sys.stdin)['eng'])))\n"
-                "except ValueError as e:\n print(json.dumps({'error':str(e)}))", {"eng": eng}, timeout=900)
+            return ops("report.build", eng, timeout=900)
         if action == "meta":
-            p = eng_path(eng, "report", "meta.txt")
-            cur = read(p).splitlines() or []
-            keys = {"client": "Client", "prepared by": "Prepared by", "version": "Version",
-                    "classification": "Classification"}
-            vals = {k: str(body[k]).replace("\n", " ")[:200] for k in keys if k in body}
-            out, seen = [], set()
-            for line in cur:
-                k = line.split(":", 1)[0].strip().lower() if ":" in line else None
-                if k in vals:
-                    out.append(f"{keys[k]}: {vals[k]}"); seen.add(k)
-                else:
-                    out.append(line)
-            out += [f"{keys[k]}: {v}" for k, v in vals.items() if k not in seen]
-            os.makedirs(os.path.dirname(p), exist_ok=True)
-            with open(p, "w") as fh:
-                fh.write("\n".join(out) + "\n")
-            return {"meta": meta(eng)}
+            fields = {k: body[k] for k in ("client", "prepared by", "version", "classification") if k in body}
+            return ops("meta.set", eng, fields=fields, expected_digest=digest_field(body))
         if action == "summary":
-            p = eng_path(eng, "report", "executive-summary.md")
-            os.makedirs(os.path.dirname(p), exist_ok=True)
-            with open(p, "w") as fh:
-                fh.write(str(body.get("text", ""))[:200_000])
-            return {"saved": True}
+            return ops("summary.set", eng, text=field(body, "text", str, ""), expected_digest=digest_field(body))
         if action == "finding":
             fid = body.get("id", "")
-            if not FID_RX.match(fid):
+            if not isinstance(fid, str) or not FID_RX.match(fid):
                 raise Fail("invalid finding id")
             fields = {k: body[k] for k in ("status", "severity", "notes", "duplicate_of", "title") if k in body}
-            if fields.get("duplicate_of") == "":
-                fields.pop("duplicate_of")
-            return findings_py(
-                "import json,sys,findings_db as db\n"
-                "d=json.load(sys.stdin)\n"
-                "try:\n print(json.dumps({'finding':db.update(d['eng'],d['id'],**d['fields'])}))\n"
-                "except ValueError as e:\n print(json.dumps({'error':str(e)}))",
-                {"eng": eng, "id": fid, "fields": fields}, timeout=60)
+            return {"finding": ops("finding.update", eng, id=fid, fields=fields,
+                                   expected_revision=field(body, "revision", int, None))}
     m = re.match(r"^/api/approvals/([^/]+)/([a-f0-9]{6,32})/(approve|deny)$", path)
     if m:
         eng, aid, action = m.groups()
@@ -454,23 +567,88 @@ class H(BaseHTTPRequestHandler):
                 return self._send(200, data, "text/html", {"Content-Security-Policy": REPORT_CSP})
             return self._send(200, data, mimetypes.guess_type(name)[0] or "application/octet-stream",
                               {"Content-Disposition": f'attachment; filename="{name}"'})
+        if u.path.startswith("/api/") and not self._same_origin():
+            return self._send(403, {"error": "cross-site request refused"})
+        if u.path == "/api/stream":
+            return self._stream(q)
         if u.path.startswith("/api/"):
             return self._api(lambda: api_get(u.path, q))
         self._send(404, {"error": "not found"})
 
+    def _same_origin(self):
+        """Browsers say where a request comes from; anything but this page is refused (defence in depth next to the
+        SameSite cookie and the X-RV-Console header). Clients that send neither header (curl) are judged by those."""
+        origin = self.headers.get("Origin")
+        if origin and origin not in (f"http://127.0.0.1:{PORT}", f"http://localhost:{PORT}"):
+            return False
+        return self.headers.get("Sec-Fetch-Site", "same-origin") in ("same-origin", "none")
+
     def do_POST(self):
         if not self._host_ok():
             return self._send(403, {"error": "wrong host"})
+        if not self._same_origin():
+            return self._send(403, {"error": "cross-site request refused"})
         if not self._authed() or self.headers.get("X-RV-Console") != "1":
             return self._send(401, {"error": "not signed in"})
-        n = int(self.headers.get("Content-Length") or 0)
+        if self.headers.get("Content-Type", "").split(";")[0].strip().lower() != "application/json":
+            return self._send(415, {"error": "send JSON (Content-Type: application/json)"})
+        try:
+            n = int(self.headers.get("Content-Length") or 0)
+        except ValueError:
+            return self._send(400, {"error": "bad Content-Length"})
         if n > 2_000_000:
             return self._send(413, {"error": "too large"})
         try:
             body = json.loads(self.rfile.read(n) or b"{}")
         except ValueError:
             return self._send(400, {"error": "invalid JSON"})
+        if not isinstance(body, dict):
+            return self._send(400, {"error": "the request body must be a JSON object"})
         self._api(lambda: api_post(urllib.parse.urlsplit(self.path).path, body))
+
+    def do_PUT(self):
+        self._send(405, {"error": "method not allowed"}, extra={"Allow": "GET, POST"})
+
+    do_DELETE = do_PATCH = do_PUT
+
+    def _stream(self, q):
+        """Server-sent events: "overview" always, "live" for ?eng=<name>; a comment line every 15 s keeps it open."""
+        eng = (q.get("eng") or [""])[0]
+        if eng and not NAME_RX.match(eng):
+            return self._send(400, {"error": "invalid engagement name"})
+        topics = ["overview"] + ([f"live:{eng}"] if eng else [])
+        self.send_response(200)
+        for k, v in (("Content-Type", "text/event-stream; charset=utf-8"), ("Cache-Control", "no-store"),
+                     ("X-Content-Type-Options", "nosniff"), ("Connection", "close")):
+            self.send_header(k, v)
+        self.end_headers()
+        inbox = queue.Queue()
+        subs = [(tp, HUB.subscribe(tp)) for tp in topics]
+        stop = threading.Event()
+
+        def pump(sq):  # merge each topic's queue into one
+            while not stop.is_set():
+                try:
+                    inbox.put(sq.get(timeout=1))
+                except queue.Empty:
+                    pass
+        for _, sq in subs:
+            threading.Thread(target=pump, args=(sq,), daemon=True).start()
+        try:
+            self.wfile.write(b"retry: 3000\n\n"); self.wfile.flush()
+            while True:
+                try:
+                    name, data = inbox.get(timeout=15)
+                    self.wfile.write(f"event: {name}\ndata: {data}\n\n".encode())
+                except queue.Empty:
+                    self.wfile.write(b": ping\n\n")
+                self.wfile.flush()
+        except (BrokenPipeError, ConnectionResetError, OSError):
+            pass
+        finally:
+            stop.set()
+            for tp, sq in subs:
+                HUB.unsubscribe(tp, sq)
 
     def _api(self, fn):
         try:

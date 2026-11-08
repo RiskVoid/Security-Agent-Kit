@@ -10,7 +10,7 @@ Trust model
 The network policy is the hard boundary for scope. Tiers, rate caps and the regex pre-check are guardrails
 against mistakes: a script could still send intrusive traffic to in-scope hosts.
 """
-import datetime, difflib, hashlib, ipaddress, json, os, re, shutil, signal, subprocess, time, uuid
+import datetime, difflib, hashlib, ipaddress, json, os, re, shutil, signal, socket, subprocess, time, uuid
 
 WORK, CONTROL, HERE = "/work", "/control", os.path.dirname(os.path.abspath(__file__))
 REGISTRY = os.path.join(CONTROL, "registry.json")
@@ -21,6 +21,18 @@ DEFAULT_RULES = {"tiers": ["passive", "active"], "max_rate": 100, "network": "on
                  "worker": "auto", "strict": False}  # worker: auto (fallback model allowed) | private (worker endpoint only)
 # Never reachable by agent commands, even if a scope entry covers them (loopback, link-local/cloud metadata).
 MCP_PORT = 8090  # server.py listens here; engagement commands must never reach it (they could call run for others)
+# Who is acting, recorded on every audit entry: rvctl sets it from --actor (console:<user> or cli:<user>); commands
+# that arrive through the MCP server are the agent's.
+ACTOR = "agent:kali-mcp"
+ACTOR_RX = re.compile(r"^(console|cli|agent|test):[A-Za-z0-9._@-]{1,64}$")
+# Events another authority reports for the audit log (rvctl record): changes made through harness/ops.py.
+RECORDABLE = {"finding-updated", "finding-recorded", "meta-updated", "summary-updated", "report-generated"}
+
+
+class Conflict(ValueError):
+    """The scope or rules changed since the caller read them."""
+
+
 ALWAYS_BLOCKED = ["127.0.0.0/8", "169.254.0.0/16", "0.0.0.0/8", "224.0.0.0/4"]
 
 # ---------------------------------------------------------------- tiers
@@ -210,10 +222,16 @@ def read_ctl(eng, name):
         return ""
 
 
+def revision(eng):
+    """Short digest of the active SCOPE.md and RULES.md: changes whenever either one does."""
+    return hashlib.sha256((read_ctl(eng, "SCOPE.md") + "\0" + read_ctl(eng, "RULES.md")).encode()).hexdigest()[:16]
+
+
 def info(eng):
     uid = require(eng)
     sc, rules = parse_scope(read_ctl(eng, "SCOPE.md")), parse_rules(read_ctl(eng, "RULES.md"))
-    return {"engagement": eng, "uid": uid, "scope": {k: sc[k] for k in ("nets", "domains", "paths")},
+    return {"engagement": eng, "uid": uid, "revision": revision(eng),
+            "scope": {k: sc[k] for k in ("nets", "domains", "paths")},
             "rules": rules, "halted": os.path.exists(os.path.join(ctl_dir(eng), "HALT")),
             "infra_domains": infra_domains() if rules["network"] == "online" else []}
 
@@ -249,10 +267,23 @@ def preview(eng, scope_text, rules_text):
             "scope": {k: sc[k] for k in ("nets", "domains", "paths")}}
 
 
-def sync(eng):
-    """Import the host's SCOPE.md/RULES.md as the authoritative copy (rvkit only), then rebuild the firewall."""
+def sync(eng, expected=None, texts=None):
+    """Import the host's SCOPE.md/RULES.md as the authoritative copy (rvkit only), then rebuild the firewall.
+    expected: the revision the caller previewed; if the active scope changed since, Conflict and nothing changes.
+    texts: {"scope": ..., "rules": ...} to write to the engagement folder first (the console's apply), so what is
+    imported is exactly what was previewed."""
     if not _name_ok(eng):
         raise ValueError(f"invalid engagement name: {eng}")
+    before = revision(eng) if eng in registry() else None
+    if expected is not None and expected != before:
+        raise Conflict(f"the scope or rules of {eng} changed since you opened them (revision {before}, you had "
+                       f"{expected}): reload, check the change, then apply again")
+    if texts is not None:
+        os.makedirs(os.path.join(WORK, eng), exist_ok=True)
+        for f, key in (("SCOPE.md", "scope"), ("RULES.md", "rules")):
+            if key in texts:
+                with open(os.path.join(WORK, eng, f), "w") as fh:
+                    fh.write(str(texts[key]))
     if not os.path.isfile(os.path.join(WORK, eng, "SCOPE.md")):
         raise ValueError(f"/work/{eng}/SCOPE.md not found")
     os.makedirs(os.path.join(ctl_dir(eng), "approvals"), exist_ok=True)
@@ -273,7 +304,7 @@ def sync(eng):
     _grant(eng, reg[eng])
     sc = parse_scope(read_ctl(eng, "SCOPE.md"))
     _audit({"engagement": eng, "event": "scope-sync", "scope": {k: sc[k] for k in ("nets", "domains", "paths")},
-            "rules": parse_rules(read_ctl(eng, "RULES.md"))})
+            "rules": parse_rules(read_ctl(eng, "RULES.md")), "before": before, "after": revision(eng)})
     return sc["warnings"]
 
 
@@ -306,10 +337,24 @@ def _local_subnets():
     return sorted(n for n in nets if not n.startswith("127.") and n != LAB_NET)
 
 
+def _host_addrs(blocked):
+    """The Docker host's addresses as containers see them (Docker Desktop and OrbStack forward them to the host's
+    loopback, where the console listens), unless a blocked network already covers them."""
+    nets = [ipaddress.ip_network(b) for b in blocked]
+    out = set()
+    for h in ("host.docker.internal", "host.internal", "gateway.docker.internal"):
+        try:
+            out |= {ai[4][0] for ai in socket.getaddrinfo(h, None, socket.AF_INET)}
+        except OSError:
+            pass
+    return sorted(f"{a}/32" for a in out if not any(ipaddress.ip_address(a) in n for n in nets))
+
+
 def apply_network():
     """Rebuild nftables policy and per-engagement DNS for every registered engagement (idempotent)."""
     reg = registry()
     blocked = ALWAYS_BLOCKED + _local_subnets()  # other Docker services (LiteLLM, OpenHands, ...) included
+    blocked += _host_addrs(blocked)  # the host itself (the console, other local services)
     online_infra = infra_domains()
     sets, chains, vmap, nat = [], [], [], []
     for eng, uid in sorted(reg.items(), key=lambda x: x[1]):
@@ -558,8 +603,27 @@ def activity(eng):
 
 
 # ---------------------------------------------------------------- run
+def record(eng, event):
+    """Add a change another authority made (harness/ops.py: findings, report details) to the audit log, so the
+    engagement's history shows who changed what. Only known events, with a valid actor, are accepted."""
+    require(eng)
+    if not isinstance(event, dict) or event.get("event") not in RECORDABLE:
+        raise ValueError(f"event must be one of {sorted(RECORDABLE)}")
+    actor = event.get("actor")
+    if not isinstance(actor, str) or not ACTOR_RX.match(actor):
+        raise ValueError("event needs an actor: <console|cli|agent>:<name>")
+    keep = {k: event[k] for k in ("event", "actor", "target", "before", "after", "fields", "files", "findings")
+            if k in event}
+    if len(json.dumps(keep, default=str)) > 4000:  # keep audit lines small: drop the details, not the event
+        keep = {k: keep[k] for k in ("event", "actor", "target") if k in keep}
+    entry = {"engagement": eng, **json.loads(json.dumps(keep, default=str))}
+    _audit(entry)
+    return entry
+
+
 def _audit(entry):
-    entry = {"ts": datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds"), **entry}
+    entry = {"ts": datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds"), "actor": ACTOR,
+             **entry}
     line = json.dumps(entry) + "\n"
     with open(AUDIT, "a") as f:
         f.write(line)

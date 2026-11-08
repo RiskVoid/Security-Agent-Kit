@@ -232,6 +232,68 @@ class Findings(unittest.TestCase):
         with self.assertRaises(ValueError):
             db.update("e", "F-404", status="confirmed")
 
+    def test_migrates_old_database(self):
+        """A findings.db from before schema versions keeps its rows and gains revision and updated_by."""
+        import sqlite3
+        con = sqlite3.connect(os.path.join(self.tmp.name, "e", "findings.db"))
+        con.execute("CREATE TABLE findings (id TEXT PRIMARY KEY, title TEXT NOT NULL, severity TEXT NOT NULL, "
+                    "cvss_vector TEXT, cvss_score REAL, cwe TEXT, asset TEXT, description TEXT, impact TEXT, "
+                    "reproduction TEXT, remediation TEXT, evidence TEXT DEFAULT '[]', status TEXT NOT NULL "
+                    "DEFAULT 'candidate', source TEXT, notes TEXT, created TEXT, updated TEXT)")
+        con.execute("INSERT INTO findings (id, title, severity) VALUES ('F-001', 'old', 'low')")
+        con.commit(); con.close()
+        r = db.get("e", "F-001")
+        self.assertEqual((r["title"], r["revision"], r["updated_by"], r["duplicate_of"]), ("old", 1, None, None))
+        con = sqlite3.connect(os.path.join(self.tmp.name, "e", "findings.db"))
+        self.assertEqual(con.execute("PRAGMA user_version").fetchone()[0], db.SCHEMA_VERSION)
+        con.execute(f"PRAGMA user_version={db.SCHEMA_VERSION + 1}"); con.commit(); con.close()
+        with self.assertRaises(ValueError):  # from a newer kit: refused, not downgraded
+            db.get("e", "F-001")
+
+    def test_revisions_and_conflicts(self):
+        a = self.add("A")
+        r = db.update("e", a, expected_revision=1, actor="console:alice", status="confirmed")
+        self.assertEqual((r["revision"], r["previous_revision"], r["updated_by"]), (2, 1, "console:alice"))
+        with self.assertRaises(db.Conflict):  # someone saved revision 2 in between
+            db.update("e", a, expected_revision=1, actor="console:bob", severity="low")
+        self.assertEqual(db.get("e", a)["severity"], "high")
+        with self.assertRaises(ValueError):
+            db.update("e", a, actor="root", notes="x")  # actors are <kind>:<name>
+
+    def test_ops(self):
+        import ops
+        a = self.add("A")
+        with self.assertRaises(ops.OpError) as c:
+            ops.call("shell.run", {"engagement": "e"})  # only listed operations exist
+        self.assertEqual(c.exception.code, 404)
+        with self.assertRaises(ops.OpError):  # a change needs an actor
+            ops.call("finding.update", {"engagement": "e", "id": a, "fields": {"status": "confirmed"}})
+        with self.assertRaises(ops.OpError):  # source isn't editable
+            ops.call("finding.update", {"engagement": "e", "actor": "cli:x", "id": a, "fields": {"source": "x"}})
+        row, ev = ops.call("finding.update", {"engagement": "e", "actor": "cli:x", "id": a,
+                                              "fields": {"status": "confirmed"}, "expected_revision": 1})
+        self.assertEqual(ev, {"event": "finding-updated", "actor": "cli:x", "target": a, "before": 1, "after": 2,
+                              "fields": ["status"]})
+        with self.assertRaises(ops.OpError) as c:
+            ops.call("finding.update", {"engagement": "e", "actor": "cli:x", "id": a,
+                                        "fields": {"status": "fixed"}, "expected_revision": 1})
+        self.assertEqual(c.exception.code, 409)
+        got, _ = ops.call("meta.get", {"engagement": "e"})
+        res, ev = ops.call("meta.set", {"engagement": "e", "actor": "console:a", "fields": {"client": "Acme\nInc"},
+                                        "expected_digest": got["digest"]})
+        self.assertEqual((res["meta"]["client"], ev["event"]), ("Acme Inc", "meta-updated"))
+        with self.assertRaises(ops.OpError) as c:  # stale digest: the file changed since it was read
+            ops.call("meta.set", {"engagement": "e", "actor": "console:a", "fields": {"client": "B"},
+                                  "expected_digest": got["digest"]})
+        self.assertEqual(c.exception.code, 409)
+        with self.assertRaises(ops.OpError):
+            ops.call("meta.set", {"engagement": "e", "actor": "console:a", "fields": {"evil": "x"}})
+        s, _ = ops.call("summary.get", {"engagement": "e"})
+        ops.call("summary.set", {"engagement": "e", "actor": "console:a", "text": "Hi", "expected_digest": s["digest"]})
+        self.assertEqual(ops.call("summary.get", {"engagement": "e"})[0]["text"], "Hi")
+        with self.assertRaises(ValueError):
+            ops.call("summary.get", {"engagement": "../e"})
+
 
 class WebFetch(unittest.TestCase):
     def test_refusal(self):
