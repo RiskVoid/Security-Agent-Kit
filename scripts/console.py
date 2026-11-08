@@ -402,7 +402,7 @@ def api_get(path, q):
     raise Fail("not found", 404)
 
 
-TARGET_RX = re.compile(r"^[A-Za-z0-9._:/\[\]*%@-]+$")  # IPs, CIDRs, domains (incl. *.), URLs, /src paths
+TARGET_RX = re.compile(r"^!?[A-Za-z0-9._:/\[\]*%@,-]+$")  # IPs, CIDRs, names (incl. *.), :ports, URLs, /src, !exclusions
 
 
 def field(body, key, kind, default):
@@ -441,6 +441,10 @@ def api_post(path, body):
         for tg in targets:
             if tg.startswith("-") or len(tg) > 253 or not TARGET_RX.match(tg):
                 raise Fail(f"Not a target: {tg[:80]!r}. Use an IP, a CIDR network, a domain, a URL or a /src path.")
+        check = json.loads(ctl("preview", name, stdin=json.dumps({"scope": "\n".join("- " + t for t in targets),
+                                                                   "rules": ""})))
+        if check["errors"]:
+            raise Fail("Fix these targets first: " + "; ".join(check["errors"][:10]))
         tiers = field(body, "tiers", list, [])
         if any(x not in ("passive", "active", "intrusive") for x in tiers):
             raise Fail("Tiers are passive, active and intrusive.")

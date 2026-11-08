@@ -58,6 +58,14 @@ is weaker than described here.
   container has. Docker Desktop and OrbStack let containers on non-internal networks open that port through
   `host.docker.internal`; without the token they get `401`. The agent's own container has no route to it and the
   sandbox firewall blocks the host's addresses.
+- **Approvals are bound to the action.** An approval covers one exact command (with the SHA-256 of the programs it
+  runs and the files it reads) or one exact request (method, URL, headers, body), under one scope and rules
+  revision, once. Changing any of these, or the scope, needs a new approval. The worker's task tier is enforced by
+  kali-mcp, not only stated in the prompt.
+- **Scope lines that can't be enforced are refused**, not ignored, and what the kit can't enforce for a given
+  scope (for example URL paths for arbitrary commands, or two virtual hosts on one address) is listed when the
+  scope is applied. URL path limits are enforced only by the request tool, so raw commands can't reach those
+  hosts at all.
 - **Kali tools.** Every command runs as an unprivileged user for that engagement, in a sandbox that sees only its
   own engagement folder and in-scope code (read-only). An nftables firewall lets that user reach only in-scope IPs
   and domains, plus package and vulnerability-database sites for online engagements. Link-local and cloud metadata

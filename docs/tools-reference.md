@@ -21,17 +21,22 @@ the agent did, to write better task prompts, or to extend the kit.
 
 | Tool | Parameters | What it does |
 |---|---|---|
-| `list_engagements` | none | Every registered engagement with its active scope (networks, domains, code paths), rules (tiers, max rate, network, testing window) and `HALTED` flag. The planner calls it first. |
-| `engagement_info` | `engagement` | The same for one engagement as JSON, plus its uid and the infrastructure domains it may reach (online engagements). |
+| `list_engagements` | none | Every registered engagement with its policy revision, what the scope allows and excludes, rules (tiers, max rate, network, execution, window, dates, days, time zone), stop conditions, what the kit doesn't enforce, `NOT NOW` when outside the testing time, and `HALTED`. The planner calls it first. |
+| `engagement_info` | `engagement` | The same for one engagement as JSON: effective policy, rules, budget use, uid and the infrastructure domains it may reach (online engagements). |
 | `all_scopes` | none | The union of every engagement's networks and domains. `web-mcp` uses it to refuse fetching targets. |
-| `run` | `command`, `engagement`, `timeout_s` (default 600, max 3600), `approval_id` | Runs a shell command in the engagement's sandbox. Returns `exit=<code> tier=<tier>` and the output, or `REFUSED: <reason>`, or `APPROVAL REQUIRED` with an approval id. |
+| `run` | `command`, `engagement`, `timeout_s` (default 600, max 3600), `approval_id`, `max_tier`, `task` | Runs a shell command in the engagement's sandbox. Returns `exit=<code> tier=<tier>` and the output, or `REFUSED: <reason>`, or `APPROVAL REQUIRED` with an approval id. `max_tier` limits the command to a task's tier (the worker sets it). |
+| `http_request` | `engagement`, `method`, `url`, `headers`, `body`, `approval_id`, `max_tier`, `task`, `body_base64` | Sends one HTTP request from kali-mcp to an in-scope URL: the only way to reach hosts whose scope is a URL path. Checks every URL and redirect against the policy, connects to the address it checked, counts against `Max requests`, saves request and response in `evidence/http/`. GET/HEAD/OPTIONS are active; other methods intrusive (approval). |
+| `analyze_source` | `engagement`, `tool` (semgrep, gitleaks, trufflehog, bandit), `path`, `rulesets`, `task` | Runs a source-analysis tool on in-scope code in the sandbox with no network at all; the JSON report goes to `evidence/source/`. |
 | `evidence_provenance` | `engagement`, `paths` | For each evidence file: current SHA-256 and status: `verified` (with the producing command, time, tier, exit code), `MODIFIED after it was produced`, `not produced by an audited kali command`, `missing`, or `not an engagement file` (a path outside the engagement folder). |
 | `engagement_activity` | `engagement` | Summary of the audit log: time range, commands run and refused, counts per tier and per tool, evidence files, approvals, halts and scope changes. The report's methodology section uses it. |
 
-What `run` does, in order: refuses if the engagement is halted or outside its testing window; classifies the
-tier and refuses it if `RULES.md` doesn't allow it; refuses obvious out-of-scope hosts in network-tool commands;
-asks for approval if the command is intrusive; adds the rate flag; runs the command sandboxed as the engagement's
-user; hashes every file it created or changed. Details: [architecture.md](architecture.md#how-one-task-flows)
+What `run` does, in order: refuses if the engagement is halted or outside its testing window, dates or days;
+classifies the tier and refuses it if `RULES.md` or the task's `max_tier` doesn't allow it; refuses out-of-scope,
+excluded and request-tool-only hosts in network-tool commands; refuses when `Max parallel` network commands are
+already running; asks for approval if the command is intrusive (bound to the command, its programs, its input
+files and the policy revision); adds the rate flag (its share of `Max rate`); counts it against `Max commands`;
+runs the command sandboxed as the engagement's user (with no network for passive commands under `Execution:
+controlled`); hashes every file it created or changed. Details: [architecture.md](architecture.md#how-one-task-flows)
 and [engagements.md](engagements.md).
 
 Output notes:
@@ -78,7 +83,9 @@ Inside a task, the worker model has these tools (they aren't MCP tools; `worker-
 
 | Tool | What it does |
 |---|---|
-| `kali_run` | `command`, `timeout_s` (default 600, max 3600): calls the kali `run` tool for the task's engagement. Same checks, same audit log. An intrusive command makes it stop and report the approval id. |
+| `kali_run` | `command`, `timeout_s` (default 600, max 3600): calls the kali `run` tool for the task's engagement with the task's tier as `max_tier`. Same checks, same audit log. An intrusive command makes it stop and report the approval id. |
+| `http_request` | `method`, `url`, `headers`, `body`: calls the kali `http_request` tool with the task's tier as `max_tier`. |
+| `analyze_source` | `tool`, `path`, `rulesets`: calls the kali `analyze_source` tool (no network). |
 | `vuln_intel` | `ids`: ranks up to 50 vulnerability ids with the intel `prioritize` tool. |
 | `web_search` | `query`: SearXNG search through `web-mcp`, 8 results. |
 | `fetch_url` | `url`: reads a public page as text through `web-mcp`. Refuses every engagement's targets and non-public addresses, on every redirect too. |

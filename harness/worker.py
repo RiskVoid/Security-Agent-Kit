@@ -44,7 +44,7 @@ Rules:
   Never go beyond the allowed tier. If the task needs more, stop and say so in `finish`.
 - Scope: {scope}. Only touch these systems; anything else is blocked at the network level. Never try to work
   around a refusal or a block.
-- If kali_run answers APPROVAL REQUIRED, don't retry or rephrase the command: call finish and report the
+- If kali_run or http_request answers APPROVAL REQUIRED, don't retry or rephrase the command: call finish and report the
   approval id and the exact command in open_questions. The lead consultant gets the user's approval.
 - Use kali_run for anything that touches a target. fetch_url is for public research only (advisories, docs).
 - Prefer small, specific commands. The current directory is the engagement folder: write all output files there
@@ -71,6 +71,21 @@ TOOLS = [
         "parameters": {"type": "object", "properties": {
             "command": {"type": "string"}, "timeout_s": {"type": "integer", "default": 600}},
             "required": ["command"]}}},
+    {"type": "function", "function": {"name": "http_request", "description":
+        "Send one HTTP request to an in-scope URL; returns status, headers and body, saved as evidence. Use it "
+        "for single requests (the only way to reach hosts limited to URL paths). GET/HEAD/OPTIONS only unless "
+        "your tier is intrusive; other methods need the user's approval.",
+        "parameters": {"type": "object", "properties": {
+            "method": {"type": "string", "enum": ["GET", "HEAD", "OPTIONS", "POST", "PUT", "PATCH", "DELETE"]},
+            "url": {"type": "string"}, "headers": {"type": "object"}, "body": {"type": "string"}},
+            "required": ["method", "url"]}}},
+    {"type": "function", "function": {"name": "analyze_source", "description":
+        "Run semgrep (offline rules), gitleaks, trufflehog or bandit on in-scope code with no network. "
+        "path: a /src path. rulesets (semgrep only): rule folders like php, python, javascript.",
+        "parameters": {"type": "object", "properties": {
+            "tool": {"type": "string", "enum": ["semgrep", "gitleaks", "trufflehog", "bandit"]},
+            "path": {"type": "string"}, "rulesets": {"type": "array", "items": {"type": "string"}}},
+            "required": ["tool", "path"]}}},
     {"type": "function", "function": {"name": "vuln_intel", "description":
         "Rank vulnerability ids (CVE/GHSA/PYSEC) by real-world risk: CISA KEV, EPSS, CVSS, CWE, fixed versions. "
         "Use it on ids from osv-scanner, pip-audit, trivy or grype instead of searching the web.",
@@ -146,8 +161,21 @@ def engagement_info(engagement):
 
 
 def kali_run(task, command, timeout_s=600):
+    """kali-mcp enforces the task's tier (max_tier), not only the prompt."""
     t = min(int(timeout_s or 600), 3600)
-    return _arun(_kali("run", {"command": command, "engagement": task["engagement"], "timeout_s": t}, t))
+    return _arun(_kali("run", {"command": command, "engagement": task["engagement"], "timeout_s": t,
+                               "max_tier": task["tier"], "task": task["id"]}, t))
+
+
+def http_request(task, method, url, headers=None, body=""):
+    return _arun(_kali("http_request", {"engagement": task["engagement"], "method": method, "url": url,
+                                        "headers": headers or {}, "body": body or "", "max_tier": task["tier"],
+                                        "task": task["id"]}, 300))
+
+
+def analyze_source(task, tool, path, rulesets=None):
+    return _arun(_kali("analyze_source", {"engagement": task["engagement"], "tool": tool, "path": path,
+                                          "rulesets": rulesets or [], "task": task["id"]}, 1900))
 
 
 def vuln_intel(task, ids):
@@ -189,7 +217,7 @@ def record_candidate(task, title, severity, asset, description, evidence, cwe=""
     return f"recorded {f['id']} (candidate)"
 
 
-IMPL = {"kali_run": kali_run, "vuln_intel": vuln_intel, "web_search": web_search, "fetch_url": fetch_url, "read_file": read_file,
+IMPL = {"kali_run": kali_run, "http_request": http_request, "analyze_source": analyze_source, "vuln_intel": vuln_intel, "web_search": web_search, "fetch_url": fetch_url, "read_file": read_file,
         "record_candidate": record_candidate}
 
 

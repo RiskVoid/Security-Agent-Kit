@@ -194,6 +194,7 @@ The `evals/` folder also holds the kit's own tests. All but the first run agains
 | `evals/phase5_e2e.sh` | end to end: audited tools, hashed evidence, findings, a final report, tamper detection, close-out | the demo app |
 | `evals/console_test.sh` | the console's sign-in, host check, CSRF header, read API and file limits; preview writes nothing; the live view shows a running command and drops it when it ends | `demo-code` |
 | `evals/console_contract_test.py` | the console contract: validation, conflicts, audit attribution, event stream, inert content, isolation | the stack |
+| `evals/policy_test.sh` | scope and rules enforcement with real DNS and the firewall, the request tool, bound and stale approvals, controlled execution, offline source analysis, budgets | the stack, internet access |
 | `evals/model_stub_test.sh` | the deterministic model stub through LiteLLM, streaming and error classification, no GPU or provider | the stack |
 | `evals/agent_loop_test.sh` | the worker's agent loop with a scripted model (`evals/mock_llm.py`, no GPU or API key): tools sent, kali command run in the sandbox, candidate recorded citing the verified output, task saved | the stack, `/src/rv-demo-app` |
 | `evals/lab_test.sh` | lab isolation: only in-scope engagements reach a lab target, the lab has no internet and can't reach the kit | `./rvkit lab up` |

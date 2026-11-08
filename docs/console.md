@@ -75,6 +75,17 @@ ssh -L 8100:127.0.0.1:8100 you@kit-host     # then, on the kit host: ./rvkit con
 
 Open the printed sign-in link on your own machine.
 
+## Scope and rules preview
+
+**Preview changes** shows the diff and what the policy will allow, exclude and when, the stop conditions, and what
+the kit doesn't enforce for this scope. Lines the kit can't enforce or doesn't understand are listed under
+**Can't apply** with the reason, and **Apply** stays disabled until they are fixed. Applying creates a new policy
+revision and makes earlier approvals that weren't used yet stale.
+
+An approval card says what the approval is bound to: the scope and rules revision, the programs and input files
+of a command or the headers of a request, and the worker task that asked. A request made through the request tool
+shows as `HTTP <method> <url>`.
+
 ## Who changed what
 
 Every change made in the console is recorded in the engagement's audit log (the **Audit log** tab) with who made

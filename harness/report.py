@@ -271,8 +271,7 @@ def build(eng):
     d.body("Testing was limited to the targets below. The limits were enforced technically: every command ran in "
            "a per-engagement sandbox whose network access was restricted to these targets, at or below the agreed "
            "intensity, and every command was recorded in an audit log.")
-    rows = [["Network", n] for n in sc["nets"]] + [["Domain (incl. subdomains)", x] for x in sc["domains"]] + \
-           [["Source code", p] for p in sc["paths"]]
+    rows = [list(x) for x in report_html.scope_rows(info)]
     d.table(["Type", "Target"], rows=rows or [["n/a", "no targets"]], col_weights=[1.4, 4])
     r = info["rules"]
     d.body("")
@@ -280,7 +279,7 @@ def build(eng):
         ["Allowed testing tiers", ", ".join(r["tiers"])],
         ["Maximum request rate", f"{r['max_rate']} per second"],
         ["Network access", r["network"]],
-        ["Testing window (UTC)", r["window"] or "unrestricted"],
+        ["Testing window", report_html.time_rule(r)],
         ["Testing period", period]], col_weights=[1.4, 4])
 
     # 3. methodology

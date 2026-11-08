@@ -65,13 +65,13 @@ check "out-of-scope name does not resolve"        'NORESOLVE'                   
 check "internal services blocked (litellm)"       'BLOCKED'                     "$(run net-test 'curl -s -m 5 -o /dev/null http://litellm:4000/health && echo REACHED || echo BLOCKED')"
 check "loopback services blocked (kali-mcp)"      'BLOCKED'                     "$(run net-test "python3 -c 'import urllib.request as u; u.urlopen(\"http://127.0.0.1:8090/mcp\", timeout=5)' >/dev/null 2>&1 && echo REACHED || echo BLOCKED")"
 
-scope_of() { docker compose exec -T kali-mcp python3 -c 'import sys,json; sys.path.insert(0,"/opt/kali-mcp"); import core
-print(json.dumps(core.parse_scope(sys.argv[1])["nets"]))' "$1"; }
-check "CIDR scope keeps its prefix"               '"203.0.113.0/28", "10.0.0.0/24"' "$(scope_of $'- 203.0.113.0/28\n- 10.0.0.5/24')"
-check "URL scope keeps only the host"             '"10.250.0.10/32"'            "$(scope_of '- http://10.250.0.10:3000/login')"
+scope_of() { docker compose exec -T kali-mcp python3 -c 'import sys,json; sys.path.insert(0,"/opt/kali-mcp"); import policy
+p = policy.parse_scope(sys.argv[1]); print(json.dumps([[n["cidr"], n["ports"]] for n in p["nets"]] + p["urls"]))' "$1"; }
+check "CIDR scope keeps its prefix"               '"203.0.113.0/28", null\], \["10.0.0.0/24"' "$(scope_of $'- 203.0.113.0/28\n- 10.0.0.5/24')"
+check "URL scope keeps its port and path"         '"port": 3000, "prefix": "/login"' "$(scope_of '- http://10.250.0.10:3000/login')"
 
 echo "== rate caps (net-test: max 20/s)"
-check "rate flag injected"                        'rate limit applied: ffuf -rate 20'  "$(run net-test 'ffuf -V')"
+check "rate flag injected (max 20 shared by 2)"   'rate limit applied: ffuf -rate 10'  "$(run net-test 'ffuf -V')"
 check "higher explicit rate refused"              'exceeds the engagement max rate' "$(run net-test 'nmap -sS -p 80 1.1.1.1 --max-rate 1000')"
 
 echo "== approvals (net-test)"
@@ -80,7 +80,7 @@ check "intrusive needs approval"                  'APPROVAL REQUIRED'           
 aid="$(echo "$out" | grep -oE 'Approval id: [a-f0-9]{8}' | awk '{print $3}')"
 check "unapproved id refused"                     'is pending'                  "$(run net-test 'sqlmap --version' "$aid")"
 ctl approve net-test "$aid" >/dev/null
-check "different command refused"                 'different command'           "$(run net-test 'sqlmap --help' "$aid")"
+check "different command refused"                 'different action'            "$(run net-test 'sqlmap --help' "$aid")"
 check "approved command runs"                     'exit=0 tier=intrusive'       "$(run net-test 'sqlmap --version' "$aid")"
 check "approval is single-use"                    'is used'                     "$(run net-test 'sqlmap --version' "$aid")"
 

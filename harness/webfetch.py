@@ -12,7 +12,10 @@ UA = "Mozilla/5.0 (rvkit research)"
 
 
 def in_scope_name(host, domains):
-    return any(host == d or host.endswith("." + d) for d in domains)
+    """Is this host an engagement target? Entries may be wildcards (*.example.com); for keeping research
+    fetches away from targets, the base name counts too (broader is safer here)."""
+    host = host.lower().rstrip(".")
+    return any(host == d or host.endswith("." + d) for d in (x[2:] if x.startswith("*.") else x for x in domains))
 
 
 def refusal(url, nets, domains, pins=None):
