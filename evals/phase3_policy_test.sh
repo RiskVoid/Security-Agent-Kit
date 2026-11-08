@@ -71,7 +71,7 @@ check "CIDR scope keeps its prefix"               '"203.0.113.0/28", null\], \["
 check "URL scope keeps its port and path"         '"port": 3000, "prefix": "/login"' "$(scope_of '- http://10.250.0.10:3000/login')"
 
 echo "== rate caps (net-test: max 20/s)"
-check "rate flag injected"                        'rate limit applied: ffuf -rate 20'  "$(run net-test 'ffuf -V')"
+check "rate flag injected (max 20 shared by 2)"   'rate limit applied: ffuf -rate 10'  "$(run net-test 'ffuf -V')"
 check "higher explicit rate refused"              'exceeds the engagement max rate' "$(run net-test 'nmap -sS -p 80 1.1.1.1 --max-rate 1000')"
 
 echo "== approvals (net-test)"
@@ -80,7 +80,7 @@ check "intrusive needs approval"                  'APPROVAL REQUIRED'           
 aid="$(echo "$out" | grep -oE 'Approval id: [a-f0-9]{8}' | awk '{print $3}')"
 check "unapproved id refused"                     'is pending'                  "$(run net-test 'sqlmap --version' "$aid")"
 ctl approve net-test "$aid" >/dev/null
-check "different command refused"                 'different command'           "$(run net-test 'sqlmap --help' "$aid")"
+check "different command refused"                 'different action'            "$(run net-test 'sqlmap --help' "$aid")"
 check "approved command runs"                     'exit=0 tier=intrusive'       "$(run net-test 'sqlmap --version' "$aid")"
 check "approval is single-use"                    'is used'                     "$(run net-test 'sqlmap --version' "$aid")"
 

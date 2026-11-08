@@ -44,7 +44,7 @@ SCOPE='- example.com
 - !data.iana.org
 - 1.1.1.1:443
 - https://example.net/api/'
-RULES='- Allowed tiers: passive, active
+RULES='- Allowed tiers: passive, active, intrusive
 - Max rate: 50'
 
 echo "== activation"
@@ -80,7 +80,58 @@ check "outside the days refused"                  'allowed on .* only' \
 setscope "$SCOPE" "$RULES" >/dev/null
 check "back inside: runs"                         'exit=0'                       "$(run 'echo hi')"
 
-if [ -f evals/policy_test_rw005.sh ]; then . evals/policy_test_rw005.sh; fi
+echo "== request tool (RW-005)"
+http() { # http <method> <url> [body] [approval-id] [max-tier]
+  mcp http_request "$(python3 -c 'import json,sys; a=sys.argv; print(json.dumps({"engagement": a[1], "method": a[2], "url": a[3], "body": a[4], "approval_id": a[5], "max_tier": a[6]}))' "$ENG" "$1" "$2" "${3:-}" "${4:-}" "${5:-}")"
+}
+out="$(http GET https://example.net/api/x)"
+check "URL-limited host reachable by request tool" '-> [0-9]{3} '               "$out"
+check "request saved as verified evidence"        'evidence/http/'               "$out"
+check "path outside the URL limit refused"        'only https://example.net:443/api/' "$(http GET https://example.net/other)"
+check "excluded name refused by request tool"     'excluded from scope'          "$(http GET https://data.iana.org/)"
+check "redirect out of scope not followed"        'not followed: one.one.one.one is not in scope' "$(http GET https://1.1.1.1/)"
+check "task tier enforced by kali-mcp"            "this task may only use 'passive'" "$(http GET https://example.com/ '' '' passive)"
+
+echo "== approvals bound to the action (RW-005)"
+out="$(http POST https://example.com/form 'a=1')"
+check "POST needs an approval"                    'APPROVAL REQUIRED'            "$out"
+aid="$(echo "$out" | grep -oE 'Approval id: [a-f0-9]{8}' | awk '{print $3}')"
+ctl approve "$ENG" "$aid" >/dev/null
+check "different body refused"                    'body differ'                  "$(http POST https://example.com/form 'a=2' "$aid")"
+check "approved request runs"                     '-> [0-9]{3} '                 "$(http POST https://example.com/form 'a=1' "$aid")"
+check "approval is single-use"                    'is used'                      "$(http POST https://example.com/form 'a=1' "$aid")"
+out="$(http POST https://example.com/form 'b=1')"
+aid="$(echo "$out" | grep -oE 'Approval id: [a-f0-9]{8}' | awk '{print $3}')"
+ctl approve "$ENG" "$aid" >/dev/null
+setscope "$SCOPE"$'\n- example.org' "$RULES" >/dev/null
+check "scope change makes an approval stale"      'stale'                        "$(http POST https://example.com/form 'b=1' "$aid")"
+check "stale approval shown as stale"             '"status": "stale"'            "$(ctl show "$ENG" >/dev/null; docker compose exec -T kali-mcp cat /control/eng/$ENG/approvals/$aid.json)"
+
+echo "== controlled execution (RW-005)"
+setscope "$SCOPE" "$RULES"$'\n- Execution: controlled' >/dev/null
+check "passive command gets no network"           'NORESOLVE'                    "$(resolves example.com)"
+check "DNS tools keep their network"              '[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+' "$(run 'dig +short example.com')"
+run 'printf "curl -s https://example.com/\n" > probe.sh' >/dev/null
+out="$(run 'bash probe.sh')"
+check "script needs an approval"                  'APPROVAL REQUIRED'            "$out"
+aid="$(echo "$out" | grep -oE 'Approval id: [a-f0-9]{8}' | awk '{print $3}')"
+ctl approve "$ENG" "$aid" >/dev/null
+run 'printf "curl -s https://example.com/admin\n" > probe.sh' >/dev/null
+check "changed input file refused"                'inputs differ'                "$(run 'bash probe.sh' "$aid")"
+check "task tier enforced for run"                "this task may only use 'passive'" "$(mcp run "$(python3 -c 'import json,sys; print(json.dumps({"engagement": sys.argv[1], "command": "nmap -sn 1.1.1.1", "max_tier": "passive"}))' "$ENG")")"
+
+echo "== source analysis without network (RW-005)"
+run 'mkdir -p code && printf "import subprocess\npassword = \"hunter2\"\nsubprocess.call(input(), shell=True)\n" > code/app.py' >/dev/null
+out="$(mcp analyze_source "$(python3 -c 'import json,sys; print(json.dumps({"engagement": sys.argv[1], "tool": "bandit", "path": "/work/" + sys.argv[1] + "/code"}))' "$ENG")")"
+check "bandit runs offline and reports"           'bandit: [1-9][0-9]* result\(s\)' "$out"
+check "analysis path outside scope refused"       'not in scope'                 "$(mcp analyze_source "$(python3 -c 'import json,sys; print(json.dumps({"engagement": sys.argv[1], "tool": "bandit", "path": "/etc"}))' "$ENG")")"
+
+echo "== budgets (RW-005)"
+used="$(docker compose exec -T kali-mcp cat /control/eng/$ENG/usage.json | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d["commands"], d["requests"])')"
+setscope "$SCOPE" "$RULES"$'\n- Max commands: '"${used% *}"$'\n- Max requests: '"${used#* }" >/dev/null
+check "command budget enforced"                   'command budget is used up'    "$(run 'echo hi')"
+check "request budget enforced"                   'request budget is used up'    "$(http GET https://example.com/)"
+setscope "$SCOPE" "$RULES" >/dev/null
 
 ctl halt "$ENG" >/dev/null 2>&1; ctl close "$ENG" >/dev/null 2>&1; ctl delete "$ENG" --force >/dev/null 2>&1
 rm -rf "$DIR/$ENG" "$DIR"/_deleted-"$ENG"-* "$DIR"/_archive/"$ENG"* 2>/dev/null

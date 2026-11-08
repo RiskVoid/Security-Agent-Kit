@@ -183,10 +183,23 @@ function approvalCard(a, withEng) {
     <div class="rv-meta">${withEng ? `<a href="#eng-${esc(a.engagement)}">${esc(a.engagement)}</a>` : ""}${tag(a.tier, TIER_CLASS[a.tier] || "intrusive")}
       <span>id ${esc(a.id)}</span><span>${fmtTime(a.created)}</span></div>
     <pre class="rv-pre">${esc(a.command)}</pre>
+    ${approvalBinding(a)}
     <div class="rv-actions">
       <button class="rv-btn ghost" data-deny="${esc(a.engagement)}/${esc(a.id)}">Deny</button>
-      <button class="rv-btn accent" data-approve="${esc(a.engagement)}/${esc(a.id)}">Approve this command</button>
+      <button class="rv-btn accent" data-approve="${esc(a.engagement)}/${esc(a.id)}">Approve ${a.kind === "http" ? "this request" : "this command"}</button>
     </div></div></div>`;
+}
+function approvalBinding(a) {
+  // What the approval covers: a later change to any of these needs a new approval.
+  const act = a.action || {}, bits = [];
+  if (a.policy_version) bits.push(`scope and rules revision ${esc(a.policy_version)}`);
+  const exes = Object.keys(act.executables || {});
+  if (exes.length) bits.push(`programs ${exes.map((x) => `<code>${esc(x)}</code>`).join(", ")}`);
+  const inputs = Object.keys(act.inputs || {});
+  if (inputs.length) bits.push(`files ${inputs.slice(0, 6).map((x) => `<code>${esc(x)}</code>`).join(", ")}${inputs.length > 6 ? ` +${inputs.length - 6}` : ""}`);
+  if (act.kind === "http" && Object.keys(act.headers || {}).length) bits.push(`headers ${Object.keys(act.headers).map((x) => `<code>${esc(x)}</code>`).join(", ")}`);
+  if (a.task) bits.push(`worker task ${esc(a.task)}`);
+  return bits.length ? `<p class="hint">Bound to ${bits.join("; ")}.</p>` : "";
 }
 function renderApprovals() {
   const list = state.overview?.approvals || [];
@@ -511,6 +524,10 @@ function liveEvent(e) {
   if (e.refused) {
     dot = "c-critical";
     body = `<span>Refused: ${esc(e.refused)}</span>${e.command ? `<code>${esc(e.command)}</code>` : ""}`;
+  } else if (e.action === "http") {
+    const last = (e.hops || []).slice(-1)[0] || {};
+    dot = last.status && last.status < 400 ? "c-ok" : "c-high";
+    body = `<code>${esc(e.method)} ${esc(e.url)}</code><span class="rv-meta">${tier}<span>${esc(last.status || last.error || "no response")}</span>${(e.hops || []).length > 1 ? `<span>${e.hops.length - 1} redirect(s)</span>` : ""}${e.approval ? `<span>approval ${esc(e.approval)}</span>` : ""}</span>${(e.notes || []).map((n) => `<span class="rv-meta">${esc(n)}</span>`).join("")}`;
   } else if (e.command && e.exit !== undefined) {
     dot = e.exit === 0 ? "c-ok" : "c-high";
     body = `<code>${esc(e.command)}</code><span class="rv-meta">${tier}<span>exit ${esc(e.exit)}</span><span>${esc(e.seconds)} s</span>${e.approval ? `<span>approval ${esc(e.approval)}</span>` : ""}</span>`;

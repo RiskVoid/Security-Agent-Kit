@@ -10,7 +10,8 @@ Trust model
 The network policy is the hard boundary for scope. Tiers, rate caps and the regex pre-check are guardrails
 against mistakes: a script could still send intrusive traffic to in-scope hosts.
 """
-import datetime, difflib, hashlib, ipaddress, json, os, re, shutil, signal, socket, subprocess, time, uuid
+import datetime, difflib, fcntl, hashlib, ipaddress, json, os, re, shlex, shutil, signal, socket, subprocess, \
+    threading, time, uuid
 
 import policy as rvpolicy
 
@@ -199,7 +200,7 @@ def info(eng):
     rules = pol["rules"]
     return {"engagement": eng, "uid": uid, "revision": revision(eng), "policy_version": policy_version(eng),
             "scope": rvpolicy.legacy_scope(pol), "policy": {k: pol[k] for k in POLICY_KEYS},
-            "rules": rules, "halted": os.path.exists(os.path.join(ctl_dir(eng), "HALT")),
+            "rules": rules, "halted": os.path.exists(os.path.join(ctl_dir(eng), "HALT")), "usage": usage(eng),
             "infra_domains": infra_domains() if rules["network"] == "online" else []}
 
 
@@ -287,6 +288,8 @@ def sync(eng, expected=None, texts=None):
                        "policy": {k: pol[k] for k in POLICY_KEYS}, "rules": pol["rules"]}, f, indent=1)
     _audit({"engagement": eng, "event": "scope-sync", "scope": rvpolicy.legacy_scope(pol),
             "rules": pol["rules"], "before": before, "after": after, "policy_version": version})
+    if before and after != before:
+        invalidate_approvals(eng, f"the scope or rules changed (policy revision {version})")
     return pol["warnings"]
 
 
@@ -454,10 +457,64 @@ def _cmd_hash(command):
     return hashlib.sha256(command.encode()).hexdigest()[:16]
 
 
+SANDBOX_PATH = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"  # rv-sandbox.sh's PATH
+_EXE_CACHE = {}
+
+
+def _exe_digest(prog):
+    """sha256 of the program the sandbox would run for this name (None if not found)."""
+    path = shutil.which(prog, path=SANDBOX_PATH)
+    if not path:
+        return None
+    path = os.path.realpath(path)
+    st = os.stat(path)
+    key = (path, st.st_mtime_ns, st.st_size)
+    if key not in _EXE_CACHE:
+        _EXE_CACHE[key] = sha256_file(path)[:32]
+    return _EXE_CACHE[key]
+
+
+def _input_files(eng, command):
+    """Files the command names that exist in the engagement folder or in-scope source: their digests are part of
+    what an approval covers, so changing a script or wordlist after approval invalidates it."""
+    out, root = {}, os.path.join(WORK, eng)
+    try:
+        words = shlex.split(command)
+    except ValueError:
+        words = command.split()
+    for w in words:
+        for cand in ([w] if w.startswith("/") else [os.path.join(root, w)]):
+            p = os.path.normpath(cand)
+            if (p.startswith(root + "/") or p.startswith("/src/")) and os.path.isfile(p) and len(out) < 50:
+                if os.path.getsize(p) <= 64 * 1024 * 1024:
+                    out[os.path.relpath(p, root) if p.startswith(root + "/") else p] = sha256_file(p)[:32]
+    return out
+
+
+def run_action(eng, command):
+    """What an approval of a run command is bound to: the exact text, the programs it runs and its input files."""
+    return {"kind": "run", "command": command,
+            "executables": {prog: _exe_digest(prog) for prog, _ in _segments(command)},
+            "inputs": _input_files(eng, command)}
+
+
+def action_digest(action):
+    return hashlib.sha256(json.dumps(action, sort_keys=True).encode()).hexdigest()[:32]
+
+
+def _write_json(path, data):
+    tmp = f"{path}.{os.getpid()}.{threading.get_ident()}.tmp"
+    with open(tmp, "w") as f:
+        json.dump(data, f, indent=1)
+    os.replace(tmp, path)
+
+
 def approvals(eng, status=None):
     d = os.path.join(ctl_dir(eng), "approvals")
     out = []
     for f in sorted(os.listdir(d)) if os.path.isdir(d) else []:
+        if not f.endswith(".json"):
+            continue
         a = json.load(open(os.path.join(d, f)))
         if not status or a["status"] == status:
             out.append(a)
@@ -470,14 +527,19 @@ def _approval_path(eng, aid):
     return os.path.join(ctl_dir(eng), "approvals", aid + ".json")
 
 
-def request_approval(eng, command, tier):
+def request_approval(eng, action, tier, display, task=None):
+    """A pending approval for exactly this action under the current policy revision (reused if one is pending)."""
+    digest = action_digest(action)
     for a in approvals(eng, "pending"):
-        if a["hash"] == _cmd_hash(command):
+        if a.get("digest") == digest and a.get("policy") == revision(eng):
             return a
-    a = {"id": uuid.uuid4().hex[:8], "engagement": eng, "command": command, "hash": _cmd_hash(command),
-         "tier": tier, "status": "pending", "created": time.time()}
-    json.dump(a, open(_approval_path(eng, a["id"]), "w"), indent=1)
-    _audit({"engagement": eng, "event": "approval-requested", "approval": a["id"], "command": command})
+    a = {"id": uuid.uuid4().hex[:8], "engagement": eng, "kind": action["kind"], "command": display,
+         "hash": _cmd_hash(display), "digest": digest, "action": action, "tier": tier, "status": "pending",
+         "created": time.time(), "policy": revision(eng), "policy_version": policy_version(eng),
+         "requested_by": ACTOR, "task": task}
+    _write_json(_approval_path(eng, a["id"]), a)
+    _audit({"engagement": eng, "event": "approval-requested", "approval": a["id"], "command": display,
+            "digest": digest, "policy": a["policy"], "task": task})
     return a
 
 
@@ -486,26 +548,98 @@ def decide(eng, aid, approve):
     a = json.load(open(path))
     if a["status"] != "pending":
         raise ValueError(f"approval {aid} is {a['status']}")
-    a.update(status="approved" if approve else "denied", decided=time.time())
-    json.dump(a, open(path, "w"), indent=1)
-    _audit({"engagement": eng, "event": "approval-" + a["status"], "approval": aid, "command": a["command"]})
+    if approve and a.get("policy") != revision(eng):
+        _stale(eng, a, "the scope or rules changed after it was requested")
+        raise ValueError(f"approval {aid} is stale: the scope or rules changed after it was requested; the agent "
+                         f"has to ask again")
+    a.update(status="approved" if approve else "denied", decided=time.time(), decided_by=ACTOR)
+    _write_json(path, a)
+    _audit({"engagement": eng, "event": "approval-" + a["status"], "approval": aid, "command": a["command"],
+            "digest": a.get("digest"), "policy": a.get("policy")})
     return a
 
 
-def _use_approval(eng, aid, command):
+def _stale(eng, a, why):
+    a.update(status="stale", stale_reason=why, staled=time.time())
+    _write_json(_approval_path(eng, a["id"]), a)
+    _audit({"engagement": eng, "event": "approval-stale", "approval": a["id"], "command": a["command"], "reason": why})
+
+
+def invalidate_approvals(eng, why):
+    """Pending and approved-but-unused approvals stop being valid when the policy they were made under changes."""
+    n = 0
+    for a in approvals(eng):
+        if a["status"] in ("pending", "approved") and a.get("policy") != revision(eng):
+            _stale(eng, a, why)
+            n += 1
+    return n
+
+
+def consume_approval(eng, aid, action, rules):
+    """Use an approval for this action exactly once. None when it may run, else why not."""
     path = _approval_path(eng, aid)
     if not os.path.exists(path):
         return "no such approval"
     a = json.load(open(path))
     if a["status"] != "approved":
-        return f"approval {aid} is {a['status']}"
-    if a["hash"] != _cmd_hash(command):
-        return "approval was for a different command; it must match exactly"
-    if time.time() - a.get("decided", 0) > 86400:
-        return "approval expired (24 h)"
+        return f"approval {aid} is {a['status']}" + (f" ({a['stale_reason']})" if a.get("stale_reason") else "")
+    if "digest" not in a:
+        return "approval was made before approvals were bound to the action; ask for a new one"
+    if a.get("policy") != revision(eng):
+        _stale(eng, a, "the scope or rules changed after it was approved")
+        return "approval is stale: the scope or rules changed after it was approved; ask for a new one"
+    if a["digest"] != action_digest(action):
+        old = a.get("action") or {}
+        what = [k for k in sorted(set(old) | set(action)) if old.get(k) != action.get(k)]
+        return ("approval was for a different action (" + ", ".join(what or ["action"]) + " differ); it must "
+                "match exactly, including the programs and input files it uses")
+    if time.time() - a.get("decided", 0) > rules.get("approval_hours", 24) * 3600:
+        return f"approval expired ({rules.get('approval_hours', 24)} h)"
+    try:  # exactly once, also when two calls race for the same approval
+        os.close(os.open(path[:-5] + ".used", os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600))
+    except FileExistsError:
+        return f"approval {aid} is used"
     a.update(status="used", used=time.time())
-    json.dump(a, open(path, "w"), indent=1)
+    _write_json(path, a)
     return None
+
+
+# ---------------------------------------------------------------- budgets and concurrency
+def _usage_path(eng):
+    return os.path.join(ctl_dir(eng), "usage.json")
+
+
+def usage(eng):
+    try:
+        return json.load(open(_usage_path(eng)))
+    except (OSError, ValueError):
+        return {"requests": 0, "commands": 0}
+
+
+def take_budget(eng, key, limit):
+    """Count one request or command against the engagement-wide budget. False when the budget is used up."""
+    with open(_usage_path(eng) + ".lock", "a") as lk:
+        fcntl.flock(lk, fcntl.LOCK_EX)
+        u = usage(eng)
+        if limit is not None and u.get(key, 0) >= limit:
+            return False
+        u[key] = u.get(key, 0) + 1
+        _write_json(_usage_path(eng), u)
+        return True
+
+
+_RATE_LOCK = threading.Lock()
+_NEXT_SLOT = {}
+
+
+def rate_wait(eng, per_second):
+    """Space requests from the request tool to the engagement's max rate, across all callers of this server."""
+    with _RATE_LOCK:
+        now = time.monotonic()
+        slot = max(now, _NEXT_SLOT.get(eng, 0.0))
+        _NEXT_SLOT[eng] = slot + 1.0 / max(1, per_second)
+    if slot > now:
+        time.sleep(slot - now)
 
 
 def halt(eng, on):
@@ -670,10 +804,24 @@ def _audit(entry):
         pass
 
 
-def run(command, eng, timeout_s=600, approval_id=None):
+# Passive tools that need the network (DNS and registry lookups). With Execution: controlled, a passive command gets
+# network only when it runs one of these; everything else passive (code review, parsing output) runs with none.
+PASSIVE_NET = {"dig", "host", "nslookup", "delv", "drill", "whois", "dnsx", "subfinder", "assetfinder", "shuffledns",
+               "puredns", "asnmap", "cdncheck"}
+
+
+def _tier_over(tier, max_tier):
+    return max_tier in TIERS and TIERS.index(tier) > TIERS.index(max_tier)
+
+
+def run(command, eng, timeout_s=600, approval_id=None, max_tier=None, task=None):
+    """Run one command in the engagement's sandbox after every policy check. max_tier: the calling task's tier
+    (the worker passes it), never above the engagement's. Execution: controlled runs passive commands with no
+    network at all and counts scripts and interpreters as intrusive (an approval each)."""
     i = info(eng)
     uid, rules = i["uid"], i["rules"]
-    entry = {"engagement": eng, "uid": uid, "command": command}
+    controlled = rules.get("execution") == "controlled"
+    entry = {"engagement": eng, "uid": uid, "command": command, **({"task": task} if task else {})}
 
     def refuse(msg, **extra):
         _audit({**entry, "refused": msg, **extra})
@@ -684,39 +832,61 @@ def run(command, eng, timeout_s=600, approval_id=None):
     late = rvpolicy.time_refusal(rules)
     if late:
         return refuse(late + " (RULES.md)")
-    tier = classify(command, rules.get("strict", False))
+    tier = classify(command, rules.get("strict", False) or controlled)
     entry["tier"] = tier
     if tier not in rules["tiers"]:
         return refuse(f"this command is tier '{tier}', RULES.md allows only {rules['tiers']}", tier=tier)
-    bad = precheck(command, i)
+    if _tier_over(tier, max_tier):
+        return refuse(f"this command is tier '{tier}' and this task may only use '{max_tier}'", tier=tier)
+    pol = policy_of(eng)
+    bad = precheck(command, i, pol)
     if bad:
         return refuse(f"targets not in scope for {eng}: {bad}")
+    network = not (controlled and tier == "passive" and not any(p in PASSIVE_NET for p, _ in _segments(command)))
+    if network and tier != "passive":
+        busy = [r for r in running(eng) if r.get("network") and r.get("tier", "passive") != "passive"]
+        if len(busy) >= rules["max_parallel"]:
+            return refuse(f"{len(busy)} network command(s) already running for {eng} (Max parallel: "
+                          f"{rules['max_parallel']}); wait for one to finish")
     if tier == "intrusive":
+        action = run_action(eng, command)
         if not approval_id:
-            a = request_approval(eng, command, tier)
+            a = request_approval(eng, action, tier, command, task)
             return (f"APPROVAL REQUIRED (intrusive). Approval id: {a['id']}. Ask the user to review and run on the "
                     f"host:  ./rvkit approve {eng} {a['id']}   Then call run again with the same command and "
-                    f"approval_id='{a['id']}'.")
-        err = _use_approval(eng, approval_id, command)
+                    f"approval_id='{a['id']}'. Approvals are bound to this exact command, the programs and input "
+                    f"files it uses and the current scope: a change to any of them needs a new approval.")
+        err = consume_approval(eng, approval_id, action, rules)
         if err:
             return refuse(err, approval=approval_id)
         entry["approval"] = approval_id
-    final, err = apply_rate(command, rules["max_rate"])
+    share = max(1, rules["max_rate"] // max(1, rules["max_parallel"]))  # parallel commands share the max rate
+    final, err = apply_rate(command, share if network else None)
     if err:
         return refuse(err)
+    if not take_budget(eng, "commands", rules.get("max_commands")):
+        return refuse(f"the engagement's command budget is used up (Max commands: {rules['max_commands']})")
     entry["command"] = final
     if final != command:
         entry["original"] = command
+    if not network:
+        entry["network"] = "none"
+    return _execute(eng, i, entry, final, tier, timeout_s, network, approval_id,
+                    note=f"[rate limit applied: {final}]\n" if final != command else "")
 
+
+def _execute(eng, i, entry, final, tier, timeout_s, network, approval_id, note=""):
+    """Run a checked command in the sandbox, save its output as verified evidence and audit it."""
+    uid = i["uid"]
     env = {"RV_ENG": eng, "RV_UID": str(uid), "RV_HOME": f"/work/{eng}/.home",
            "RV_SRC": "\n".join(i["scope"]["paths"]), "RV_CMD": final, "PATH": os.environ.get("PATH", "")}
     root = os.path.join(WORK, eng)
     before = _snapshot(root)
     t0 = time.time()
-    p = subprocess.Popen(["unshare", "-m", "-p", "-f", "--mount-proc", "--propagation", "private",
-                          os.path.join(HERE, "rv-sandbox.sh")], env=env, stdout=subprocess.PIPE,
+    ns = ["unshare", "-m", "-p", "-f"] + ([] if network else ["-n"]) + ["--mount-proc", "--propagation", "private"]
+    p = subprocess.Popen(ns + [os.path.join(HERE, "rv-sandbox.sh")], env=env, stdout=subprocess.PIPE,
                          stderr=subprocess.PIPE, text=True, start_new_session=True)
-    marker = _running_mark(eng, p.pid, {"command": final, "tier": tier, "started": t0,
+    marker = _running_mark(eng, p.pid, {"command": final, "tier": tier, "started": t0, "network": network,
                                         "timeout_s": min(int(timeout_s or 600), 3600), "approval": approval_id})
     try:
         out, errout = p.communicate(timeout=min(int(timeout_s or 600), 3600))
@@ -740,11 +910,11 @@ def run(command, eng, timeout_s=600, approval_id=None):
     os.makedirs(os.path.dirname(full), exist_ok=True)
     with open(full, "w") as f:
         f.write(f"# {entry['command']}\n# exit={code} tier={tier} seconds={seconds} "
-                f"at={datetime.datetime.now(datetime.timezone.utc).isoformat(timespec='seconds')}\n\n{res}")
+                f"at={datetime.datetime.now(datetime.timezone.utc).isoformat(timespec='seconds')}"
+                f"{'' if network else ' network=none'}\n\n{res}")
     outputs[rel] = sha256_file(full)
     _audit({**entry, "exit": code, "seconds": seconds, "outputs": outputs})
-    if final != command:
-        res = f"[rate limit applied: {final}]\n" + res
+    res = note + res
     files = sorted(k for k in outputs if k != rel)
     if files:
         res += "\n[evidence recorded: " + ", ".join(files[:20]) + (" …" if len(files) > 20 else "") + "]"

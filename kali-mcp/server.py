@@ -7,6 +7,7 @@ everything is audit-logged. Only run against systems you are authorised to test.
 import json, sys
 from mcp.server.fastmcp import FastMCP
 import core
+import actions
 
 mcp = FastMCP("kali", host="0.0.0.0", port=core.MCP_PORT)
 
@@ -72,7 +73,36 @@ def engagement_activity(engagement: str) -> str:
 
 
 @mcp.tool()
-def run(command: str, engagement: str, timeout_s: int = 600, approval_id: str = "") -> str:
+def http_request(engagement: str, method: str, url: str, headers: dict | None = None, body: str = "",
+                 approval_id: str = "", max_tier: str = "", task: str = "", body_base64: bool = False) -> str:
+    """Send one HTTP request to an in-scope URL and get the response (status, headers, body). Prefer this over
+    curl in run for single requests: it is the only way to reach hosts whose scope is limited to URL paths, it
+    follows redirects only within scope, and the request and response are saved as verified evidence.
+    GET, HEAD and OPTIONS are tier active. POST, PUT, PATCH and DELETE can change state: they are intrusive and
+    return an approval id first; after the user approves, call again with the identical method, URL, headers and
+    body plus approval_id. max_tier: the tier your task is limited to, if any. body_base64: body is base64."""
+    try:
+        return actions.http_request(engagement, method, url, headers or {}, body, approval_id or None,
+                                    max_tier or None, task or None, body_base64=body_base64)
+    except ValueError as e:
+        return f"REFUSED: {e}"
+
+
+@mcp.tool()
+def analyze_source(engagement: str, tool: str, path: str, rulesets: list[str] | None = None, task: str = "") -> str:
+    """Run a source-analysis tool on in-scope code with no network access at all (it can't reach targets or the
+    internet). tool: semgrep (offline rules; rulesets = folders like php, python, javascript; default: detected
+    from the code), gitleaks (secrets, redacted), trufflehog (secrets, unverified), bandit (Python). path: a
+    /src path from the scope or a path under /work/<engagement>. The JSON report is saved as verified evidence."""
+    try:
+        return actions.analyze_source(engagement, tool, path, rulesets or None, task or None)
+    except ValueError as e:
+        return f"REFUSED: {e}"
+
+
+@mcp.tool()
+def run(command: str, engagement: str, timeout_s: int = 600, approval_id: str = "", max_tier: str = "",
+        task: str = "") -> str:
     """Run a shell command in the Kali sandbox for an engagement.
 
     cwd is /work/<engagement> (write output files here). In-scope client code is read-only under /src.
@@ -100,10 +130,13 @@ def run(command: str, engagement: str, timeout_s: int = 600, approval_id: str = 
     Tiers: passive (code/config analysis, DNS, research), active (scans, crawling, fingerprinting),
     intrusive (exploitation, brute force, DoS-capable tools). Commands above the engagement's allowed tiers are
     refused. Intrusive commands return an approval id: ask the user to approve on the host, then call run again
-    with the identical command and approval_id. Rate-limitable tools get the engagement's max rate added.
+    with the identical command and approval_id. Rate-limitable tools get the engagement's max rate added (shared
+    between parallel commands). Approvals are bound to the command, the programs and input files it uses and the
+    current scope. max_tier: the tier your task is limited to, if any. Hosts limited to URL paths in the scope
+    are reachable only through http_request; for code analysis without network use analyze_source.
     """
     try:
-        return core.run(command, engagement, timeout_s, approval_id or None)
+        return core.run(command, engagement, timeout_s, approval_id or None, max_tier or None, task or None)
     except ValueError as e:
         return f"REFUSED: {e}"
 

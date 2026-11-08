@@ -266,6 +266,77 @@ class Scope(unittest.TestCase):
             self.assertFalse(core._name_ok(bad), bad)
 
 
+class Approvals(unittest.TestCase):
+    """RW-005: approvals are bound to the action and the policy revision, and are used exactly once."""
+    def setUp(self):
+        import json
+        self.tmp = tempfile.TemporaryDirectory()
+        self.saved = (core.CONTROL, core.WORK, core.AUDIT, core.REGISTRY, core.ACTOR)
+        core.CONTROL, core.WORK = os.path.join(self.tmp.name, "control"), os.path.join(self.tmp.name, "work")
+        core.AUDIT, core.REGISTRY = os.path.join(core.CONTROL, "audit.log"), os.path.join(core.CONTROL, "reg.json")
+        os.makedirs(os.path.join(core.ctl_dir("e1"), "approvals"))
+        os.makedirs(os.path.join(core.WORK, "e1"))
+        json.dump({"e1": 20001}, open(core.REGISTRY, "w"))
+        self.scope("- example.com\n")
+        self.rules = policy.parse_rules("")[0]
+
+    def tearDown(self):
+        core.CONTROL, core.WORK, core.AUDIT, core.REGISTRY, core.ACTOR = self.saved
+        self.tmp.cleanup()
+
+    def scope(self, text):
+        with open(os.path.join(core.ctl_dir("e1"), "SCOPE.md"), "w") as f:
+            f.write(text)
+
+    def approved(self, action):
+        a = core.request_approval("e1", action, "intrusive", "shown")
+        core.ACTOR = "console:tester"
+        core.decide("e1", a["id"], True)
+        return a["id"]
+
+    def test_bound_to_action_and_used_once(self):
+        act = {"kind": "http", "method": "POST", "url": "https://example.com/", "headers": {}, "body": "x"}
+        aid = self.approved(act)
+        self.assertIn("body differ", core.consume_approval("e1", aid, dict(act, body="y"), self.rules))
+        self.assertIsNone(core.consume_approval("e1", aid, act, self.rules))
+        self.assertIn("is used", core.consume_approval("e1", aid, act, self.rules))
+        a = [x for x in core.approvals("e1") if x["id"] == aid][0]
+        self.assertEqual(a["decided_by"], "console:tester")
+
+    def test_policy_change_makes_it_stale(self):
+        act = {"kind": "run", "command": "sqlmap -u x", "executables": {}, "inputs": {}}
+        aid = self.approved(act)
+        self.scope("- example.com\n- example.org\n")
+        self.assertIn("stale", core.consume_approval("e1", aid, act, self.rules))
+        self.assertEqual([x["status"] for x in core.approvals("e1")], ["stale"])
+        pending = core.request_approval("e1", act, "intrusive", "shown")
+        self.scope("- example.com\n")
+        self.assertEqual(core.invalidate_approvals("e1", "changed"), 1)
+        with self.assertRaises(ValueError):  # approving a request made under another policy
+            core.decide("e1", pending["id"], True)
+
+    def test_race_uses_once(self):
+        act = {"kind": "run", "command": "x", "executables": {}, "inputs": {}}
+        aid = self.approved(act)
+        open(core._approval_path("e1", aid)[:-5] + ".used", "w").close()  # another call got there first
+        self.assertIn("is used", core.consume_approval("e1", aid, act, self.rules))
+
+    def test_input_files_bound(self):
+        with open(os.path.join(core.WORK, "e1", "probe.sh"), "w") as f:
+            f.write("curl x")
+        before = core.run_action("e1", "bash probe.sh")["inputs"]
+        with open(os.path.join(core.WORK, "e1", "probe.sh"), "w") as f:
+            f.write("curl y")
+        self.assertNotEqual(before, core.run_action("e1", "bash probe.sh")["inputs"])
+        self.assertIn("probe.sh", before)
+
+    def test_budget(self):
+        self.assertTrue(core.take_budget("e1", "requests", 2))
+        self.assertTrue(core.take_budget("e1", "requests", 2))
+        self.assertFalse(core.take_budget("e1", "requests", 2))
+        self.assertEqual(core.usage("e1")["requests"], 2)
+
+
 class Findings(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
