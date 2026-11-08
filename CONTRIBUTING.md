@@ -81,7 +81,7 @@ bash evals/ci_prepare.sh
 | `phase5_e2e.sh` | audited tool runs, findings citing hashed evidence, final report, tamper detection, close-out manifest and archive | the demo app in your projects folder; it creates and resets its own engagement `p5-e2e` | `bash evals/phase5_e2e.sh` |
 | `console_test.sh` | the console: sign-in, host-header check, CSRF header, read API, report-file limits, preview writes nothing, live view | `demo-code` | `bash evals/console_test.sh` |
 | `lab_test.sh` | lab isolation: an engagement reaches only its own lab target; lab targets have no internet and can't reach the kit's services; DVWA login works | `./rvkit lab up`, `demo-code`, `net-test`; it creates `lab-juice` and `lab-dvwa` itself | `bash evals/lab_test.sh` |
-| `planner_smoke.py` | each planner route answers an authorised engagement brief with a usable plan, not a refusal; records latency and tokens | `OPENROUTER_API_KEY` (costs a few cents) | `python3 evals/planner_smoke.py [model ...]` |
+| `planner_smoke.py` | each planner route answers authorised code-review, web-app and external-network briefs with a usable plan, not a refusal; records latency and tokens | `OPENROUTER_API_KEY` (costs a few cents) | `python3 evals/planner_smoke.py [--brief code\|web\|network] [model ...]` |
 
 Results that the suites write go to `evals/results/`, which is git-ignored: results can contain model output about
 your targets.
