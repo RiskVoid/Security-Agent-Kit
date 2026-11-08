@@ -239,6 +239,42 @@ class WebFetch(unittest.TestCase):
         self.assertTrue(webfetch.refusal("https://app.example.com/x", [], ["example.com"]).startswith("REFUSED"))
         self.assertEqual(webfetch.refusal("file:///etc/passwd", [], []), "only http(s) URLs")
 
+    def test_connection_is_pinned(self):
+        """The connection goes to the checked address, never to a fresh DNS answer, and an unchecked host
+        (a redirect target that skipped the check) can't be reached at all."""
+        import http.server, threading
+        srv = http.server.HTTPServer(("127.0.0.1", 0), type("H", (http.server.BaseHTTPRequestHandler,), {
+            "do_GET": lambda s: (s.send_response(200), s.end_headers(), s.wfile.write(b"pinned")),
+            "log_message": lambda *a: None}))
+        threading.Thread(target=srv.serve_forever, daemon=True).start()
+        port = srv.server_address[1]
+        try:
+            pins = {"never-resolves.invalid": ["127.0.0.1"]}  # .invalid has no DNS: only the pin can reach it
+            op = webfetch.opener([], [], pins)
+            self.assertEqual(op.open(f"http://never-resolves.invalid:{port}/", timeout=5).read(), b"pinned")
+            with self.assertRaises(Exception):
+                op.open(f"http://localhost:{port}/", timeout=5)  # not checked, so not pinned
+        finally:
+            srv.shutdown()
+
+
+class ColabPrebuilt(unittest.TestCase):
+    """colab/serve.py picks the llama.cpp CUDA build for the driver, never the runtime-only cudart package."""
+    NAMES = ["cudart-llama-b1-bin-ubuntu-cuda-12.8-x64.tar.gz", "cudart-llama-b1-bin-ubuntu-cuda-13.4-x64.tar.gz",
+             "llama-b1-bin-ubuntu-cuda-12.8-x64.tar.gz", "llama-b1-bin-ubuntu-cuda-13.4-x64.tar.gz",
+             "llama-b1-bin-ubuntu-cuda-13.4-arm64.tar.gz", "llama-b1-bin-ubuntu-x64.tar.gz"]
+
+    def test_pick(self):
+        spec = importlib.util.spec_from_file_location("serve", os.path.join(KIT, "colab", "serve.py"))
+        serve = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(serve)
+        pick = serve.pick_prebuilt
+        self.assertEqual(pick(self.NAMES, "b1", (12, 8)), ("llama-b1-bin-ubuntu-cuda-12.8-x64.tar.gz",
+                                                          "cudart-llama-b1-bin-ubuntu-cuda-12.8-x64.tar.gz"))
+        self.assertEqual(pick(self.NAMES, "b1", (13, 6))[0], "llama-b1-bin-ubuntu-cuda-13.4-x64.tar.gz")
+        self.assertEqual(pick(self.NAMES, "b1", (12, 4)), (None, None))  # driver too old: build from source
+        self.assertEqual(pick(self.NAMES, "b1", None)[0], "llama-b1-bin-ubuntu-cuda-12.8-x64.tar.gz")
+
 
 class Console(unittest.TestCase):
     @classmethod

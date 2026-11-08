@@ -10,11 +10,15 @@ tiers: passive, active; intrusive steps need approval
 - [ ] WAF/CDN in front: `wafw00f <url>` (explains blocked payloads later; never try to evade a WAF unless the RoE
       says so)
 - [ ] CMS: WordPress → `wpscan --url <url> --enumerate vp,vt,u --no-update` (plugin/theme/user enumeration)
-- [ ] Crawl: `katana -u <url> -jc -d 3 -o katana.txt`; screenshots `gowitness scan single -u <url>`
+- [ ] Crawl: `katana -u <url> -jc -d 3 -o katana.txt`; screenshots `gowitness scan single -u <url> --write-jsonl`
+      (PNG/JPEG in screenshots/)
 - [ ] Parameters: `arjun -u <endpoint> -oJ arjun.json` on interesting endpoints
-- [ ] Content discovery: `ffuf -u <url>/FUZZ -w /usr/share/seclists/Discovery/Web-Content/raft-small-words.txt
-      -mc 200,204,301,302,307,401,403 -of json -o ffuf.json`; recursive: `feroxbuster -u <url> -w
-      /usr/share/seclists/Discovery/Web-Content/raft-small-words.txt -d 2 --json -o ferox.json`
+- [ ] Content discovery, first pass: `ffuf -u <url>/FUZZ -w /usr/share/seclists/Discovery/Web-Content/common.txt
+      -ac -mc 200,204,301,302,307,401,403 -of json -o ffuf.json -s`. Keep `-ac`: single-page apps answer 200 to
+      every path, and without auto-calibration every word "matches". Bigger list (raft-small-words.txt, 43k words)
+      only after that, with timeout_s above words / rate (43k at 100 req/s is about 450 s, so timeout_s=900).
+      Recursive: `feroxbuster -u <url> -w /usr/share/seclists/Discovery/Web-Content/common.txt -d 2 --json -o
+      ferox.json`
 - [ ] APIs found here (`/api`, `/graphql`, spec files): also run the api-security playbook
 - [ ] AI features (chat, assistant, summarise): also run the ai-llm playbook
 - [ ] Record the application map (roles, functions, inputs) in PLAN.md

@@ -93,7 +93,7 @@ setting.
 | Setting | Default | Meaning |
 |---|---|---|
 | `NVD_API_KEY` | empty | Raises NVD's rate limit for CVE lookups (5 to 50 requests per 30 s). Free from https://nvd.nist.gov/developers/request-an-api-key. |
-| `AGENT_CANVAS_TAG` | `1.33.0` (in `docker-compose.yml`) | OpenHands version. Change it only to test a newer release, or when its data volume was already used by a newer version. |
+| `AGENT_CANVAS_TAG` | `1.37.0` (in `docker-compose.yml`) | OpenHands version. Change it only to test a newer release, or when its data volume was already used by a newer version. |
 | `LITELLM_TAG`, `SEARXNG_TAG`, `CADDY_TAG`, `VALKEY_TAG` | pinned in `docker-compose.yml` | Override a third-party image version. |
 | `RVKIT_REGISTRY` | `ghcr.io/riskvoid/security-agent-kit` | Where the kit's own images are pulled from (`-egress`, `-harness`, `-kali`, `-report`). |
 | `RVKIT_VERSION` | `0.1.0` | Which published version of the kit's images to pull. Normally matches the `VERSION` file. |

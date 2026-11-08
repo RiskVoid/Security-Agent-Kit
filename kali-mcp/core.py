@@ -20,6 +20,7 @@ TIERS = ("passive", "active", "intrusive")
 DEFAULT_RULES = {"tiers": ["passive", "active"], "max_rate": 100, "network": "online", "window": None,
                  "worker": "auto", "strict": False}  # worker: auto (fallback model allowed) | private (worker endpoint only)
 # Never reachable by agent commands, even if a scope entry covers them (loopback, link-local/cloud metadata).
+MCP_PORT = 8090  # server.py listens here; engagement commands must never reach it (they could call run for others)
 ALWAYS_BLOCKED = ["127.0.0.0/8", "169.254.0.0/16", "0.0.0.0/8", "224.0.0.0/4"]
 
 # ---------------------------------------------------------------- tiers
@@ -319,7 +320,11 @@ def apply_network():
         sets.append(f"  set e{uid}_dns4 {{ type ipv4_addr; flags timeout; timeout 2h; }}")
         sets.append(f"  set e{uid}_net4 {{ type ipv4_addr; flags interval; auto-merge; "
                     + (f"elements = {{ {', '.join(nets)} }}; " if nets else "") + "}")
+        # Loopback 127.0.0.1 on unprivileged ports, except this MCP server's own port: tools that start a helper
+        # and talk to it over localhost (gowitness drives Chromium through its DevTools port) need it. Docker's
+        # DNS (127.0.0.11) and the other engagements' resolvers (127.0.1.x) stay blocked.
         rules = [f"    ip daddr {dns_ip} meta l4proto {{ tcp, udp }} th dport 53 accept",
+                 f"    oifname \"lo\" ip daddr 127.0.0.1 tcp dport {{ 1024-{MCP_PORT - 1}, {MCP_PORT + 1}-65535 }} accept",
                  f"    ip daddr {{ {', '.join(blocked)} }} counter drop",
                  f"    ip daddr @e{uid}_net4 accept", f"    ip daddr @e{uid}_dns4 accept"]
         if i["rules"]["network"] == "online":

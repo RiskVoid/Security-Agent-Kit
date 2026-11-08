@@ -30,7 +30,8 @@ is weaker than described here.
 2. **The planner's web fetch tool checks names and addresses, not content.** The `web` MCP server (`web-mcp`)
    refuses every engagement target (the union of all engagements' scope) and every non-public address, on the
    first request and on each redirect, and fails closed when it can't read the scopes. Its requests are not in the
-   audit log. A DNS rebinding window remains between the check and the connection. The worker has no internet of
+   audit log. Each connection goes to an address that passed the check (the name is not resolved again), so DNS
+   rebinding can't redirect it. The worker has no internet of
    its own: its `web_search` and `fetch_url` tools go through this server, with the same checks.
 3. **Kit services can reach the internet.** `web-mcp`, `intel-mcp`, `kali-mcp` (for its own updates and rule
    downloads, not agent commands), LiteLLM and SearXNG have outbound access. The two agent-facing containers,
@@ -55,8 +56,9 @@ is weaker than described here.
 
 - **Kali tools.** Every command runs as an unprivileged user for that engagement, in a sandbox that sees only its
   own engagement folder and in-scope code (read-only). An nftables firewall lets that user reach only in-scope IPs
-  and domains, plus package and vulnerability-database sites for online engagements. Loopback, link-local and cloud
-  metadata addresses and the kit's own services are always blocked.
+  and domains, plus package and vulnerability-database sites for online engagements. Link-local and cloud metadata
+  addresses and the kit's own services are always blocked. Of loopback, only 127.0.0.1 on unprivileged ports other
+  than kali-mcp's own (8090) is open, so a tool can drive a helper it started (gowitness and its Chromium).
 - **The OpenHands agent container** has no direct internet access. Its traffic goes through an allowlisting egress
   proxy (package registries and vulnerability databases, `egress/allowlist.txt` plus `EGRESS_EXTRA_DOMAINS`) and
   can reach only the kit's model gateway and MCP servers directly. Its terminal and browser can't reach engagement

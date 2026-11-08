@@ -8,7 +8,7 @@ import json, sys
 from mcp.server.fastmcp import FastMCP
 import core
 
-mcp = FastMCP("kali", host="0.0.0.0", port=8090)
+mcp = FastMCP("kali", host="0.0.0.0", port=core.MCP_PORT)
 
 
 @mcp.tool()
@@ -86,6 +86,9 @@ def run(command: str, engagement: str, timeout_s: int = 600, approval_id: str = 
                     input-to-sink flows with full paths to joern-flows.json; `rv-joern scan` for C/C++/Java queries)
       supply chain: osv-scanner, pip-audit, trivy (fs/config/secret), syft (SBOM), grype (scan an SBOM or dir)
     Write output files (JSON where the tool supports it) to the current directory.
+    Content discovery: give ffuf `-ac` (single-page apps answer 200 to every path) and start with
+    seclists common.txt; set timeout_s above wordlist size / rate. gowitness: `gowitness scan single -u <url>
+    --write-jsonl` (screenshots land in screenshots/).
     Tiers: passive (code/config analysis, DNS, research), active (scans, crawling, fingerprinting),
     intrusive (exploitation, brute force, DoS-capable tools). Commands above the engagement's allowed tiers are
     refused. Intrusive commands return an approval id: ask the user to approve on the host, then call run again

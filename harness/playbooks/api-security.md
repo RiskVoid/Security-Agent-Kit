@@ -13,7 +13,7 @@ role (needed for authorisation tests), and which endpoints change real data. Put
 - [ ] Spec: try `/openapi.json`, `/swagger.json`, `/v3/api-docs`, `/api-docs`, `/swagger-ui/`, `/graphql`,
       `/graphiql`, `/.well-known/` with `curl -s -o /dev/null -w '%{http_code} %{url}\n' <url>/<path>`
 - [ ] Routes: `ffuf -u <base>/FUZZ -w /usr/share/seclists/Discovery/Web-Content/api/api-endpoints.txt
-      -mc all -fc 404 -of json -o ffuf-api.json`; versions: `/v1 /v2 /api/v1 /internal /admin /beta`
+      -ac -mc all -fc 404 -of json -o ffuf-api.json`; versions: `/v1 /v2 /api/v1 /internal /admin /beta`
 - [ ] Crawl the web client for API calls: `katana -u <app> -jc -d 3 -f qurl -o api-urls.txt`
 - [ ] Parameters on interesting endpoints: `arjun -u <endpoint> -m JSON -oJ arjun.json`
 - [ ] GraphQL: `graphw00f -d -f -t <url>/graphql` (engine fingerprint); introspection:

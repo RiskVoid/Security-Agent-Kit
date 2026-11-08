@@ -169,7 +169,11 @@ edits them changes nothing. Inside the sandbox, the files are replaced by the re
   engagement's folder and its in-scope code paths bound in (code read-only). `/control`, `/tmp` and `/run` are
   empty tmpfs. Other engagements and other code don't exist inside the sandbox.
 - **Firewall by uid.** An nftables table `inet rvkit` sends each engagement user's traffic to its own chain:
-  - always dropped: `127.0.0.0/8`, `169.254.0.0/16` (link-local, cloud metadata), `0.0.0.0/8`, `224.0.0.0/4`, and
+  - allowed first: `127.0.0.1` TCP 1024-65535 except 8090 (kali-mcp's own MCP port) over `lo`, for tools that
+    talk to a helper they started (gowitness drives Chromium over its DevTools port). nftables can't tell which
+    user owns the listening socket, so while two engagements run at once, one could reach the other's helper
+    port; the kit's services and the MCP port are not reachable;
+  - always dropped: the rest of `127.0.0.0/8`, `169.254.0.0/16` (link-local, cloud metadata), `0.0.0.0/8`, `224.0.0.0/4`, and
     every Docker subnet `kali-mcp` is on except the lab, so the kit's own services are unreachable;
   - allowed: the scope's IPv4 networks; addresses that dnsmasq resolved for in-scope domains; for online
     engagements, addresses resolved for the infrastructure domains (`kali-mcp/infra_domains.txt`) on TCP 80/443;

@@ -125,22 +125,55 @@ def bin_works():
         return False
 
 
-def try_prebuilt():
-    """Official llama.cpp Linux CUDA build of the pinned release, if one is published."""
+def driver_cuda():
+    """Highest CUDA version the GPU driver supports, from nvidia-smi ("CUDA Version: 12.8"), or None."""
     try:
-        rel = json.load(urllib.request.urlopen(f"https://api.github.com/repos/ggml-org/llama.cpp/releases/tags/{llama_tag()}", timeout=20))
-        assets = [a for a in rel["assets"] if re.search(r"ubuntu.*cuda.*x64|linux.*cuda.*x64", a["name"], re.I)]
-        if not assets:
+        out = subprocess.run(["nvidia-smi"], capture_output=True, text=True, timeout=30).stdout
+        m = re.search(r"CUDA Version:\s*(\d+)\.(\d+)", out)
+        return (int(m.group(1)), int(m.group(2))) if m else None
+    except Exception:
+        return None
+
+
+def pick_prebuilt(names, tag, cuda):
+    """The llama.cpp Linux x64 CUDA build for the newest CUDA the driver supports, and its CUDA runtime package.
+    Release assets: llama-<tag>-bin-ubuntu-cuda-<ver>-x64.tar.gz (binaries) and cudart-llama-<tag>-bin-ubuntu-cuda-
+    <ver>-x64.tar.gz (only the CUDA runtime libraries, no llama-server). Returns (binaries, runtime-or-None)."""
+    rx = re.compile(r"llama-%s-bin-(?:ubuntu|linux)-cuda-(\d+)\.(\d+)-x64\.(?:tar\.gz|zip)" % re.escape(tag))
+    builds = sorted(((int(m.group(1)), int(m.group(2))), n) for n in names
+                    if (m := rx.fullmatch(n)))
+    usable = [b for b in builds if cuda is None or b[0] <= cuda]
+    if not usable:
+        return None, None
+    ver, name = usable[-1] if cuda else usable[0]  # unknown driver: the oldest CUDA is the safest guess
+    rt = "cudart-" + name
+    return name, rt if rt in names else None
+
+
+def try_prebuilt():
+    """Official llama.cpp Linux CUDA build of the pinned release, if one is published for this driver."""
+    try:
+        tag = llama_tag()
+        rel = json.load(urllib.request.urlopen(f"https://api.github.com/repos/ggml-org/llama.cpp/releases/tags/{tag}", timeout=20))
+        urls = {a["name"]: a["browser_download_url"] for a in rel["assets"]}
+        cuda = driver_cuda()
+        name, runtime = pick_prebuilt(list(urls), tag, cuda)
+        if not name:
+            print(f"no prebuilt llama.cpp {tag} for this driver (CUDA {cuda})")
             return False
-        a = assets[0]
-        print("trying prebuilt", a["name"])
-        sh(f"rm -rf /content/llama-pre && mkdir -p /content/llama-pre && cd /content/llama-pre && "
-           f"wget -q -O pkg '{a['browser_download_url']}' && (unzip -q pkg || tar xf pkg)")
+        print("trying prebuilt", name, "+", runtime or "(no runtime package)")
+        sh("rm -rf /content/llama-pre && mkdir -p /content/llama-pre")
+        for n in [name] + ([runtime] if runtime else []):
+            sh(f"cd /content/llama-pre && wget -q -O pkg '{urls[n]}' && (tar xzf pkg || unzip -qo pkg) && rm pkg")
         found = glob.glob("/content/llama-pre/**/llama-server", recursive=True)
         if not found:
             return False
         shutil.rmtree(BIN_DIR, ignore_errors=True)
         shutil.copytree(os.path.dirname(found[0]), BIN_DIR)
+        for lib in glob.glob("/content/llama-pre/**/*.so*", recursive=True):  # runtime libs from the cudart package
+            dst = os.path.join(BIN_DIR, os.path.basename(lib))
+            if not os.path.exists(dst):
+                shutil.copy2(lib, dst, follow_symlinks=False)
         os.chmod(server_bin(), 0o755)
         return bin_works()
     except Exception as e:

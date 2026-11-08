@@ -38,6 +38,15 @@ check "cannot change firewall"                    'Operation not permitted|denie
 check "own pid namespace (no server processes)"   '^0$'                         "$(run demo-code 'ps -eo args --no-headers | grep -cE "[p]ython3 .*server.py|[d]nsmasq"')"
 check "git trusts client repos (history scans)"   'safe.directory=\*'           "$(run demo-code 'git config --list | grep safe.directory')"
 
+# Loopback: a command may reach a helper it started on 127.0.0.1 (gowitness -> Chromium), never kali-mcp's port.
+# The address is built at run time so the scope pre-check doesn't refuse the command before the firewall sees it.
+probe='python3 -c "import socket,sys;a=chr(49)+chr(50)+chr(55)+chr(46)+chr(48)+chr(46)+chr(48)+chr(46)+chr(49)
+s=socket.socket();s.settimeout(3)
+try: s.connect((a,int(sys.argv[1])));print(chr(111)+chr(112)+chr(101)+chr(110))
+except Exception as e: print(type(e).__name__)"'
+check "loopback helper ports reachable"             'ConnectionRefused|open'      "$(run demo-code "$probe 5999")"
+check "kali-mcp port blocked from the sandbox"      'TimeoutError'                "$(run demo-code "$probe 8090")"
+
 echo "== tiers and pre-check false positives (demo-code: passive only)"
 check "semgrep (passive) runs"                    'exit=0 tier=passive'         "$(run demo-code 'semgrep --config p/python --metrics=off -q /src/rv-demo-app/app.py --json -o semgrep.json; echo rc=$?')"
 check "grep for a tool name is passive"           'tier=passive'                "$(run demo-code 'grep -ci sqlmap /src/rv-demo-app/app.py')"

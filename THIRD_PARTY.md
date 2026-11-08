@@ -30,7 +30,7 @@ mounted config files).
 
 | Image | Version | Licence | Verified | Notes |
 |---|---|---|---|---|
-| OpenHands agent-canvas (`ghcr.io/openhands/agent-canvas`) | 1.33.0 | MIT | upstream (OpenHands, OpenHands software-agent-sdk) | The image also contains Node.js, openvscode-server and other components under their own licences |
+| OpenHands agent-canvas (`ghcr.io/openhands/agent-canvas`) | 1.37.0 | MIT | upstream (OpenHands, OpenHands software-agent-sdk) | The image also contains Node.js, openvscode-server and other components under their own licences |
 | LiteLLM (`ghcr.io/berriai/litellm`) | v1.106.2 | MIT, except the `enterprise/` directory | upstream | `enterprise/` has its own commercial licence. The kit doesn't set a LiteLLM enterprise licence key |
 | SearXNG (`searxng/searxng`) | 2026.10.23-629368e40 | AGPL-3.0-or-later | upstream (image label) | See [SearXNG and the AGPL](#searxng-and-the-agpl) |
 | Valkey (`valkey/valkey`) | 8.0.2-alpine | BSD-3-Clause | upstream | Stores LiteLLM's spend counter |
