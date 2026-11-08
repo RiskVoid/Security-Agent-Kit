@@ -64,6 +64,7 @@ function show(view) {
   for (const v of ["engagements", "approvals", "status", "models"]) $(`#view-${v}`).hidden = v !== view;
   $$(".rv-sidebar-item[data-view]").forEach((a) => a.classList.toggle("active", a.dataset.view === view));
   document.body.classList.remove("nav-open");
+  if (stream.es) connectStream();  // the live topic only while an engagement's Live tab shows
   if (view === "status") { crumbs([["Console", "#engagements"], ["Stack status"]]); loadStatus(); }
   else if (view === "models") { crumbs([["Console", "#engagements"], ["Model log"]]); loadModels(); }
   else if (view === "approvals") crumbs([["Console", "#engagements"], ["Approvals"]]);
@@ -78,10 +79,31 @@ function route() {
 window.addEventListener("hashchange", route);
 $("#menu-btn").addEventListener("click", () => document.body.classList.toggle("nav-open"));
 
-// ---------------------------------------------------------------- overview + approvals polling
+// ---------------------------------------------------------------- live updates
+// The console pushes changes over server-sent events (/api/stream): the overview always, and the open engagement's
+// live view while its Live tab is showing. If the stream drops, the page polls until it comes back.
+const stream = { es: null, key: null, last: 0 };
+const streamFresh = () => stream.es && stream.es.readyState === 1 && Date.now() - stream.last < 20000;
+function connectStream() {
+  const key = state.view === "engagements" && state.tab === "live" && state.current ? state.current : "";
+  if (stream.es && stream.key === key && stream.es.readyState !== 2) return;
+  if (stream.es) stream.es.close();
+  stream.key = key; stream.last = 0;
+  const es = (stream.es = new EventSource("/api/stream" + (key ? "?eng=" + enc(key) : "")));
+  const seen = () => { stream.last = Date.now(); };
+  es.addEventListener("open", seen);
+  es.addEventListener("overview", (e) => { seen(); applyOverview(JSON.parse(e.data)); });
+  es.addEventListener("live", (e) => { seen(); const d = JSON.parse(e.data); state.live = d; if (state.onLive) state.onLive(d); });
+  es.addEventListener("problem", (e) => { seen(); const d = JSON.parse(e.data); if (d.topic === "overview") showOverviewError(d.error); else if (state.onLive) state.onLive(d); });
+}
+
+// ---------------------------------------------------------------- overview + approvals
 async function refresh() {
-  try {
-    const o = await api("/api/overview");
+  try { applyOverview(await api("/api/overview")); } catch (e) { showOverviewError(e.message); }
+}
+function showOverviewError(msg) { $("#eng-list").innerHTML = `<div class="rv-empty err">${esc(msg)}</div>`; }
+function applyOverview(o) {
+  {
     state.overview = o;
     $("#agent-ui").href = o.ui_url;
     if (o.version) $("#side-version").textContent = "kit " + o.version;
@@ -97,8 +119,6 @@ async function refresh() {
     state.seenApprovals = ids;
     const b = $("#appr-badge"); b.textContent = o.approvals.length; b.hidden = !o.approvals.length;
     document.title = (o.approvals.length ? `(${o.approvals.length}) ` : "") + "RiskVoid Console";
-  } catch (e) {
-    $("#eng-list").innerHTML = `<div class="rv-empty err">${esc(e.message)}</div>`;
   }
 }
 
@@ -187,6 +207,7 @@ function renderDetail() {
     </div>
     <div id="pane" class="rv-pane"></div>`;
   $$(".rv-tab").forEach((b) => b.addEventListener("click", () => { state.tab = b.dataset.tab; renderDetail(); }));
+  connectStream();
   $("#halt-btn")?.addEventListener("click", (ev) => lifecycle(ev.currentTarget, "halt", "Halted: running commands were killed."));
   $("#resume-btn")?.addEventListener("click", (ev) => lifecycle(ev.currentTarget, "resume", "Resumed."));
   $("#close-btn").addEventListener("click", () => confirmBox("Close out " + d.engagement + "?",
@@ -510,15 +531,19 @@ async function paneLive() {
     $$("#live-out [data-goto]").forEach((b) => b.addEventListener("click", () => { state.tab = b.dataset.goto; renderDetail(); }));
     tick();
   };
-  const load = async () => {
+  const show = (r) => {
+    if (!active() || (r.topic && r.topic !== "live:" + eng)) return;
+    if (r.error) { const o = $("#live-out"); if (o) o.textContent = r.error; return; }
+    skew = Date.now() / 1000 - r.now;
+    render(r);
+  };
+  state.onLive = show;
+  if (state.live && state.live.topic === "live:" + eng) show(state.live);
+  const load = async () => {  // only while the stream is down; otherwise "live" events call show()
     if (!active()) return;
-    if (!document.hidden) {
-      try {
-        const r = await api(`/api/eng/${enc(eng)}/live`);
-        if (!active()) return;
-        skew = Date.now() / 1000 - r.now;
-        render(r);
-      } catch (e) { const o = $("#live-out"); if (o) o.textContent = e.message; }
+    if (!document.hidden && !streamFresh()) {
+      try { show(await api(`/api/eng/${enc(eng)}/live`)); }
+      catch (e) { const o = $("#live-out"); if (o) o.textContent = e.message; }
     }
     setTimeout(load, 3000);
   };
@@ -601,5 +626,5 @@ async function loadStatus() {
 }
 $("#status-refresh").addEventListener("click", loadStatus);
 
-refresh().then(route);
-setInterval(refresh, 5000);
+refresh().then(route).then(connectStream);
+setInterval(() => { if (!streamFresh()) { refresh(); connectStream(); } }, 5000);

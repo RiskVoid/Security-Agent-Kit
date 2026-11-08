@@ -14,7 +14,7 @@ header, which a cross-site form or link can't send.
 Python 3.9+, standard library only.
 """
 import calendar, getpass, hashlib, hmac, json, mimetypes, os, re, secrets, sqlite3, subprocess, sys, threading, time
-import urllib.parse
+import queue, urllib.parse
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -274,22 +274,92 @@ def spend():
 
 
 # ---------------------------------------------------------------- API
+def overview():
+    """Engagements with their state and finding counts, pending approvals, model problems of the last 24 h."""
+    engs = json.loads(ctl("list", "--json") or "[]")
+    for e in engs:
+        rows = findings(e["engagement"])
+        e["findings"] = counts(rows)
+        e["client"] = meta(e["engagement"]).get("client", "")
+        closed = os.path.isdir(os.path.join(ENG_DIR, "_archive")) and any(
+            f.startswith(e["engagement"] + "-") and f.endswith(".tar.gz")
+            for f in os.listdir(os.path.join(ENG_DIR, "_archive")))
+        e["closed"] = bool(closed and e["halted"])
+        e["model_problems"] = len(model_events.recent(86400, problems_only=True, engagement=e["engagement"]))
+    return {"engagements": engs, "approvals": json.loads(ctl("approvals", "--json") or "[]"),
+            "ui_url": f"http://localhost:{E.get('GATEWAY_PORT') or 8000}/", "version": VERSION,
+            # failed model calls of the last 24 h (litellm/rv_events.py): the Model log badges
+            "model_problems": len(model_events.recent(86400, problems_only=True))}
+
+
+def live(eng):
+    """What an engagement is doing now: running commands, worker tasks, latest events, approvals, spend."""
+    lv, tasks = json.loads(ctl("live", eng, "15")), worker_tasks(eng)
+    busy = [t for t in tasks if t["status"] in ("running", "queued")]
+    return {**lv, "now": time.time(), "events": lv["events"][::-1], "spend": spend(),
+            "tasks": busy + [t for t in tasks if t not in busy][:3]}
+
+
+class Hub:
+    """Server-sent events for the page (/api/stream): one poller per topic, shared by every open page and running
+    only while someone listens; a snapshot goes out when it differs from the last one. Topics: "overview" and
+    "live:<engagement>". The sources are the same calls the page used to poll; the transport lets later sources
+    (task runs, approvals) push without the page changing."""
+    SOURCES = {"overview": (overview, 3.0), "live": (live, 2.0)}
+
+    def __init__(self):
+        self.lock, self.topics = threading.Lock(), {}
+
+    def subscribe(self, topic):
+        q = queue.Queue(maxsize=50)
+        with self.lock:
+            t = self.topics.get(topic)
+            if not t:
+                t = self.topics[topic] = {"subs": set(), "last": None, "msg": None}
+                threading.Thread(target=self._poll, args=(topic,), daemon=True).start()
+            t["subs"].add(q)
+            if t["msg"]:
+                q.put(t["msg"])
+        return q
+
+    def unsubscribe(self, topic, q):
+        with self.lock:
+            t = self.topics.get(topic)
+            if t:
+                t["subs"].discard(q)
+
+    def _poll(self, topic):
+        kind, _, arg = topic.partition(":")
+        fn, every = self.SOURCES[kind]
+        while True:
+            with self.lock:
+                t = self.topics[topic]
+                if not t["subs"]:
+                    del self.topics[topic]
+                    return
+            try:
+                data, name = fn(arg) if arg else fn(), kind
+            except Exception as e:  # noqa: BLE001 (the page shows it; polling goes on)
+                data, name = {"error": str(e) if isinstance(e, Fail) else f"{type(e).__name__}: {e}"}, "problem"
+            key = json.dumps({k: v for k, v in data.items() if k != "now"}, sort_keys=True, default=str)
+            if key != t["last"]:
+                msg = (name, json.dumps({**data, "topic": topic}, default=str))
+                with self.lock:
+                    t["last"], t["msg"] = key, msg
+                    for q in list(t["subs"]):
+                        try:
+                            q.put_nowait(msg)
+                        except queue.Full:  # a stalled page: drop it, the browser reconnects
+                            t["subs"].discard(q)
+            time.sleep(every)
+
+
+HUB = Hub()
+
+
 def api_get(path, q):
     if path == "/api/overview":
-        engs = json.loads(ctl("list", "--json") or "[]")
-        for e in engs:
-            rows = findings(e["engagement"])
-            e["findings"] = counts(rows)
-            e["client"] = meta(e["engagement"]).get("client", "")
-            closed = os.path.isdir(os.path.join(ENG_DIR, "_archive")) and any(
-                f.startswith(e["engagement"] + "-") and f.endswith(".tar.gz")
-                for f in os.listdir(os.path.join(ENG_DIR, "_archive")))
-            e["closed"] = bool(closed and e["halted"])
-            e["model_problems"] = len(model_events.recent(86400, problems_only=True, engagement=e["engagement"]))
-        return {"engagements": engs, "approvals": json.loads(ctl("approvals", "--json") or "[]"),
-                "ui_url": f"http://localhost:{E.get('GATEWAY_PORT') or 8000}/", "version": VERSION,
-                # failed model calls of the last 24 h (litellm/rv_events.py): the Model log badges
-                "model_problems": len(model_events.recent(86400, problems_only=True))}
+        return overview()
     if path == "/api/models":  # the model log: all calls, or one engagement's (eng=<name>)
         eng = q.get("eng", [None])[0]
         if eng and not NAME_RX.match(eng):
@@ -322,11 +392,8 @@ def api_get(path, q):
         return {"entries": [json.loads(l) for l in lines if l.startswith("{")][::-1]}
     if what == "tasks":
         return {"tasks": worker_tasks(eng)}
-    if what == "live":  # what is happening now: running commands, worker tasks, latest events, spend
-        live, tasks = json.loads(ctl("live", eng, "15")), worker_tasks(eng)
-        busy = [t for t in tasks if t["status"] in ("running", "queued")]
-        return {**live, "now": time.time(), "events": live["events"][::-1], "spend": spend(),
-                "tasks": busy + [t for t in tasks if t not in busy][:3]}
+    if what == "live":
+        return live(eng)
     if what == "evidence":
         return ops("evidence.index", eng)
     raise Fail("not found", 404)
@@ -456,6 +523,8 @@ class H(BaseHTTPRequestHandler):
                 return self._send(200, data, "text/html", {"Content-Security-Policy": REPORT_CSP})
             return self._send(200, data, mimetypes.guess_type(name)[0] or "application/octet-stream",
                               {"Content-Disposition": f'attachment; filename="{name}"'})
+        if u.path == "/api/stream":
+            return self._stream(q)
         if u.path.startswith("/api/"):
             return self._api(lambda: api_get(u.path, q))
         self._send(404, {"error": "not found"})
@@ -473,6 +542,45 @@ class H(BaseHTTPRequestHandler):
         except ValueError:
             return self._send(400, {"error": "invalid JSON"})
         self._api(lambda: api_post(urllib.parse.urlsplit(self.path).path, body))
+
+    def _stream(self, q):
+        """Server-sent events: "overview" always, "live" for ?eng=<name>; a comment line every 15 s keeps it open."""
+        eng = (q.get("eng") or [""])[0]
+        if eng and not NAME_RX.match(eng):
+            return self._send(400, {"error": "invalid engagement name"})
+        topics = ["overview"] + ([f"live:{eng}"] if eng else [])
+        self.send_response(200)
+        for k, v in (("Content-Type", "text/event-stream; charset=utf-8"), ("Cache-Control", "no-store"),
+                     ("X-Content-Type-Options", "nosniff"), ("Connection", "close")):
+            self.send_header(k, v)
+        self.end_headers()
+        inbox = queue.Queue()
+        subs = [(tp, HUB.subscribe(tp)) for tp in topics]
+        stop = threading.Event()
+
+        def pump(sq):  # merge each topic's queue into one
+            while not stop.is_set():
+                try:
+                    inbox.put(sq.get(timeout=1))
+                except queue.Empty:
+                    pass
+        for _, sq in subs:
+            threading.Thread(target=pump, args=(sq,), daemon=True).start()
+        try:
+            self.wfile.write(b"retry: 3000\n\n"); self.wfile.flush()
+            while True:
+                try:
+                    name, data = inbox.get(timeout=15)
+                    self.wfile.write(f"event: {name}\ndata: {data}\n\n".encode())
+                except queue.Empty:
+                    self.wfile.write(b": ping\n\n")
+                self.wfile.flush()
+        except (BrokenPipeError, ConnectionResetError, OSError):
+            pass
+        finally:
+            stop.set()
+            for tp, sq in subs:
+                HUB.unsubscribe(tp, sq)
 
     def _api(self, fn):
         try:
