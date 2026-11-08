@@ -40,7 +40,7 @@ Set these with `./rvkit connect` and `./rvkit worker` ([models.md](models.md)), 
 |---|---|---|
 | `WORKER_API_BASE` | `http://worker-not-connected.invalid/v1` | OpenAI-compatible base URL of the worker endpoint. |
 | `WORKER_API_KEY` | | Its API key (`none` if it has none). |
-| `WORKER_MODEL_ID` | `openai/qwen38-27b` | `openai/` + the model name the endpoint serves. |
+| `WORKER_MODEL_ID` | `openai/qwen38-27b-obl` | `openai/` + the model name the endpoint serves. |
 | `WORKER_FALLBACK` | `off` | `on` sends worker calls to `WORKER_FALLBACK_MODEL` while the endpoint is down. |
 | `WORKER_FALLBACK_MODEL` | `openrouter/deepseek/deepseek-v4.1-flash` | The fallback model (OpenRouter). |
 | `COLAB_API_BASE`, `COLAB_MODEL` | | The last Colab URL and model, so `./rvkit worker colab` can switch back. |

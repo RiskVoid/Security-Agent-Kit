@@ -154,7 +154,7 @@ In the kit folder, start `claude` and type:
 | Command | Does |
 |---|---|
 | `/rv-setup` | First-time setup: asks for the folder and organisation, runs setup, checks the planner, helps you pick a worker, runs `doctor` |
-| `/rv-start [auto\|l4\|a100-40\|a100-80] [thinking] [abliterated]` | Starts the worker on a Colab GPU and connects the stack to it |
+| `/rv-start [auto\|l4\|a100-40\|a100-80] [thinking] [qwen]` | Starts the worker on a Colab GPU and connects the stack to it |
 | `/rv-stop` | Releases the Colab GPU so it stops using compute units |
 
 `/rv-start` drives Colab through the Colab MCP server (`colab-mcp` in `.mcp.json`), which needs `uv`

@@ -7,7 +7,7 @@ What it does:
   1. picks a profile from the GPU it finds (L4 -> Q4, A100-40 -> Q8, A100-80/H100/G4 -> Q8 with long context)
   2. gets llama-server with CUDA (Drive cache -> prebuilt release -> source build), caches it in Drive
   3. downloads the Qwen3.8-27B GGUF from Hugging Face at a pinned revision:
-     the mainstream build by default, or the abliterated (refusal-removed) build with RVKIT_MODEL=abliterated
+     the abliterated (refusal-removed) build by default, or Qwen's unchanged weights with RVKIT_MODEL=qwen
   4. starts an OpenAI-compatible API on :8000, protected by an API key
   5. opens a tunnel (Cloudflare quick tunnel, or ngrok if NGROK_TOKEN is set)
   6. prints   RVKIT_ENDPOINT {"url": ..., "key": ..., "model": ...}   and the ./rvkit connect <url> <key> <model> line
@@ -15,10 +15,10 @@ What it does:
 
 Settings come from environment variables (all optional):
   RVKIT_PROFILE   auto | l4 | a100-40 | a100-80     (default auto)
-  RVKIT_MODEL     qwen | abliterated   (default qwen)
-                    qwen         lmstudio-community/Qwen3.8-27B-GGUF, Qwen's weights unchanged, served as qwen38-27b
+  RVKIT_MODEL     abliterated | qwen   (default abliterated)
                     abliterated  huihui-ai/Huihui-Qwen3.8-27B-abliterated-GGUF, refusals removed, served as qwen38-27b-obl;
                                  you are responsible for how you use it
+                    qwen         lmstudio-community/Qwen3.8-27B-GGUF, Qwen's weights unchanged, served as qwen38-27b
   RVKIT_REPO      override the GGUF repo (the served name still follows RVKIT_MODEL)
   RVKIT_REVISION  override the pinned revision (default: the pinned commit, or main when RVKIT_REPO is set)
   RVKIT_QUANT     override quant, e.g. Q5_K_M
@@ -40,7 +40,7 @@ MODELS = {
     "abliterated": ("huihui-ai/Huihui-Qwen3.8-27B-abliterated-GGUF",
                     "1c69098e9c32db6dc06fc48f1d6cc75ad07da89e", "qwen38-27b-obl"),
 }
-DEFAULT_MODEL = "qwen"
+DEFAULT_MODEL = "abliterated"
 PORT = 8000
 BIN_DIR = "/content/llama-bin"
 # Pinned versions (each at least two weeks old when pinned). RVKIT_LLAMA_TAG overrides the llama.cpp release.

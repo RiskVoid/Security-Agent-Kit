@@ -50,7 +50,7 @@ need_env() {
   envensure WORKER_API_BASE "$(envget COLAB_API_BASE || true)"
   [ -n "$(envget WORKER_API_BASE)" ] || envset WORKER_API_BASE "http://worker-not-connected.invalid/v1"
   envensure WORKER_API_KEY "$(envget COLAB_API_KEY || true)"
-  envensure WORKER_MODEL_ID "openai/qwen38-27b"
+  envensure WORKER_MODEL_ID "openai/qwen38-27b-obl"
   envensure WORKER_FALLBACK_MODEL "openrouter/deepseek/deepseek-v4.1-flash"
   envensure WORKER_FALLBACK "off"
   envensure PLANNER_MODEL "openrouter/anthropic/claude-sonnet-5.5"
@@ -501,7 +501,7 @@ cmd_worker() {
       [ -n "$(envget COLAB_API_BASE)" ] || die "No Colab URL yet: start the model (/rv-start), then ./rvkit connect <url>"
       envset WORKER_API_BASE "$(envget COLAB_API_BASE)"; envset WORKER_API_KEY "$(envget COLAB_API_KEY)"
       envset WORKER_MODEL_ID "openai/$(envget COLAB_MODEL || true)"
-      [ "$(envget WORKER_MODEL_ID)" != "openai/" ] || envset WORKER_MODEL_ID "openai/qwen38-27b" ;;
+      [ "$(envget WORKER_MODEL_ID)" != "openai/" ] || envset WORKER_MODEL_ID "openai/qwen38-27b-obl" ;;
     local) # llama-server / LM Studio / Ollama / vLLM on this machine
       local url="${2:-}" model="${3:-}" found
       if [ -z "$url" ]; then
@@ -650,7 +650,7 @@ case "$cmd" in
     url="$1"; case "$url" in */v1) ;; *) url="${url%/}/v1" ;; esac
     envset COLAB_API_BASE "$url"
     [ $# -ge 2 ] && [ -n "$2" ] && envset COLAB_API_KEY "$2"
-    envset COLAB_MODEL "${3:-qwen38-27b}"
+    envset COLAB_MODEL "${3:-qwen38-27b-obl}"
     envset WORKER_API_BASE "$url"; envset WORKER_API_KEY "$(envget COLAB_API_KEY)"
     envset WORKER_MODEL_ID "openai/$(envget COLAB_MODEL)"
     recreate_litellm

@@ -33,7 +33,7 @@ symptom below.
 | Planner calls fail with "crossed budget" | The daily OpenRouter budget is used up: `./rvkit budget <usd>`, or wait for the period to end. |
 | Planner calls fail with "requires more credits" | Top up your OpenRouter balance. |
 | `Model 'planner' not reachable` | Check `OPENROUTER_API_KEY` in `.env` (then `./rvkit up`) and `./rvkit logs litellm`. |
-| The worker refuses an authorised task | The mainstream model sometimes refuses offensive-security steps. Rephrase the goal with the engagement context, let the planner use the `kali` tool directly, or (your call) use the abliterated build: `/rv-start abliterated` ([models.md](models.md)). |
+| The worker refuses an authorised task | The mainstream build (`qwen`) sometimes refuses offensive-security steps: start the default abliterated build with `/rv-start` ([models.md](models.md)). If the refusal comes from the planner (the `riskvoid-planner` agent answers with Claude), rephrase the goal with the engagement context. |
 
 ## The agent
 

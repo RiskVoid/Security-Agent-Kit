@@ -152,8 +152,8 @@ See [models.md](models.md) for what each model does and what data it sees.
 ```
 
 Points the worker at a running Colab model. The Colab notebook prints this line for you. `/v1` is added to the
-URL if missing. `key` defaults to `COLAB_API_KEY` from `.env`; `model` defaults to `qwen38-27b` (the abliterated
-build is `qwen38-27b-obl`). Saves the URL as `COLAB_API_BASE`, recreates LiteLLM and sends a test prompt: it should
+URL if missing. `key` defaults to `COLAB_API_KEY` from `.env`; `model` defaults to `qwen38-27b-obl` (the mainstream
+build is `qwen38-27b`). Saves the URL as `COLAB_API_BASE`, recreates LiteLLM and sends a test prompt: it should
 end with "Model reachable".
 
 ### worker

@@ -18,13 +18,13 @@ md("""
 
 First start: ~25–30 min (one-time build). Later starts: ~3–6 min. The runtime disconnects itself after the idle timeout.
 
-Model: Qwen3.8-27B (Apache-2.0). `MODEL = "qwen"` serves Qwen's weights unchanged; `"abliterated"` serves a community build with refusals removed.
+Model: Qwen3.8-27B (Apache-2.0). `MODEL = "abliterated"` (the default) serves a community build with refusals removed; `"qwen"` serves Qwen's weights unchanged.
 """),
 code("""
 #@title Settings
 PROFILE = "auto"  #@param ["auto", "l4", "a100-40", "a100-80"]
-MODEL = "qwen"  #@param ["qwen", "abliterated"]
-#@markdown `qwen` is the mainstream Qwen3.8-27B. `abliterated` has its refusals removed; you are responsible for how you use it.
+MODEL = "abliterated"  #@param ["abliterated", "qwen"]
+#@markdown `abliterated` has its refusals removed; you are responsible for how you use it. `qwen` is the mainstream Qwen3.8-27B.
 THINKING = False  #@param {type:"boolean"}
 IDLE_MINUTES = 30  #@param {type:"integer"}
 API_KEY = ""  #@param {type:"string"}

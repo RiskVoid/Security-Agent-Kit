@@ -247,8 +247,8 @@ pinned revision when you start a session.
 | Model | Source | Licence | Verified |
 |---|---|---|---|
 | Qwen3.8-27B (base weights, by Qwen) | `Qwen/Qwen3.8-27B` | Apache-2.0 | upstream (model card) |
-| Default worker build: Qwen3.8-27B GGUF | `lmstudio-community/Qwen3.8-27B-GGUF` (Qwen publishes no GGUF of this model; this is a stock llama.cpp conversion of Qwen's weights) | Apache-2.0 | upstream (model card) |
-| Optional abliterated build (`RVKIT_MODEL=abliterated`) | `huihui-ai/Huihui-Qwen3.8-27B-abliterated-GGUF`, a community build with refusals removed | Apache-2.0 (as stated on its model card) | upstream (model card) |
+| Mainstream worker build (`RVKIT_MODEL=qwen`): Qwen3.8-27B GGUF | `lmstudio-community/Qwen3.8-27B-GGUF` (Qwen publishes no GGUF of this model; this is a stock llama.cpp conversion of Qwen's weights) | Apache-2.0 | upstream (model card) |
+| Default worker build: abliterated (`RVKIT_MODEL=abliterated`) | `huihui-ai/Huihui-Qwen3.8-27B-abliterated-GGUF`, a community build with refusals removed | Apache-2.0 (as stated on its model card) | upstream (model card) |
 
 You are responsible for how you use any model, and especially the abliterated build. See `SECURITY.md`,
 "Responsible use".

@@ -62,10 +62,10 @@ The worker runs on a Colab GPU, started per session. You need Colab Pro (or a pl
 **With Claude Code** (one command):
 
 ```
-/rv-start                 # auto profile, mainstream model, thinking off
+/rv-start                 # auto profile, abliterated model, thinking off
 /rv-start l4              # pick the profile
 /rv-start a100-40 thinking
-/rv-start abliterated     # the refusal-removed build (see Which model)
+/rv-start qwen            # Qwen's unchanged weights (see Which model)
 ```
 
 Claude Code opens Colab in your browser through the Colab MCP server and tells you what to click: sign in, pick
@@ -83,7 +83,7 @@ model and runs `./rvkit connect` for you. `/rv-stop` releases the GPU. The full 
 4. The last cell prints a line like this. Run it on your computer:
 
    ```sh
-   ./rvkit connect https://xxxx.trycloudflare.com/v1 rv-xxxx qwen38-27b
+   ./rvkit connect https://xxxx.trycloudflare.com/v1 rv-xxxx qwen38-27b-obl
    ```
 
    It should end with **Model reachable**.
@@ -113,7 +113,7 @@ the advanced ones for special cases:
 | Variable | Default | Meaning |
 |---|---|---|
 | `RVKIT_PROFILE` | `auto` | `auto`, `l4`, `a100-40`, `a100-80` |
-| `RVKIT_MODEL` | `qwen` | `qwen` (mainstream) or `abliterated` |
+| `RVKIT_MODEL` | `abliterated` | `abliterated` (refusals removed) or `qwen` (mainstream) |
 | `RVKIT_THINKING` | `0` | `1` for thinking mode |
 | `RVKIT_API_KEY` | Colab secret `LLM_API_KEY`, else random | the endpoint's API key |
 | `RVKIT_IDLE_MINUTES` | `30` | idle minutes before the runtime disconnects |
@@ -190,8 +190,8 @@ Every `worker` command recreates LiteLLM and sends a test prompt.
 
 | Choice | Served as | Weights | Notes |
 |---|---|---|---|
-| **Qwen3.8-27B** (default, `qwen`) | `qwen38-27b` | `lmstudio-community/Qwen3.8-27B-GGUF`, Qwen's weights unchanged (Apache-2.0) | may refuse some offensive-security tasks |
-| **Abliterated** (`abliterated`) | `qwen38-27b-obl` | `huihui-ai/Huihui-Qwen3.8-27B-abliterated-GGUF`, a community build with refusals removed | refuses fewer tasks; a third-party modification |
+| **Abliterated** (default, `abliterated`) | `qwen38-27b-obl` | `huihui-ai/Huihui-Qwen3.8-27B-abliterated-GGUF`, a community build with refusals removed | refuses fewer tasks; a third-party modification |
+| **Qwen3.8-27B** (`qwen`) | `qwen38-27b` | `lmstudio-community/Qwen3.8-27B-GGUF`, Qwen's weights unchanged (Apache-2.0) | may refuse some offensive-security tasks |
 
 Both repos are pinned to a commit, so a re-upload can't change what runs. The abliterated build will not refuse
 harmful requests: you are responsible for how you use it ([SECURITY.md](../SECURITY.md#responsible-use)).

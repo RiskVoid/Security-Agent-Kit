@@ -26,10 +26,9 @@ Keep the user informed in one short line per step. When the user has to act, say
 
 ## Start the model
 
-Arguments may name a profile (`auto`, `l4`, `a100-40`, `a100-80`; default `auto`), `thinking`, and/or `abliterated`.
-The default model is the mainstream Qwen3.8-27B (`qwen`, served as `qwen38-27b`). Use the abliterated build
-(`abliterated`, served as `qwen38-27b-obl`, refusals removed) only when the user's arguments say `abliterated`;
-before starting it, tell the user in one line that its refusals are removed and they are responsible for how it is used.
+Arguments may name a profile (`auto`, `l4`, `a100-40`, `a100-80`; default `auto`), `thinking`, and/or `qwen`.
+The default model is the abliterated Qwen3.8-27B (`abliterated`, served as `qwen38-27b-obl`, refusals removed).
+Use the mainstream build (`qwen`, served as `qwen38-27b`, Qwen's weights unchanged) when the user's arguments say `qwen`.
 
 1. **Local stack.** Run `./rvkit status`. If containers are not running, run `./rvkit up`.
 2. **Key.** Run `./rvkit key colab` and keep the value as KEY. Never print it in chat beyond what's needed.
@@ -57,17 +56,17 @@ before starting it, tell the user in one line that its refusals are removed and 
    ```python
    import os
    os.environ.update(RVKIT_API_KEY="<KEY>", RVKIT_PROFILE="<profile or auto>",
-                     RVKIT_MODEL="<abliterated if 'abliterated' was requested else qwen>",
+                     RVKIT_MODEL="<qwen if 'qwen' was requested else abliterated>",
                      RVKIT_THINKING="<1 if 'thinking' was requested else 0>", RVKIT_IDLE_MINUTES="30")
    %run /content/serve.py
    ```
    - With the Drive cache, a run takes ~3–6 min (mostly the model download). Without a cache, the one-time llama.cpp build adds ~25 min. If the execute tool times out, keep reading the cell's output every ~60 s until it finishes. Don't re-run the cell while it's still running.
    - Check the first output lines: if the GPU isn't the one the user picked, tell them, and ask whether to continue or switch.
-     The `Model:` line must name the model you asked for (`qwen` or `abliterated`).
+     The `Model:` line must name the model you asked for (`abliterated` or `qwen`).
    - If the output says "No GPU" or that the GPU is too small, repeat step 4, then steps 5–7.
    - If it fails elsewhere, show the user the last ~30 lines of output and suggest a fix. To read the logs, run `!tail -50 /content/server.log` or `!tail -50 /content/rvkit-build.log` in a new cell.
 8. **Connect the stack.** Find the output line that starts with `RVKIT_ENDPOINT ` and parse its JSON. Run `./rvkit connect <url> <key> <model>` with its `url`, `key` and `model` values. It must end with "Model reachable".
-9. **Report** in 2–3 lines: the model (`qwen38-27b` or `qwen38-27b-obl`), the profile and GPU, that OpenHands can be used now, and that the GPU disconnects after 30 idle minutes or when the user runs `/rv-stop`. If an existing OpenHands conversation shows a connection error, start a new one.
+9. **Report** in 2–3 lines: the model (`qwen38-27b-obl` or `qwen38-27b`), the profile and GPU, that OpenHands can be used now, and that the GPU disconnects after 30 idle minutes or when the user runs `/rv-stop`. If an existing OpenHands conversation shows a connection error, start a new one.
 
 ## Stop the model
 

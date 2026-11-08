@@ -143,7 +143,7 @@ when a fix touches them.
   write there, not what the client agreed to.
 - **You are responsible for the agent's actions.** Review intrusive commands before you approve them, watch running
   engagements, and use `./rvkit halt` if anything looks wrong.
-- **You are responsible for how you use any model** with the kit. This applies especially to the optional
+- **You are responsible for how you use any model** with the kit. This applies especially to the default
   abliterated (refusal-removed) worker model: it will not refuse harmful requests, so the safeguards are yours.
 - Check where client data goes (see "Where your data goes" in the README) against your client agreements before
   you start.
