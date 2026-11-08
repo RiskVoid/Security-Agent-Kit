@@ -40,10 +40,16 @@ TIERS = ("passive", "active", "intrusive")
 ALWAYS_BLOCKED = ["127.0.0.0/8", "169.254.0.0/16", "0.0.0.0/8", "224.0.0.0/4"]
 NAME_RX = re.compile(r"(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z][a-z0-9-]{0,62}")
 DAYS = ("mon", "tue", "wed", "thu", "fri", "sat", "sun")
+# Where client data (tool output, code, evidence, findings) may be sent for model processing. The LiteLLM hook
+# (litellm/rv_routes.py) classifies every model route into one of these and refuses calls that would send an
+# engagement's data elsewhere. local = a model server on this machine or the local network; colab = the Colab
+# notebook; api = another self-hosted endpoint (./rvkit worker api); the rest are hosted providers.
+DESTINATIONS = ("local", "colab", "api", "openrouter", "anthropic", "openai")
 DEFAULT_RULES = {"tiers": ["passive", "active"], "max_rate": 100, "network": "online", "window": None,
                  "strict": False, "worker": "auto", "timezone": "UTC", "dates": None, "days": None,
                  "max_requests": None, "max_commands": None, "max_parallel": 2, "redirects": "in-scope",
-                 "execution": "standard", "approval_hours": 24, "stop_conditions": [], "notes": []}
+                 "execution": "standard", "approval_hours": 24, "stop_conditions": [], "notes": [],
+                 "client_data": None}  # None: any destination the stack is configured for
 
 
 def entries(text):
@@ -373,6 +379,16 @@ def parse_rules(text):
                 if v not in ("private", "auto"):
                     raise ValueError("Worker model is private or auto")
                 r["worker"] = v
+            elif k.startswith("client data"):
+                dests = [d for d in re.split(r"[,\s]+", v) if d]
+                if dests == ["any"]:
+                    r["client_data"] = None
+                else:
+                    bad = [d for d in dests if d not in DESTINATIONS]
+                    if bad or not dests:
+                        raise ValueError(f"Client data is any, or a list of {', '.join(DESTINATIONS)} "
+                                         f"(got {', '.join(bad) or 'nothing'})")
+                    r["client_data"] = [d for d in DESTINATIONS if d in dests]
             elif k.startswith("window"):
                 m = re.fullmatch(r"(\d{1,2}):(\d{2})\s*-\s*(\d{1,2}):(\d{2})\s*(\S+)?", v0.strip())
                 if not m or int(m.group(1)) > 23 or int(m.group(3)) > 24 or int(m.group(2)) > 59 or int(m.group(4)) > 59:
@@ -485,6 +501,10 @@ def limits(pol, rules):
         out.append("Execution: standard. Scripts and unknown programs run through run at their classified tier; "
                    "use Execution: controlled to require an approval for every network command that isn't a "
                    "known tool.")
+    if rules.get("client_data"):
+        out.append("Client data: enforced at the model gateway for kit tools, bound conversations and worker tasks. "
+                   "An unbound OpenHands conversation is matched by the engagements it names; start conversations "
+                   "from the console (or ./rvkit conversation new) so they are bound.")
     out.append("IPv6 is never reachable from the sandbox (AAAA records are filtered).")
     return out
 

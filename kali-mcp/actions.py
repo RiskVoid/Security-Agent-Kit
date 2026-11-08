@@ -144,8 +144,23 @@ def http_request(eng, method, url, headers=None, body="", approval_id=None, max_
             return refuse(err, approval=approval_id)
         entry["approval"] = approval_id
 
+    # credential references ({{cred:NAME}}) are filled in only now: the approval, the audit entry and the evidence
+    # file keep the reference, the target gets the value
+    used = core.cred_used(eng, url + json.dumps(hdrs) + data.decode("utf-8", "replace"))
+    try:
+        send_url = core.cred_expand(eng, url)
+        send_hdrs = {k: core.cred_expand(eng, v) for k, v in hdrs.items()}
+        send_data = core.cred_expand(eng, data.decode("utf-8", "surrogateescape")).encode("utf-8", "surrogateescape") \
+            if used else data
+    except ValueError as e:
+        return refuse(str(e))
+    if used:
+        entry["credentials"] = used
+        why = rvpolicy.check_url(pol, send_url)
+        if why:
+            return refuse(why)
     blocked, hops, notes = _blocked(), [], []
-    cur, cur_method, cur_data = url, method, data
+    cur, cur_method, cur_data = send_url, method, send_data
     for hop in range(6):
         if core.info(eng)["halted"]:
             notes.append("stopped: the engagement was halted")
@@ -164,26 +179,30 @@ def http_request(eng, method, url, headers=None, body="", approval_id=None, max_
         path = (u.path or "/") + (f"?{u.query}" if u.query else "")
         t0 = time.time()
         try:
-            conn.request(cur_method, path, body=cur_data or None, headers=hdrs)
+            conn.request(cur_method, path, body=cur_data or None, headers=send_hdrs)
             r = conn.getresponse()
             raw = r.read(MAX_BODY_OUT + 1)
-            hop_rec = {"url": cur, "method": cur_method, "ip": ip, "status": r.status, "reason": r.reason,
-                       "headers": r.getheaders(), "body": raw[:MAX_BODY_OUT], "truncated": len(raw) > MAX_BODY_OUT,
+            hop_rec = {"url": core.scrub(eng, cur), "method": cur_method, "ip": ip, "status": r.status,
+                       "reason": r.reason, "headers": [(k, core.scrub(eng, v)) for k, v in r.getheaders()],
+                       "body": core.scrub(eng, raw[:MAX_BODY_OUT]), "truncated": len(raw) > MAX_BODY_OUT,
                        "seconds": round(time.time() - t0, 2)}
             if u.scheme == "https" and conn.sock:
                 der = conn.sock.getpeercert(binary_form=True)
                 hop_rec["tls"] = {"version": conn.sock.version(), "cert_sha256": hashlib.sha256(der).hexdigest()
                                   if der else None, "verified": False}
         except (OSError, http.client.HTTPException) as e:
-            hops.append({"url": cur, "method": cur_method, "ip": ip, "error": f"{type(e).__name__}: {e}"})
+            hops.append({"url": core.scrub(eng, cur), "method": cur_method, "ip": ip,
+                         "error": core.scrub(eng, f"{type(e).__name__}: {e}")})
             break
         finally:
             conn.close()
         hops.append(hop_rec)
-        loc = dict((k.lower(), v) for k, v in hop_rec["headers"]).get("location")
+        loc = dict((k.lower(), v) for k, v in r.getheaders()).get("location")
         if hop_rec["status"] not in (301, 302, 303, 307, 308) or not loc:
             break
         nxt = urllib.parse.urljoin(cur, loc)
+        if send_hdrs != hdrs and urllib.parse.urlsplit(nxt).netloc != urllib.parse.urlsplit(cur).netloc:
+            send_hdrs = hdrs  # credentials are not sent on to another host
         if rules.get("redirects") == "none" or cur_method not in ("GET", "HEAD"):
             notes.append(f"redirect to {nxt} not followed (" + ("Redirects: none" if rules.get("redirects") == "none"
                          else f"{cur_method} is not repeated automatically") + ")")
@@ -197,6 +216,7 @@ def http_request(eng, method, url, headers=None, body="", approval_id=None, max_
             break
         cur = nxt
 
+    notes = [core.scrub(eng, n) for n in notes]
     rel = _evidence_path(eng, method, urllib.parse.urlsplit(url).hostname or "host")
     full = os.path.join(core.WORK, eng, rel)
     with open(full, "wb") as f:
@@ -238,7 +258,7 @@ def http_request(eng, method, url, headers=None, body="", approval_id=None, max_
         out.append(text[:SHOWN] + (f"\n... {len(text) - SHOWN} more characters in the evidence file"
                                    if len(text) > SHOWN else ""))
     out.append(f"[request and response saved as verified evidence: /work/{eng}/{rel}]")
-    return "\n".join(out)
+    return core.scrub(eng, "\n".join(out))
 
 
 # ---------------------------------------------------------------- source analysis, no network
@@ -311,7 +331,7 @@ def analyze_source(eng, tool, path, rulesets=None, task=None, timeout_s=1800):
     else:
         cmd = f"bandit -r {q(p)} -f json -o {out} -q --exit-zero"
     entry.update(command=cmd, tier="passive", network="none")
-    res = core._execute(eng, i, entry, cmd, "passive", timeout_s, False, None)
+    res = core._execute(eng, i, entry, cmd, "passive", timeout_s, False, None, task=task)
     full = os.path.join(core.WORK, eng, out)
     count = None
     try:

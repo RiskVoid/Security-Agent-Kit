@@ -379,3 +379,10 @@ fieldset.rv-field legend { padding: 0; margin-bottom: 8px; }
   #new-btn .rv-btn-label { display: none; }
 }
 .rv-muted { color: var(--rv-text-2); }
+
+/* bound conversations, stored credentials (overview) */
+.rv-rows { list-style: none; margin: 0 0 12px; padding: 0; display: grid; gap: 8px; }
+.rv-rows li { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; min-width: 0; }
+.rv-rows li a { overflow-wrap: anywhere; }
+.rv-form-row { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
+.rv-form-row .rv-input { flex: 1 1 140px; width: auto; }

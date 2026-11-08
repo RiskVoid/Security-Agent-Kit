@@ -573,5 +573,142 @@ class ModelEvents(unittest.TestCase):
             self.assertEqual(me.recent(3600, path=log, engagement="lab-juice")[0]["text"], "Is not reachable")
 
 
+
+class DataRoutes(unittest.TestCase):
+    """RW-006: where each model route sends data (litellm/rv_routes.py) and the Client data decision."""
+    @classmethod
+    def setUpClass(cls):
+        spec = importlib.util.spec_from_file_location("rv_routes", os.path.join(KIT, "litellm", "rv_routes.py"))
+        cls.r = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(cls.r)
+
+    ENV = {"WORKER_MODEL_ID": "openai/qwen", "WORKER_API_BASE": "https://abc.trycloudflare.com/v1",
+           "COLAB_API_BASE": "https://abc.trycloudflare.com/v1", "WORKER_FALLBACK": "on",
+           "WORKER_FALLBACK_MODEL": "openrouter/x/y", "PLANNER_MODEL": "openrouter/a/b",
+           "PLANNER_FALLBACK_MODEL": "anthropic/claude-x"}
+    ROUTES = {"engagements": {"acme": {"client_data": ["local", "colab"], "paths": ["/src/acme"], "halted": False},
+                              "open": {"client_data": None, "paths": [], "halted": False},
+                              "stopped": {"client_data": None, "paths": [], "halted": True}},
+              "conversations": {"0123abcd00004000800000000000beef": "acme", "aaaabbbb00004000800000000000cccc": "stopped"}}
+
+    def test_destinations(self):
+        r, env = self.r, self.ENV
+        self.assertEqual(r.group_route("colab-qwen", env), ("colab", ["openrouter"]))
+        self.assertEqual(r.group_route("private-llm", env), ("colab", []))
+        self.assertEqual(r.group_route("planner", env), ("openrouter", ["anthropic"]))
+        self.assertEqual(r.group_route("colab-qwen", dict(env, WORKER_FALLBACK="off"))[1], [])
+        local = dict(env, WORKER_API_BASE="http://host.docker.internal:11434/v1")
+        self.assertEqual(r.group_route("colab-qwen", local)[0], "local")
+        for base, dest in (("http://192.168.1.20:8000/v1", "local"), ("http://gpu-box:8000/v1", "local"),
+                           ("https://gpu.example.net/v1", "api"), ("https://openrouter.ai/api/v1", "openrouter"),
+                           ("http://worker-not-connected.invalid/v1", "local")):
+            self.assertEqual(r.group_route("private-llm", dict(env, WORKER_API_BASE=base))[0], dest, base)
+        self.assertEqual(r.group_route("private-llm", dict(env, WORKER_MODEL_ID="openrouter/m"))[0], "openrouter")
+
+    def decide(self, group, request, headers=None, session=None):
+        return self.r.decide(group, request, headers or {}, self.ROUTES, self.ENV, session)
+
+    def test_client_data(self):
+        hi = {"messages": [{"role": "user", "content": "hi"}]}
+        self.assertTrue(self.decide("planner", hi)["allow"])                                   # names no engagement
+        d = self.decide("planner", hi, {"X-RV-Engagement": "acme"})
+        self.assertFalse(d["allow"])
+        self.assertIn("only to local, colab", d["reason"])
+        d = self.decide("colab-qwen", hi, {"x-rv-engagement": "acme"})
+        self.assertTrue(d["allow"])
+        self.assertFalse(d["fallbacks"])                                                       # OpenRouter fallback off
+        self.assertTrue(self.decide("colab-qwen", hi, {"x-rv-engagement": "open"})["fallbacks"])
+        self.assertFalse(self.decide("planner", hi, session="0123abcd-0000-4000-8000-00000000beef")["allow"])
+        call = {"messages": [{"role": "user", "content": "go"}, {"role": "assistant", "tool_calls": [
+            {"function": {"name": "run", "arguments": '{"engagement": "acme", "command": "ls"}'}}]}]}
+        self.assertFalse(self.decide("planner", call)["allow"])
+        self.assertFalse(self.decide("planner", {"messages": [{"role": "user", "content": "cat /src/acme/app.py"}]})["allow"])
+        self.assertFalse(self.decide("planner", {"messages": [{"role": "assistant", "tool_calls": [
+            {"function": {"name": "terminal", "arguments": '{"command": "cat /work/acme/notes.md"}'}}]}]})["allow"])
+        # tool results are not scanned: a listing of every engagement doesn't tie the call to them
+        listing = {"messages": [{"role": "user", "content": "list"}, {"role": "tool", "content": "Engagement acme ..."}]}
+        self.assertTrue(self.decide("planner", listing)["allow"])
+        self.assertTrue(self.decide("planner", {"messages": [{"role": "user", "content": "the /work/acmeX folder"}]})["allow"])
+
+    def test_halt(self):
+        hi = {"messages": [{"role": "user", "content": "hi"}]}
+        self.assertIn("halted", self.decide("colab-qwen", hi, {"x-rv-engagement": "stopped"})["reason"])
+        self.assertFalse(self.decide("planner", hi, session="aaaabbbb00004000800000000000cccc")["allow"])
+        # only its own conversations and tasks stop: naming a halted engagement elsewhere is still allowed
+        self.assertTrue(self.decide("planner", {"messages": [{"role": "user", "content": "report on /work/stopped/x"}]})["allow"])
+        gone = dict(self.ROUTES, conversations={"ffff": "deleted-one"})
+        self.assertFalse(self.r.decide("planner", hi, {"x-litellm-session-id": "ffff"}, gone, self.ENV)["allow"])
+
+    def test_rule(self):
+        r, e = policy.parse_rules("- Client data: colab, local")
+        self.assertEqual((r["client_data"], e), (["local", "colab"], []))
+        self.assertIsNone(policy.parse_rules("- Client data: any")[0]["client_data"])
+        self.assertIsNone(policy.parse_rules("")[0]["client_data"])
+        self.assertTrue(policy.parse_rules("- Client data: moon")[1])
+        self.assertTrue(any("Client data" in x for x in policy.effective("- a.example.com", "- Client data: local")["limits"]))
+
+    def test_policy_refusal_passes_through(self):
+        spec = importlib.util.spec_from_file_location("rv_events", os.path.join(KIT, "litellm", "rv_events.py"))
+        ev = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(ev)
+        kind, text = ev.classify("planner", Exception(ev.POLICY_TAG + "engagement acme allows ..."))
+        self.assertEqual((kind, text), ("policy", "engagement acme allows ..."))
+
+
+class Credentials(unittest.TestCase):
+    """RW-006: credential references; RW-007: conversation bindings and the routing table."""
+    def setUp(self):
+        import json
+        self.tmp = tempfile.TemporaryDirectory()
+        self.saved = (core.CONTROL, core.WORK, core.AUDIT, core.REGISTRY, core.ACTOR, core.ROUTES)
+        core.CONTROL, core.WORK = os.path.join(self.tmp.name, "control"), os.path.join(self.tmp.name, "work")
+        core.AUDIT, core.REGISTRY = os.path.join(core.CONTROL, "audit.log"), os.path.join(core.CONTROL, "reg.json")
+        core.ROUTES = os.path.join(self.tmp.name, "routes")
+        for e in ("e1", "e2"):
+            os.makedirs(core.ctl_dir(e))
+            open(os.path.join(core.ctl_dir(e), "SCOPE.md"), "w").write("- example.com\n- /src/app\n")
+            open(os.path.join(core.ctl_dir(e), "RULES.md"), "w").write("- Client data: local\n" if e == "e1" else "")
+        json.dump({"e1": 20001, "e2": 20002}, open(core.REGISTRY, "w"))
+
+    def tearDown(self):
+        core.CONTROL, core.WORK, core.AUDIT, core.REGISTRY, core.ACTOR, core.ROUTES = self.saved
+        self.tmp.cleanup()
+
+    def test_references(self):
+        core.cred_set("e1", "api_token", "Sup3r-Secret-Value\n")
+        self.assertEqual([c["name"] for c in core.cred_list("e1")], ["API_TOKEN"])
+        self.assertNotIn("value", core.cred_list("e1")[0])
+        self.assertEqual(core.cred_expand("e1", "Bearer {{cred:API_TOKEN}}"), "Bearer Sup3r-Secret-Value")
+        with self.assertRaises(ValueError):
+            core.cred_expand("e1", "{{cred:OTHER}}")
+        self.assertEqual(core.scrub("e1", "x Sup3r-Secret-Value y"), "x {{cred:API_TOKEN}} y")
+        self.assertEqual(core.scrub("e1", b"Sup3r-Secret-Value"), b"{{cred:API_TOKEN}}")
+        self.assertEqual(core.scrub("e2", "Sup3r-Secret-Value"), "Sup3r-Secret-Value")   # per engagement
+        self.assertEqual(core.cred_used("e1", "curl -H \"X: $RV_CRED_API_TOKEN\" u"), ["API_TOKEN"])
+        self.assertEqual(core.cred_env("e1"), {"RV_CRED_API_TOKEN": "Sup3r-Secret-Value"})
+        self.assertNotIn("Sup3r", open(core.AUDIT).read())
+        for bad in ("1abc", "a-b", "x" * 40):
+            with self.assertRaises(ValueError):
+                core.cred_set("e1", bad, "valuevalue")
+        with self.assertRaises(ValueError):
+            core.cred_set("e1", "short", "abc")
+        core.cred_remove("e1", "api_token")
+        self.assertEqual(core.cred_list("e1"), [])
+
+    def test_bindings_and_routes(self):
+        import json
+        core.bind_conversation("e1", "0123ABCD-0000-4000-8000-00000000BEEF", "t")
+        with self.assertRaises(ValueError):  # one engagement per conversation
+            core.bind_conversation("e2", "0123abcd-0000-4000-8000-00000000beef")
+        with self.assertRaises(ValueError):
+            core.bind_conversation("e1", "not an id!")
+        r = json.load(open(os.path.join(core.ROUTES, "routes.json")))
+        self.assertEqual(r["conversations"], {"0123abcd00004000800000000000beef": "e1"})
+        self.assertEqual(r["engagements"]["e1"]["client_data"], ["local"])
+        self.assertEqual(r["engagements"]["e1"]["paths"], ["/src/app"])
+        self.assertIsNone(r["engagements"]["e2"]["client_data"])
+        core.unbind_conversation("e1", "0123abcd-0000-4000-8000-00000000beef")
+        self.assertEqual(json.load(open(os.path.join(core.ROUTES, "routes.json")))["conversations"], {})
+
 if __name__ == "__main__":
     unittest.main(verbosity=1)

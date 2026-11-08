@@ -4,12 +4,21 @@ Commands run sandboxed per engagement (see core.py): own folder only, unprivileg
 engagement scope by nftables, tiers and rate limits from RULES.md, intrusive commands need host approval, and
 everything is audit-logged. Only run against systems you are authorised to test.
 """
-import json, sys
+import functools, json, sys
+import anyio
 from mcp.server.fastmcp import FastMCP
 import core
 import actions
 
 mcp = FastMCP("kali", host="0.0.0.0", port=core.MCP_PORT)
+
+
+async def _thread(fn, *args, **kw):
+    """Run a blocking call in a worker thread. FastMCP runs plain functions on its event loop, so a long command
+    would hold every other call (another task's command, cancel_task, approval_status) until it ended."""
+    return await anyio.to_thread.run_sync(functools.partial(fn, *args, **kw), limiter=_LIMIT)
+
+_LIMIT = anyio.CapacityLimiter(64)
 
 
 @mcp.tool()
@@ -73,35 +82,37 @@ def engagement_activity(engagement: str) -> str:
 
 
 @mcp.tool()
-def http_request(engagement: str, method: str, url: str, headers: dict | None = None, body: str = "",
+async def http_request(engagement: str, method: str, url: str, headers: dict | None = None, body: str = "",
                  approval_id: str = "", max_tier: str = "", task: str = "", body_base64: bool = False) -> str:
     """Send one HTTP request to an in-scope URL and get the response (status, headers, body). Prefer this over
     curl in run for single requests: it is the only way to reach hosts whose scope is limited to URL paths, it
     follows redirects only within scope, and the request and response are saved as verified evidence.
     GET, HEAD and OPTIONS are tier active. POST, PUT, PATCH and DELETE can change state: they are intrusive and
     return an approval id first; after the user approves, call again with the identical method, URL, headers and
-    body plus approval_id. max_tier: the tier your task is limited to, if any. body_base64: body is base64."""
+    body plus approval_id. max_tier: the tier your task is limited to, if any. body_base64: body is base64.
+    Credentials stored on the host (list_credentials): write {{cred:NAME}} in the URL, a header or the body; the
+    value is filled in when the request is sent and replaced by the reference in the output and evidence."""
     try:
-        return actions.http_request(engagement, method, url, headers or {}, body, approval_id or None,
-                                    max_tier or None, task or None, body_base64=body_base64)
+        return await _thread(actions.http_request, engagement, method, url, headers or {}, body, approval_id or None,
+                             max_tier or None, task or None, body_base64=body_base64)
     except ValueError as e:
         return f"REFUSED: {e}"
 
 
 @mcp.tool()
-def analyze_source(engagement: str, tool: str, path: str, rulesets: list[str] | None = None, task: str = "") -> str:
+async def analyze_source(engagement: str, tool: str, path: str, rulesets: list[str] | None = None, task: str = "") -> str:
     """Run a source-analysis tool on in-scope code with no network access at all (it can't reach targets or the
     internet). tool: semgrep (offline rules; rulesets = folders like php, python, javascript; default: detected
     from the code), gitleaks (secrets, redacted), trufflehog (secrets, unverified), bandit (Python). path: a
     /src path from the scope or a path under /work/<engagement>. The JSON report is saved as verified evidence."""
     try:
-        return actions.analyze_source(engagement, tool, path, rulesets or None, task or None)
+        return await _thread(actions.analyze_source, engagement, tool, path, rulesets or None, task or None)
     except ValueError as e:
         return f"REFUSED: {e}"
 
 
 @mcp.tool()
-def run(command: str, engagement: str, timeout_s: int = 600, approval_id: str = "", max_tier: str = "",
+async def run(command: str, engagement: str, timeout_s: int = 600, approval_id: str = "", max_tier: str = "",
         task: str = "") -> str:
     """Run a shell command in the Kali sandbox for an engagement.
 
@@ -134,14 +145,48 @@ def run(command: str, engagement: str, timeout_s: int = 600, approval_id: str = 
     between parallel commands). Approvals are bound to the command, the programs and input files it uses and the
     current scope. max_tier: the tier your task is limited to, if any. Hosts limited to URL paths in the scope
     are reachable only through http_request; for code analysis without network use analyze_source.
+    Credentials stored on the host (list_credentials) are in the environment as $RV_CRED_<NAME>; their values
+    are replaced by {{cred:NAME}} in the output.
     """
     try:
-        return core.run(command, engagement, timeout_s, approval_id or None, max_tier or None, task or None)
+        return await _thread(core.run, command, engagement, timeout_s, approval_id or None, max_tier or None,
+                             task or None)
+    except ValueError as e:
+        return f"REFUSED: {e}"
+
+
+@mcp.tool()
+def approval_status(engagement: str, approval_id: str) -> str:
+    """Where an approval stands: pending, approved, denied, used, or stale (the scope changed). JSON."""
+    try:
+        return json.dumps(core.approval_status(engagement, approval_id))
+    except ValueError as e:
+        return f"REFUSED: {e}"
+
+
+@mcp.tool()
+def list_credentials(engagement: str) -> str:
+    """Credentials stored for an engagement on the host (names only; values are never shown). Use one in a run
+    command as $RV_CRED_<NAME>, or in an http_request URL, header or body as {{cred:NAME}}. Values are replaced by
+    the reference in output and evidence. Add or change credentials on the host: ./rvkit cred <engagement> set <NAME>."""
+    try:
+        return json.dumps(core.cred_list(engagement)) if core.cred_list(engagement) else \
+            f"no credentials stored for {engagement}"
+    except ValueError as e:
+        return f"REFUSED: {e}"
+
+
+@mcp.tool()
+def cancel_task(engagement: str, task: str) -> str:
+    """Kill the commands a worker task is running now (worker-mcp calls this when a task is cancelled)."""
+    try:
+        return f"killed {core.cancel_task(engagement, task)} command(s) of task {task}"
     except ValueError as e:
         return f"REFUSED: {e}"
 
 
 if __name__ == "__main__":
+    core.publish_routes()  # routing table for the model gateway (bindings, Client data, halt)
     try:
         core.apply_network()  # restore firewall + DNS after a container restart
     except Exception as e:

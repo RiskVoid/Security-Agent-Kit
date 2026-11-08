@@ -18,6 +18,13 @@
   rvctl.py delete <eng> [--force]    unregister a closed engagement; its folder becomes _deleted-<eng>-<time>
   rvctl.py apply                     rebuild firewall + DNS for all engagements
   rvctl.py record <eng>              add a change event from harness/ops.py (JSON on stdin) to the audit log
+  rvctl.py conversations [eng] [--json]  OpenHands conversations bound to engagements
+  rvctl.py bind <eng> <conversation-id> [title]   bind a conversation (its model calls follow the engagement)
+  rvctl.py unbind <eng> <conversation-id>
+  rvctl.py cred <eng> list [--json] | set <NAME> (value on stdin) | rm <NAME>
+  rvctl.py approval <eng> <id>       one approval's status (JSON)
+  rvctl.py cancel <eng> <task-id>    kill the commands of a worker task
+  rvctl.py routes                    the routing table the model gateway uses (JSON; rewritten too)
 
 Global option: --actor <console|cli>:<name> names who acts; it is recorded on every audit entry (default cli:host).
 Exit codes: 0 ok, 1 error, 2 sync not confirmed, 3 conflict (the record changed since it was read).
@@ -53,6 +60,8 @@ def _print_policy(p):
             f"days {','.join(r['days'])}" if r["days"] else ""]
     print(f"Rules: tiers {'/'.join(r['tiers'])}, {r['max_rate']}/s, {r['network']}, execution {r['execution']}"
           + "".join(f", {w}" for w in when if w) + f" ({r['timezone']})")
+    print("Client data may go to: " + (", ".join(r["client_data"]) if r.get("client_data") else
+                                        "any model the stack is configured for"))
     for s in r["stop_conditions"]:
         print("Stop condition: " + s)
     if p["limits"]:
@@ -168,6 +177,39 @@ def main(a):
         return 0
     if cmd == "apply":
         core.apply_network(); print("network policy applied"); return 0
+    if cmd == "conversations":
+        engs = [a for a in rest if a != "--json"][:1] or core.engagements()
+        rows = [dict(c, engagement=e) for e in engs for c in core.conversations(e)]
+        if "--json" in rest:
+            print(json.dumps(rows)); return 0
+        for r in rows:
+            print(f"{r['engagement']:<22} {r['id']}  {r['bound']}  {r.get('title', '')}")
+        print(f"{len(rows)} bound conversation(s)"); return 0
+    if cmd == "bind":
+        c = core.bind_conversation(rest[0], rest[1], " ".join(rest[2:]))
+        print(f"conversation {c['id']} bound to {rest[0]}"); return 0
+    if cmd == "unbind":
+        core.unbind_conversation(rest[0], rest[1]); print(f"conversation {rest[1]} unbound from {rest[0]}"); return 0
+    if cmd == "cred":
+        eng, sub = rest[0], (rest[1] if len(rest) > 1 else "list")
+        if sub == "list":
+            rows = core.cred_list(eng)
+            if "--json" in rest:
+                print(json.dumps(rows)); return 0
+            for r in rows:
+                print(f"{r['name']:<24} ${r['env']:<30} {r['ref']:<30} set {r['set_at']} by {r['set_by']}")
+            print(f"{len(rows)} credential(s)"); return 0
+        if sub == "set":
+            core.cred_set(eng, rest[2], sys.stdin.read()); print(f"{rest[2].upper()} stored for {eng}"); return 0
+        if sub == "rm":
+            core.cred_remove(eng, rest[2]); print(f"{rest[2].upper()} removed from {eng}"); return 0
+        raise ValueError("usage: cred <eng> list | set <NAME> | rm <NAME>")
+    if cmd == "approval":
+        print(json.dumps(core.approval_status(rest[0], rest[1]))); return 0
+    if cmd == "cancel":
+        print(f"killed {core.cancel_task(rest[0], rest[1])} command(s)"); return 0
+    if cmd == "routes":
+        core.publish_routes(); print(json.dumps(core.routes(), indent=1)); return 0
     if cmd == "record":
         print(json.dumps(core.record(rest[0], json.load(sys.stdin)))); return 0
     print(__doc__); return 1

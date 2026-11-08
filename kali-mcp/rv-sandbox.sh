@@ -36,10 +36,14 @@ umount -R "$stage/eng"; for e in "${srcs[@]}"; do umount -R "$stage/src/${e%%:*}
 mount -t tmpfs tmpfs /run
 
 cd "/work/$RV_ENG"
+# credentials of this engagement (./rvkit cred), for commands that use $RV_CRED_<NAME>
+creds=()
+while IFS= read -r v; do [ -n "$v" ] && creds+=("$v=${!v}"); done < <(compgen -e | grep '^RV_CRED_' || true)
 exec setpriv --reuid="$RV_UID" --regid="$RV_UID" --clear-groups \
   --inh-caps=-all,+net_raw --ambient-caps=-all,+net_raw --bounding-set=-all,+net_raw --no-new-privs \
   env -i HOME="$RV_HOME" USER="rv-$RV_UID" LANG=C.UTF-8 TERM=dumb \
       PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
       NMAP_PRIVILEGED=1 SEMGREP_SEND_METRICS=off \
       GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=safe.directory GIT_CONFIG_VALUE_0='*' \
+      ${creds[@]+"${creds[@]}"} \
   bash -lc "$RV_CMD"
