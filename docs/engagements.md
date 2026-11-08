@@ -164,7 +164,8 @@ Ignored, with a warning when you apply the scope:
 
 - IPv6 addresses and networks (IPv6 isn't supported; all IPv6 traffic from engagement commands is dropped).
 - Loopback, link-local (including cloud metadata `169.254.169.254`), `0.0.0.0/8` and multicast. These are never
-  reachable.
+  reachable as targets. (The firewall itself lets a command reach 127.0.0.1 on unprivileged ports, except
+  kali-mcp's 8090, so tools such as gowitness can talk to the browser they start.)
 - Paths outside `/src`.
 - Anything that isn't an IPv4 address, a CIDR or a dotted domain name (for example a single-label name like
   `intranet`).

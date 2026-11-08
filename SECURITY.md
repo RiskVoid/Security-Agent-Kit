@@ -55,8 +55,9 @@ is weaker than described here.
 
 - **Kali tools.** Every command runs as an unprivileged user for that engagement, in a sandbox that sees only its
   own engagement folder and in-scope code (read-only). An nftables firewall lets that user reach only in-scope IPs
-  and domains, plus package and vulnerability-database sites for online engagements. Loopback, link-local and cloud
-  metadata addresses and the kit's own services are always blocked.
+  and domains, plus package and vulnerability-database sites for online engagements. Link-local and cloud metadata
+  addresses and the kit's own services are always blocked. Of loopback, only 127.0.0.1 on unprivileged ports other
+  than kali-mcp's own (8090) is open, so a tool can drive a helper it started (gowitness and its Chromium).
 - **The OpenHands agent container** has no direct internet access. Its traffic goes through an allowlisting egress
   proxy (package registries and vulnerability databases, `egress/allowlist.txt` plus `EGRESS_EXTRA_DOMAINS`) and
   can reach only the kit's model gateway and MCP servers directly. Its terminal and browser can't reach engagement
