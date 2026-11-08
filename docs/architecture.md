@@ -90,7 +90,7 @@ All published ports bind to `127.0.0.1` only:
 | Name | Mounted in | Holds |
 |---|---|---|
 | `PROJECTS_DIR` (host folder) | `/src`, read-only in every container | client code, one folder per repository |
-| `ENGAGEMENTS_DIR` (host folder) | `/work`: read-only in `agent-canvas`, read-write in `kali-mcp`, `worker-mcp`, `findings-mcp` | one folder per engagement, plus `audit.log` (a convenience copy) and `_archive/` |
+| `ENGAGEMENTS_DIR` (host folder) | `/work`: read-only in `agent-canvas`, read-write in `kali-mcp`, `worker-mcp`, `findings-mcp` | one folder per engagement, plus `audit.log` (an informational copy; nothing reads it) and `_archive/` |
 | `openhands-data` | `agent-canvas` | conversations, LLM profiles, agent profiles, MCP settings |
 | `kali-control` | `kali-mcp` at `/control` (root-only) | the authoritative scope, rules, approvals, halt flags, engagement registry and audit log |
 | `litellm-spend` | `redis` | OpenRouter spend counter |

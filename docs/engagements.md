@@ -95,7 +95,7 @@ The agent and tools see it as `/work/<engagement>/`.
 
 ```
 ~/riskvoid/engagements/
-├── audit.log                     convenience copy of the audit log (all engagements)
+├── audit.log                     informational copy of the audit log (all engagements); see below
 ├── _archive/                     archives written by ./rvkit close
 │   ├── acme-2026-11-20261121T163000Z.tar.gz
 │   └── acme-2026-11-20261121T163000Z.tar.gz.sha256
@@ -119,6 +119,11 @@ The agent and tools see it as `/work/<engagement>/`.
     ├── audit.jsonl               after close: this engagement's audit entries
     └── MANIFEST.sha256           after close: SHA-256 of every file
 ```
+
+The top-level `audit.log` is a convenience copy for reading on the host. The worker and findings containers
+can write to this folder, so the copy is not trusted: evidence checks, the activity summary in reports, close-out
+extracts, `./rvkit audit` and the console all read the authoritative log in the Kali control volume
+(`/control/audit.log`), which nothing but the Kali server writes.
 
 Who writes what:
 
