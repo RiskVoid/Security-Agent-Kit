@@ -378,3 +378,4 @@ fieldset.rv-field legend { padding: 0; margin-bottom: 8px; }
   .rv-crumbs > :not(:last-child) { display: none; }
   #new-btn .rv-btn-label { display: none; }
 }
+.rv-muted { color: var(--rv-text-2); }

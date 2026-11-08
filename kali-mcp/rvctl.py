@@ -5,6 +5,7 @@
                                      --expect: refuse (exit 3) if the active scope is no longer that revision.
                                      --stdin: write {"scope": ..., "rules": ...} from stdin to the folder first
   rvctl.py show <eng>                active scope and rules
+  rvctl.py policy <eng> [--json]     effective policy: what is allowed, excluded, not enforced; revision history
   rvctl.py preview <eng>             diff + warnings for {"scope": ..., "rules": ...} on stdin (writes nothing)
   rvctl.py approvals [eng] [--json]  pending approvals (all engagements if none given)
   rvctl.py list [--json]             engagements: scope summary, halt state, pending approvals
@@ -37,6 +38,29 @@ def _opt(a, name):
     return None
 
 
+def _print_policy(p):
+    print("\nAllows:" if p["hosts"] or p["nets"] or p["urls"] or p["paths"] else "\nAllows: nothing yet")
+    for line in core.rvpolicy.describe(p):
+        print("  " + line)
+    ex = p["exclude"]
+    xs = [("*." if e["wildcard"] else "") + e["name"] for e in ex["hosts"]] + ex["nets"] + \
+        [f"{u['scheme']}://{u['host']}:{u['port']}{u['prefix']}" for u in ex["urls"]]
+    if xs:
+        print("Excludes:\n  " + "\n  ".join(xs))
+    r = p["rules"]
+    when = [f"window {':'.join(f'{x:02d}' for x in r['window'][:2])}-{':'.join(f'{x:02d}' for x in r['window'][2:])}"
+            if r["window"] else "", f"dates {r['dates'][0]} to {r['dates'][1]}" if r["dates"] else "",
+            f"days {','.join(r['days'])}" if r["days"] else ""]
+    print(f"Rules: tiers {'/'.join(r['tiers'])}, {r['max_rate']}/s, {r['network']}, execution {r['execution']}"
+          + "".join(f", {w}" for w in when if w) + f" ({r['timezone']})")
+    for s in r["stop_conditions"]:
+        print("Stop condition: " + s)
+    if p["limits"]:
+        print("Not enforced by the kit:\n  - " + "\n  - ".join(p["limits"]))
+    for e in p["errors"]:
+        print("ERROR: " + e)
+
+
 def main(a):
     a = list(a)
     actor = _opt(a, "--actor") or "cli:host"
@@ -58,6 +82,10 @@ def main(a):
             if not new and not d:
                 print(f"{eng}: no changes"); return 0
             print(f"{'New engagement' if new else 'Changes to'} {eng}:\n{d}")
+            sp, rp = (os.path.join(core.WORK, eng, f) for f in ("SCOPE.md", "RULES.md"))
+            p = core.policy_of(scope_text=open(sp).read() if os.path.exists(sp) else "",
+                               rules_text=open(rp).read() if os.path.exists(rp) else "")
+            _print_policy(p)
         if not yes:
             print("\nNot applied. Review the diff, then re-run with --yes."); return 2
         for w in core.sync(eng, expected=expect, texts=texts):
@@ -68,6 +96,19 @@ def main(a):
         print(json.dumps(core.preview(rest[0], d.get("scope", ""), d.get("rules", "")))); return 0
     if cmd == "show":
         print(json.dumps(core.info(rest[0]), indent=1)); return 0
+    if cmd == "policy":
+        eng = rest[0]
+        core.require(eng)
+        p, hist = core.policy_of(eng), core.policy_history(eng)
+        if "--json" in rest:
+            print(json.dumps({"policy": {k: p[k] for k in core.POLICY_KEYS}, "rules": p["rules"],
+                              "version": core.policy_version(eng), "revision": core.revision(eng),
+                              "history": hist})); return 0
+        print(f"{eng}: policy revision {core.policy_version(eng)} ({core.revision(eng)})")
+        _print_policy(p)
+        for h in hist[-10:]:
+            print(f"  r{h['version']}  {h['activated']}  {h['actor']}  {h['revision']}")
+        return 0
     if cmd == "approvals":  # approvals [eng] [--json]: one engagement, or all of them
         as_json = "--json" in rest
         engs = [a for a in rest if a != "--json"][:1] or core.engagements()

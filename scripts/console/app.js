@@ -331,7 +331,7 @@ function paneScope() {
       <label class="rv-field"><span class="rv-field-label">SCOPE.md</span><textarea id="scope-text" class="rv-input" rows="14" spellcheck="false">${esc(d.scope_text)}</textarea></label>
       <label class="rv-field"><span class="rv-field-label">RULES.md</span><textarea id="rules-text" class="rv-input" rows="14" spellcheck="false">${esc(d.rules_text)}</textarea></label>
     </div>
-    <div class="rv-actions"><button id="preview-btn" class="rv-btn">Preview changes</button><button id="apply-btn" class="rv-btn accent" ${p && p.diff ? "" : "disabled"}>Apply</button></div>
+    <div class="rv-actions"><button id="preview-btn" class="rv-btn">Preview changes</button><button id="apply-btn" class="rv-btn accent" ${p && p.diff && !(p.errors || []).length ? "" : "disabled"}>Apply</button></div>
     <div id="preview-out" class="rv-stack">${p ? previewHtml(p) : ""}</div>`;
   const reset = () => { state.preview = null; $("#apply-btn").disabled = true; $("#preview-out").innerHTML = ""; };
   $("#scope-text").addEventListener("input", reset); $("#rules-text").addEventListener("input", reset);
@@ -339,7 +339,7 @@ function paneScope() {
     const r = await act(ev.currentTarget, () => api(`/api/eng/${enc(d.engagement)}/preview`, { scope: $("#scope-text").value, rules: $("#rules-text").value }));
     if (!r) return;
     state.preview = r; d.scope_text = $("#scope-text").value; d.rules_text = $("#rules-text").value;
-    $("#preview-out").innerHTML = previewHtml(r); $("#apply-btn").disabled = !r.diff;
+    $("#preview-out").innerHTML = previewHtml(r); $("#apply-btn").disabled = !r.diff || (r.errors || []).length > 0;
   });
   $("#apply-btn").addEventListener("click", async (ev) => {
     const r = await act(ev.currentTarget, () => api(`/api/eng/${enc(d.engagement)}/apply`, { scope: $("#scope-text").value, rules: $("#rules-text").value, revision: d.info.revision }), "Applied. The firewall now uses the new scope.");
@@ -348,11 +348,21 @@ function paneScope() {
 }
 function previewHtml(p) {
   const lines = (p.diff || "").split("\n").map((l) => `<span class="${l.startsWith("+++") || l.startsWith("---") || l.startsWith("@@") ? "hdr" : l.startsWith("+") ? "add" : l.startsWith("-") ? "del" : ""}">${esc(l)}</span>`).join("\n");
-  return `${p.warnings.length ? `<div class="rv-banner warn"><div class="rv-banner-body"><p class="rv-banner-title">The parser ignored some entries</p><ul>${p.warnings.map((w) => `<li>${esc(w)}</li>`).join("")}</ul></div></div>` : ""}
+  const errs = p.errors || [], ex = p.exclude || { hosts: [], nets: [], urls: [] }, r = p.rules;
+  const excluded = [...ex.hosts.map((x) => (x.wildcard ? "*." : "") + x.name), ...ex.nets, ...ex.urls.map((u) => `${u.scheme}://${u.host}:${u.port}${u.prefix}`)];
+  const when = [r.dates ? `${r.dates[0]} to ${r.dates[1]}` : "", r.days ? r.days.join(", ") : "", r.window ? r.window.map((x, i) => String(x).padStart(2, "0") + (i === 0 || i === 2 ? ":" : i === 1 ? "-" : "")).join("") : ""].filter(Boolean);
+  const list = (items) => `<ul>${items.map((w) => `<li>${esc(w)}</li>`).join("")}</ul>`;
+  return `${errs.length ? `<div class="rv-banner danger"><div class="rv-banner-body"><p class="rv-banner-title">Can't apply: fix these lines first</p>${list(errs)}</div></div>` : ""}
+    ${p.warnings.length ? `<div class="rv-banner warn"><div class="rv-banner-body"><p class="rv-banner-title">Check these</p>${list(p.warnings)}</div></div>` : ""}
     <div class="rv-card"><div class="rv-card-head"><h3>Preview</h3>${p.diff ? tag("changes", "warn") : tag("no changes")}</div><div class="rv-card-body">
       ${p.diff ? `<pre class="rv-pre">${lines}</pre>` : ""}
-      <dl class="rv-kv"><dt>Will allow</dt><dd>${codeChips([...p.scope.nets, ...p.scope.domains, ...p.scope.paths])}</dd>
-      <dt>Tiers</dt><dd>${tierTags(p.rules.tiers)}${p.rules.strict ? " " + tag("strict", "warn") : ""}</dd><dt>Rate / network</dt><dd>${esc(p.rules.max_rate)}/s · ${esc(p.rules.network)}</dd></dl>
+      <dl class="rv-kv"><dt>Will allow</dt><dd>${(p.allows || []).length ? codeChips(p.allows) : "nothing"}</dd>
+      ${excluded.length ? `<dt>Excluded</dt><dd>${codeChips(excluded)}</dd>` : ""}
+      <dt>Tiers</dt><dd>${tierTags(r.tiers)}${r.strict ? " " + tag("strict", "warn") : ""}${r.execution === "controlled" ? " " + tag("controlled execution", "warn") : ""}</dd>
+      <dt>Rate / network</dt><dd>${esc(r.max_rate)}/s · ${esc(r.network)}${r.max_requests ? ` · ${esc(r.max_requests)} requests` : ""}${r.max_commands ? ` · ${esc(r.max_commands)} commands` : ""}</dd>
+      <dt>When</dt><dd>${when.length ? esc(when.join(" · ")) + ` <span class="rv-muted">(${esc(r.timezone)})</span>` : "any time"}</dd>
+      ${r.stop_conditions.length ? `<dt>Stop conditions</dt><dd>${list(r.stop_conditions)}</dd>` : ""}</dl>
+      ${(p.limits || []).length ? `<p class="rv-field-label" style="margin-top:12px">Not enforced by the kit</p>${list(p.limits)}` : ""}
     </div></div>`;
 }
 

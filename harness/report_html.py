@@ -10,6 +10,38 @@ Custom and plain brands (branding.py) swap the name, logo, the primary and accen
 import base64, html, re
 from pathlib import Path
 
+
+def scope_rows(info):
+    """(type, target) rows for the report's scope table, from the effective policy when kali-mcp provides it."""
+    p, sc = info.get("policy"), info["scope"]
+    if not p:
+        return [("Network", n) for n in sc["nets"]] + [("Domain", x) for x in sc["domains"]] + \
+            [("Source code", x) for x in sc["paths"]]
+    ports = lambda x: f" (ports {', '.join(map(str, x['ports']))})" if x.get("ports") else ""
+    rows = [("Subdomains" if h["wildcard"] else "Host",
+             ("*." if h["wildcard"] else "") + h["name"] + ports(h)) for h in p["hosts"]]
+    rows += [("Network", n["cidr"] + ports(n)) for n in p["nets"]]
+    rows += [("URL prefix", f"{u['scheme']}://{u['host']}:{u['port']}{u['prefix']}") for u in p["urls"]]
+    rows += [("Source code", x) for x in p["paths"]]
+    ex = p.get("exclude") or {}
+    rows += [("Excluded", ("*." if x["wildcard"] else "") + x["name"]) for x in ex.get("hosts", [])]
+    rows += [("Excluded", x) for x in ex.get("nets", [])]
+    rows += [("Excluded", f"{u['scheme']}://{u['host']}:{u['port']}{u['prefix']}") for u in ex.get("urls", [])]
+    return rows
+
+
+def time_rule(r):
+    """The testing window, dates and days in words, with the time zone."""
+    parts = []
+    if r.get("dates"):
+        parts.append(f"{r['dates'][0]} to {r['dates'][1]}")
+    if r.get("days"):
+        parts.append(", ".join(r["days"]))
+    if r.get("window"):
+        h1, m1, h2, m2 = r["window"]
+        parts.append(f"{h1:02d}:{m1:02d}-{h2:02d}:{m2:02d}")
+    return (" · ".join(parts) + f" ({r.get('timezone') or 'UTC'})") if parts else "unrestricted"
+
 ASSETS = Path(__file__).resolve().parent / "assets"
 SEVS = ("critical", "high", "medium", "low", "info")
 GRADE = {"critical": ("F", "Critical exposure", "critical"), "high": ("D", "Needs attention", "high"),
@@ -344,9 +376,7 @@ def render(c):
 
     # 03 scope and rules
     sc, r = info["scope"], info["rules"]
-    targets = [["Network", f"<code>{e(n)}</code>"] for n in sc["nets"]] + \
-              [["Domain (incl. subdomains)", f"<code>{e(x)}</code>"] for x in sc["domains"]] + \
-              [["Source code", f"<code>{e(p)}</code>"] for p in sc["paths"]]
+    targets = [[k, f"<code>{e(v)}</code>"] for k, v in scope_rows(info)]
     scope_body = ("<p>Testing was limited to the targets below. The limits were enforced technically: every command ran "
                   "in a per-engagement sandbox whose network access was restricted to these targets, at or below the "
                   "agreed intensity, and every command was recorded in an audit log.</p>" +
@@ -357,7 +387,7 @@ def render(c):
                                                          for t in r["tiers"])],
                       ["Maximum request rate", f"{e(r['max_rate'])} per second"],
                       ["Network access", e(r["network"])],
-                      ["Testing window (UTC)", e(":".join(map(str, r["window"])) if r["window"] else "unrestricted")],
+                      ["Testing window", e(time_rule(r))],
                       ["Testing period", e(c["period"])]]))
 
     # 04 methodology

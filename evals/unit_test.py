@@ -8,6 +8,7 @@ import importlib.util, os, sys, tempfile, unittest
 KIT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path[:0] = [os.path.join(KIT, "kali-mcp"), os.path.join(KIT, "harness"), os.path.join(KIT, "scripts")]
 import core  # noqa: E402
+import policy  # noqa: E402
 import tierconf  # noqa: E402
 import findings_db as db  # noqa: E402
 import webfetch  # noqa: E402
@@ -156,37 +157,108 @@ class LiteLLMConfig(unittest.TestCase):
 
 class Scope(unittest.TestCase):
     def test_parse_scope(self):
-        sc = core.parse_scope("""
-- https://app.example.com/login   # a URL keeps only the host
+        pol = policy.parse_scope("""
+- https://app.example.com/login   # a URL path: request tool only
+- https://www.example.com          # the whole host on 443
 - *.example.io
+- example.io:80,8000-8100
 - 203.0.113.0/28
 - 10.0.0.5:8080
+- !10.0.0.7
+- !admin.example.io
+- !https://www.example.com/admin
 - /src/repo
 - /etc/passwd
 - 127.0.0.1
 - 169.254.169.254
 - ::1
 - not a host!
+- example.org:70000
 """)
-        self.assertEqual(sc["domains"], ["app.example.com", "example.io"])
-        self.assertEqual(sc["nets"], ["203.0.113.0/28", "10.0.0.5/32"])
-        self.assertEqual(sc["paths"], ["/src/repo"])
-        self.assertEqual(len(sc["warnings"]), 5)
+        self.assertEqual([(h["name"], h["wildcard"], h["ports"]) for h in pol["hosts"]],
+                         [("www.example.com", False, [443]), ("example.io", True, None),
+                          ("example.io", False, [80, "8000-8100"])])
+        self.assertEqual([(n["cidr"], n["ports"]) for n in pol["nets"]], [("203.0.113.0/28", None), ("10.0.0.5/32", [8080])])
+        self.assertEqual([(u["host"], u["port"], u["prefix"]) for u in pol["urls"]], [("app.example.com", 443, "/login")])
+        self.assertEqual(pol["exclude"]["nets"], ["10.0.0.7/32"])
+        self.assertEqual(pol["paths"], ["/src/repo"])
+        self.assertEqual(len(pol["errors"]), 7, pol["errors"])  # nothing is silently ignored any more (the 7th: example.io vs *.example.io ports)
+        self.assertIn("IPv6", " ".join(pol["errors"]))
+        self.assertIn("need the same ports", " ".join(policy.parse_scope("- a.test\n- *.a.test:443")["errors"]))
+
+    def test_matching(self):
+        pol = policy.effective("- example.com\n- *.example.io:443\n- !x.example.io\n- 10.0.0.0/24:80\n- !10.0.0.9\n"
+                               "- https://shop.example.com/api/\n- !https://example.com/admin", "")
+        raw = {n: policy.raw_host(pol, n) is not None for n in
+               ("example.com", "www.example.com", "a.example.io", "example.io", "x.example.io", "y.x.example.io",
+                "shop.example.com")}
+        self.assertEqual(raw, {"example.com": False, "www.example.com": False, "a.example.io": True,
+                               "example.io": False, "x.example.io": False, "y.x.example.io": False,
+                               "shop.example.com": False})  # example.com has a URL exclusion: request tool only
+        self.assertTrue(policy.raw_net(pol, "10.0.0.5"))
+        self.assertFalse(policy.raw_net(pol, "10.0.0.9"))
+        urls = {u: policy.check_url(pol, u) is None for u in (
+            "https://shop.example.com/api/x", "https://shop.example.com/apix", "https://shop.example.com/api/../admin",
+            "https://shop.example.com/api%2f..%2fadmin", "https://example.com/admin/x", "https://example.com/ok",
+            "https://a.example.io/", "http://a.example.io/", "http://10.0.0.5/", "http://10.0.0.5:81/",
+            "http://10.0.0.9/", "http://user:pw@example.com/", "ftp://example.com/")}
+        self.assertEqual(urls, {
+            "https://shop.example.com/api/x": True, "https://shop.example.com/apix": False,
+            "https://shop.example.com/api/../admin": False, "https://shop.example.com/api%2f..%2fadmin": False,
+            "https://example.com/admin/x": False, "https://example.com/ok": True, "https://a.example.io/": True,
+            "http://a.example.io/": False, "http://10.0.0.5/": True, "http://10.0.0.5:81/": False,
+            "http://10.0.0.9/": False, "http://user:pw@example.com/": False, "ftp://example.com/": False})
+        self.assertIn("never reachable", policy.check_address(pol, "example.com", "127.0.0.1", policy.ALWAYS_BLOCKED))
+        self.assertIsNone(policy.check_address(pol, "example.com", "93.184.215.14", policy.ALWAYS_BLOCKED))
+
+    def test_dns_args(self):
+        pol = policy.effective("- example.com\n- *.example.io:443\n- !x.example.io\n- https://shop.example.com/api/", "")
+        args = core._dns_args(pol, 20001)
+        self.assertIn("--server=/example.com/127.0.0.11", args)
+        self.assertIn("--address=/*.example.com/", args)       # subdomains of an exact host: NXDOMAIN
+        self.assertIn("--server=/*.example.io/127.0.0.11", args)
+        self.assertIn("--nftset=/example.io/4#inet#rvkit#e20001_h1", args)
+        self.assertIn("--address=/x.example.io/", args)          # exclusion
+        self.assertIn("--address=/shop.example.com/", args)      # request tool only
+        self.assertNotIn("--server=/shop.example.com/127.0.0.11", args)
 
     def test_parse_rules(self):
-        r = core.parse_rules("- Allowed tiers: passive, intrusive\n- Max rate: 20/s\n- Network: offline\n"
-                             "- Worker: private\n- Window: 22:00-06:00 UTC")
-        self.assertEqual((r["tiers"], r["max_rate"], r["network"], r["worker"], r["window"]),
-                         (["passive", "intrusive"], 20, "offline", "private", [22, 0, 6, 0]))
-        self.assertEqual(core.parse_rules("- Allowed tiers: everything")["tiers"], ["passive"])
-        self.assertEqual(core.parse_rules("")["tiers"], ["passive", "active"])
+        r, err = policy.parse_rules("- Allowed tiers: passive, intrusive\n- Max rate: 20/s\n- Network: offline\n"
+                                    "- Worker: private\n- Window: 22:00-06:00 UTC\n- Dates: 2026-11-10 to 2026-11-20\n"
+                                    "- Days: mon-fri\n- Max requests: 500\n- Execution: controlled\n"
+                                    "- Stop condition: errors rise\n- Note: anything")
+        self.assertEqual(err, [])
+        self.assertEqual((r["tiers"], r["max_rate"], r["network"], r["worker"], r["window"], r["timezone"]),
+                         (["passive", "intrusive"], 20, "offline", "private", [22, 0, 6, 0], "UTC"))
+        self.assertEqual((r["dates"], r["days"], r["max_requests"], r["execution"], r["stop_conditions"]),
+                         (["2026-11-10", "2026-11-20"], ["mon", "tue", "wed", "thu", "fri"], 500, "controlled",
+                          ["errors rise"]))
+        for bad in ("- Allowed tiers: everything", "- Speed: fast", "- Do not touch prod", "- Timezone: Mars/Base",
+                    "- Dates: 2026-11-20 to 2026-11-10", "- Window: 25:00-26:00", "- Max rate: lots"):
+            self.assertTrue(policy.parse_rules(bad)[1], bad)
+        self.assertEqual(policy.parse_rules("")[0]["tiers"], ["passive", "active"])
+        self.assertEqual(policy.parse_rules("- Window (UTC): 08:00-18:00")[0]["timezone"], "UTC")
+
+    def test_time(self):
+        import datetime as dt
+        r = policy.parse_rules("- Timezone: Europe/Berlin\n- Window: 08:00-18:00\n- Days: mon-fri\n"
+                               "- Dates: 2026-11-02 to 2026-11-30")[0]
+        at = lambda *a: dt.datetime(*a, tzinfo=dt.timezone.utc)
+        self.assertIsNone(policy.time_refusal(r, at(2026, 11, 9, 10, 0)))          # Monday 11:00 Berlin
+        self.assertIn("window", policy.time_refusal(r, at(2026, 11, 9, 6, 30)))    # 07:30 Berlin
+        self.assertIn("mon, tue", policy.time_refusal(r, at(2026, 11, 8, 10, 0)))  # Sunday
+        self.assertIn("ended", policy.time_refusal(r, at(2026, 12, 1, 10, 0)))
+        self.assertIn("starts", policy.time_refusal(r, at(2026, 11, 1, 10, 0)))
 
     def test_precheck(self):
-        info = {"scope": core.parse_scope("- example.com\n- 10.0.0.0/24"), "infra_domains": ["searxng"]}
-        self.assertEqual(core.precheck("nmap 10.0.0.7 app.example.com", info), [])
-        self.assertEqual(core.precheck("nmap 10.0.1.7 evil.test", info), ["10.0.1.7", "evil.test"])
-        self.assertEqual(core.precheck("grep evil.test notes.txt", info), [])  # not a network tool
-        self.assertEqual(core.precheck("curl http://10.0.0.1/login.php", info), [])
+        pol = policy.effective("- example.com\n- 10.0.0.0/24\n- !10.0.0.66\n- https://shop.example.com/api/", "")
+        info = {"infra_domains": ["searxng"]}
+        self.assertEqual(core.precheck("nmap 10.0.0.7 example.com", info, pol), [])
+        self.assertEqual(core.precheck("nmap 10.0.1.7 evil.test", info, pol), ["10.0.1.7", "evil.test"])
+        self.assertEqual(core.precheck("nmap 10.0.0.66 www.example.com", info, pol), ["10.0.0.66", "www.example.com"])
+        self.assertEqual(core.precheck("curl https://shop.example.com/api/x", info, pol), ["shop.example.com"])
+        self.assertEqual(core.precheck("grep evil.test notes.txt", info, pol), [])  # not a network tool
+        self.assertEqual(core.precheck("curl http://10.0.0.1/login.php", info, pol), [])
 
     def test_names(self):
         self.assertTrue(core._name_ok("acme-2026.11_a"))

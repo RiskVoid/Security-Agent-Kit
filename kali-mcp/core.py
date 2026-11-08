@@ -12,13 +12,14 @@ against mistakes: a script could still send intrusive traffic to in-scope hosts.
 """
 import datetime, difflib, hashlib, ipaddress, json, os, re, shutil, signal, socket, subprocess, time, uuid
 
+import policy as rvpolicy
+
 WORK, CONTROL, HERE = "/work", "/control", os.path.dirname(os.path.abspath(__file__))
 REGISTRY = os.path.join(CONTROL, "registry.json")
 AUDIT = os.path.join(CONTROL, "audit.log")
 UID_BASE, MAX_OUT = 20000, 30_000
 TIERS = ("passive", "active", "intrusive")
-DEFAULT_RULES = {"tiers": ["passive", "active"], "max_rate": 100, "network": "online", "window": None,
-                 "worker": "auto", "strict": False}  # worker: auto (fallback model allowed) | private (worker endpoint only)
+DEFAULT_RULES = rvpolicy.DEFAULT_RULES  # worker: auto (fallback model allowed) | private (worker endpoint only)
 # Never reachable by agent commands, even if a scope entry covers them (loopback, link-local/cloud metadata).
 MCP_PORT = 8090  # server.py listens here; engagement commands must never reach it (they could call run for others)
 # Who is acting, recorded on every audit entry: rvctl sets it from --actor (console:<user> or cli:<user>); commands
@@ -33,7 +34,7 @@ class Conflict(ValueError):
     """The scope or rules changed since the caller read them."""
 
 
-ALWAYS_BLOCKED = ["127.0.0.0/8", "169.254.0.0/16", "0.0.0.0/8", "224.0.0.0/4"]
+ALWAYS_BLOCKED = rvpolicy.ALWAYS_BLOCKED
 
 # ---------------------------------------------------------------- tiers
 # Program lists, subcommand rules, rate flags and strict mode live in tiers.yaml (checked at start-up).
@@ -155,64 +156,19 @@ def require(eng):
     return registry()[eng]
 
 
-def _entries(text):
-    for line in text.splitlines():
-        s = line.strip().lstrip("-* ").split("#")[0].strip()
-        if s:
-            yield s
-
-
-def parse_scope(text):
-    """-> dict(nets=[...], domains=[...], paths=[...], warnings=[...])"""
-    sc = {"nets": [], "domains": [], "paths": [], "warnings": []}
-    for s in _entries(text):
-        if s.startswith("/"):
-            p = os.path.normpath(s)
-            (sc["paths"].append(p) if p.startswith("/src/") or p == "/src"
-             else sc["warnings"].append(f"path outside /src ignored: {s}"))
-            continue
-        host = re.sub(r"^[a-z]+://", "", s.lower())
-        if not re.fullmatch(r"\d{1,3}(\.\d{1,3}){3}/\d{1,2}", host):  # keep a CIDR's prefix; drop a URL's path
-            host = host.split("/")[0]
-        host = host.rsplit(":", 1)[0] if host.count(":") == 1 else host
-        try:
-            net = ipaddress.ip_network(host, strict=False)
-            if net.version == 6:
-                sc["warnings"].append(f"IPv6 not supported yet, ignored: {s}")
-            elif any(net.overlaps(ipaddress.ip_network(b)) for b in ALWAYS_BLOCKED):
-                sc["warnings"].append(f"loopback/link-local/multicast is never reachable, ignored: {s}")
-            else:
-                sc["nets"].append(str(net))
-            continue
-        except ValueError:
-            pass
-        d = host.lstrip("*.").strip(".")
-        if re.fullmatch(r"(?:[a-z0-9-]+\.)+[a-z][a-z0-9-]+", d):
-            sc["domains"].append(d)
-        else:
-            sc["warnings"].append(f"unrecognised scope entry ignored: {s}")
-    return sc
+_entries = rvpolicy.entries
 
 
 def parse_rules(text):
-    r = dict(DEFAULT_RULES, tiers=list(DEFAULT_RULES["tiers"]))
-    for s in _entries(text or ""):
-        k, _, v = s.partition(":")
-        k, v = k.strip().lower(), v.strip().lower()
-        if k.startswith("allowed tier"):
-            r["tiers"] = [t for t in re.split(r"[,\s]+", v) if t in TIERS] or ["passive"]
-        elif k.startswith("max rate"):
-            m = re.search(r"\d+", v); r["max_rate"] = int(m.group()) if m else r["max_rate"]
-        elif k == "network":
-            r["network"] = "offline" if "offline" in v else "online"
-        elif k.startswith("strict"):
-            r["strict"] = v.split()[0] in ("on", "yes", "true") if v else False
-        elif k.startswith("worker"):
-            r["worker"] = "private" if "private" in v else "auto"
-        elif k.startswith("window"):
-            m = re.search(r"(\d{1,2}):(\d{2})\s*-\s*(\d{1,2}):(\d{2})", v)
-            r["window"] = [int(x) for x in m.groups()] if m else None
-    return r
+    """Rules as enforced. An invalid line keeps the default for that rule here; sync refuses to activate it."""
+    return rvpolicy.parse_rules(text)[0]
+
+
+def policy_of(eng=None, scope_text=None, rules_text=None):
+    """The effective policy of the active SCOPE.md/RULES.md (or of the given texts)."""
+    if scope_text is None:
+        scope_text, rules_text = read_ctl(eng, "SCOPE.md"), read_ctl(eng, "RULES.md")
+    return rvpolicy.effective(scope_text, rules_text or "")
 
 
 def read_ctl(eng, name):
@@ -227,11 +183,22 @@ def revision(eng):
     return hashlib.sha256((read_ctl(eng, "SCOPE.md") + "\0" + read_ctl(eng, "RULES.md")).encode()).hexdigest()[:16]
 
 
+POLICY_KEYS = ("hosts", "nets", "urls", "exclude", "paths", "limits", "errors")
+
+
+def policy_version(eng):
+    """Number of the active policy revision (1 = the first applied scope), 0 if none is recorded yet."""
+    d = os.path.join(ctl_dir(eng), "policy")
+    nums = [int(f[:-5]) for f in os.listdir(d) if re.fullmatch(r"\d{4,}\.json", f)] if os.path.isdir(d) else []
+    return max(nums, default=0)
+
+
 def info(eng):
     uid = require(eng)
-    sc, rules = parse_scope(read_ctl(eng, "SCOPE.md")), parse_rules(read_ctl(eng, "RULES.md"))
-    return {"engagement": eng, "uid": uid, "revision": revision(eng),
-            "scope": {k: sc[k] for k in ("nets", "domains", "paths")},
+    pol = policy_of(eng)
+    rules = pol["rules"]
+    return {"engagement": eng, "uid": uid, "revision": revision(eng), "policy_version": policy_version(eng),
+            "scope": rvpolicy.legacy_scope(pol), "policy": {k: pol[k] for k in POLICY_KEYS},
             "rules": rules, "halted": os.path.exists(os.path.join(ctl_dir(eng), "HALT")),
             "infra_domains": infra_domains() if rules["network"] == "online" else []}
 
@@ -262,9 +229,10 @@ def preview(eng, scope_text, rules_text):
     for f, new in (("SCOPE.md", scope_text), ("RULES.md", rules_text)):
         old = read_ctl(eng, f) if eng in registry() else ""
         out += difflib.unified_diff(old.splitlines(), new.splitlines(), f"active/{f}", f"proposed/{f}", lineterm="")
-    sc, rules = parse_scope(scope_text), parse_rules(rules_text)
-    return {"diff": "\n".join(out), "warnings": sc["warnings"], "rules": rules,
-            "scope": {k: sc[k] for k in ("nets", "domains", "paths")}}
+    pol = policy_of(scope_text=scope_text, rules_text=rules_text)
+    return {"diff": "\n".join(out), "errors": pol["errors"], "warnings": pol["warnings"], "limits": pol["limits"],
+            "rules": pol["rules"], "scope": rvpolicy.legacy_scope(pol), "allows": rvpolicy.describe(pol),
+            "exclude": pol["exclude"], "policy_version": policy_version(eng) if eng in registry() else 0}
 
 
 def sync(eng, expected=None, texts=None):
@@ -286,6 +254,11 @@ def sync(eng, expected=None, texts=None):
                     fh.write(str(texts[key]))
     if not os.path.isfile(os.path.join(WORK, eng, "SCOPE.md")):
         raise ValueError(f"/work/{eng}/SCOPE.md not found")
+    rp = os.path.join(WORK, eng, "RULES.md")
+    new = policy_of(scope_text=open(os.path.join(WORK, eng, "SCOPE.md")).read(),
+                    rules_text=open(rp).read() if os.path.exists(rp) else "")
+    if new["errors"]:  # nothing is activated that the kit can't enforce or doesn't understand
+        raise ValueError("not applied, fix these lines first:\n  " + "\n  ".join(new["errors"]))
     os.makedirs(os.path.join(ctl_dir(eng), "approvals"), exist_ok=True)
     for f in ("SCOPE.md", "RULES.md"):
         src = os.path.join(WORK, eng, f)
@@ -302,10 +275,29 @@ def sync(eng, expected=None, texts=None):
         json.dump(reg, open(REGISTRY, "w"), indent=1)
     apply_network()
     _grant(eng, reg[eng])
-    sc = parse_scope(read_ctl(eng, "SCOPE.md"))
-    _audit({"engagement": eng, "event": "scope-sync", "scope": {k: sc[k] for k in ("nets", "domains", "paths")},
-            "rules": parse_rules(read_ctl(eng, "RULES.md")), "before": before, "after": revision(eng)})
-    return sc["warnings"]
+    pol, after = policy_of(eng), revision(eng)
+    version = policy_version(eng)
+    if after != before or not version:  # a new policy revision: keep it, with who activated it
+        version += 1
+        os.makedirs(os.path.join(ctl_dir(eng), "policy"), exist_ok=True)
+        with open(os.path.join(ctl_dir(eng), "policy", f"{version:04d}.json"), "w") as f:
+            json.dump({"version": version, "revision": after, "previous": before, "actor": ACTOR,
+                       "activated": datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds"),
+                       "scope_text": read_ctl(eng, "SCOPE.md"), "rules_text": read_ctl(eng, "RULES.md"),
+                       "policy": {k: pol[k] for k in POLICY_KEYS}, "rules": pol["rules"]}, f, indent=1)
+    _audit({"engagement": eng, "event": "scope-sync", "scope": rvpolicy.legacy_scope(pol),
+            "rules": pol["rules"], "before": before, "after": after, "policy_version": version})
+    return pol["warnings"]
+
+
+def policy_history(eng):
+    d = os.path.join(ctl_dir(eng), "policy")
+    out = []
+    for f in sorted(os.listdir(d)) if os.path.isdir(d) else []:
+        if re.fullmatch(r"\d{4,}\.json", f):
+            p = json.load(open(os.path.join(d, f)))
+            out.append({k: p.get(k) for k in ("version", "revision", "previous", "actor", "activated")})
+    return out
 
 
 def _grant(eng, uid):
@@ -360,18 +352,31 @@ def apply_network():
     for eng, uid in sorted(reg.items(), key=lambda x: x[1]):
         _ensure_user(uid)
         i = info(eng)
+        pol = policy_of(eng)
         dns_ip = f"127.0.1.{uid - UID_BASE}"
-        nets = i["scope"]["nets"]
-        sets.append(f"  set e{uid}_dns4 {{ type ipv4_addr; flags timeout; timeout 2h; }}")
+        # Raw commands reach: nets (by address, optionally ports) and host names (addresses added when the
+        # engagement's resolver answers, one set per port list). Exclusions and hosts with URL-level rules (only
+        # the request tool can enforce a path) are dropped first.
+        drop = pol["exclude"]["nets"] + [u + "/32" for u in rvpolicy.url_hosts(pol) if rvpolicy._is_ip(u)]
+        allnets = [n["cidr"] for n in pol["nets"] if n["ports"] is None]
         sets.append(f"  set e{uid}_net4 {{ type ipv4_addr; flags interval; auto-merge; "
-                    + (f"elements = {{ {', '.join(nets)} }}; " if nets else "") + "}")
+                    + (f"elements = {{ {', '.join(allnets)} }}; " if allnets else "") + "}")
         # Loopback 127.0.0.1 on unprivileged ports, except this MCP server's own port: tools that start a helper
         # and talk to it over localhost (gowitness drives Chromium through its DevTools port) need it. Docker's
         # DNS (127.0.0.11) and the other engagements' resolvers (127.0.1.x) stay blocked.
         rules = [f"    ip daddr {dns_ip} meta l4proto {{ tcp, udp }} th dport 53 accept",
                  f"    oifname \"lo\" ip daddr 127.0.0.1 tcp dport {{ 1024-{MCP_PORT - 1}, {MCP_PORT + 1}-65535 }} accept",
-                 f"    ip daddr {{ {', '.join(blocked)} }} counter drop",
-                 f"    ip daddr @e{uid}_net4 accept", f"    ip daddr @e{uid}_dns4 accept"]
+                 f"    ip daddr {{ {', '.join(blocked)} }} counter drop"]
+        if drop:
+            rules.append(f"    ip daddr {{ {', '.join(drop)} }} counter drop")
+        rules.append(f"    ip daddr @e{uid}_net4 accept")
+        for n in pol["nets"]:
+            if n["ports"] is not None:
+                rules.append(f"    ip daddr {n['cidr']} meta l4proto {{ tcp, udp }} th dport {{ {_nft_ports(n['ports'])} }} accept")
+        for k, ports in enumerate(_host_groups(pol)):
+            sets.append(f"  set e{uid}_h{k} {{ type ipv4_addr; flags timeout; timeout 2h; }}")
+            rules.append(f"    ip daddr @e{uid}_h{k} " + (f"meta l4proto {{ tcp, udp }} th dport {{ {_nft_ports(list(ports))} }} "
+                                                         if ports else "") + "accept")
         if i["rules"]["network"] == "online":
             rules.append("    ip daddr @infra4 tcp dport { 80, 443 } accept")
         chains.append(f"  chain e{uid} {{\n" + "\n".join(rules) + "\n    counter drop\n  }")
@@ -398,12 +403,50 @@ def apply_network():
         args = ["dnsmasq", "-u", "root", "--conf-file=/dev/null", f"--listen-address=127.0.1.{uid - UID_BASE}",
                 "--bind-interfaces", "--port=53", "--no-resolv", "--no-hosts", "--filter-AAAA",
                 "--cache-size=0", f"--pid-file=/run/rvkit-dns-{uid}.pid"]
-        for d in i["scope"]["domains"]:
-            args += [f"--server=/{d}/127.0.0.11", f"--nftset=/{d}/4#inet#rvkit#e{uid}_dns4"]
+        args += _dns_args(policy_of(eng), uid)
         for d in i["infra_domains"]:
             args += [f"--server=/{d}/127.0.0.11", f"--nftset=/{d}/4#inet#rvkit#infra4"]
         # daemonises; refuses every name not listed. DEVNULL: a daemon holding a pipe would block run().
         subprocess.run(args, check=True, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+
+def _nft_ports(ports):
+    return ", ".join(str(p) for p in ports)
+
+
+def _host_groups(pol):
+    """Distinct port lists of the raw-reachable host entries, in a stable order (None = every port)."""
+    out = []
+    for h in pol["hosts"]:
+        key = tuple(h["ports"]) if h["ports"] else None
+        if key not in out:
+            out.append(key)
+    return out
+
+
+def _dns_args(pol, uid):
+    """dnsmasq options for one engagement's resolver. A name resolves only when a host entry covers it; the
+    answer's addresses go into the nft set for that entry's ports. dnsmasq matches the longest listed domain:
+    '/name/' covers the name and its subdomains, '/*.name/' only the subdomains, and an --address with no
+    address answers NXDOMAIN. So an exact entry gets '/*.name/' refused unless a wildcard covers its subdomains,
+    and exclusions and hosts that only the request tool may reach are refused outright."""
+    groups = _host_groups(pol)
+    args, wild = [], [h["name"] for h in pol["hosts"] if h["wildcard"]]
+    for h in pol["hosts"]:
+        pattern = ("*." if h["wildcard"] else "") + h["name"]
+        k = groups.index(tuple(h["ports"]) if h["ports"] else None)
+        # --nftset has no '*.' form: '/name/' matches the subdomains too, and the apex never gets an answer
+        # (no --server covers it) unless it is listed itself; policy.py refuses the two with different ports.
+        nft = f"--nftset=/{h['name']}/4#inet#rvkit#e{uid}_h{k}"
+        args += [f"--server=/{pattern}/127.0.0.11"] + ([nft] if nft not in args else [])
+        if not h["wildcard"] and not any(h["name"] == w or h["name"].endswith("." + w) for w in wild):
+            args.append(f"--address=/*.{h['name']}/")
+    for e in pol["exclude"]["hosts"]:
+        args.append(f"--address=/{'*.' if e['wildcard'] else ''}{e['name']}/")
+    for name in rvpolicy.url_hosts(pol):
+        if not rvpolicy._is_ip(name):
+            args.append(f"--address=/{name}/")
+    return args
 
 
 # ---------------------------------------------------------------- approvals, halt, window, regex pre-check
@@ -476,15 +519,6 @@ def halt(eng, on):
     _audit({"engagement": eng, "event": "halt" if on else "resume"})
 
 
-def _in_window(window):
-    if not window:
-        return True
-    h1, m1, h2, m2 = window
-    now = datetime.datetime.now(datetime.timezone.utc)
-    cur, a, b = now.hour * 60 + now.minute, h1 * 60 + m1, h2 * 60 + m2
-    return a <= cur < b if a <= b else (cur >= a or cur < b)
-
-
 # a host never starts inside a path, a word or a dotted name: "10.0.0.1/login.php" yields only the IP
 HOST_RE = re.compile(r"(?<![\w./-])(?:https?://)?((?:\d{1,3}\.){3}\d{1,3}(?:/\d{1,2})?|(?:[a-z0-9-]+\.)+[a-z]{2,})",
                      re.I)
@@ -492,21 +526,23 @@ FILE_EXT = re.compile(r"\.(txt|json|jsonl|md|py|js|ts|yml|yaml|xml|html|log|csv|
                       r"gz|zip|tar|pem|key|crt|db|sqlite|nmap|gnmap|xsl)$", re.I)
 
 
-def precheck(command, info_):
+def precheck(command, info_, pol=None):
     """Early, readable refusal for obvious out-of-scope targets in network-tool commands. The firewall is the
-    real enforcement; this only looks at segments that run network tools (no false positives on grep/python)."""
-    sc, bad = info_["scope"], []
+    real enforcement; this only looks at segments that run network tools (no false positives on grep/python).
+    Excluded hosts, and hosts only the request tool may reach, count as out of scope here."""
+    pol = pol or info_.get("_policy") or policy_of(info_["engagement"])
+    infra, bad = info_.get("infra_domains", []), []
     for prog, seg in _segments(command):
         if prog not in ACTIVE and prog not in INTRUSIVE:
             continue
         for tok in set(HOST_RE.findall(seg)):
             t = tok.lower()
-            if FILE_EXT.search(t) or any(t == d or t.endswith("." + d) for d in sc["domains"] + info_["infra_domains"]):
+            if FILE_EXT.search(t) or any(t == d or t.endswith("." + d) for d in infra):
                 continue
-            try:
-                ok = any(ipaddress.ip_network(t, strict=False).subnet_of(ipaddress.ip_network(n)) for n in sc["nets"])
-            except ValueError:
-                ok = False
+            if re.fullmatch(r"[\d./]+", t):
+                ok = rvpolicy.raw_net(pol, t) is not None
+            else:
+                ok = rvpolicy.raw_host(pol, t) is not None
             if not ok:
                 bad.append(t)
     return sorted(set(bad))
@@ -645,8 +681,9 @@ def run(command, eng, timeout_s=600, approval_id=None):
 
     if i["halted"]:
         return refuse("engagement is halted (./rvkit resume <engagement> on the host)")
-    if not _in_window(rules["window"]):
-        return refuse("outside the testing window in RULES.md (UTC)")
+    late = rvpolicy.time_refusal(rules)
+    if late:
+        return refuse(late + " (RULES.md)")
     tier = classify(command, rules.get("strict", False))
     entry["tier"] = tier
     if tier not in rules["tiers"]:

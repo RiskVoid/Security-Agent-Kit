@@ -18,10 +18,18 @@ def list_engagements() -> str:
     for e in core.engagements():
         i = core.info(e)
         r = i["rules"]
-        out.append(f"## {e}{'  (HALTED)' if i['halted'] else ''}\n"
-                   f"scope: nets={i['scope']['nets']} domains={i['scope']['domains']} code={i['scope']['paths']}\n"
-                   f"rules: tiers={r['tiers']} max_rate={r['max_rate']}/s network={r['network']}"
-                   + (" strict_tiers=on" if r.get("strict") else "") + (f" window_utc={r['window']}" if r["window"] else ""))
+        p = i["policy"]
+        late = core.rvpolicy.time_refusal(r)
+        out.append(f"## {e}{'  (HALTED)' if i['halted'] else ''}  policy r{i['policy_version']}\n"
+                   f"scope: {'; '.join(core.rvpolicy.describe(p)) or 'nothing'}\n"
+                   + (f"excluded: {json.dumps(p['exclude'])}\n" if any(p['exclude'].values()) else "")
+                   + f"rules: tiers={r['tiers']} max_rate={r['max_rate']}/s network={r['network']} "
+                   f"execution={r['execution']}" + (" strict_tiers=on" if r.get("strict") else "")
+                   + (f" window={r['window']} timezone={r['timezone']}" if r["window"] else "")
+                   + (f" dates={r['dates']}" if r["dates"] else "") + (f" days={r['days']}" if r["days"] else "")
+                   + (f"\nNOT NOW: {late}" if late else "")
+                   + "".join(f"\nstop condition (stop and tell the user when it happens): {s}" for s in r["stop_conditions"])
+                   + "".join(f"\nlimit: {x}" for x in p["limits"]))
     return "\n".join(out) or "no engagements; the user creates them on the host with ./rvkit engagement"
 
 

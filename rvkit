@@ -178,15 +178,24 @@ eng_dir() { printf '%s/%s' "$(expand "$(envget ENGAGEMENTS_DIR)")" "$1"; }
 write_engagement() { # write_engagement <name> <client> <tiers> <rate> <network> <private:y|n> <target>...
   local name="$1" client="$2" tiers="$3" rate="$4" network="$5" private="$6" dir; shift 6
   dir="$(eng_dir "$name")"; mkdir -p "$dir/report"
-  { echo "# Authorised scope ($(date +%F)). One host, domain, CIDR, or /src/<repo> path per line."
-    echo "# *.example.com covers subdomains. Change it here, then run: ./rvkit scope $name"
+  { echo "# Authorised scope ($(date +%F)). One entry per line: app.example.com (that host), *.example.com"
+    echo "# (its subdomains), host:443,8443 (those ports), 10.0.0.0/24, https://app.example.com/api/ (only that"
+    echo "# path, through the request tool), !admin.example.com (excluded), /src/<repo>."
+    echo "# Change it here, then run: ./rvkit scope $name   (./rvkit policy $name shows what it allows)"
     for t in "$@"; do echo "- $t"; done; } > "$dir/SCOPE.md"
   [ -f "$dir/RULES.md" ] || {
     echo "# Rules of engagement for $name. Change here, then run: ./rvkit scope $name"
     echo "- Allowed tiers: $tiers"
     echo "- Max rate: $rate"
     echo "- Network: $network"
-    echo "# - Window (UTC): 08:00-18:00"
+    echo "# - Timezone: UTC                 (Window, Dates and Days use it; e.g. Europe/Berlin)"
+    echo "# - Window: 08:00-18:00"
+    echo "# - Dates: $(date +%F) to $(date +%F)"
+    echo "# - Days: mon-fri"
+    echo "# - Max requests: 5000            (request tool budget, whole engagement)"
+    echo "# - Max commands: 500             (run budget, whole engagement)"
+    echo "# - Execution: controlled         (every network command that isn't a known tool needs an approval)"
+    echo "# - Stop condition: the site returns errors or slows down"
     echo "# - Strict tiers: on       (scripts and interpreters, and curl/wget sending data, count as intrusive)"
     if [ "$private" = y ]; then echo "- Worker model: private"
     else echo "# - Worker model: private      (never use the OpenRouter fallback model for this engagement's tool work)"; fi
@@ -567,7 +576,7 @@ cmd_worker() {
 }
 
 # ---------------------------------------------------------------- install / completion
-COMMANDS="setup up down update console status doctor logs connect worker planner budget test key openhands new engagement eng quickstart watch scope show approvals approve deny halt resume audit report close delete lab bench install completion help"
+COMMANDS="setup up down update console status doctor logs connect worker planner budget test key openhands new engagement eng quickstart watch scope show policy finding approvals approve deny halt resume audit report close delete lab bench install completion help"
 ENG_SUB="list new show scope approvals approve deny halt resume audit report close delete"
 cmd_install() {
   local dir="${1:-$HOME/.local/bin}"
@@ -590,7 +599,7 @@ _rvkit() {
     eng) COMPREPLY=( \$(compgen -W "$ENG_SUB" -- "\$cur") ) ;;
     worker) COMPREPLY=( \$(compgen -W "show colab local api openrouter fallback" -- "\$cur") ) ;;
     lab) COMPREPLY=( \$(compgen -W "up down status" -- "\$cur") ) ;;
-    show|scope|approvals|approve|deny|halt|resume|audit|report|close|delete)
+    show|policy|scope|approvals|approve|deny|halt|resume|audit|report|close|delete)
       engs="\$(ls "\$(grep -E '^ENGAGEMENTS_DIR=' "$KIT/.env" 2>/dev/null | cut -d= -f2- | sed "s|^~|\$HOME|")" 2>/dev/null | grep -v '^_')"
       COMPREPLY=( \$(compgen -W "\$engs" -- "\$cur") ) ;;
   esac
@@ -604,7 +613,7 @@ EOF
       echo "complete -c rvkit -n '__fish_seen_subcommand_from eng' -a '$ENG_SUB'"
       echo "complete -c rvkit -n '__fish_seen_subcommand_from worker' -a 'show colab local api openrouter fallback'"
       echo "complete -c rvkit -n '__fish_seen_subcommand_from lab' -a 'up down status'"
-      echo "complete -c rvkit -n '__fish_seen_subcommand_from show scope approvals approve deny halt resume audit report close delete' -a \"(ls (grep -E '^ENGAGEMENTS_DIR=' $KIT/.env | cut -d= -f2- | string replace -r '^~' \$HOME) 2>/dev/null | string match -v '_*')\""
+      echo "complete -c rvkit -n '__fish_seen_subcommand_from show policy scope approvals approve deny halt resume audit report close delete' -a \"(ls (grep -E '^ENGAGEMENTS_DIR=' $KIT/.env | cut -d= -f2- | string replace -r '^~' \$HOME) 2>/dev/null | string match -v '_*')\""
       ;;
     *) die "usage: ./rvkit completion bash|zsh|fish" ;;
   esac
@@ -675,6 +684,7 @@ ${B}Engagements${N}  (also as: rvkit eng <command>)
   approvals [eng] | approve|deny <eng> <id>   list / decide approvals
   scope <eng> [--yes]           apply edits to SCOPE.md / RULES.md (shows the diff first)
   show <eng>                    active scope and rules
+  policy <eng> [--json]         what the scope allows and excludes, what isn't enforced, revision history
   halt|resume <eng>             kill running commands and block new ones / allow again
   audit [eng] [n]               last n audit-log entries
   finding <eng> <F-id> k=v...   change a finding: status=, severity=, notes=, title=, duplicate_of= (audited)
@@ -783,6 +793,7 @@ for k, b in p.items(): print("%s: spent $%.4f in the current 24 h period" % (k, 
     need_env; [ $# -ge 1 ] || die "usage: ./rvkit scope <engagement> [--yes]   (apply edits to SCOPE.md / RULES.md)"
     kctl sync "$@" || true ;;
   show)       need_env; [ $# -ge 1 ] || die "usage: ./rvkit show <engagement>"; kctl show "$1" ;;
+  policy)     need_env; [ $# -ge 1 ] || die "usage: ./rvkit policy <engagement> [--json]"; kctl policy "$@" ;;
   approvals)  need_env; kctl approvals "$@" ;;
   approve|deny)
     need_env; [ $# -ge 2 ] || die "usage: ./rvkit $cmd <engagement> <approval-id>"; kctl "$cmd" "$1" "$2" ;;
