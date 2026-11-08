@@ -36,7 +36,7 @@ reach() { run "curl -s -o /dev/null -m 8 -w code=%{http_code} $1 || echo BLOCKED
 
 DIR="$(grep -E '^ENGAGEMENTS_DIR=' .env | cut -d= -f2- | sed "s|^~|$HOME|")"
 ctl halt "$ENG" >/dev/null 2>&1; ctl close "$ENG" >/dev/null 2>&1; ctl delete "$ENG" --force >/dev/null 2>&1
-rm -rf "$DIR/$ENG" "$DIR"/_deleted-"$ENG"-* 2>/dev/null
+rm -rf "${DIR:?}/${ENG:?}" "$DIR"/_deleted-"$ENG"-* 2>/dev/null
 mkdir -p "$DIR/$ENG"; : > "$DIR/$ENG/SCOPE.md"
 
 SCOPE='- example.com
@@ -134,6 +134,6 @@ check "request budget enforced"                   'request budget is used up'   
 setscope "$SCOPE" "$RULES" >/dev/null
 
 ctl halt "$ENG" >/dev/null 2>&1; ctl close "$ENG" >/dev/null 2>&1; ctl delete "$ENG" --force >/dev/null 2>&1
-rm -rf "$DIR/$ENG" "$DIR"/_deleted-"$ENG"-* "$DIR"/_archive/"$ENG"* 2>/dev/null
+rm -rf "${DIR:?}/${ENG:?}" "$DIR"/_deleted-"$ENG"-* "$DIR"/_archive/"$ENG"* 2>/dev/null
 echo; echo "policy test: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]
