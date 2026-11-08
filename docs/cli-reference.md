@@ -374,6 +374,16 @@ each refusal with its reason, approvals, halts, scope changes and close-out, and
 details. Each entry names its actor: `cli:<login>` for `./rvkit`, `console:<login>` for the console, `agent:…` for
 the agent.
 
+### policy
+
+```sh
+./rvkit policy <engagement> [--json]
+```
+
+What the active scope and rules allow and exclude, the rules in force (with the time zone), stop conditions, what
+the kit doesn't enforce, and the policy revision history (number, time, who applied it, digest). `--json` prints
+the effective policy for scripts.
+
 ### finding
 
 ```sh

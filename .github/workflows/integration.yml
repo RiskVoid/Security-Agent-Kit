@@ -73,6 +73,8 @@ jobs:
         run: bash evals/ci_prepare.sh
       - name: Policy (scope, isolation, tiers, approvals, halt)
         run: bash evals/phase3_policy_test.sh
+      - name: Policy revisions and typed actions (DNS, ports, exclusions, URL limits, bound approvals, budgets)
+        run: bash evals/policy_test.sh
       - name: Console (sign-in, CSRF, read API)
         run: bash evals/console_test.sh
       - name: Console contract (validation, conflicts, audit attribution, live stream, isolation)

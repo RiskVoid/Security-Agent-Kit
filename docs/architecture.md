@@ -170,6 +170,27 @@ overwriting. Changes go into the authoritative audit log with actor and revision
 for changes made in `findings-mcp`). `findings.db` is migrated in place (`PRAGMA user_version`); a database from a
 newer kit is refused rather than written with an older schema.
 
+### Policy revisions and bound approvals
+
+`kali-mcp/policy.py` turns `SCOPE.md` and `RULES.md` into the **effective policy**: exact hosts, wildcards
+(subdomains only), ports, addresses, URL path limits, exclusions, source paths, and the rules (tiers, rate, time
+zone, window, dates, days, budgets, execution profile, stop conditions). Lines it can't enforce or doesn't
+understand are errors and stop activation; what the kit doesn't enforce is listed with the policy. Each activation
+is stored as a numbered revision in the control volume with the texts, the effective policy and the actor.
+
+The policy is applied in three places: the nftables chain and the per-engagement dnsmasq resolver (addresses,
+ports, names, exclusions) for every sandboxed command; the pre-check for readable refusals; and the request tool
+(`actions.http_request`), which alone can enforce URL paths and therefore alone reaches hosts that have them.
+
+An approval stores the action's digest (for a command: its text, the SHA-256 of the programs it runs and of the
+input files it names; for a request: method, URL, headers and body digest), the policy revision, who asked (and
+from which worker task) and who decided. It is consumed once with an exclusive-create marker, so two concurrent
+calls can't both use it. A policy change makes pending and unused approvals stale.
+
+Budgets (`Max requests`, `Max commands`) are counted in the control volume under a file lock, so the planner,
+every worker task and the console share them. `Max parallel` limits concurrent network commands and divides
+`Max rate` between them; the request tool spaces its requests to `Max rate`.
+
 `SCOPE.md` and `RULES.md` in the engagement folder are what you edit. They take effect only when you run
 `./rvkit scope <engagement> --yes`, which copies them into `/control` and rebuilds the firewall. So an agent that
 edits them changes nothing. Inside the sandbox, the files are replaced by the read-only active copies. See
@@ -281,8 +302,12 @@ searxng/settings.yml        search engine settings
 prompts/                    planner.md (planner persona and method), local.md (local-only additions)
 scripts/                    openhands_config.py (OpenHands API setup), render_litellm.py
 kali-mcp/
-  server.py                 MCP tools: list_engagements, engagement_info, all_scopes, run, evidence_provenance, …
-  core.py                   policy: scope parsing, tiers, rate caps, approvals, halt, firewall, DNS, audit, close-out
+  server.py                 MCP tools: list_engagements, engagement_info, all_scopes, run, http_request, analyze_source, …
+  policy.py                 SCOPE.md/RULES.md -> effective policy: hosts, wildcards, ports, exclusions, URL limits,
+                            time rules, budgets, errors and what is not enforced (pure, unit-tested)
+  actions.py                typed actions: http_request (sent by kali-mcp) and analyze_source (no network)
+  core.py                   enforcement: tiers, rate caps, policy revisions, bound approvals, budgets, halt,
+                            firewall, DNS, audit, close-out
   tiers.yaml, tierconf.py   tool tiers, subcommand rules, rate flags, strict mode; and their loader and checks
   rvctl.py                  admin CLI behind ./rvkit (sync, approve, halt, audit, close, …)
   rv-sandbox.sh             per-command sandbox (mount namespace, unprivileged user)

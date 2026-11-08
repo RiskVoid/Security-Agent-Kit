@@ -140,38 +140,58 @@ See [findings-and-reports.md](findings-and-reports.md) for findings, evidence an
 
 ## SCOPE.md
 
-One target per line. A leading `-` or `*` is ignored, and so is anything after `#`.
+One entry per line. A leading `- ` or `* ` bullet is ignored, and so is anything after `#`.
 
 ```markdown
-# Authorised scope (2026-11-07). One host, domain, CIDR, or /src/<repo> path per line.
-- app.acme.com
-- *.acme.io                     # all subdomains of acme.io
+# Authorised scope (2026-11-07)
+- app.acme.com                       # that host only
+- *.acme.io                          # the subdomains of acme.io (not acme.io itself)
+- api.acme.com:443,8443              # that host, those ports only
 - 203.0.113.0/28
-- 198.51.100.7
-- https://portal.acme.com:8443/login   # read as portal.acme.com
+- 198.51.100.7:22,80
+- https://portal.acme.com:8443       # portal.acme.com on port 8443
+- https://shop.acme.com/api/         # only URLs under /api/ on that host (request tool only)
+- !admin.acme.io                     # excluded, with its subdomains
+- !203.0.113.9
+- !https://app.acme.com/admin        # that path excluded on app.acme.com
 - /src/acme-webshop
 ```
 
 | Entry | Meaning |
 |---|---|
-| `app.acme.com` | That domain **and all its subdomains**. You can't limit scope to one exact host name yet. |
-| `*.acme.io` | The same as `acme.io`: the domain and its subdomains. |
+| `app.acme.com` | That host only, every port. Its subdomains are **not** in scope: list them, or use a wildcard. |
+| `*.acme.io` | The subdomains of `acme.io`, at any depth. `acme.io` itself only if you list it too. |
+| `host:443,8443`, `host:8000-8100` | Only those ports (TCP and UDP). Works for host names, wildcards, addresses and CIDRs. |
 | `203.0.113.0/28`, `198.51.100.7` | IPv4 networks and addresses. A host address inside a CIDR is fine (`10.0.0.5/24` becomes `10.0.0.0/24`). |
-| `https://host:8443/path` | The scheme, port and path are dropped: only the host counts. Scope is per host, not per port or URL. |
+| `https://host` or `https://host:8443` | The host on the URL's port (443 for https, 80 for http when none is given). |
+| `https://host/path/` | Only URLs under that path, on that host and port. A path can't be enforced for arbitrary commands, so such a host is reachable **only through the request tool** (`http_request`), never through `run`. |
+| `!entry` | Excluded, whatever else the scope says: a name (with its subdomains), `*.name` (the subdomains only), an address or CIDR, or a URL path. An excluded URL path makes its host request-tool only, like a path limit. |
 | `/src/<repo>` | Client code the tools may read (read-only). Code not listed here is invisible to engagement commands. |
 
-Ignored, with a warning when you apply the scope:
+**Lines the kit can't enforce or doesn't understand stop the scope from being applied**, with the reason for each
+line, instead of being ignored:
 
-- IPv6 addresses and networks (IPv6 isn't supported; all IPv6 traffic from engagement commands is dropped).
+- IPv6 addresses and networks. Engagement commands have no IPv6 route and DNS answers carry no IPv6 addresses.
 - Loopback, link-local (including cloud metadata `169.254.169.254`), `0.0.0.0/8` and multicast. These are never
   reachable as targets. (The firewall itself lets a command reach 127.0.0.1 on unprivileged ports, except
   kali-mcp's 8090, so tools such as gowitness can talk to the browser they start.)
-- Paths outside `/src`.
-- Anything that isn't an IPv4 address, a CIDR or a dotted domain name (for example a single-label name like
-  `intranet`).
+- Paths outside `/src`, invalid ports, credentials or a query in a URL entry.
+- `acme.io` and `*.acme.io` with different ports: both get their addresses from the same DNS rule, so the firewall
+  can't keep their ports apart. Give them the same ports.
+- Anything that isn't an address, a CIDR, a dotted host name or one of the forms above (for example a single-label
+  name like `intranet`).
 
-Domain names are resolved through a per-engagement DNS server that answers only for in-scope domains (and, for
-online engagements, the infrastructure domains). Their addresses become reachable once resolved.
+Host names are resolved through a per-engagement DNS server that answers only for in-scope names (and, for online
+engagements, the infrastructure domains). Their addresses become reachable, on the listed ports, once resolved.
+
+**What the kit doesn't enforce** is listed every time you preview or apply a scope (and by `./rvkit policy <eng>`),
+for example: an excluded name that shares an IP address with an in-scope host can still be reached there by a tool
+that sets the `Host` header itself (exclude the address too if that matters), and stop conditions are instructions,
+not something the kit detects.
+
+**Changed in this version:** a plain host name used to cover its subdomains and every port, a URL's port and path
+were ignored, and unrecognised lines were skipped with a warning. Check older scopes with `./rvkit policy <eng>`
+and add `*.` entries where you meant subdomains.
 
 ---
 
@@ -182,22 +202,41 @@ online engagements, the infrastructure domains). Their addresses become reachabl
 - Allowed tiers: passive, active
 - Max rate: 100
 - Network: online
-# - Window (UTC): 08:00-18:00
+- Timezone: Europe/Berlin
+- Window: 08:00-18:00
+- Dates: 2026-11-10 to 2026-11-21
+- Days: mon-fri
+- Max requests: 5000
+- Max commands: 500
+- Stop condition: the site returns errors or slows down
+# - Execution: controlled
 # - Strict tiers: on
 # - Worker model: private
 ```
 
 | Rule | Values | Default (rule missing) |
 |---|---|---|
-| `Allowed tiers:` | any of `passive`, `active`, `intrusive`, comma-separated | `passive, active` (a line with no valid tier means `passive` only) |
-| `Max rate:` | requests or packets per second, a whole number | `100` |
+| `Allowed tiers:` | any of `passive`, `active`, `intrusive`, comma-separated | `passive, active` |
+| `Max rate:` | requests or packets per second, 1 to 100000 | `100` |
 | `Network:` | `online` or `offline` | `online` |
-| `Window (UTC):` | `HH:MM-HH:MM`, in UTC. An overnight window such as `22:00-06:00` works | no window: any time |
-| `Strict tiers:` | `on`, or anything else for off | off |
-| `Worker model:` | `private`, or anything else for the default | not private |
+| `Timezone:` | an IANA name such as `Europe/Berlin`, or `UTC`. `Window`, `Dates` and `Days` use it | `UTC` |
+| `Window:` | `HH:MM-HH:MM`; an overnight window such as `22:00-06:00` works. `Window (UTC):` from older files still works | any time |
+| `Dates:` | `YYYY-MM-DD to YYYY-MM-DD`, both days included | no date limit |
+| `Days:` | `mon-fri`, `mon,wed,fri`, ... | every day |
+| `Max requests:` | requests through the request tool, for the whole engagement (redirects count) | no budget |
+| `Max commands:` | commands through `run` and source analysis, for the whole engagement | no budget |
+| `Max parallel:` | network commands running at once (1 to 16); each gets `Max rate` divided by this | `2` |
+| `Redirects:` | `in-scope` (the request tool follows redirects that stay in scope) or `none` | `in-scope` |
+| `Execution:` | `standard` or `controlled` ([below](#controlled-execution)) | `standard` |
+| `Approval expiry:` | `1h` to `168h` | `24h` |
+| `Strict tiers:` | `on` or `off` | `off` |
+| `Worker model:` | `private` or `auto` | `auto` |
+| `Stop condition:` | free text, one per line: shown to the agent with the rules, kept in each policy revision | none |
+| `Note:` | free text kept with the rules | none |
 
 Lines starting with `#` are comments, so remove the `#` to turn on a rule. Rule names are matched without regard to
-case.
+case. **An unknown rule, a line that isn't `Key: value` or an invalid value stops the rules from being applied**
+(free text goes after `Note:` or `Stop condition:`).
 
 **Worker model: private** means the worker's tool work for this engagement always uses the `private-llm` model: the
 worker endpoint only, never the OpenRouter fallback, even when you have turned the fallback on. See
@@ -210,17 +249,22 @@ worker endpoint only, never the OpenRouter fallback, even when you have turned t
 Edit `SCOPE.md` or `RULES.md` in the engagement folder, then:
 
 ```sh
-./rvkit scope acme-2026-11          # shows the diff against the active copy; changes nothing
+./rvkit scope acme-2026-11          # the diff, what the policy allows and excludes, what it doesn't enforce
 ./rvkit scope acme-2026-11 --yes    # applies it
+./rvkit policy acme-2026-11         # the active policy and its revision history
 ```
 
 **Editing the files alone has no effect.** The active scope and rules are a copy kept in the Kali container's
 root-only control volume (`kali-control`), together with approvals, halt flags and the audit log. Only `./rvkit`
-updates that copy, so the agent can't widen its own scope. Inside the sandbox, `SCOPE.md` and `RULES.md` show the
-active copy, read-only. Every applied change is recorded in the audit log (`scope-sync`) and counted in the
-report.
+(or the console) updates that copy, so the agent can't widen its own scope. Inside the sandbox, `SCOPE.md` and
+`RULES.md` show the active copy, read-only.
 
-`./rvkit show <eng>` prints what is active now, as JSON: scope, rules, halt state and the infrastructure domains.
+Every applied change becomes a numbered **policy revision**, kept with the texts, the effective policy, who
+applied it and when (`./rvkit policy <eng> --json`), and is recorded in the audit log (`scope-sync`). Approvals
+that were pending or approved but not yet used under the previous revision become **stale** and can't be used.
+
+`./rvkit show <eng>` prints what is active now, as JSON: scope, effective policy, rules, budget use, halt state
+and the infrastructure domains.
 
 ---
 
@@ -276,7 +320,8 @@ engagement doesn't allow.
 
 ## Rate limits
 
-When a command runs one of these tools, the kit adds the engagement's max rate:
+When a command runs one of these tools, the kit adds its share of the engagement's max rate: `Max rate` divided
+by `Max parallel` (default 2), so network commands running at the same time stay within `Max rate` together:
 
 | Tool | Flag added |
 |---|---|
@@ -317,21 +362,65 @@ through other services; see [architecture.md](architecture.md).
 
 ## How scope is enforced
 
-Two layers:
+Three layers:
 
 1. **Pre-check (readable refusals).** Before a network tool runs, the kit looks for host names and IP addresses in
-   its command line. Any that aren't in scope give
-   `REFUSED: targets not in scope for <eng>: [...]`. This catches mistakes early with a clear message; it only looks
-   at network tools.
-2. **Firewall (the real boundary).** Each command runs as the engagement's own unprivileged user, in a sandbox that
-   shows only its engagement folder and in-scope code (read-only). An nftables policy for that user allows only
-   in-scope addresses, resolved in-scope domains and, when online, the infrastructure sites. Everything else is
-   dropped, including the kit's own services, other engagements' targets, loopback, link-local and IPv6.
+   its command line. Any that aren't in scope, are excluded, or may only be reached through the request tool give
+   `REFUSED: targets not in scope for <eng>: [...]`. This catches mistakes early with a clear message; it only
+   looks at network tools.
+2. **Firewall and resolver (the boundary for commands).** Each command runs as the engagement's own unprivileged
+   user, in a sandbox that shows only its engagement folder and in-scope code (read-only). An nftables policy for
+   that user allows only in-scope addresses on their listed ports, addresses of in-scope names as the
+   engagement's resolver answers them, and, when online, the infrastructure sites. Excluded addresses are dropped
+   first; excluded names and request-tool-only hosts don't resolve. Everything else is dropped, including the
+   kit's own services, the Docker host, other engagements' targets, loopback, link-local and IPv6.
+3. **The request tool (URL-level limits).** `http_request` is sent by kali-mcp itself. It checks the scheme,
+   host, port, path and exclusions of every URL (and of every redirect), resolves the name, checks the address,
+   and connects to exactly the address it checked.
 
 So a script that builds a URL the pre-check can't see is still blocked by the firewall if the host is out of scope.
+The firewall works on addresses and ports: it can't tell two virtual hosts on one address apart, and it can't see
+URL paths. That is why path limits are request-tool only.
 
 The practice lab network (`10.250.0.0/24`) is treated like any other target: reachable only from engagements that
 have a lab address in scope.
+
+---
+
+## Request tool and source analysis
+
+Besides `run` (a shell command), the agent has two typed actions whose effect the kit understands:
+
+- **`http_request`**: one HTTP request (method, URL, headers, body). GET, HEAD and OPTIONS are tier active; POST,
+  PUT, PATCH and DELETE can change state and are intrusive, so they need an approval. Redirects are followed only
+  while they stay in scope (and only for GET and HEAD; `Redirects: none` turns this off). Each request counts
+  against `Max requests` and is spaced to `Max rate`. The request and the full response are saved as verified
+  evidence in `evidence/http/`; the audit log records them with `Authorization`, `Cookie` and API-key headers
+  redacted. TLS certificates aren't verified (test systems often use their own CA); the certificate's SHA-256 is
+  recorded instead.
+- **`analyze_source`**: semgrep (offline rules), gitleaks (secrets redacted), trufflehog (no verification) or
+  bandit on in-scope code, run in the sandbox **with no network at all**. The JSON report is saved in
+  `evidence/source/`.
+
+The worker uses both, and kali-mcp enforces the tier of the worker's task: a passive task can't send a GET request
+or run an active command, whatever the model asks for.
+
+## Controlled execution
+
+`Execution: controlled` in `RULES.md` narrows `run`:
+
+- **Passive commands get no network at all**, unless they run a DNS or registry lookup tool (`dig`, `host`,
+  `nslookup`, `whois`, `dnsx`, `subfinder` and similar; the list is `PASSIVE_NET` in `kali-mcp/core.py`). Code
+  review, parsing and other offline work can't reach targets or the internet.
+- **Scripts and interpreters count as intrusive** (as with `Strict tiers: on`): each one needs an approval, and
+  the approval is bound to the script's contents.
+
+## Budgets and parallel commands
+
+`Max requests` and `Max commands` are budgets for the whole engagement, counted across the planner, every worker
+task and the console; once one is used up, further requests or commands are refused with a clear message. Use is
+shown by `./rvkit show <eng>` (`usage`). `Max parallel` limits how many network commands run at once; each of them
+gets an equal share of `Max rate`, so together they stay within it.
 
 ---
 
@@ -366,12 +455,16 @@ again with the identical command and the `approval_id`.
 
 The rules:
 
-- An approval is for **that exact command**. The agent can't change a single character, or the approval doesn't
-  apply.
-- It can be used **once**. Running the same command again needs a new approval.
-- It **expires 24 hours** after you decide it.
-- Asking again for the same command while it's still pending returns the same approval id.
-- Every request, approval, denial and use is in the audit log.
+- An approval is bound to **that exact action**: for a command, its text, the programs it runs (by their SHA-256)
+  and the files it reads from the engagement folder or `/src` (a script, a wordlist, a request file); for a
+  request, the method, URL, headers and body. Changing any of them needs a new approval, and the refusal says
+  what differs.
+- It is bound to the **scope and rules revision** it was requested under. Applying a changed scope or rules makes
+  every pending or unused approval stale. Approving a request made under an older revision is refused.
+- It can be used **once**, even when two calls race for it. Running the same command again needs a new approval.
+- It **expires** 24 hours after you decide it (`Approval expiry:` in `RULES.md` changes this).
+- Asking again for the same action while it's still pending returns the same approval id.
+- Every request, approval (with who approved it), denial, use and stale approval is in the audit log.
 
 The engagement's rate limit is applied to approved commands too.
 
@@ -389,9 +482,10 @@ Halting kills all processes of the engagement's user at once and refuses new Kal
 
 ## Testing window
 
-With `Window (UTC): 08:00-18:00` in `RULES.md`, commands outside that time are refused with
-`outside the testing window in RULES.md (UTC)`. Commands already running aren't stopped at the end of the window;
-use `halt` for that.
+With `Window`, `Dates` or `Days` in `RULES.md`, commands and requests outside them are refused with the reason, for
+example `outside the testing window 08:00-18:00 (Europe/Berlin)` or `testing ended on 2026-11-21 (Europe/Berlin)`.
+Commands already running aren't stopped at the end of the window; use `halt` for that. Offline source analysis is
+not testing a target and still runs.
 
 ---
 
