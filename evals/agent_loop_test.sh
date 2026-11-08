@@ -9,7 +9,10 @@ cd "$(dirname "$0")/.." || exit 1
 ENG=rv-loop-test
 pass=0; fail=0
 check() { if echo "$2" | grep -qE "$3"; then pass=$((pass+1)); echo "PASS  $1"; else fail=$((fail+1)); echo "FAIL  $1"; echo "$2" | head -5 | sed 's/^/      /'; fi; }
-cleanup() { RVKIT_YES=1 ./rvkit eng delete $ENG --force >/dev/null 2>&1; }
+cleanup() {   # unregister the throwaway engagement and remove its folder
+  docker compose exec -T kali-mcp python3 /opt/kali-mcp/rvctl.py delete $ENG --force >/dev/null 2>&1 </dev/null
+  docker compose exec -T kali-mcp sh -c "rm -rf /work/_deleted-$ENG-*" </dev/null
+}
 trap cleanup EXIT
 
 ./rvkit engagement $ENG --replace --tiers passive /src/rv-demo-app >/dev/null 2>&1 || { echo "FAIL  could not create $ENG"; exit 1; }
