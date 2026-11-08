@@ -219,7 +219,8 @@ evidence unchanged, client name set).
 - Commands above the allowed tiers are refused; rate-limitable tools (nmap, nuclei, ffuf, httpx, …) get the max
   rate added. **Intrusive** commands wait for you (`./rvkit watch`, or `./rvkit approvals` and
   `./rvkit approve <eng> <id>`). Tiers are assigned by program name: scripts run at the passive tier and `curl` at the
-  active tier, without approval ([SECURITY.md](SECURITY.md), known limitations).
+  active tier, without approval, unless the engagement sets `Strict tiers: on` ([SECURITY.md](SECURITY.md), known
+  limitations).
 - `./rvkit halt <eng>` kills everything running for an engagement and blocks new commands (`resume` to undo).
 - Every command, refusal and approval is in the audit log: `./rvkit audit <eng>`.
 

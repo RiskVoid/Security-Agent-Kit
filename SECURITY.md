@@ -20,9 +20,13 @@ is weaker than described here.
    doesn't list counts as passive, so a script or an interpreter (`python3 -c ...`, `bash script.sh`) runs at
    the **passive** tier, and `curl`, `wget` or `nc` with a payload at the **active** tier. Either can send
    intrusive traffic to in-scope hosts **without approval**, even on an engagement that allows only passive
-   commands. This is a deliberate choice for now: classifying arbitrary code isn't reliable. The network layer
-   still enforces scope: these commands can only reach in-scope hosts. Treat approvals as a guard against
-   mistakes, not against a determined agent.
+   commands. This is the default because classifying arbitrary code isn't reliable. **`Strict tiers: on`** in an
+   engagement's `RULES.md` closes the common cases: interpreters running code (`python3`, `perl`, `node`,
+   `bash script.sh`, …) and `curl`/`wget` sending data (`-d`, `--data*`, `-F`, `-X POST/PUT/PATCH/DELETE`) count
+   as intrusive, so each needs your approval. It is still matching on the command line, not on what the code
+   does: a compiled binary the agent writes itself, or an unusual way of invoking a tool, can get past it. The
+   network layer still enforces scope: these commands can only reach in-scope hosts. Treat approvals as a guard
+   against mistakes, not against a determined agent.
 2. **The planner's web fetch tool checks names and addresses, not content.** The `web` MCP server (`web-mcp`)
    refuses every engagement target (the union of all engagements' scope) and every non-public address, on the
    first request and on each redirect, and fails closed when it can't read the scopes. Its requests are not in the

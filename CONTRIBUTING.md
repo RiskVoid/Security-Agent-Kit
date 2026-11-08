@@ -176,12 +176,13 @@ A tool needs five changes. Missing one of them leaves the agent unaware of it, o
    checked against the publisher's SHA-256 (amd64 and arm64); a pinned Git commit. Make it readable by the
    engagement users (`chmod -R a+rX`) and link it into `/usr/local/bin` (the sandbox's login shell resets `PATH`).
    Add it to the tool list comment at the top.
-2. **`kali-mcp/core.py`:** put the program name in the right tier set: `INTRUSIVE` (exploitation, brute force,
-   fuzzing, anything that changes state or can cause a denial of service), `ACTIVE` (scanning, crawling,
+2. **`kali-mcp/tiers.yaml`:** put the program name in the right list: `intrusive` (exploitation, brute force,
+   fuzzing, anything that changes state or can cause a denial of service), `active` (scanning, crawling,
    fingerprinting, any request to a target) or neither (passive: offline analysis). Programs not listed are
-   **passive**, so a network tool you forget here runs without the tier checks. If it can rate-limit, add its flag
-   to `RATE_FLAGS` (and `RATE_FMT` if the value isn't a bare number). If its risk depends on a subcommand or flag,
-   add rules to `SUBCOMMAND_TIERS`.
+   **passive**, so a network tool you forget here runs without the tier checks. If it can rate-limit, add it under
+   `rate_flags` (with `format` if the value isn't a bare number, `after` if the option belongs to a subcommand).
+   If its risk depends on a subcommand or flag, add `subcommands` rules. You don't need to touch the policy code;
+   `python3 evals/unit_test.py` checks the file (unknown keys, bad regexes, a program in two tiers).
 3. **`evals/tools_smoke.sh`:** add a line to the "tools start" list (a version check). If it analyses code or
    dependencies, add a check that runs through the sandbox on `demo-code`.
 4. **`kali-mcp/server.py`:** add it to the `run` tool's docstring, under the right area, with a short usage hint.

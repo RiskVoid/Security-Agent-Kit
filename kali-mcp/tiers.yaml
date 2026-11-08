@@ -1,0 +1,158 @@
+# Tool tiers and rate flags for agent commands (read by kali-mcp/core.py at start-up).
+#
+# Every command the agent runs is split into simple commands and each program gets a tier; the command's tier is
+# the highest one. RULES.md decides which tiers an engagement allows, and intrusive commands need ./rvkit approve.
+#   intrusive  exploitation, brute force, fuzzing, anything that changes state or can cause a denial of service
+#   active     scanning, crawling, fingerprinting: any request to a target
+#   passive    everything not listed here (offline analysis, code review, DNS lookups through the resolver)
+# A network tool you forget here runs as passive. The firewall still limits it to the engagement's scope.
+#
+# Format: plain YAML (block mappings and lists, one-line {a: b} and [a, b], quoted strings). Write regexes in
+# single quotes, where a backslash is literal. After a change: rebuild kali-mcp, then run python3 evals/unit_test.py
+# and evals/phase3_policy_test.sh. CONTRIBUTING.md ("Adding a tool to the Kali image") has the whole checklist.
+
+intrusive:
+  - sqlmap
+  - hydra
+  - medusa
+  - ncrack
+  - patator
+  - msfconsole
+  - msfvenom
+  - crackmapexec
+  - nxc
+  - netexec
+  - responder
+  - commix
+  - hping3
+  - slowhttptest
+  - thc-ssl-dos
+  - john
+  - hashcat
+  - kerbrute
+  - evil-winrm
+  - impacket-psexec
+  - impacket-smbexec
+  - impacket-wmiexec
+  - dalfox
+  - zaproxy
+  - zap.sh
+  - zap-full-scan.py   # ZAP: spider and active scan send attack payloads
+  - schemathesis       # API fuzzing: malformed and state-changing requests
+  - st                 # schemathesis's short name
+  - garak              # adversarial prompts against the target model
+
+active:
+  # port and service scanning
+  - nmap
+  - masscan
+  - naabu
+  - rustscan
+  - ping
+  - traceroute
+  - arping
+  # web probing, crawling and content discovery
+  - httpx
+  - httpx-toolkit
+  - nuclei
+  - nikto
+  - whatweb
+  - wafw00f
+  - ffuf
+  - gobuster
+  - feroxbuster
+  - dirsearch
+  - dirb
+  - katana
+  - gospider
+  - wpscan
+  - zap-baseline.py
+  - arjun
+  - gowitness
+  - crlfuzz
+  - graphw00f
+  - graphql-cop
+  - clairvoyance
+  # TLS, network services and DNS enumeration
+  - testssl
+  - testssl.sh
+  - sslscan
+  - sslyze
+  - enum4linux
+  - smbclient
+  - snmpwalk
+  - onesixtyone
+  - ldapsearch
+  - rpcclient
+  - dnsrecon
+  - fierce
+  - amass
+  # raw clients and multi-mode tools (see subcommands)
+  - curl
+  - wget
+  - nc
+  - netcat
+  - ncat
+  - jwt_tool
+  - rv-llm
+
+# Tiers that depend on a subcommand or flag. Checked in order before the lists above; the first rule whose program
+# matches and whose regular expression is found in the command wins. A matching rule can lower a program's tier
+# (rv-llm payloads is offline) as well as raise it.
+subcommands:
+  - program: rv-llm
+    match: 'rv-llm\s+(probe|mcp-call)\b'        # adversarial prompts, tool calls
+    tier: intrusive
+  - program: rv-llm
+    match: 'rv-llm\s+(payloads|list|help)\b|rv-llm\s*$'   # offline
+    tier: passive
+  # jwt_tool only touches the target with -t; decoding, cracking (-C) and forging tokens (-X/-I/-S) are offline
+  - program: jwt_tool
+    match: '\s-t\s.*\s-(X|I|S|M)\s|\s-(X|I|S|M)\s.*\s-t\s'   # tampered tokens sent to the target
+    tier: intrusive
+  - program: jwt_tool
+    match: '\s-t\s'                              # sends the token to a target URL
+    tier: active
+  - program: jwt_tool
+    match: '.'
+    tier: passive
+  - program: nuclei
+    match: '(?i)(-tags?|-itags|-t)\s+\S*(intrusive|dos|fuzz|brute)|-dast|-fuzz'
+    tier: intrusive
+  - program: nmap
+    match: '(?i)--script[= ]\S*(brute|dos|exploit|intrusive|vuln)'
+    tier: intrusive
+
+# Flags that cap a tool's rate. When RULES.md sets a max rate, the first flag is added to the command (or a higher
+# value is refused). format: how the value is written when it isn't a bare number. after: the flag goes after this
+# subcommand, and is only added when the subcommand is used.
+rate_flags:
+  nmap: {flags: [--max-rate]}
+  masscan: {flags: [--rate, --max-rate]}
+  naabu: {flags: [-rate]}
+  nuclei: {flags: [-rl, -rate-limit]}
+  httpx: {flags: [-rl, -rate-limit]}
+  httpx-toolkit: {flags: [-rl, -rate-limit]}
+  ffuf: {flags: [-rate]}
+  katana: {flags: [-rl, -rate-limit]}
+  feroxbuster: {flags: [--rate-limit]}
+  dirsearch: {flags: [--max-rate]}
+  schemathesis: {flags: [--rate-limit], format: '{}/s', after: run}
+  st: {flags: [--rate-limit], format: '{}/s', after: run}
+  rv-llm: {flags: [--rate], after: probe}
+
+# Strict tiers, for engagements whose RULES.md says "Strict tiers: on". By default the lists above go by program
+# name, so a script or a curl POST can send intrusive traffic to in-scope hosts without approval. In strict mode:
+strict:
+  # interpreters running code (a script or inline code) get this tier; version suffixes count (python3.12)
+  interpreters: [python, python2, python3, perl, ruby, node, nodejs, php, lua, tclsh, pwsh, bash, sh, dash, zsh,
+                 ksh, socat, telnet, expect]
+  interpreter_tier: intrusive
+  # requests that carry a body or use a state-changing method
+  subcommands:
+    - program: curl
+      match: '\s(-d|--data\S*|-F|--form\S*|-T|--upload-file|--json)(\s|=)|\s(-X|--request)[= ]?\s*["'']?(POST|PUT|PATCH|DELETE)'
+      tier: intrusive
+    - program: wget
+      match: '--post-(data|file)|--body-(data|file)|--method[= ]["'']?(POST|PUT|PATCH|DELETE)'
+      tier: intrusive

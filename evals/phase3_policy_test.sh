@@ -96,6 +96,18 @@ check "deleted engagement unregistered"           'unknown engagement'          
 check "deletion is audited"                       '"event": "deleted"'          "$(ctl audit rv-del-test 5)"
 docker compose exec -T kali-mcp sh -c 'rm -rf /work/_deleted-rv-del-test-* /work/_archive/rv-del-test-*' </dev/null
 
+echo "== strict tiers (rv-strict-test: passive and active, Strict tiers: on)"
+./rvkit engagement rv-strict-test --replace --tiers "passive, active" /src/rv-demo-app >/dev/null 2>&1
+docker compose exec -T kali-mcp sh -c 'echo "- Strict tiers: on" >> /work/rv-strict-test/RULES.md' </dev/null
+ctl sync rv-strict-test --yes >/dev/null 2>&1
+check "rules show strict tiers"                   '"strict": true'              "$(ctl show rv-strict-test)"
+check "interpreter running code is intrusive"     "REFUSED: .*tier 'intrusive'" "$(run rv-strict-test "python3 -c 'print(1)'")"
+check "script through sh -c counts what it runs"  "REFUSED: .*tier 'intrusive'" "$(run rv-strict-test "sh -c 'perl -e 1'")"
+check "interpreter version check still runs"      'exit=0 tier=passive'         "$(run rv-strict-test 'python3 --version')"
+check "plain commands still run"                  'exit=0 tier=passive'         "$(run rv-strict-test 'ls /src')"
+ctl delete rv-strict-test --force >/dev/null 2>&1
+docker compose exec -T kali-mcp sh -c 'rm -rf /work/_deleted-rv-strict-test-*' </dev/null
+
 echo "== audit"
 check "audit log records refusals and approvals"  'approval-approved'           "$(ctl audit net-test 50)"
 echo; echo "passed $pass, failed $fail"; [ "$fail" -eq 0 ]

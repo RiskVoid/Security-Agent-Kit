@@ -21,7 +21,7 @@ def list_engagements() -> str:
         out.append(f"## {e}{'  (HALTED)' if i['halted'] else ''}\n"
                    f"scope: nets={i['scope']['nets']} domains={i['scope']['domains']} code={i['scope']['paths']}\n"
                    f"rules: tiers={r['tiers']} max_rate={r['max_rate']}/s network={r['network']}"
-                   + (f" window_utc={r['window']}" if r["window"] else ""))
+                   + (" strict_tiers=on" if r.get("strict") else "") + (f" window_utc={r['window']}" if r["window"] else ""))
     return "\n".join(out) or "no engagements; the user creates them on the host with ./rvkit engagement"
 
 

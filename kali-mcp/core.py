@@ -18,42 +18,22 @@ AUDIT = os.path.join(CONTROL, "audit.log")
 UID_BASE, MAX_OUT = 20000, 30_000
 TIERS = ("passive", "active", "intrusive")
 DEFAULT_RULES = {"tiers": ["passive", "active"], "max_rate": 100, "network": "online", "window": None,
-                 "worker": "auto"}  # worker: auto (fallback model allowed) | private (worker endpoint only)
+                 "worker": "auto", "strict": False}  # worker: auto (fallback model allowed) | private (worker endpoint only)
 # Never reachable by agent commands, even if a scope entry covers them (loopback, link-local/cloud metadata).
 ALWAYS_BLOCKED = ["127.0.0.0/8", "169.254.0.0/16", "0.0.0.0/8", "224.0.0.0/4"]
 
 # ---------------------------------------------------------------- tiers
-INTRUSIVE = {"sqlmap", "hydra", "medusa", "ncrack", "patator", "msfconsole", "msfvenom", "crackmapexec", "nxc",
-             "netexec", "responder", "commix", "hping3", "slowhttptest", "thc-ssl-dos", "john", "hashcat",
-             "kerbrute", "evil-winrm", "impacket-psexec", "impacket-smbexec", "impacket-wmiexec",
-             "dalfox", "zaproxy", "zap.sh", "zap-full-scan.py",  # ZAP: spider + active scan sends attack payloads
-             "schemathesis", "st",  # API fuzzing: sends malformed and state-changing requests
-             "garak"}  # LLM attack probes (adversarial prompts against the target model)
-ACTIVE = {"nmap", "masscan", "naabu", "rustscan", "httpx", "httpx-toolkit", "nuclei", "nikto", "whatweb", "wafw00f",
-          "testssl", "testssl.sh", "sslscan", "sslyze", "ffuf", "gobuster", "feroxbuster", "dirsearch", "dirb",
-          "katana", "gospider", "wpscan", "curl", "wget", "nc", "netcat", "ncat", "ping", "traceroute", "arping",
-          "enum4linux", "smbclient", "snmpwalk", "onesixtyone", "ldapsearch", "rpcclient", "dnsrecon", "fierce",
-          "amass", "zap-baseline.py", "arjun", "gowitness", "nuclei",
-          "crlfuzz", "graphw00f", "graphql-cop", "clairvoyance", "jwt_tool", "rv-llm"}
-# Per-subcommand tiers for multi-mode tools: (program, regex on the segment, tier). First match wins.
-SUBCOMMAND_TIERS = [
-    ("rv-llm", re.compile(r"rv-llm\s+(probe|mcp-call)\b"), "intrusive"),     # adversarial prompts, tool calls
-    ("rv-llm", re.compile(r"rv-llm\s+(payloads|list|help)\b|rv-llm\s*$"), "passive"),  # offline
-    # jwt_tool only touches the target with -t; decode, crack (-C) and forging tokens (-X/-I/-S) are offline
-    ("jwt_tool", re.compile(r"\s-t\s.*\s-(X|I|S|M)\s|\s-(X|I|S|M)\s.*\s-t\s"), "intrusive"),  # tampered tokens sent
-    ("jwt_tool", re.compile(r"\s-t\s"), "active"),                            # sends the token to a target URL
-    ("jwt_tool", re.compile(r"."), "passive"),
-]
+# Program lists, subcommand rules, rate flags and strict mode live in tiers.yaml (checked at start-up).
+import tierconf  # noqa: E402
+
+POLICY = tierconf.load(os.path.join(HERE, "tiers.yaml"))
+INTRUSIVE, ACTIVE = POLICY["intrusive"], POLICY["active"]
 WRAPPERS = {"sudo", "env", "timeout", "nice", "nohup", "time", "stdbuf", "xargs", "command", "exec"}
-NUCLEI_INTRUSIVE = re.compile(r"(?i)(-tags?|-itags|-t)\s+\S*(intrusive|dos|fuzz|brute)|-dast|-fuzz")
-NMAP_INTRUSIVE = re.compile(r"(?i)--script[= ]\S*(brute|dos|exploit|intrusive|vuln)")
-# flag injected (or capped) when RULES.md sets a max rate; value = requests or packets per second
-RATE_FLAGS = {"nmap": ["--max-rate"], "masscan": ["--rate", "--max-rate"], "naabu": ["-rate"], "nuclei": ["-rl", "-rate-limit"],
-              "httpx": ["-rl", "-rate-limit"], "httpx-toolkit": ["-rl", "-rate-limit"], "ffuf": ["-rate"],
-              "katana": ["-rl", "-rate-limit"], "feroxbuster": ["--rate-limit"], "dirsearch": ["--max-rate"],
-              "schemathesis": ["--rate-limit"], "st": ["--rate-limit"], "rv-llm": ["--rate"]}
-RATE_FMT = {"schemathesis": "{}/s", "st": "{}/s"}  # value format when it isn't a bare number
+SHELLS = {"sh", "bash", "dash", "zsh", "ksh"}
 SPLIT = re.compile(r"\|\||&&|[|;&\n]|\$\(|`")
+# code handed to a shell as a string: sh -c '...', bash -lc "...", eval '...'
+INNER = re.compile(r"(?:^|[\s;&|(`])(?:(?:/\S*/)?(?:" + "|".join(sorted(SHELLS)) + r")\s+(?:-[A-Za-z]+\s+)*-[A-Za-z]*c[A-Za-z]*"
+                   r"|eval)\s+(?:'([^']*)'|\"((?:[^\"\\]|\\.)*)\")")
 
 
 def _segments(command):
@@ -70,20 +50,38 @@ def _segments(command):
     return out
 
 
-def classify(command):
+def _interpreter(prog, seg):
+    """True if this segment runs code through an interpreter (not just asks for its version or help)."""
+    if prog not in POLICY["interpreters"] and re.sub(r"[\d.]+$", "", prog) not in POLICY["interpreters"]:
+        return False
+    rest = seg.split(prog, 1)[-1].split()
+    return not (rest and all(w in ("--version", "-V", "-v", "--help", "-h") for w in rest))
+
+
+def _max(a, b):
+    return a if TIERS.index(a) >= TIERS.index(b) else b
+
+
+def classify(command, strict=False, _depth=0):
+    """The command's tier: the highest tier of the programs it runs. strict (RULES.md "Strict tiers: on") also
+    counts interpreters running code, and requests that send data, from tiers.yaml's strict section."""
     tier = "passive"
     for prog, seg in _segments(command):
-        t = "passive"
-        sub = next((st for p, rx, st in SUBCOMMAND_TIERS if p == prog and rx.search(seg)), None)
-        if sub:
-            t = sub
-        elif prog in INTRUSIVE or (prog == "nuclei" and NUCLEI_INTRUSIVE.search(seg)) or \
-                (prog == "nmap" and NMAP_INTRUSIVE.search(seg)):
-            t = "intrusive"
-        elif prog in ACTIVE:
-            t = "active"
-        if TIERS.index(t) > TIERS.index(tier):
-            tier = t
+        t = None
+        if strict:
+            t = next((st for p, rx, st in POLICY["strict_subcommands"] if p == prog and rx.search(seg)), None)
+        if t is None:
+            t = next((st for p, rx, st in POLICY["subcommands"] if p == prog and rx.search(seg)), None)
+        if t is None:
+            t = "intrusive" if prog in INTRUSIVE else "active" if prog in ACTIVE else "passive"
+        # a shell's -c string is classified below by what it runs; a shell running a script file is an interpreter
+        if strict and _interpreter(prog, seg) and not (prog in SHELLS and re.search(r"\s-[A-Za-z]*c", seg)):
+            t = _max(t, POLICY["interpreter_tier"])
+        tier = _max(tier, t)
+    if _depth < 3:  # what sh -c '...' and eval '...' run counts too
+        for m in INNER.finditer(command):
+            inner = m.group(1) if m.group(1) is not None else m.group(2).replace('\\"', '"')
+            tier = _max(tier, classify(inner, strict, _depth + 1))
     return tier
 
 
@@ -91,25 +89,29 @@ def apply_rate(command, max_rate):
     """Insert the rate flag after each rate-limitable program, or refuse if a higher rate is set."""
     if not max_rate:
         return command, None
+    for m in list(INNER.finditer(command)):  # tools run through sh -c '...' or eval get the cap too
+        inner = m.group(1) if m.group(1) is not None else m.group(2)
+        capped, err = apply_rate(inner, max_rate)
+        if err:
+            return None, err
+        command = command.replace(inner, capped, 1)
     for prog, seg in _segments(command):
-        flags = RATE_FLAGS.get(prog)
-        if not flags:
+        spec = POLICY["rate_flags"].get(prog)
+        if not spec:
             continue
+        flags = spec["flags"]
         m = re.search(r"(?:^|\s)(" + "|".join(map(re.escape, flags)) + r")[= ](\d+)", seg)
         if m:
             if int(m.group(2)) > max_rate:
                 return None, f"{prog} {m.group(1)} {m.group(2)} exceeds the engagement max rate ({max_rate}/s)"
             continue
-        val = RATE_FMT.get(prog, "{}").format(max_rate)
-        if prog == "rv-llm" and not re.search(r"rv-llm\s+probe\b", seg):
-            continue  # only 'probe' takes --rate
-        if prog in ("schemathesis", "st") and not re.search(r"\brun\b", seg):
-            continue
-        new = re.sub(rf"(^|\s|/)({re.escape(prog)})(\s|$)", rf"\1\2 {flags[0]} {val}\3", seg, count=1)
-        if prog in ("schemathesis", "st"):  # option must follow the 'run' subcommand
-            new = re.sub(r"\brun\b", f"run {flags[0]} {val}", seg, count=1)
-        elif prog == "rv-llm":
-            new = re.sub(r"\bprobe\b", f"probe {flags[0]} {val}", seg, count=1)
+        val = spec["format"].format(max_rate)
+        if spec["after"]:  # the option belongs to a subcommand: add it there, and only when it's used
+            if not re.search(rf"\b{re.escape(spec['after'])}\b", seg):
+                continue
+            new = re.sub(rf"\b{re.escape(spec['after'])}\b", f"{spec['after']} {flags[0]} {val}", seg, count=1)
+        else:
+            new = re.sub(rf"(^|\s|/)({re.escape(prog)})(\s|$)", rf"\1\2 {flags[0]} {val}\3", seg, count=1)
         command = command.replace(seg, new, 1)
     return command, None
 
@@ -190,6 +192,8 @@ def parse_rules(text):
             m = re.search(r"\d+", v); r["max_rate"] = int(m.group()) if m else r["max_rate"]
         elif k == "network":
             r["network"] = "offline" if "offline" in v else "online"
+        elif k.startswith("strict"):
+            r["strict"] = v.split()[0] in ("on", "yes", "true") if v else False
         elif k.startswith("worker"):
             r["worker"] = "private" if "private" in v else "auto"
         elif k.startswith("window"):
@@ -574,7 +578,7 @@ def run(command, eng, timeout_s=600, approval_id=None):
         return refuse("engagement is halted (./rvkit resume <engagement> on the host)")
     if not _in_window(rules["window"]):
         return refuse("outside the testing window in RULES.md (UTC)")
-    tier = classify(command)
+    tier = classify(command, rules.get("strict", False))
     entry["tier"] = tier
     if tier not in rules["tiers"]:
         return refuse(f"this command is tier '{tier}', RULES.md allows only {rules['tiers']}", tier=tier)

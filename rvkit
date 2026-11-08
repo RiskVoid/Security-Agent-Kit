@@ -176,6 +176,7 @@ write_engagement() { # write_engagement <name> <client> <tiers> <rate> <network>
     echo "- Max rate: $rate"
     echo "- Network: $network"
     echo "# - Window (UTC): 08:00-18:00"
+    echo "# - Strict tiers: on       (scripts and interpreters, and curl/wget sending data, count as intrusive)"
     if [ "$private" = y ]; then echo "- Worker model: private"
     else echo "# - Worker model: private      (never use the OpenRouter fallback model for this engagement's tool work)"; fi
     echo "# Tiers: passive (code review, DNS, research), active (scans, crawling), intrusive (exploitation, brute force;"

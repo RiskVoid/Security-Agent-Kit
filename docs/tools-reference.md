@@ -198,7 +198,8 @@ the command doesn't set it; a command that sets a higher value is refused.
 Also available: `python3`, `git`, `jq`, `curl`, `wget`, `unzip` and the usual shell tools. Scripts and
 interpreters are classified by program name too, so `python3 exploit.py` runs at the passive tier and a `curl`
 with a payload at the active tier, without approval. The firewall still limits them to the scope. This is a known
-limitation: [SECURITY.md](../SECURITY.md#known-limitations).
+limitation: [SECURITY.md](../SECURITY.md#known-limitations). With `Strict tiers: on` in `RULES.md`, both count as
+intrusive ([engagements.md](engagements.md#rulesmd)).
 
 ### Data in the image
 
@@ -317,12 +318,13 @@ You can steer the choice in your prompt ("follow the api-security playbook, Grap
 In short (details in [CONTRIBUTING.md](../CONTRIBUTING.md#adding-a-tool-to-the-kali-image)):
 
 1. Install it in `kali-mcp/Dockerfile`, pinned, readable by the engagement users and linked into `/usr/local/bin`.
-2. Put its program name in `INTRUSIVE` or `ACTIVE` in `kali-mcp/core.py` (otherwise it's **passive**), add its
-   rate flag to `RATE_FLAGS`, and add `SUBCOMMAND_TIERS` rules if its risk depends on a subcommand or flag.
+2. Put its program name under `intrusive` or `active` in `kali-mcp/tiers.yaml` (otherwise it's **passive**), add
+   its rate flag under `rate_flags`, and add `subcommands` rules if its risk depends on a subcommand or flag.
 3. Describe it in the `run` tool's docstring in `kali-mcp/server.py` (what the planner reads) and in the
    `kali_run` description in `harness/worker.py` (what the worker reads).
 4. Add a check to `evals/tools_smoke.sh`, and any download hosts to `kali-mcp/infra_domains.txt`.
-5. Rebuild with `RVKIT_BUILD=1 ./rvkit up`, then run `evals/tools_smoke.sh` and `evals/phase3_policy_test.sh`.
+5. Run `python3 evals/unit_test.py` (it checks `tiers.yaml`), rebuild with `RVKIT_BUILD=1 ./rvkit up`, then run
+   `evals/tools_smoke.sh` and `evals/phase3_policy_test.sh`.
 
 See also: [architecture.md](architecture.md) · [engagements.md](engagements.md) ·
 [running-the-agent.md](running-the-agent.md) · [lab-and-benchmarks.md](lab-and-benchmarks.md)

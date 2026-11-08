@@ -232,7 +232,7 @@ function paneOverview() {
       <div class="rv-card"><div class="rv-card-head"><h3>Scope and rules</h3><button class="rv-btn ghost sm" data-goto="scope">Edit</button></div>
         <div class="rv-card-body"><dl class="rv-kv">
           <dt>Targets</dt><dd>${codeChips([...sc.nets, ...sc.domains, ...sc.paths])}</dd>
-          <dt>Tiers</dt><dd>${tierTags(i.rules.tiers)}</dd>
+          <dt>Tiers</dt><dd>${tierTags(i.rules.tiers)}${i.rules.strict ? " " + tag("strict", "warn") : ""}</dd>
           <dt>Rate</dt><dd>${esc(i.rules.max_rate)} per second</dd>
           <dt>Network</dt><dd>${esc(i.rules.network)}</dd>
           <dt>Window</dt><dd>${i.rules.window ? esc(i.rules.window.join(":")) + " UTC" : "any time"}</dd>
@@ -278,7 +278,7 @@ function previewHtml(p) {
     <div class="rv-card"><div class="rv-card-head"><h3>Preview</h3>${p.diff ? tag("changes", "warn") : tag("no changes")}</div><div class="rv-card-body">
       ${p.diff ? `<pre class="rv-pre">${lines}</pre>` : ""}
       <dl class="rv-kv"><dt>Will allow</dt><dd>${codeChips([...p.scope.nets, ...p.scope.domains, ...p.scope.paths])}</dd>
-      <dt>Tiers</dt><dd>${tierTags(p.rules.tiers)}</dd><dt>Rate / network</dt><dd>${esc(p.rules.max_rate)}/s · ${esc(p.rules.network)}</dd></dl>
+      <dt>Tiers</dt><dd>${tierTags(p.rules.tiers)}${p.rules.strict ? " " + tag("strict", "warn") : ""}</dd><dt>Rate / network</dt><dd>${esc(p.rules.max_rate)}/s · ${esc(p.rules.network)}</dd></dl>
     </div></div>`;
 }
 
