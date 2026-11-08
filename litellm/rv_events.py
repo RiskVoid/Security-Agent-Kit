@@ -9,12 +9,18 @@ What it does:
   2. A reason in the chat. When no model produced an answer, the reply becomes a short "[RiskVoid] ..." message that
      says why and what to do, instead of an empty reply that OpenHands answers with "did not include a function call".
      Errors (no credits, budget reached, bad key, worker down, ...) get the same plain-language explanation.
+  0. Data destinations and halt (rv_routes.py). Before every call: refuse it when it would carry an engagement's
+     client data to a destination that engagement's RULES.md doesn't allow, or when its conversation or worker task
+     belongs to a halted engagement; turn off fallbacks that would go to a destination that isn't allowed.
   3. An event log. Every problem is appended to /rv-events/model-events.jsonl (.rvkit/events/ on the host). The console,
      ./rvkit status, ./rvkit doctor and ./rvkit watch read it (scripts/model_events.py).
 
 Loaded by LiteLLM from litellm_settings.callbacks (rv_events.handler). classify() needs no LiteLLM, for the unit tests.
 """
-import asyncio, json, os, re, time
+import asyncio, json, os, re, sys, time
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import rv_routes  # noqa: E402  (data destinations and halt for model calls, RW-006/RW-007)
 
 try:
     from litellm.integrations.custom_logger import CustomLogger
@@ -31,6 +37,7 @@ MODEL_VAR = {"planner": "PLANNER_MODEL", "planner-fallback": "PLANNER_FALLBACK_M
 PASS = ("messages", "tools", "tool_choice", "temperature", "top_p", "max_tokens", "max_completion_tokens", "stop",
         "parallel_tool_calls", "reasoning_effort", "response_format", "seed", "stream_options")
 PREFIX = "[RiskVoid] "
+POLICY_TAG = "[RiskVoid] refused by policy: "
 GENERIC = {"provider returned error", "invalid input", "internal server error", "bad request", "error"}
 
 
@@ -48,7 +55,10 @@ def classify(group, exc=None, status=None, text=""):
         status = int(status) if status is not None else None
     except (TypeError, ValueError):
         status = None
-    low = f"{name} {text or exc or ''}".lower()
+    raw = f"{text or exc or ''}"
+    if POLICY_TAG in raw:  # our own refusal (pre-call hook): pass its reason on as it is
+        return "policy", raw[raw.index(POLICY_TAG) + len(POLICY_TAG):].split(" | Original error")[0].strip()
+    low = f"{name} {raw}".lower()
     who = model_name(group)
     worker = group in WORKER
     if "budget" in low and ("exceed" in low or "crossed" in low or "over" in low):
@@ -193,7 +203,43 @@ def no_answer_text(group, kind, fallback=None, fb_error=None):
              if fallback else "") + ". Continue the conversation to retry; if it keeps happening, check ./rvkit status.")
 
 
+def request_headers(data):
+    """Request headers as LiteLLM passes them to hooks (the location differs between versions)."""
+    for src in ((data.get("proxy_server_request") or {}).get("headers"), (data.get("metadata") or {}).get("headers"),
+                (data.get("litellm_metadata") or {}).get("headers")):
+        if isinstance(src, dict) and src:
+            return src
+    return {}
+
+
+def session_of(data, headers):
+    for v in (rv_routes.header(headers, "x-litellm-session-id"), data.get("litellm_session_id"),
+              (data.get("metadata") or {}).get("session_id"), (data.get("litellm_metadata") or {}).get("session_id")):
+        if v:
+            return str(v)
+    return None
+
+
+def env_now():
+    return dict(os.environ)
+
+
 class RvEvents(CustomLogger):
+    async def async_pre_call_hook(self, user_api_key_dict, cache, data, call_type):
+        group = data.get("model")
+        if group is None:
+            return data
+        headers = request_headers(data)
+        d = rv_routes.decide(group, data, headers, rv_routes.load_routes(), env_now(), session_of(data, headers))
+        if not d["allow"]:
+            record("policy", group, d["reason"], engagement=(d["engagements"] or [d["bound"]])[0],
+                   engagements=d["engagements"])
+            from fastapi import HTTPException
+            raise HTTPException(status_code=403, detail=POLICY_TAG + d["reason"])
+        if not d["fallbacks"]:
+            data["disable_fallbacks"] = True
+        return data
+
     async def async_post_call_streaming_iterator_hook(self, user_api_key_dict, response, request_data):
         group, eng = request_data.get("model"), engagement_of(request_data)
         held, sent, finish = [], False, None
@@ -212,7 +258,7 @@ class RvEvents(CustomLogger):
         if sent:
             return
         kind = "refusal" if finish == "content_filter" else "empty"
-        fb, fb_error = fallback_for(group), None
+        fb, fb_error = (None if request_data.get("disable_fallbacks") else fallback_for(group)), None
         if fb:
             record(kind, group, engagement=eng, message=f"{model_name(group)} " + ("refused this request" if kind == "refusal" else
                    "returned an empty reply") + f"; answering with the fallback {model_name(fb)}.", fallback=fb)
@@ -283,10 +329,12 @@ class RvEvents(CustomLogger):
             record("context", group, f"{model_name(group)}: the conversation outgrew the context window{size}; OpenHands "
                    "summarised older turns and continued.", engagement=eng, status=status)
             return None
-        record(kind, group, text, engagement=eng, status=status)
+        record(kind, group, text, engagement=eng, status=status) if kind != "policy" else None
         try:
             from fastapi import HTTPException
             # keep the provider's text after the explanation: OpenHands classifies errors by it (rate limit, quota, ...)
+            if kind == "policy":
+                return HTTPException(status_code=403, detail=PREFIX + text)
             orig = re.sub(r"\s+", " ", str(original_exception))[:1500]
             return HTTPException(status_code=int(status or 500), detail=f"{PREFIX}{text} | Original error: {orig}")
         except Exception:  # noqa: BLE001

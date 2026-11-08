@@ -85,6 +85,8 @@ jobs:
         run: bash evals/tools_smoke.sh
       - name: Worker agent loop (scripted model)
         run: bash evals/agent_loop_test.sh
+      - name: Execution state (data routes, credentials, durable tasks, halt)
+        run: bash evals/execution_state_test.sh
       - name: End to end (evidence, report, close-out)
         run: bash evals/phase5_e2e.sh
       - name: Lab isolation

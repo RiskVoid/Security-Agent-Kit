@@ -334,7 +334,7 @@ Lists pending approvals: engagement, id, tier and command. Without an engagement
 ```
 
 Decides one approval. An approval is for that exact command only, can be used once, and expires 24 hours after
-you approve it.
+you approve it. A worker task waiting for it continues by itself.
 
 ### scope
 
@@ -360,6 +360,40 @@ engagement's sandbox user id and the infrastructure domains it may reach, as JSO
 ```sh
 ./rvkit halt <engagement>       # kill everything running for it and refuse new commands
 ./rvkit resume <engagement>     # allow commands again
+```
+
+Halt also stops the engagement's worker tasks, pauses its bound conversations, and makes the model gateway refuse
+their model calls.
+
+### conversation
+
+```sh
+./rvkit conversation <engagement> new ["first message"]   # create an OpenHands conversation bound to it
+./rvkit conversation <engagement> list                    # bound conversations (the default)
+./rvkit conversation <engagement> bind <conversation-id>
+./rvkit conversation <engagement> unbind <conversation-id>
+```
+
+A bound conversation's model calls follow the engagement's `Client data:` rule and halt. `new` uses
+`riskvoid-planner`, or `riskvoid-local` when the rule doesn't allow the planner's route, and prints the link. See
+[engagements.md](engagements.md#conversations).
+
+### cred
+
+```sh
+./rvkit cred <engagement> list              # names only (the default)
+./rvkit cred <engagement> set <NAME>        # asks for the value, hidden
+./rvkit cred <engagement> rm <NAME>
+```
+
+Credentials the agent uses by reference (`$RV_CRED_<NAME>`, `{{cred:NAME}}`) without seeing them. Names are
+letters, digits and `_`, starting with a letter. See [engagements.md](engagements.md#credentials).
+
+### task
+
+```sh
+./rvkit task cancel <task-id>    # stop a worker task and kill its running command
+./rvkit task resume <task-id>    # continue an interrupted task from its last checkpoint
 ```
 
 ### audit

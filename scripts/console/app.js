@@ -324,16 +324,79 @@ function paneOverview() {
           <dt>Network</dt><dd>${esc(i.rules.network)}</dd>
           <dt>Window</dt><dd>${i.rules.window ? esc(i.rules.window.join(":")) + " UTC" : "any time"}</dd>
           <dt>Worker</dt><dd>${i.rules.worker === "private" ? "private: never the fallback model" : "fallback allowed when switched on"}</dd>
+          <dt>Client data</dt><dd>${i.rules.client_data ? esc(i.rules.client_data.join(", ")) : "any configured model"}</dd>
         </dl></div></div>
-      <div class="rv-card"><div class="rv-card-head"><h3>Start the agent</h3><a class="rv-btn ghost sm" href="${esc(state.overview?.ui_url || "#")}" target="_blank" rel="noopener">Open agent UI ↗</a></div>
-        <div class="rv-card-body">
-          <p class="hint">Start a conversation with <b>riskvoid-planner</b> and name the engagement:</p>
-          <pre class="rv-pre">${esc(prompt)}</pre>
-          <div class="rv-actions start"><button id="copy-prompt" class="rv-btn sm">${ICON_COPY} Copy prompt</button></div>
-        </div></div>
+      ${modelsCard(d)}
+    </div>
+    <div class="rv-two">
+      ${conversationsCard(d)}
+      ${credentialsCard(d)}
     </div>`;
-  $("#copy-prompt").addEventListener("click", () => navigator.clipboard.writeText(prompt).then(() => toast("Copied.")).catch(() => toast("Copy failed: select the text instead.", true)));
+  bindConversations(d, prompt);
+  bindCredentials(d);
   $$("[data-goto]").forEach((b) => b.addEventListener("click", () => { state.tab = b.dataset.goto; renderDetail(); }));
+}
+
+// ---------------------------------------------------------------- models, conversations, credentials (RW-006/7)
+const DEST = { local: "this machine or network", colab: "Colab notebook", api: "self-hosted endpoint", openrouter: "OpenRouter", anthropic: "Anthropic", openai: "OpenAI" };
+function destTag(dest, allowed) {
+  const ok = !allowed || allowed.includes(dest);
+  return tag(DEST[dest] || dest, ok ? "" : "warn") + (ok ? "" : ` <span class="err">not allowed for this engagement's client data</span>`);
+}
+function modelsCard(d) {
+  const m = d.models || {}, allowed = d.info.rules.client_data, w = m.worker || {}, p = m.planner || {}, fb = m.worker_fallback || {};
+  return `<div class="rv-card"><div class="rv-card-head"><h3>Models</h3></div><div class="rv-card-body"><dl class="rv-kv">
+    <dt>Worker</dt><dd>${destTag(w.destination, allowed)}<div class="rv-dim">${esc(w.model || "")}${w.host ? " at " + esc(w.host) : ""}</div></dd>
+    <dt>Fallback</dt><dd>${fb.on ? destTag(fb.destination, allowed) + `<div class="rv-dim">${esc(fb.model)} while the worker is down${allowed && !allowed.includes(fb.destination) ? " (not used for this engagement)" : ""}</div>` : "off"}</dd>
+    <dt>Planner</dt><dd>${destTag(p.destination, allowed)}<div class="rv-dim">${esc(p.model || "")}</div></dd>
+  </dl><p class="hint">Model calls that would send this engagement's data somewhere its rules don't allow are refused at the model gateway.</p></div></div>`;
+}
+function conversationsCard(d) {
+  const cs = d.conversations, err = cs && !Array.isArray(cs) ? cs.error : null, rows = Array.isArray(cs) ? cs : [];
+  return `<div class="rv-card"><div class="rv-card-head"><h3>Conversations</h3><a class="rv-btn ghost sm" href="${esc(state.overview?.ui_url || "#")}" target="_blank" rel="noopener">Open agent UI ↗</a></div>
+    <div class="rv-card-body">
+      ${err ? `<p class="err">${esc(err)}</p>` : ""}
+      ${rows.length ? `<ul class="rv-rows">${rows.map((c) => `<li><a href="${esc(c.url)}" target="_blank" rel="noopener">${esc(c.title || c.id)}</a> ${c.status ? tag(c.status, c.status === "running" ? "running" : "") : ""}
+        <span class="rv-dim">${esc(c.id.slice(0, 8))} · ${fmtTime(c.bound)}</span> <button class="rv-btn ghost sm" data-unbind="${esc(c.id)}">Unbind</button></li>`).join("")}</ul>`
+        : `<p class="hint">No conversation is bound to this engagement yet. A bound conversation follows the engagement: its client-data rule applies to every model it uses, and halting stops it.</p>`}
+      <label class="rv-label" for="conv-msg">First message (optional)</label>
+      <textarea id="conv-msg" class="rv-input" rows="3" placeholder="What to test, e.g. a web assessment of the in-scope app; follow the playbooks and write the report."></textarea>
+      <div class="rv-actions start"><button id="conv-new" class="rv-btn sm">New conversation</button><button id="copy-prompt" class="rv-btn ghost sm">${ICON_COPY} Copy prompt</button></div>
+    </div></div>`;
+}
+function bindConversations(d, prompt) {
+  $("#copy-prompt").addEventListener("click", () => navigator.clipboard.writeText(prompt).then(() => toast("Copied.")).catch(() => toast("Copy failed: select the text instead.", true)));
+  $("#conv-new").addEventListener("click", async (ev) => {
+    const r = await act(ev.currentTarget, () => api(`/api/eng/${enc(d.engagement)}/conversation`, { message: $("#conv-msg").value }), "Conversation created and bound.");
+    if (r) { window.open(r.url, "_blank", "noopener"); openEngagement(d.engagement, true); }
+  });
+  $$("[data-unbind]").forEach((b) => b.addEventListener("click", async (ev) => {
+    const r = await act(ev.currentTarget, () => api(`/api/eng/${enc(d.engagement)}/unbind`, { id: b.dataset.unbind }), "Unbound.");
+    if (r) openEngagement(d.engagement, true);
+  }));
+}
+function credentialsCard(d) {
+  const cs = d.credentials || [];
+  return `<div class="rv-card"><div class="rv-card-head"><h3>Credentials</h3></div><div class="rv-card-body">
+    ${cs.length ? `<ul class="rv-rows">${cs.map((c) => `<li><b>${esc(c.name)}</b> <span class="rv-code-chip">$${esc(c.env)}</span> <span class="rv-code-chip">${esc(c.ref)}</span>
+      <span class="rv-dim">${fmtTime(c.set_at)} · ${esc(c.set_by || "")}</span> <button class="rv-btn ghost sm" data-credrm="${esc(c.name)}">Remove</button></li>`).join("")}</ul>`
+      : `<p class="hint">None stored. The agent uses a credential by reference ($RV_CRED_NAME in commands, {{cred:NAME}} in requests); the value never reaches the model and is replaced by the reference in output and evidence.</p>`}
+    <div class="rv-form-row"><input id="cred-name" class="rv-input" placeholder="NAME" autocomplete="off" spellcheck="false" maxlength="32" aria-label="Credential name">
+      <input id="cred-value" class="rv-input" type="password" placeholder="value" autocomplete="new-password" aria-label="Credential value">
+      <button id="cred-save" class="rv-btn sm">Store</button></div>
+  </div></div>`;
+}
+function bindCredentials(d) {
+  $("#cred-save").addEventListener("click", async (ev) => {
+    const name = $("#cred-name").value.trim().toUpperCase(), value = $("#cred-value").value;
+    const r = await act(ev.currentTarget, () => api(`/api/eng/${enc(d.engagement)}/cred`, { name, value }), `${name} stored.`);
+    $("#cred-value").value = "";
+    if (r) openEngagement(d.engagement, true);
+  });
+  $$("[data-credrm]").forEach((b) => b.addEventListener("click", async (ev) => {
+    const r = await act(ev.currentTarget, () => api(`/api/eng/${enc(d.engagement)}/cred`, { name: b.dataset.credrm, remove: true }), "Removed.");
+    if (r) openEngagement(d.engagement, true);
+  }));
 }
 
 function paneScope() {
@@ -496,15 +559,25 @@ async function paneTasks() {
     if (state.tab !== "tasks" || state.current !== d.engagement) return;
     try {
       const r = await api(`/api/eng/${enc(d.engagement)}/tasks`);
-      $("#tasks-out").outerHTML = `<div id="tasks-out" class="rv-stack">${r.tasks.map((t) => `<details class="rv-card rv-task" ${t.status === "running" ? "open" : ""}>
+      $("#tasks-out").outerHTML = `<div id="tasks-out" class="rv-stack">${r.tasks.map((t) => `<details class="rv-card rv-task" ${["running", "awaiting_approval", "interrupted"].includes(t.status) ? "open" : ""}>
         <summary>${tag(t.status, t.status)} ${tag(t.tier, TIER_CLASS[t.tier] || "")}<span class="goal">${esc((t.goal || "").slice(0, 160))}</span></summary>
         <div class="rv-card-body">
           <div class="rv-meta"><span>${esc(t.id)}</span><span>started ${fmtTime(t.started)}</span>${t.finished ? `<span>${Math.max(0, Math.round((t.finished - t.started) / 60))} min</span>` : ""}
             <span>${t.steps.length} step(s)</span><span>${t.candidates} candidate(s)</span>${t.models.length ? `<span>model: ${t.models.map(esc).join(", ")}</span>` : ""}</div>
+          ${t.approval ? `<p>Paused for approval <b>${esc(t.approval.id)}</b>: <code>${esc(t.approval.action)}</code>. Decide it on the Overview tab; the task then continues by itself.</p>` : ""}
+          ${(t.depends_on || []).length ? `<p class="rv-dim">waits for ${t.depends_on.map(esc).join(", ")}</p>` : ""}
           ${t.error ? `<p class="err">${esc(t.error)}</p>` : ""}${t.summary ? `<p class="rv-prose">${esc(t.summary)}</p>` : ""}
+          ${t.recovery ? `<p class="${t.recovery.decision === "needs_review" ? "err" : "rv-dim"}">After a restart: ${esc(t.recovery.note || t.recovery.decision)}${(t.recovery.uncertain || []).length ? ` (in flight: ${t.recovery.uncertain.map((u) => esc(u.action || u.tool)).join("; ")})` : ""}</p>` : ""}
+          ${["queued", "waiting", "running", "awaiting_approval", "interrupted"].includes(t.status) ? `<div class="rv-actions start">
+            ${t.status === "interrupted" ? `<button class="rv-btn sm" data-task="resume" data-id="${esc(t.id)}">Resume from checkpoint</button>` : `<button class="rv-btn ghost sm danger-quiet" data-task="cancel" data-id="${esc(t.id)}">Cancel task</button>`}</div>` : ""}
           ${t.steps.length ? `<pre class="rv-pre">${t.steps.map((s, i) => `<span class="ln">${String(i + 1).padStart(2, " ")}</span>  ${esc(s)}`).join("\n")}</pre>` : ""}
         </div></details>`).join("") || `<div class="rv-card"><div class="rv-empty">No worker tasks yet.</div></div>`}</div>`;
-      if (r.tasks.some((t) => t.status === "running" || t.status === "queued")) setTimeout(load, 5000);
+      $$("[data-task]").forEach((b) => b.addEventListener("click", async (ev) => {
+        const ok = await act(ev.currentTarget, () => api(`/api/eng/${enc(d.engagement)}/task`, { id: b.dataset.id, action: b.dataset.task }),
+          b.dataset.task === "cancel" ? "Cancel requested." : "Resumed from its last checkpoint.");
+        if (ok) setTimeout(load, 1500);
+      }));
+      if (r.tasks.some((t) => ["running", "queued", "waiting", "awaiting_approval"].includes(t.status))) setTimeout(load, 5000);
     } catch (e) { $("#tasks-out").textContent = e.message; }
   };
   load();

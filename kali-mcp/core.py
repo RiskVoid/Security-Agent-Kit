@@ -290,6 +290,7 @@ def sync(eng, expected=None, texts=None):
             "rules": pol["rules"], "before": before, "after": after, "policy_version": version})
     if before and after != before:
         invalidate_approvals(eng, f"the scope or rules changed (policy revision {version})")
+    publish_routes()
     return pol["warnings"]
 
 
@@ -559,6 +560,18 @@ def decide(eng, aid, approve):
     return a
 
 
+def approval_status(eng, aid):
+    """Where an approval stands (for the worker waiting on it); a stale one is marked stale here."""
+    require(eng)
+    path = _approval_path(eng, aid)
+    if not os.path.exists(path):
+        raise ValueError(f"no approval {aid} in {eng}")
+    a = json.load(open(path))
+    if a["status"] in ("pending", "approved") and a.get("policy") != revision(eng):
+        _stale(eng, a, "the scope or rules changed")
+    return {k: a.get(k) for k in ("id", "status", "stale_reason", "command", "task", "decided_by", "kind")}
+
+
 def _stale(eng, a, why):
     a.update(status="stale", stale_reason=why, staled=time.time())
     _write_json(_approval_path(eng, a["id"]), a)
@@ -643,14 +656,189 @@ def rate_wait(eng, per_second):
 
 
 def halt(eng, on):
+    """Halt: kill the engagement's commands, refuse new ones, and (through the routing table) stop model calls of
+    its bound conversations and worker tasks. Resume undoes the block; killed work is not restarted."""
     uid = require(eng)
     flag = os.path.join(ctl_dir(eng), "HALT")
     if on:
         open(flag, "w").write(datetime.datetime.now(datetime.timezone.utc).isoformat())
+        publish_routes()  # first: model calls stop before the commands are killed
         subprocess.run(["pkill", "-KILL", "-u", str(uid)], capture_output=True)
     elif os.path.exists(flag):
         os.remove(flag)
+        publish_routes()
     _audit({"engagement": eng, "event": "halt" if on else "resume"})
+
+
+def cancel_task(eng, task):
+    """Kill the commands a worker task is running now (the worker stops the task itself)."""
+    require(eng)
+    n = 0
+    for r in running(eng):
+        if task and r.get("task") == task:
+            try:
+                os.killpg(int(r["pid"]), signal.SIGKILL)
+                n += 1
+            except (OSError, ValueError):
+                pass
+    _audit({"engagement": eng, "event": "task-cancelled", "task": task, "killed": n})
+    return n
+
+
+# ---------------------------------------------------------------- routing table for the model gateway (RW-006/7)
+ROUTES = os.environ.get("RV_ROUTES_DIR", "/routes")
+
+
+def conversations(eng):
+    try:
+        return json.load(open(os.path.join(ctl_dir(eng), "conversations.json")))
+    except (OSError, ValueError):
+        return []
+
+
+CONV_RX = re.compile(r"^[0-9a-fA-F-]{8,64}$")
+
+
+def bind_conversation(eng, cid, title=""):
+    """Tie an OpenHands conversation to an engagement: its model calls then follow the engagement's Client data
+    rule and stop when it is halted. Host only (rvctl); a conversation belongs to one engagement."""
+    require(eng)
+    if not CONV_RX.match(cid or ""):
+        raise ValueError("conversation id must be the OpenHands conversation id (hex and dashes)")
+    cid = cid.lower()
+    for e in engagements():
+        if e != eng and any(c["id"] == cid for c in conversations(e)):
+            raise ValueError(f"conversation {cid} already belongs to engagement {e}")
+    rows = [c for c in conversations(eng) if c["id"] != cid]
+    rows.append({"id": cid, "title": str(title or "")[:200], "bound_by": ACTOR,
+                 "bound": datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds")})
+    _write_json(os.path.join(ctl_dir(eng), "conversations.json"), rows)
+    publish_routes()
+    _audit({"engagement": eng, "event": "conversation-bound", "conversation": cid})
+    return rows[-1]
+
+
+def unbind_conversation(eng, cid):
+    require(eng)
+    rows = conversations(eng)
+    keep = [c for c in rows if c["id"] != (cid or "").lower()]
+    if len(keep) == len(rows):
+        raise ValueError(f"conversation {cid} is not bound to {eng}")
+    _write_json(os.path.join(ctl_dir(eng), "conversations.json"), keep)
+    publish_routes()
+    _audit({"engagement": eng, "event": "conversation-unbound", "conversation": cid})
+
+
+def routes():
+    out = {"engagements": {}, "conversations": {}, "generated": time.time()}
+    for e in engagements():
+        try:
+            pol = policy_of(e)
+        except Exception:  # noqa: BLE001 - one bad engagement must not drop the table
+            continue
+        out["engagements"][e] = {"client_data": pol["rules"].get("client_data"), "paths": pol["paths"],
+                                 "halted": os.path.exists(os.path.join(ctl_dir(e), "HALT"))}
+        for c in conversations(e):
+            out["conversations"][c["id"].replace("-", "")] = e  # OpenHands sends it with or without dashes
+    return out
+
+
+def publish_routes():
+    """Write the routing table the LiteLLM hook reads (kali-routes volume, read-only there)."""
+    try:
+        os.makedirs(ROUTES, exist_ok=True)
+        _write_json(os.path.join(ROUTES, "routes.json"), routes())
+        os.chmod(os.path.join(ROUTES, "routes.json"), 0o644)
+    except OSError:
+        pass
+
+
+# ---------------------------------------------------------------- credential references (RW-006)
+# Values live in the control volume only. Commands use $RV_CRED_<NAME> (set in the sandbox), requests use
+# {{cred:NAME}} in the URL, headers or body. Values are replaced by the reference in what is returned to the model,
+# in kali-mcp's own evidence files and in the audit log. RW-008 adds encryption, identities and expiry.
+CRED_NAME = re.compile(r"^[A-Z][A-Z0-9_]{0,31}$")
+CRED_REF = re.compile(r"\{\{cred:([A-Za-z][A-Za-z0-9_]{0,31})\}\}")
+
+
+def _cred_file(eng):
+    return os.path.join(ctl_dir(eng), "credentials.json")
+
+
+def _creds(eng):
+    try:
+        return json.load(open(_cred_file(eng)))
+    except (OSError, ValueError):
+        return {}
+
+
+def cred_set(eng, name, value):
+    require(eng)
+    name = (name or "").upper()
+    if not CRED_NAME.match(name):
+        raise ValueError("credential names are letters, digits and _ (start with a letter, up to 32)")
+    value = (value or "").rstrip("\r\n")
+    if len(value) < 4 or len(value) > 8192:
+        raise ValueError("the value must be 4 to 8192 characters")
+    c = _creds(eng)
+    c[name] = {"value": value, "set_by": ACTOR,
+               "set_at": datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds")}
+    _write_json(_cred_file(eng), c)
+    os.chmod(_cred_file(eng), 0o600)
+    _audit({"engagement": eng, "event": "credential-set", "name": name})
+
+
+def cred_remove(eng, name):
+    require(eng)
+    c = _creds(eng)
+    if c.pop((name or "").upper(), None) is None:
+        raise ValueError(f"no credential {name} in {eng}")
+    _write_json(_cred_file(eng), c)
+    _audit({"engagement": eng, "event": "credential-removed", "name": name.upper()})
+
+
+def cred_list(eng):
+    require(eng)
+    return [{"name": k, "set_by": v.get("set_by"), "set_at": v.get("set_at"), "env": f"RV_CRED_{k}",
+             "ref": "{{cred:%s}}" % k} for k, v in sorted(_creds(eng).items())]
+
+
+def cred_env(eng):
+    return {f"RV_CRED_{k}": v["value"] for k, v in _creds(eng).items()}
+
+
+def cred_used(eng, text):
+    """Names of this engagement's credentials a command or request refers to."""
+    names = set(_creds(eng))
+    used = {m.group(1).upper() for m in CRED_REF.finditer(text or "")}
+    used |= {n for n in names if re.search(r"\$\{?RV_CRED_" + n + r"\b", text or "")}
+    return sorted(used)
+
+
+def cred_expand(eng, text):
+    """{{cred:NAME}} -> the value. Unknown names raise ValueError (nothing is sent)."""
+    c = _creds(eng)
+
+    def one(m):
+        n = m.group(1).upper()
+        if n not in c:
+            raise ValueError(f"no credential {n} in {eng} (set it on the host: ./rvkit cred {eng} set {n})")
+        return c[n]["value"]
+    return CRED_REF.sub(one, text or "")
+
+
+def scrub(eng, data):
+    """Replace credential values with their reference (str or bytes)."""
+    c = _creds(eng)
+    if not c or not data:
+        return data
+    for n, v in sorted(c.items(), key=lambda kv: -len(kv[1]["value"])):
+        val = v["value"]
+        if isinstance(data, bytes):
+            data = data.replace(val.encode(), ("{{cred:%s}}" % n).encode())
+        else:
+            data = data.replace(val, "{{cred:%s}}" % n)
+    return data
 
 
 # a host never starts inside a path, a word or a dotted name: "10.0.0.1/login.php" yields only the IP
@@ -843,11 +1031,10 @@ def run(command, eng, timeout_s=600, approval_id=None, max_tier=None, task=None)
     if bad:
         return refuse(f"targets not in scope for {eng}: {bad}")
     network = not (controlled and tier == "passive" and not any(p in PASSIVE_NET for p, _ in _segments(command)))
-    if network and tier != "passive":
-        busy = [r for r in running(eng) if r.get("network") and r.get("tier", "passive") != "passive"]
-        if len(busy) >= rules["max_parallel"]:
-            return refuse(f"{len(busy)} network command(s) already running for {eng} (Max parallel: "
-                          f"{rules['max_parallel']}); wait for one to finish")
+    parallel = network and tier != "passive"
+    if parallel and _busy(eng) >= rules["max_parallel"]:
+        return refuse(f"{_busy(eng)} network command(s) already running for {eng} (Max parallel: "
+                      f"{rules['max_parallel']}); wait for one to finish")
     if tier == "intrusive":
         action = run_action(eng, command)
         if not approval_id:
@@ -871,23 +1058,50 @@ def run(command, eng, timeout_s=600, approval_id=None, max_tier=None, task=None)
         entry["original"] = command
     if not network:
         entry["network"] = "none"
+    used = cred_used(eng, command)
+    if used:
+        entry["credentials"] = used
+    if parallel:  # tools run in threads: check and reserve a slot atomically, released once its marker exists
+        with _PAR_LOCK:
+            if _busy(eng) >= rules["max_parallel"]:
+                return refuse(f"{_busy(eng)} network command(s) already running for {eng} (Max parallel: "
+                              f"{rules['max_parallel']}); wait for one to finish")
+            _RESERVED[eng] = _RESERVED.get(eng, 0) + 1
     return _execute(eng, i, entry, final, tier, timeout_s, network, approval_id,
-                    note=f"[rate limit applied: {final}]\n" if final != command else "")
+                    note=f"[rate limit applied: {final}]\n" if final != command else "", task=task,
+                    reserved=parallel)
 
 
-def _execute(eng, i, entry, final, tier, timeout_s, network, approval_id, note=""):
+_PAR_LOCK = threading.Lock()
+_RESERVED = {}
+
+
+def _busy(eng):
+    """Network commands above passive running now for eng, plus slots reserved by calls about to start one."""
+    return sum(1 for r in running(eng) if r.get("network") and r.get("tier", "passive") != "passive") + \
+        _RESERVED.get(eng, 0)
+
+
+def _execute(eng, i, entry, final, tier, timeout_s, network, approval_id, note="", task=None, reserved=False):
     """Run a checked command in the sandbox, save its output as verified evidence and audit it."""
     uid = i["uid"]
     env = {"RV_ENG": eng, "RV_UID": str(uid), "RV_HOME": f"/work/{eng}/.home",
-           "RV_SRC": "\n".join(i["scope"]["paths"]), "RV_CMD": final, "PATH": os.environ.get("PATH", "")}
+           "RV_SRC": "\n".join(i["scope"]["paths"]), "RV_CMD": final, "PATH": os.environ.get("PATH", ""),
+           **(cred_env(eng) if network else {})}
     root = os.path.join(WORK, eng)
     before = _snapshot(root)
     t0 = time.time()
     ns = ["unshare", "-m", "-p", "-f"] + ([] if network else ["-n"]) + ["--mount-proc", "--propagation", "private"]
-    p = subprocess.Popen(ns + [os.path.join(HERE, "rv-sandbox.sh")], env=env, stdout=subprocess.PIPE,
-                         stderr=subprocess.PIPE, text=True, start_new_session=True)
-    marker = _running_mark(eng, p.pid, {"command": final, "tier": tier, "started": t0, "network": network,
-                                        "timeout_s": min(int(timeout_s or 600), 3600), "approval": approval_id})
+    try:
+        p = subprocess.Popen(ns + [os.path.join(HERE, "rv-sandbox.sh")], env=env, stdout=subprocess.PIPE,
+                             stderr=subprocess.PIPE, text=True, start_new_session=True)
+        marker = _running_mark(eng, p.pid, {"command": final, "tier": tier, "started": t0, "network": network,
+                                            "timeout_s": min(int(timeout_s or 600), 3600), "approval": approval_id,
+                                            "task": task})
+    finally:
+        if reserved:  # the marker counts it from now on
+            with _PAR_LOCK:
+                _RESERVED[eng] = max(0, _RESERVED.get(eng, 0) - 1)
     try:
         out, errout = p.communicate(timeout=min(int(timeout_s or 600), 3600))
         code = p.returncode
@@ -902,7 +1116,7 @@ def _execute(eng, i, entry, final, tier, timeout_s, network, approval_id, note="
             pass
     outputs = _outputs(root, before)
     seconds = round(time.time() - t0, 1)
-    res = (out or "") + ("\n[stderr]\n" + errout if errout else "")
+    res = scrub(eng, (out or "") + ("\n[stderr]\n" + errout if errout else ""))
     # The command's own output, saved by kali-mcp (not the sandbox) and hashed in the same audit entry: it is
     # verified evidence the agent can cite, instead of a copy it would write itself (which can't be verified).
     rel = run_output_path(entry["command"])
@@ -1021,6 +1235,7 @@ def delete(eng, force=False):
         moved = f"_deleted-{eng}-{stamp}"
         os.rename(src, os.path.join(WORK, moved))
     apply_network()
+    publish_routes()
     _audit({"engagement": eng, "event": "deleted", "uid": uid, "forced": bool(force and not closed),
             "folder": moved})
     return {"folder": moved, "archives": archives(eng), "closed": bool(closed)}

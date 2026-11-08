@@ -20,6 +20,9 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import model_events  # noqa: E402  (log written by litellm/rv_events.py)
+import conversations  # noqa: E402  (OpenHands conversations bound to engagements)
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "litellm"))
+import rv_routes  # noqa: E402  (where each model route sends data)
 
 KIT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 HERE = os.path.join(KIT, "scripts", "console")
@@ -229,6 +232,45 @@ def stack_status():
     return _status["text"]
 
 
+def conv_list(eng):
+    try:
+        return conversations.listing(eng, ACTOR)
+    except conversations.Fail as e:
+        return {"error": str(e)}
+
+
+TASK_RX = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
+
+
+def task_control(eng, tid, action):
+    """Ask worker-mcp to cancel or resume a task (a request file only the host and worker-mcp can write)."""
+    if not TASK_RX.match(tid or ""):
+        raise Fail("invalid task id")
+    if not os.path.isfile(eng_path(eng, "evidence", "tasks", tid, "task.json")):
+        raise Fail(f"no task {tid} in {eng}", 404)
+    d = os.path.join(ENG_DIR, ".control", "tasks")
+    os.makedirs(d, exist_ok=True)
+    res = os.path.join(d, tid + ".result")
+    try:
+        os.remove(res)
+    except OSError:
+        pass
+    with open(os.path.join(d, tid + ".json.tmp"), "w") as f:
+        json.dump({"action": action, "by": ACTOR}, f)
+    os.replace(os.path.join(d, tid + ".json.tmp"), os.path.join(d, tid + ".json"))
+    for _ in range(40):
+        if os.path.exists(res):
+            r = json.load(open(res))
+            if not r.get("ok"):
+                raise Fail(r.get("error") or "the worker refused", 409)
+            return {"output": f"task {tid}: {action} requested"}
+        time.sleep(0.25)
+    raise Fail("the worker didn't answer (is worker-mcp running?)", 504)
+
+
+CRED_RX = re.compile(r"^[A-Za-z][A-Za-z0-9_]{0,31}$")
+
+
 def worker_tasks(eng):
     """Worker tasks, saved by worker-mcp next to their evidence, newest first."""
     tdir = eng_path(eng, "evidence", "tasks")
@@ -241,7 +283,13 @@ def worker_tasks(eng):
             if not t:
                 continue
         res = t.get("result") or {}
+        ap = t.get("approval") or {}
         out.append({"id": t.get("id"), "status": t.get("status"), "tier": t.get("tier"), "goal": t.get("goal"),
+                    "approval": {"id": ap.get("id"), "action": ap.get("action")} if ap.get("id") else None,
+                    "recovery": t.get("recovery"), "depends_on": t.get("depends_on") or [],
+                    "resumed": len(t.get("resumed") or []),
+                    "uncertain": [s.get("args", {}).get("command") or s.get("args", {}).get("url") or s.get("tool")
+                                  for s in t.get("steps", []) if s.get("state") == "uncertain"],
                     "started": t.get("started"), "finished": t.get("finished"), "models": t.get("served_by", []),
                     "steps": [s.get("args", {}).get("command") or s.get("args", {}).get("query")
                               or s.get("args", {}).get("url") or s.get("args", {}).get("path") or s.get("tool")
@@ -287,6 +335,7 @@ def overview():
         e["closed"] = bool(closed and e["halted"])
         e["model_problems"] = len(model_events.recent(86400, problems_only=True, engagement=e["engagement"]))
     return {"engagements": engs, "approvals": json.loads(ctl("approvals", "--json") or "[]"),
+            "models": rv_routes.models(E),
             "ui_url": f"http://localhost:{E.get('GATEWAY_PORT') or 8000}/", "version": VERSION,
             # failed model calls of the last 24 h (litellm/rv_events.py): the Model log badges
             "model_problems": len(model_events.recent(86400, problems_only=True))}
@@ -385,7 +434,9 @@ def api_get(path, q):
                 "scope_text": read(eng_path(eng, "SCOPE.md")), "rules_text": read(eng_path(eng, "RULES.md")),
                 "findings": findings(eng), "report_files": files,
                 "executive_summary": summary, "summary_digest": digest(summary),
-                "approvals": [a for a in json.loads(ctl("approvals", eng, "--json") or "[]")]}
+                "approvals": [a for a in json.loads(ctl("approvals", eng, "--json") or "[]")],
+                "credentials": json.loads(ctl("cred", eng, "list", "--json") or "[]"),
+                "models": rv_routes.models(E), "conversations": conv_list(eng)}
     if what == "audit":
         raw = q.get("n", ["300"])[0]
         if not raw.isdigit():
@@ -481,7 +532,42 @@ def api_post(path, body):
                 args += ["--expect", rev]
             return {"output": ctl(*args, stdin=json.dumps(texts))}
         if action in ("halt", "resume", "close"):
-            return {"output": ctl(action, eng, timeout=600)}
+            out = ctl(action, eng, timeout=600)
+            if action in ("halt", "close"):  # bound conversations: the model gateway already refuses their calls
+                try:
+                    paused = conversations.pause(eng, ACTOR)
+                    if paused:
+                        out += f"\n{sum(1 for p in paused if p['paused'])} conversation(s) paused"
+                except conversations.Fail:
+                    pass
+            return {"output": out}
+        if action == "conversation":
+            msg = field(body, "message", str, "")
+            if len(msg) > 20000:
+                raise Fail("message: at most 20000 characters")
+            try:
+                return conversations.new(eng, ACTOR, msg)
+            except conversations.Fail as e:
+                raise Fail(str(e), 502)
+        if action == "unbind":
+            cid = field(body, "id", str, "")
+            if not re.fullmatch(r"[0-9a-fA-F-]{8,64}", cid):
+                raise Fail("invalid conversation id")
+            return {"output": ctl("unbind", eng, cid)}
+        if action == "cred":
+            name, value = field(body, "name", str, ""), field(body, "value", str, "")
+            if not CRED_RX.match(name):
+                raise Fail("Name: letters, digits and _ (start with a letter, up to 32).")
+            if body.get("remove"):
+                return {"output": ctl("cred", eng, "rm", name)}
+            if not 4 <= len(value) <= 8192:
+                raise Fail("Value: 4 to 8192 characters.")
+            return {"output": ctl("cred", eng, "set", name, stdin=value)}
+        if action == "task":
+            act_ = field(body, "action", str, "")
+            if act_ not in ("cancel", "resume"):
+                raise Fail("action: cancel or resume")
+            return task_control(eng, field(body, "id", str, ""), act_)
         if action == "delete":
             return {"output": ctl("delete", eng, *(["--force"] if body.get("force") else []))}
         if action == "report":

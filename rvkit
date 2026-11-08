@@ -576,7 +576,7 @@ cmd_worker() {
 }
 
 # ---------------------------------------------------------------- install / completion
-COMMANDS="setup up down update console status doctor logs connect worker planner budget test key openhands new engagement eng quickstart watch scope show policy finding approvals approve deny halt resume audit report close delete lab bench install completion help"
+COMMANDS="setup up down update console status doctor logs connect worker planner budget test key openhands new engagement eng quickstart watch scope show policy finding approvals approve deny halt resume conversation cred task audit report close delete lab bench install completion help"
 ENG_SUB="list new show scope approvals approve deny halt resume audit report close delete"
 cmd_install() {
   local dir="${1:-$HOME/.local/bin}"
@@ -599,7 +599,7 @@ _rvkit() {
     eng) COMPREPLY=( \$(compgen -W "$ENG_SUB" -- "\$cur") ) ;;
     worker) COMPREPLY=( \$(compgen -W "show colab local api openrouter fallback" -- "\$cur") ) ;;
     lab) COMPREPLY=( \$(compgen -W "up down status" -- "\$cur") ) ;;
-    show|policy|scope|approvals|approve|deny|halt|resume|audit|report|close|delete)
+    show|policy|scope|approvals|approve|deny|halt|resume|conversation|cred|audit|report|close|delete)
       engs="\$(ls "\$(grep -E '^ENGAGEMENTS_DIR=' "$KIT/.env" 2>/dev/null | cut -d= -f2- | sed "s|^~|\$HOME|")" 2>/dev/null | grep -v '^_')"
       COMPREPLY=( \$(compgen -W "\$engs" -- "\$cur") ) ;;
   esac
@@ -613,7 +613,7 @@ EOF
       echo "complete -c rvkit -n '__fish_seen_subcommand_from eng' -a '$ENG_SUB'"
       echo "complete -c rvkit -n '__fish_seen_subcommand_from worker' -a 'show colab local api openrouter fallback'"
       echo "complete -c rvkit -n '__fish_seen_subcommand_from lab' -a 'up down status'"
-      echo "complete -c rvkit -n '__fish_seen_subcommand_from show policy scope approvals approve deny halt resume audit report close delete' -a \"(ls (grep -E '^ENGAGEMENTS_DIR=' $KIT/.env | cut -d= -f2- | string replace -r '^~' \$HOME) 2>/dev/null | string match -v '_*')\""
+      echo "complete -c rvkit -n '__fish_seen_subcommand_from show policy scope approvals approve deny halt resume conversation cred audit report close delete' -a \"(ls (grep -E '^ENGAGEMENTS_DIR=' $KIT/.env | cut -d= -f2- | string replace -r '^~' \$HOME) 2>/dev/null | string match -v '_*')\""
       ;;
     *) die "usage: ./rvkit completion bash|zsh|fish" ;;
   esac
@@ -685,7 +685,10 @@ ${B}Engagements${N}  (also as: rvkit eng <command>)
   scope <eng> [--yes]           apply edits to SCOPE.md / RULES.md (shows the diff first)
   show <eng>                    active scope and rules
   policy <eng> [--json]         what the scope allows and excludes, what isn't enforced, revision history
-  halt|resume <eng>             kill running commands and block new ones / allow again
+  halt|resume <eng>             stop commands, worker tasks and model calls, block new ones / allow again
+  conversation <eng> [new [msg]|list|bind <id>|unbind <id>]   OpenHands conversations bound to the engagement
+  cred <eng> [list|set <NAME>|rm <NAME>]   credentials for the agent to use by reference (values never shown)
+  task cancel|resume <task-id>  stop a worker task / continue an interrupted one
   audit [eng] [n]               last n audit-log entries
   finding <eng> <F-id> k=v...   change a finding: status=, severity=, notes=, title=, duplicate_of= (audited)
   report <eng>                  report (.html + .docx + .pdf) and findings register (.xlsx) in <eng>/report/
@@ -791,14 +794,48 @@ for k, b in p.items(): print("%s: spent $%.4f in the current 24 h period" % (k, 
   watch)      need_env; cmd_watch ;;
   scope)
     need_env; [ $# -ge 1 ] || die "usage: ./rvkit scope <engagement> [--yes]   (apply edits to SCOPE.md / RULES.md)"
-    kctl sync "$@" || true ;;
+    kctl sync "$@" || { rc=$?; [ "$rc" -eq 2 ] || exit "$rc"; } ;;   # 2: shown, not applied yet (no --yes)
   show)       need_env; [ $# -ge 1 ] || die "usage: ./rvkit show <engagement>"; kctl show "$1" ;;
   policy)     need_env; [ $# -ge 1 ] || die "usage: ./rvkit policy <engagement> [--json]"; kctl policy "$@" ;;
   approvals)  need_env; kctl approvals "$@" ;;
   approve|deny)
     need_env; [ $# -ge 2 ] || die "usage: ./rvkit $cmd <engagement> <approval-id>"; kctl "$cmd" "$1" "$2" ;;
   halt|resume)
-    need_env; [ $# -ge 1 ] || die "usage: ./rvkit $cmd <engagement>"; kctl "$cmd" "$1" ;;
+    need_env; [ $# -ge 1 ] || die "usage: ./rvkit $cmd <engagement>"; kctl "$cmd" "$1"
+    if [ "$cmd" = halt ]; then   # bound OpenHands conversations: the gateway already refuses their model calls
+      python3 scripts/conversations.py pause "$1" --actor "$(actor)" >/dev/null 2>&1 || true
+    fi ;;
+  conversation|conv)
+    need_env; [ $# -ge 1 ] || die "usage: ./rvkit conversation <engagement> [new [message] | list | bind <id> | unbind <id>]"
+    eng="$1"; shift
+    case "${1:-list}" in
+      new)    shift; python3 scripts/conversations.py new "$eng" --actor "$(actor)" ${1:+--message "$*"} |
+                python3 -c 'import json,sys; c=json.load(sys.stdin); print("Conversation for %s (%s): %s" % (c["engagement"], c["agent"], c["url"]))' ;;
+      list)   kctl conversations "$eng" ;;
+      bind)   [ $# -ge 2 ] || die "usage: ./rvkit conversation <engagement> bind <conversation-id>"; kctl bind "$eng" "$2" ;;
+      unbind) [ $# -ge 2 ] || die "usage: ./rvkit conversation <engagement> unbind <conversation-id>"; kctl unbind "$eng" "$2" ;;
+      *) die "usage: ./rvkit conversation <engagement> [new [message] | list | bind <id> | unbind <id>]" ;;
+    esac ;;
+  cred)
+    need_env; [ $# -ge 1 ] || die "usage: ./rvkit cred <engagement> [list | set <NAME> | rm <NAME>]"
+    eng="$1"; shift
+    case "${1:-list}" in
+      list) kctl cred "$eng" list ;;
+      set)  [ $# -ge 2 ] || die "usage: ./rvkit cred <engagement> set <NAME>   (the value is asked for, hidden)"
+            v="$(ask_secret "Value for $2")"; [ -n "$v" ] || die "no value given"
+            printf '%s' "$v" | kctl cred "$eng" set "$2" ;;
+      rm)   [ $# -ge 2 ] || die "usage: ./rvkit cred <engagement> rm <NAME>"; kctl cred "$eng" rm "$2" ;;
+      *) die "usage: ./rvkit cred <engagement> [list | set <NAME> | rm <NAME>]" ;;
+    esac ;;
+  task)
+    need_env; [ $# -ge 2 ] || die "usage: ./rvkit task cancel|resume <task-id>"
+    case "$1" in cancel|resume) ;; *) die "usage: ./rvkit task cancel|resume <task-id>" ;; esac
+    [[ "$2" =~ ^[A-Za-z0-9_-]{1,64}$ ]] || die "invalid task id"
+    d="$(expand "$(envget ENGAGEMENTS_DIR)")/.control/tasks"; mkdir -p "$d"; rm -f "$d/$2.result"
+    printf '{"action": "%s", "by": "%s"}\n' "$1" "$(actor)" > "$d/$2.json"
+    for _ in $(seq 1 15); do [ -f "$d/$2.result" ] && break; sleep 1; done
+    if [ -f "$d/$2.result" ]; then python3 -c 'import json,sys; r=json.load(open(sys.argv[1])); print(("done" if r["ok"] else "error: "+r["error"]))' "$d/$2.result"
+    else warn "the worker didn't answer (is worker-mcp running?)"; fi ;;
   audit)      need_env; kctl audit "$@" ;;
   lab)
     need_env
