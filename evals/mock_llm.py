@@ -11,12 +11,24 @@ exercises the real loop: the request format, tool-call parsing, the kali sandbox
   import mock_llm; mock_llm.serve(port)  start in a background thread (evals/agent_loop_test.sh does this
                                           inside the worker container)
 Also records every request in REQUESTS, so a test can check what the worker sent.
+
+Scenario mode: a deterministic stub for any client (the planner path, the model log, error handling), no GPU and no
+provider account. A scenario is a list of steps; the reply to a request is the step for its turn (how many assistant
+messages the conversation already has), the last step repeating, so the same conversation always gets the same answer:
+  {"content": "text"}                                   a plain answer
+  {"tool_call": {"name": "...", "arguments": {...}}}    one tool call
+  {"status": 429, "error": "rate limited"}              an HTTP error in the OpenAI error format (402, 500, ...)
+  {"refusal": true}                                     an empty answer with finish_reason content_filter
+Streaming requests ("stream": true, as OpenHands sends) get the same answer as server-sent chunks.
+  python3 evals/mock_llm.py <port> --scenario <file.json>
+  mock_llm.SCENARIO = [...]               from a test
 """
 import json, re, sys, threading, time, uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 REQUESTS = []
 TITLE = "Mock finding from the agent-loop test"
+SCENARIO = None  # list of steps (see above); None: the worker agent-loop plan
 
 
 def _call(name, args):
@@ -50,23 +62,74 @@ def reply(body):
         "observations": ["mock model"], "confidence": "high"})]}
 
 
+def scenario_step(body, steps):
+    """The scenario step for this conversation's turn."""
+    if not steps:
+        raise ValueError("empty scenario")
+    turn = sum(1 for m in body.get("messages", []) if m.get("role") == "assistant")
+    return steps[min(turn, len(steps) - 1)]
+
+
+def scenario_reply(step):
+    """(http status, message or error text, finish_reason) for a scenario step."""
+    if "status" in step:
+        return int(step["status"]), str(step.get("error", "mock error")), None
+    if step.get("refusal"):
+        return 200, {"role": "assistant", "content": ""}, "content_filter"
+    if "tool_call" in step:
+        c = step["tool_call"]
+        return 200, {"role": "assistant", "content": None, "tool_calls": [_call(c["name"], c.get("arguments", {}))]}, \
+            "tool_calls"
+    return 200, {"role": "assistant", "content": str(step.get("content", ""))}, "stop"
+
+
+def _chunks(msg, finish, model):
+    """The answer as OpenAI streaming chunks."""
+    base = {"id": "mock-" + uuid.uuid4().hex[:8], "object": "chat.completion.chunk", "created": int(time.time()),
+            "model": model}
+    delta = {"role": "assistant"}
+    if msg.get("tool_calls"):
+        delta["tool_calls"] = [{**c, "index": i} for i, c in enumerate(msg["tool_calls"])]
+    else:
+        delta["content"] = msg.get("content") or ""
+    yield {**base, "choices": [{"index": 0, "delta": delta, "finish_reason": None}]}
+    yield {**base, "choices": [{"index": 0, "delta": {}, "finish_reason": finish}]}
+
+
 class H(BaseHTTPRequestHandler):
     def log_message(self, *a):
         pass
+
+    def _json(self, code, obj):
+        data = json.dumps(obj).encode()
+        self.send_response(code)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
 
     def do_POST(self):
         n = int(self.headers.get("Content-Length") or 0)
         body = json.loads(self.rfile.read(n) or b"{}")
         REQUESTS.append(body)
-        out = {"id": "mock-" + uuid.uuid4().hex[:8], "object": "chat.completion", "created": int(time.time()),
-               "model": "mock-" + str(body.get("model")), "choices": [{"index": 0, "message": reply(body),
-               "finish_reason": "tool_calls"}], "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}}
-        data = json.dumps(out).encode()
-        self.send_response(200)
-        self.send_header("Content-Type", "application/json")
-        self.send_header("Content-Length", str(len(data)))
-        self.end_headers()
-        self.wfile.write(data)
+        model = "mock-" + str(body.get("model"))
+        if SCENARIO is not None:
+            code, msg, finish = scenario_reply(scenario_step(body, SCENARIO))
+            if code != 200:
+                return self._json(code, {"error": {"message": msg, "type": "mock_error", "code": code}})
+        else:
+            msg, finish = reply(body), "tool_calls"
+        if body.get("stream"):
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream")
+            self.end_headers()
+            for c in _chunks(msg, finish, model):
+                self.wfile.write(f"data: {json.dumps(c)}\n\n".encode())
+            self.wfile.write(b"data: [DONE]\n\n")
+            return
+        self._json(200, {"id": "mock-" + uuid.uuid4().hex[:8], "object": "chat.completion", "created": int(time.time()),
+                         "model": model, "choices": [{"index": 0, "message": msg, "finish_reason": finish}],
+                         "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}})
 
 
 def serve(port=8099, background=True):
@@ -78,6 +141,11 @@ def serve(port=8099, background=True):
 
 
 if __name__ == "__main__":
-    port = int(sys.argv[1]) if len(sys.argv) > 1 else 8099
+    args = sys.argv[1:]
+    if "--scenario" in args:
+        i = args.index("--scenario")
+        SCENARIO = json.load(open(args[i + 1]))
+        del args[i:i + 2]
+    port = int(args[0]) if args else 8099
     print(f"mock model on http://127.0.0.1:{port}/v1")
     serve(port, background=False)
