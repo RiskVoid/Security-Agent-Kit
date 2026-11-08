@@ -29,14 +29,47 @@ async function api(path, body) {
 function toast(msg, bad = false) {
   const t = $("#toast");
   t.textContent = msg; t.className = "rv-toast" + (bad ? " bad" : ""); t.hidden = false;
+  t.setAttribute("role", bad ? "alert" : "status");
   clearTimeout(toast.timer); toast.timer = setTimeout(() => { t.hidden = true; }, bad ? 8000 : 3500);
 }
 
 async function act(btn, fn, okMsg) {
   if (btn) btn.disabled = true;
   try { const r = await fn(); if (okMsg) toast(okMsg); return r; }
-  catch (e) { toast(e.message, true); }
+  catch (e) {
+    if (e.status === 409) return conflict(e);
+    toast(e.message, true);
+  }
   finally { if (btn) btn.disabled = false; }
+}
+
+// Someone else (the agent, ./rvkit, another tab) changed the record since this page loaded it. Keep what the user typed
+// on screen, take the new revisions so a second save is a deliberate overwrite, and make scope changes preview again.
+async function conflict(e) {
+  const what = e.message.replace(/[:.]?\s*reload\b.*$/i, "");
+  toast(`${what}. Your edit is still on screen; saving again replaces the other change.`, true);
+  if (!state.current) return;
+  try {
+    const fresh = await api(`/api/eng/${enc(state.current)}`);
+    const d = state.detail;
+    if (!d || d.engagement !== fresh.engagement) return;
+    d.info = fresh.info; d.findings = fresh.findings; d.meta_digest = fresh.meta_digest; d.summary_digest = fresh.summary_digest;
+    if (state.tab === "findings" && state.openFinding) {  // show the saved version next to the user's edit
+      const keep = { status: $("#fe-status")?.value, severity: $("#fe-sev")?.value, notes: $("#fe-notes")?.value, dup: $("#fe-dup")?.value };
+      paneFindings();
+      if ($("#fe-status")) { $("#fe-status").value = keep.status; $("#fe-sev").value = keep.severity; $("#fe-notes").value = keep.notes; if ($("#fe-dup")) $("#fe-dup").value = keep.dup || ""; }
+      const f = d.findings.find((x) => x.id === state.openFinding);
+      if (f && $(".rv-editor")) $(".rv-editor").insertAdjacentHTML("afterbegin", `<div class="rv-banner warn"><div class="rv-banner-body">
+        <p class="rv-banner-title">Saved meanwhile${f.updated_by ? " by " + esc(f.updated_by) : ""} (revision ${esc(f.revision)})</p>
+        <p class="rv-banner-sub">Status ${esc(f.status)}, severity ${esc(f.severity)}${f.notes ? `, notes: ${esc(f.notes)}` : ""}. Your edit is below; Save replaces that version.</p></div></div>`);
+    }
+    if (state.tab === "scope") {
+      state.preview = null;
+      const a = $("#apply-btn"), o = $("#preview-out");
+      if (a) a.disabled = true;
+      if (o) o.innerHTML = `<div class="rv-banner warn"><div class="rv-banner-body"><p class="rv-banner-title">The active scope changed</p><p class="rv-banner-sub">Preview again to see your edit against the current scope, then apply.</p></div></div>`;
+    }
+  } catch { /* the toast already says what happened */ }
 }
 
 const TIER_CLASS = { passive: "passive", active: "active-tier", intrusive: "intrusive" };
@@ -202,11 +235,20 @@ function renderDetail() {
       </div>
       <div id="confirm-slot"></div>
     </div>
-    <div class="rv-tabs" role="tablist">
-      ${Object.entries(TABS).map(([t, name]) => `<button role="tab" aria-selected="${state.tab === t}" data-tab="${t}" class="rv-tab ${state.tab === t ? "active" : ""}">${name}${counts[t] !== undefined ? ` <span class="n">${counts[t]}</span>` : ""}</button>`).join("")}
+    <div class="rv-tabs" role="tablist" aria-label="Engagement sections">
+      ${Object.entries(TABS).map(([t, name]) => `<button role="tab" id="tab-${t}" aria-controls="pane" aria-selected="${state.tab === t}" tabindex="${state.tab === t ? 0 : -1}" data-tab="${t}" class="rv-tab ${state.tab === t ? "active" : ""}">${name}${counts[t] !== undefined ? ` <span class="n">${counts[t]}</span>` : ""}</button>`).join("")}
     </div>
-    <div id="pane" class="rv-pane"></div>`;
+    <div id="pane" class="rv-pane" role="tabpanel" aria-labelledby="tab-${state.tab}" tabindex="-1"></div>`;
   $$(".rv-tab").forEach((b) => b.addEventListener("click", () => { state.tab = b.dataset.tab; renderDetail(); }));
+  // keyboard: arrow keys, Home and End move between tabs (WAI-ARIA tabs pattern)
+  $(".rv-tabs").addEventListener("keydown", (ev) => {
+    const keys = Object.keys(TABS), i = keys.indexOf(state.tab);
+    const next = { ArrowRight: i + 1, ArrowLeft: i - 1, Home: 0, End: keys.length - 1 }[ev.key];
+    if (next === undefined) return;
+    ev.preventDefault();
+    state.tab = keys[(next + keys.length) % keys.length]; renderDetail();
+    $(`#tab-${state.tab}`).focus();
+  });
   connectStream();
   $("#halt-btn")?.addEventListener("click", (ev) => lifecycle(ev.currentTarget, "halt", "Halted: running commands were killed."));
   $("#resume-btn")?.addEventListener("click", (ev) => lifecycle(ev.currentTarget, "resume", "Resumed."));
@@ -227,8 +269,11 @@ function confirmBox(title, text, label, fn) {
   $("#confirm-slot").innerHTML = `<div class="rv-banner danger"><div class="rv-banner-body">
     <p class="rv-banner-title">${esc(title)}</p><p class="rv-banner-sub">${esc(text)}</p>
     <div class="rv-actions start" style="margin-top:8px"><button id="cf-yes" class="rv-btn danger">${esc(label)}</button><button id="cf-no" class="rv-btn ghost">Cancel</button></div></div></div>`;
-  $("#cf-no").addEventListener("click", () => { $("#confirm-slot").innerHTML = ""; });
+  const close = () => { $("#confirm-slot").innerHTML = ""; $("#delete-btn")?.focus(); };
+  $("#cf-no").addEventListener("click", close);
   $("#cf-yes").addEventListener("click", (ev) => fn(ev.currentTarget));
+  $("#confirm-slot").addEventListener("keydown", (ev) => { if (ev.key === "Escape") close(); });
+  $("#cf-no").focus();  // the safe choice has focus; Escape cancels
 }
 
 async function lifecycle(btn, action, msg) {

@@ -124,8 +124,8 @@ def update(engagement: str, finding_id: str, expected_revision: int | None = Non
             raise ValueError(f"no finding {finding_id}")
         before = cur_row["revision"]
         if expected_revision is not None and int(expected_revision) != before:
-            raise Conflict(f"{finding_id} changed since you opened it (revision {before}, you had "
-                           f"{expected_revision}): reload and apply your change again")
+            raise Conflict(f"{finding_id} was changed by someone else since you opened it (now revision {before}, "
+                           f"you had {expected_revision}): reload and apply your change again")
         if f.get("status") == "duplicate" or f.get("duplicate_of"):
             orig = f.get("duplicate_of") or ""
             if f.get("status", "duplicate") != "duplicate":

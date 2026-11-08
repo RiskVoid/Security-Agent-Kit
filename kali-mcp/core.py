@@ -10,7 +10,7 @@ Trust model
 The network policy is the hard boundary for scope. Tiers, rate caps and the regex pre-check are guardrails
 against mistakes: a script could still send intrusive traffic to in-scope hosts.
 """
-import datetime, difflib, hashlib, ipaddress, json, os, re, shutil, signal, subprocess, time, uuid
+import datetime, difflib, hashlib, ipaddress, json, os, re, shutil, signal, socket, subprocess, time, uuid
 
 WORK, CONTROL, HERE = "/work", "/control", os.path.dirname(os.path.abspath(__file__))
 REGISTRY = os.path.join(CONTROL, "registry.json")
@@ -337,10 +337,24 @@ def _local_subnets():
     return sorted(n for n in nets if not n.startswith("127.") and n != LAB_NET)
 
 
+def _host_addrs(blocked):
+    """The Docker host's addresses as containers see them (Docker Desktop and OrbStack forward them to the host's
+    loopback, where the console listens), unless a blocked network already covers them."""
+    nets = [ipaddress.ip_network(b) for b in blocked]
+    out = set()
+    for h in ("host.docker.internal", "host.internal", "gateway.docker.internal"):
+        try:
+            out |= {ai[4][0] for ai in socket.getaddrinfo(h, None, socket.AF_INET)}
+        except OSError:
+            pass
+    return sorted(f"{a}/32" for a in out if not any(ipaddress.ip_address(a) in n for n in nets))
+
+
 def apply_network():
     """Rebuild nftables policy and per-engagement DNS for every registered engagement (idempotent)."""
     reg = registry()
     blocked = ALWAYS_BLOCKED + _local_subnets()  # other Docker services (LiteLLM, OpenHands, ...) included
+    blocked += _host_addrs(blocked)  # the host itself (the console, other local services)
     online_infra = infra_domains()
     sets, chains, vmap, nat = [], [], [], []
     for eng, uid in sorted(reg.items(), key=lambda x: x[1]):

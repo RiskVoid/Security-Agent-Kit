@@ -387,7 +387,10 @@ def api_get(path, q):
                 "executive_summary": summary, "summary_digest": digest(summary),
                 "approvals": [a for a in json.loads(ctl("approvals", eng, "--json") or "[]")]}
     if what == "audit":
-        n = max(1, min(int(q.get("n", ["300"])[0]), 2000))
+        raw = q.get("n", ["300"])[0]
+        if not raw.isdigit():
+            raise Fail("n must be a number")
+        n = max(1, min(int(raw), 2000))
         lines = ctl("audit", eng, str(n)).splitlines()
         return {"entries": [json.loads(l) for l in lines if l.startswith("{")][::-1]}
     if what == "tasks":
@@ -399,23 +402,61 @@ def api_get(path, q):
     raise Fail("not found", 404)
 
 
+TARGET_RX = re.compile(r"^[A-Za-z0-9._:/\[\]*%@-]+$")  # IPs, CIDRs, domains (incl. *.), URLs, /src paths
+
+
+def field(body, key, kind, default):
+    """A request field of the expected JSON type (400 otherwise); default when absent or null."""
+    v = body.get(key)
+    if v is None:
+        return default
+    if kind is not bool and isinstance(v, bool) or not isinstance(v, kind):
+        names = kind.__name__ if isinstance(kind, type) else " or ".join(k.__name__ for k in kind)
+        raise Fail(f"{key}: expected {names}")
+    return v
+
+
+REV_RX = re.compile(r"^[0-9a-f]{16}$")
+
+
+def digest_field(body):
+    d = field(body, "digest", str, None)
+    if d is not None and not REV_RX.match(d):
+        raise Fail("digest: expected the value the page loaded")
+    return d
+
+
 def api_post(path, body):
     if path == "/api/engagements":  # create
-        name = body.get("name", "")
+        name = field(body, "name", str, "")
         if not NAME_RX.match(name):
             raise Fail("Name: letters, digits, dot, dash and underscore; start with a letter or digit.")
-        targets = [t.strip() for t in str(body.get("targets", "")).splitlines() if t.strip()]
+        if os.path.exists(eng_path(name)):
+            raise Fail(f"An engagement folder named {name} already exists.", 409)
+        targets = [t.strip() for t in field(body, "targets", str, "").splitlines() if t.strip()]
         if not targets:
             raise Fail("Add at least one target.")
-        tiers = [t for t in body.get("tiers", []) if t in ("passive", "active", "intrusive")] or ["passive"]
-        args = ["engagement", name, "--tiers", ",".join(tiers), "--rate", str(int(body.get("rate") or 100)),
-                "--network", "offline" if body.get("network") == "offline" else "online"]
-        if body.get("client"):
-            args += ["--client", str(body["client"])[:200]]
-        if body.get("private"):
+        if len(targets) > 500:
+            raise Fail("At most 500 targets; use networks (CIDR) or domains for larger scopes.")
+        for tg in targets:
+            if tg.startswith("-") or len(tg) > 253 or not TARGET_RX.match(tg):
+                raise Fail(f"Not a target: {tg[:80]!r}. Use an IP, a CIDR network, a domain, a URL or a /src path.")
+        tiers = field(body, "tiers", list, [])
+        if any(x not in ("passive", "active", "intrusive") for x in tiers):
+            raise Fail("Tiers are passive, active and intrusive.")
+        rate = field(body, "rate", (int, str), 100)
+        if not str(rate).strip().isdigit() or not 1 <= int(str(rate).strip()) <= 100_000:
+            raise Fail("Max rate: a whole number of requests per second, 1 to 100000.")
+        network = field(body, "network", str, "online")
+        if network not in ("online", "offline"):
+            raise Fail("Network: online or offline.")
+        client = field(body, "client", str, "").strip()
+        args = ["engagement", name, "--tiers", ",".join(tiers or ["passive"]), "--rate", str(int(str(rate).strip())),
+                "--network", network]
+        if client:
+            args += ["--client", client.replace("\n", " ")[:200]]
+        if field(body, "private", bool, False):
             args.append("--private")
-        if any(t.startswith("-") for t in targets):
-            raise Fail("A target can't start with '-'.")
         return {"output": rvkit(*args, *targets)}
     m = re.match(r"^/api/eng/([^/]+)/(\w+)$", path)
     if m:
@@ -429,8 +470,11 @@ def api_post(path, body):
             if not texts:
                 raise Fail("nothing to apply")
             args = ["sync", eng, "--yes", "--stdin"]
-            if body.get("revision"):
-                args += ["--expect", str(body["revision"])]
+            rev = field(body, "revision", str, "")
+            if rev:
+                if not REV_RX.match(rev):
+                    raise Fail("revision: expected the value the page loaded")
+                args += ["--expect", rev]
             return {"output": ctl(*args, stdin=json.dumps(texts))}
         if action in ("halt", "resume", "close"):
             return {"output": ctl(action, eng, timeout=600)}
@@ -440,16 +484,16 @@ def api_post(path, body):
             return ops("report.build", eng, timeout=900)
         if action == "meta":
             fields = {k: body[k] for k in ("client", "prepared by", "version", "classification") if k in body}
-            return ops("meta.set", eng, fields=fields, expected_digest=body.get("digest"))
+            return ops("meta.set", eng, fields=fields, expected_digest=digest_field(body))
         if action == "summary":
-            return ops("summary.set", eng, text=body.get("text", ""), expected_digest=body.get("digest"))
+            return ops("summary.set", eng, text=field(body, "text", str, ""), expected_digest=digest_field(body))
         if action == "finding":
             fid = body.get("id", "")
             if not isinstance(fid, str) or not FID_RX.match(fid):
                 raise Fail("invalid finding id")
             fields = {k: body[k] for k in ("status", "severity", "notes", "duplicate_of", "title") if k in body}
             return {"finding": ops("finding.update", eng, id=fid, fields=fields,
-                                   expected_revision=body.get("revision"))}
+                                   expected_revision=field(body, "revision", int, None))}
     m = re.match(r"^/api/approvals/([^/]+)/([a-f0-9]{6,32})/(approve|deny)$", path)
     if m:
         eng, aid, action = m.groups()
@@ -523,25 +567,49 @@ class H(BaseHTTPRequestHandler):
                 return self._send(200, data, "text/html", {"Content-Security-Policy": REPORT_CSP})
             return self._send(200, data, mimetypes.guess_type(name)[0] or "application/octet-stream",
                               {"Content-Disposition": f'attachment; filename="{name}"'})
+        if u.path.startswith("/api/") and not self._same_origin():
+            return self._send(403, {"error": "cross-site request refused"})
         if u.path == "/api/stream":
             return self._stream(q)
         if u.path.startswith("/api/"):
             return self._api(lambda: api_get(u.path, q))
         self._send(404, {"error": "not found"})
 
+    def _same_origin(self):
+        """Browsers say where a request comes from; anything but this page is refused (defence in depth next to the
+        SameSite cookie and the X-RV-Console header). Clients that send neither header (curl) are judged by those."""
+        origin = self.headers.get("Origin")
+        if origin and origin not in (f"http://127.0.0.1:{PORT}", f"http://localhost:{PORT}"):
+            return False
+        return self.headers.get("Sec-Fetch-Site", "same-origin") in ("same-origin", "none")
+
     def do_POST(self):
         if not self._host_ok():
             return self._send(403, {"error": "wrong host"})
+        if not self._same_origin():
+            return self._send(403, {"error": "cross-site request refused"})
         if not self._authed() or self.headers.get("X-RV-Console") != "1":
             return self._send(401, {"error": "not signed in"})
-        n = int(self.headers.get("Content-Length") or 0)
+        if self.headers.get("Content-Type", "").split(";")[0].strip().lower() != "application/json":
+            return self._send(415, {"error": "send JSON (Content-Type: application/json)"})
+        try:
+            n = int(self.headers.get("Content-Length") or 0)
+        except ValueError:
+            return self._send(400, {"error": "bad Content-Length"})
         if n > 2_000_000:
             return self._send(413, {"error": "too large"})
         try:
             body = json.loads(self.rfile.read(n) or b"{}")
         except ValueError:
             return self._send(400, {"error": "invalid JSON"})
+        if not isinstance(body, dict):
+            return self._send(400, {"error": "the request body must be a JSON object"})
         self._api(lambda: api_post(urllib.parse.urlsplit(self.path).path, body))
+
+    def do_PUT(self):
+        self._send(405, {"error": "method not allowed"}, extra={"Allow": "GET, POST"})
+
+    do_DELETE = do_PATCH = do_PUT
 
     def _stream(self, q):
         """Server-sent events: "overview" always, "live" for ?eng=<name>; a comment line every 15 s keeps it open."""

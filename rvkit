@@ -270,6 +270,12 @@ EOF
 }
 
 # ---------------------------------------------------------------- doctor
+# kit_exposed: true when the kit folder (.env, the console token) sits inside a folder the containers mount
+kit_exposed() {
+  python3 -c 'import os,sys; k=os.path.realpath(sys.argv[1]); sys.exit(0 if any(d and (k+"/").startswith(os.path.realpath(os.path.expanduser(d)).rstrip("/")+"/") for d in sys.argv[2:]) else 1)' \
+    "$PWD" "$(envget PROJECTS_DIR)" "$(envget ENGAGEMENTS_DIR)"
+}
+
 cmd_doctor() {
   local fails=0 warns=0 v
   pass() { ok "$*"; }
@@ -289,6 +295,8 @@ cmd_doctor() {
 
   bold "Settings"
   for v in PROJECTS_DIR ENGAGEMENTS_DIR; do [ -d "$(expand "$(envget $v)")" ] && pass "$v: $(envget $v)" || fail "$v folder missing: $(envget $v)"; done
+  if kit_exposed; then fail "The kit folder is inside PROJECTS_DIR or ENGAGEMENTS_DIR: containers would see .env and the console token. Move it, or point those settings elsewhere"
+  else pass "The kit folder (keys, console token) is not mounted into any container"; fi
   [ -n "$(envget "$(planner_key)")" ] && pass "$(planner_key) set (planner)" || note "$(planner_key) empty: only the riskvoid-local agent works"
   [ "$(envget WORKER_FALLBACK)" = on ] && note "Worker fallback ON: while the worker is down, tool output and code go to $(envget WORKER_FALLBACK_MODEL)" || pass "Worker fallback off"
 
@@ -700,7 +708,8 @@ case "$cmd" in
   update)     cmd_update ;;
   console)    need_env; need_docker
               bold "RiskVoid Console: engagements, approvals, findings, reports"
-              echo "   Runs on this computer only (127.0.0.1); the agent's containers can't reach it. Ctrl-C stops it."
+              kit_exposed && die "The kit folder is inside PROJECTS_DIR or ENGAGEMENTS_DIR, so containers could read .env and the console token. Move the kit or change those settings first."
+              echo "   Runs on this computer only (127.0.0.1) and needs its sign-in token, which no container has. Ctrl-C stops it."
               if [ "${1:-}" = "--no-open" ]; then echo "   Sign-in link: $(python3 scripts/console.py --print-url-only)"; exec python3 scripts/console.py
               else exec python3 scripts/console.py --open; fi ;;
   status)     need_env; need_docker; cmd_status ;;

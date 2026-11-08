@@ -75,6 +75,10 @@ jobs:
         run: bash evals/phase3_policy_test.sh
       - name: Console (sign-in, CSRF, read API)
         run: bash evals/console_test.sh
+      - name: Console contract (validation, conflicts, audit attribution, live stream, isolation)
+        run: python3 evals/console_contract_test.py
+      - name: Model stub through LiteLLM (no GPU, no provider)
+        run: bash evals/model_stub_test.sh
       - name: Tool smoke test
         run: bash evals/tools_smoke.sh
       - name: Worker agent loop (scripted model)
