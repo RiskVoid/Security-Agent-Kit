@@ -45,10 +45,12 @@ then plans the work, runs the tools, checks what it finds and hands you a brande
 
 It's built so you can **trust it on client work**:
 
-- <img src="docs/img/icons/sparkles.svg" width="18" height="18" align="top" alt=""> **Two models, one team.** A strong cloud model **plans** and writes. A separate **worker** model runs the tools and reads the client's code, so raw tool output and source code stay with the worker. The worker can run on your own GPU, a rented one, or a hosted model, so **you don't need a GPU**.
-- <img src="docs/img/icons/lock.svg" width="18" height="18" align="top" alt=""> **A locked sandbox.** Every tool runs in a Kali Linux sandbox with a firewall that only reaches the targets you authorised. Nothing else is reachable.
-- <img src="docs/img/icons/shield-check.svg" width="18" height="18" align="top" alt=""> **You stay in charge.** Risky (intrusive) steps wait for your approval. One command stops everything.
-- <img src="docs/img/icons/file-text.svg" width="18" height="18" align="top" alt=""> **Evidence you can defend.** Every command is logged, and every piece of evidence is hashed (SHA-256) and linked to the command that produced it.
+| &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; | |
+|:-:|---|
+| <img src="docs/img/icons/sparkles.svg" width="20" height="20" alt=""> | **Two models, one team.** A strong cloud model **plans** and writes. A separate **worker** model runs the tools and reads the client's code, so raw tool output and source code stay with the worker. The worker can run on your own GPU, a rented one, or a hosted model, so **you don't need a GPU**. |
+| <img src="docs/img/icons/lock.svg" width="20" height="20" alt=""> | **A locked sandbox.** Every tool runs in a Kali Linux sandbox with a firewall that only reaches the targets you authorised. Nothing else is reachable. |
+| <img src="docs/img/icons/shield-check.svg" width="20" height="20" alt=""> | **You stay in charge.** Risky (intrusive) steps wait for your approval. One command stops everything. |
+| <img src="docs/img/icons/file-text.svg" width="20" height="20" alt=""> | **Evidence you can defend.** Every command is logged, and every piece of evidence is hashed (SHA-256) and linked to the command that produced it. |
 
 Everything runs in Docker on your own computer. One command sets it up.
 
@@ -56,15 +58,15 @@ Everything runs in Docker on your own computer. One command sets it up.
 
 ## What it can do
 
-| Work | Method | Example tools |
-|---|---|---|
-| <img src="docs/img/icons/code.svg" width="18" height="18" align="top" alt="">&nbsp; **Source code review** | OWASP ASVS 5.0 | semgrep, Joern data flow, bandit, manual review |
-| <img src="docs/img/icons/package.svg" width="18" height="18" align="top" alt="">&nbsp; **Dependencies & supply chain** | SLSA / OpenSSF | trivy, grype, osv-scanner, syft (SBOM) |
-| <img src="docs/img/icons/key.svg" width="18" height="18" align="top" alt="">&nbsp; **Secrets in code & git history** | | gitleaks, trufflehog |
-| <img src="docs/img/icons/globe.svg" width="18" height="18" align="top" alt="">&nbsp; **Web applications** | OWASP WSTG 4.2 | ZAP, nuclei, ffuf, sqlmap, httpx |
-| <img src="docs/img/icons/plug.svg" width="18" height="18" align="top" alt="">&nbsp; **APIs: REST & GraphQL** | OWASP API Top 10 | schemathesis, jwt_tool, GraphQL tools |
-| <img src="docs/img/icons/bot.svg" width="18" height="18" align="top" alt="">&nbsp; **AI apps, agents & MCP servers** | OWASP LLM Top 10, MITRE ATLAS | garak, `rv-llm` (prompt injection, MCP audit) |
-| <img src="docs/img/icons/server.svg" width="18" height="18" align="top" alt="">&nbsp; **External networks** | PTES | nmap, nuclei, testssl, DNS tools |
+| &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; | Work | Method | Example tools |
+|:-:|---|---|---|
+| <img src="docs/img/icons/code.svg" width="20" height="20" alt=""> | **Source code review** | OWASP ASVS 5.0 | semgrep, Joern data flow, bandit, manual review |
+| <img src="docs/img/icons/package.svg" width="20" height="20" alt=""> | **Dependencies & supply chain** | SLSA / OpenSSF | trivy, grype, osv-scanner, syft (SBOM) |
+| <img src="docs/img/icons/key.svg" width="20" height="20" alt=""> | **Secrets in code & git history** | | gitleaks, trufflehog |
+| <img src="docs/img/icons/globe.svg" width="20" height="20" alt=""> | **Web applications** | OWASP WSTG 4.2 | ZAP, nuclei, ffuf, sqlmap, httpx |
+| <img src="docs/img/icons/plug.svg" width="20" height="20" alt=""> | **APIs: REST & GraphQL** | OWASP API Top 10 | schemathesis, jwt_tool, GraphQL tools |
+| <img src="docs/img/icons/bot.svg" width="20" height="20" alt=""> | **AI apps, agents & MCP servers** | OWASP LLM Top 10, MITRE ATLAS | garak, `rv-llm` (prompt injection, MCP audit) |
+| <img src="docs/img/icons/server.svg" width="20" height="20" alt=""> | **External networks** | PTES | nmap, nuclei, testssl, DNS tools |
 
 On top of that:
 - **Vulnerability intel:** CVE lookups from CISA KEV, EPSS, NVD and OSV.
@@ -85,12 +87,12 @@ The full list, with the tier of each tool (passive, active or intrusive), is in
 
 ## What you need
 
-| Requirement | Notes |
-|---|---|
-| <img src="docs/img/icons/laptop.svg" width="18" height="18" align="top" alt="">&nbsp; **A Mac or Linux computer** with **Docker** | Docker Desktop, OrbStack or Docker Engine. 16 GB RAM recommended (8 GB minimum), ~25 GB free disk. No GPU needed |
-| <img src="docs/img/icons/key.svg" width="18" height="18" align="top" alt="">&nbsp; **An [OpenRouter](https://openrouter.ai/keys) key** | Pays for the planner, and for the worker if you have no GPU (see below). A few dollars covers many runs, with a daily cap (default $20) |
-| <img src="docs/img/icons/cpu.svg" width="18" height="18" align="top" alt="">&nbsp; **Somewhere for the worker to run** | Pick one of five options [below](#where-the-worker-model-runs), from "no GPU at all" to "fully on your own hardware" |
-| <img src="docs/img/icons/terminal.svg" width="18" height="18" align="top" alt="">&nbsp; `python3`, `curl`, `perl`, `openssl` | Already on most Macs and Linux machines |
+| &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; | Requirement | Notes |
+|:-:|---|---|
+| <img src="docs/img/icons/laptop.svg" width="20" height="20" alt=""> | **A Mac or Linux computer** with **Docker** | Docker Desktop, OrbStack or Docker Engine. 16 GB RAM recommended (8 GB minimum), ~25 GB free disk. No GPU needed |
+| <img src="docs/img/icons/key.svg" width="20" height="20" alt=""> | **An [OpenRouter](https://openrouter.ai/keys) key** | Pays for the planner, and for the worker if you have no GPU (see below). A few dollars covers many runs, with a daily cap (default $20) |
+| <img src="docs/img/icons/cpu.svg" width="20" height="20" alt=""> | **Somewhere for the worker to run** | Pick one of five options [below](#where-the-worker-model-runs), from "no GPU at all" to "fully on your own hardware" |
+| <img src="docs/img/icons/terminal.svg" width="20" height="20" alt=""> | `python3`, `curl`, `perl`, `openssl` | Already on most Macs and Linux machines |
 
 > [!TIP]
 > **The minimum:** a computer with Docker and an OpenRouter key. That's enough to run everything.
@@ -100,13 +102,13 @@ The full list, with the tier of each tool (passive, active or intrusive), is in
 The worker is the model that runs the tools. Pick whichever suits your budget and privacy needs, and switch
 any time with one command:
 
-| Option | You need | Client data goes to | Command |
-|---|---|---|---|
-| <img src="docs/img/icons/globe.svg" width="18" height="18" align="top" alt="">&nbsp; **Hosted model, no GPU** (simplest) | only your OpenRouter key | OpenRouter, zero-data-retention providers only | `./rvkit worker openrouter` |
-| <img src="docs/img/icons/cpu.svg" width="18" height="18" align="top" alt="">&nbsp; **Google Colab** (default) | Colab Pro (about $10/month) | Google, on your Colab account | `/rv-start` in Claude Code, or [by hand](docs/models.md#option-1-google-colab-default) |
-| <img src="docs/img/icons/server.svg" width="18" height="18" align="top" alt="">&nbsp; **Rented GPU**: RunPod, Vast.ai, Lambda, Modal… | a GPU running vLLM, llama.cpp or Ollama | the GPU you rent | `./rvkit worker api <url> <model> [key]` |
-| <img src="docs/img/icons/laptop.svg" width="18" height="18" align="top" alt="">&nbsp; **Your own GPU** (~24 GB VRAM for Qwen 27B; smaller models work on less) | Ollama, LM Studio, llama.cpp or vLLM | **nowhere: it stays on your machine** | `./rvkit worker local` |
-| <img src="docs/img/icons/plug.svg" width="18" height="18" align="top" alt="">&nbsp; **Any OpenAI-compatible API** | a URL and a key | that provider | `./rvkit worker api <url> <model> [key]` |
+| &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; | Option | You need | Client data goes to | Command |
+|:-:|---|---|---|---|
+| <img src="docs/img/icons/globe.svg" width="20" height="20" alt=""> | **Hosted model, no GPU** (simplest) | only your OpenRouter key | OpenRouter, zero-data-retention providers only | `./rvkit worker openrouter` |
+| <img src="docs/img/icons/cpu.svg" width="20" height="20" alt=""> | **Google Colab** (default) | Colab Pro (about $10/month) | Google, on your Colab account | `/rv-start` in Claude Code, or [by hand](docs/models.md#option-1-google-colab-default) |
+| <img src="docs/img/icons/server.svg" width="20" height="20" alt=""> | **Rented GPU**: RunPod, Vast.ai, Lambda, Modal… | a GPU running vLLM, llama.cpp or Ollama | the GPU you rent | `./rvkit worker api <url> <model> [key]` |
+| <img src="docs/img/icons/laptop.svg" width="20" height="20" alt=""> | **Your own GPU** (~24 GB VRAM for Qwen 27B; smaller models work on less) | Ollama, LM Studio, llama.cpp or vLLM | **nowhere: it stays on your machine** | `./rvkit worker local` |
+| <img src="docs/img/icons/plug.svg" width="20" height="20" alt=""> | **Any OpenAI-compatible API** | a URL and a key | that provider | `./rvkit worker api <url> <model> [key]` |
 
 `./rvkit worker openrouter` uses DeepSeek V4.1 Flash by default (cheap, uses tools well, doesn't refuse
 authorised pentest tasks in our tests). Pass another model to change it, for example
@@ -190,15 +192,15 @@ approve its own requests. Ctrl-C stops it.
   <img src="docs/img/console-findings.png" alt="The RiskVoid Console: findings for an engagement" width="100%">
 </p>
 
-| Page | What you do there |
-|---|---|
-| <img src="docs/img/icons/layers.svg" width="18" height="18" align="top" alt="">&nbsp; **Engagements** | See every engagement with its status, findings and waiting approvals, and create new ones with a form. |
-| <img src="docs/img/icons/gauge.svg" width="18" height="18" align="top" alt="">&nbsp; **Live** | Watch what's running right now: commands with timers, worker tasks, approvals and today's model spend. |
-| <img src="docs/img/icons/shield-check.svg" width="18" height="18" align="top" alt="">&nbsp; **Approvals** | Approve or deny intrusive commands. The sidebar badge counts what's waiting. |
-| <img src="docs/img/icons/target.svg" width="18" height="18" align="top" alt="">&nbsp; **Scope & rules** | Edit targets and rules, preview exactly what the firewall will allow, then apply. |
-| <img src="docs/img/icons/code.svg" width="18" height="18" align="top" alt="">&nbsp; **Findings** | Triage: confirm, mark false positive or duplicate, change severity, add notes, check evidence integrity. |
-| <img src="docs/img/icons/file-text.svg" width="18" height="18" align="top" alt="">&nbsp; **Report** | Fill in the cover and executive summary, generate, view the HTML report, and download Word, PDF and Excel. |
-| <img src="docs/img/icons/stop.svg" width="18" height="18" align="top" alt="">&nbsp; **Halt, close, audit** | Stop an engagement instantly, seal and archive it, and read its full audit log. |
+| &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; | Page | What you do there |
+|:-:|---|---|
+| <img src="docs/img/icons/layers.svg" width="20" height="20" alt=""> | **Engagements** | See every engagement with its status, findings and waiting approvals, and create new ones with a form. |
+| <img src="docs/img/icons/gauge.svg" width="20" height="20" alt=""> | **Live** | Watch what's running right now: commands with timers, worker tasks, approvals and today's model spend. |
+| <img src="docs/img/icons/shield-check.svg" width="20" height="20" alt=""> | **Approvals** | Approve or deny intrusive commands. The sidebar badge counts what's waiting. |
+| <img src="docs/img/icons/target.svg" width="20" height="20" alt=""> | **Scope & rules** | Edit targets and rules, preview exactly what the firewall will allow, then apply. |
+| <img src="docs/img/icons/code.svg" width="20" height="20" alt=""> | **Findings** | Triage: confirm, mark false positive or duplicate, change severity, add notes, check evidence integrity. |
+| <img src="docs/img/icons/file-text.svg" width="20" height="20" alt=""> | **Report** | Fill in the cover and executive summary, generate, view the HTML report, and download Word, PDF and Excel. |
+| <img src="docs/img/icons/stop.svg" width="20" height="20" alt=""> | **Halt, close, audit** | Stop an engagement instantly, seal and archive it, and read its full audit log. |
 
 <details>
 <summary><b>See the engagement overview</b></summary>
@@ -300,16 +302,16 @@ More detail: [Architecture](docs/architecture.md).
 
 ## Safety built in
 
-| Control | What it means for you |
-|---|---|
-| <img src="docs/img/icons/target.svg" width="18" height="18" align="top" alt="">&nbsp; **Scope firewall** | Each engagement can only reach the IPs, domains and code you listed. Everything else is blocked at the network level. |
-| <img src="docs/img/icons/layers.svg" width="18" height="18" align="top" alt="">&nbsp; **Tiers** | Commands are **passive**, **active** or **intrusive**. You choose which tiers an engagement allows. |
-| <img src="docs/img/icons/shield-check.svg" width="18" height="18" align="top" alt="">&nbsp; **Approvals** | Intrusive commands (sqlmap, hydra, exploit scripts…) wait for your yes. Each approval works once, for one exact command. |
-| <img src="docs/img/icons/gauge.svg" width="18" height="18" align="top" alt="">&nbsp; **Rate limits** | Scanners get your max rate added automatically, and faster rates are refused. |
-| <img src="docs/img/icons/stop.svg" width="18" height="18" align="top" alt="">&nbsp; **Halt button** | `./rvkit halt <eng>` kills everything running for an engagement immediately. |
-| <img src="docs/img/icons/file-text.svg" width="18" height="18" align="top" alt="">&nbsp; **Audit log** | Every command, refusal and approval is recorded where the agent can't touch it. |
-| <img src="docs/img/icons/lock.svg" width="18" height="18" align="top" alt="">&nbsp; **Contained agent** | The agent has no direct internet, read-only engagement files, and can't widen its own scope. |
-| <img src="docs/img/icons/flask.svg" width="18" height="18" align="top" alt="">&nbsp; **Strict mode** | Optional: scripts and data-sending requests also need approval (`Strict tiers: on`). |
+| &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; | Control | What it means for you |
+|:-:|---|---|
+| <img src="docs/img/icons/target.svg" width="20" height="20" alt=""> | **Scope firewall** | Each engagement can only reach the IPs, domains and code you listed. Everything else is blocked at the network level. |
+| <img src="docs/img/icons/layers.svg" width="20" height="20" alt=""> | **Tiers** | Commands are **passive**, **active** or **intrusive**. You choose which tiers an engagement allows. |
+| <img src="docs/img/icons/shield-check.svg" width="20" height="20" alt=""> | **Approvals** | Intrusive commands (sqlmap, hydra, exploit scripts…) wait for your yes. Each approval works once, for one exact command. |
+| <img src="docs/img/icons/gauge.svg" width="20" height="20" alt=""> | **Rate limits** | Scanners get your max rate added automatically, and faster rates are refused. |
+| <img src="docs/img/icons/stop.svg" width="20" height="20" alt=""> | **Halt button** | `./rvkit halt <eng>` kills everything running for an engagement immediately. |
+| <img src="docs/img/icons/file-text.svg" width="20" height="20" alt=""> | **Audit log** | Every command, refusal and approval is recorded where the agent can't touch it. |
+| <img src="docs/img/icons/lock.svg" width="20" height="20" alt=""> | **Contained agent** | The agent has no direct internet, read-only engagement files, and can't widen its own scope. |
+| <img src="docs/img/icons/flask.svg" width="20" height="20" alt=""> | **Strict mode** | Optional: scripts and data-sending requests also need approval (`Strict tiers: on`). |
 
 Known limitations and how to report a vulnerability: [SECURITY.md](SECURITY.md).
 
