@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
-# RiskVoid Console: sign-in, host check, CSRF header, read API, path checks. Needs the stack up (./rvkit up).
+# RiskVoid Console: sign-in, host check, CSRF header, read API, path checks, live view. Needs the stack up (./rvkit up).
 # Run: bash evals/console_test.sh
 cd "$(dirname "$0")/.." || exit 1
 pass=0; fail=0
 check() { if echo "$2" | grep -qE "$3"; then pass=$((pass+1)); echo "PASS  $1"; else fail=$((fail+1)); echo "FAIL  $1"; echo "$2" | head -3 | sed 's/^/      /'; fi; }
 PORT=18100; B="http://127.0.0.1:$PORT"; JAR="$(mktemp)"
 CONSOLE_PORT=$PORT python3 scripts/console.py >/dev/null 2>&1 & pid=$!
-trap 'kill $pid 2>/dev/null; rm -f "$JAR"' EXIT
+trap 'kill $pid 2>/dev/null; wait $pid 2>/dev/null; rm -f "$JAR"' EXIT
 for _ in $(seq 1 20); do curl -s -o /dev/null "$B/" && break; sleep 0.3; done
 T="$(cat .rvkit/console.token)"
 code() { curl -s -o /dev/null -w '%{http_code}' "$@"; }
@@ -27,4 +27,12 @@ check "HTML report view is locked down"   "$(curl -s -b "$JAR" -D - -o /dev/null
 check "preview writes nothing"            "$(curl -s -b "$JAR" -H 'X-RV-Console: 1' -H 'Content-Type: application/json' -X POST \
   -d '{"scope": "- /src/rv-demo-app\n- 198.51.100.99\n", "rules": "- Allowed tiers: passive\n"}' "$B/api/eng/demo-code/preview")" '198.51.100.99/32'
 check "scope still has no preview entry"  "$(./rvkit show demo-code | grep -c 198.51.100.99)" '^0$'
+docker compose exec -T kali-mcp python3 -c "import sys; sys.path.insert(0, '/opt/kali-mcp'); import core
+core.run('sleep 5', 'demo-code', 60)" >/dev/null 2>&1 </dev/null & job=$!
+sleep 2.5
+live="$(curl -s -b "$JAR" "$B/api/eng/demo-code/live")"
+check "live view shows the running command" "$live" '"command": "sleep 5", "tier": "passive"'
+check "live view has events, tasks, spend" "$live" '"events": \[.*"tasks": \[|"tasks": \[.*"events": \['
+wait "$job"
+check "finished command leaves the live view" "$(curl -s -b "$JAR" "$B/api/eng/demo-code/live")" '"running": \[\]'
 echo; echo "passed $pass, failed $fail"; [ "$fail" -eq 0 ]

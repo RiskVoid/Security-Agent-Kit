@@ -22,6 +22,7 @@ It runs in the foreground; Ctrl-C stops it. The address is `http://127.0.0.1:810
 | **Engagements** list | Every engagement with its client, status (active, halted, closed), confirmed findings, how many wait for triage, and pending approvals. Filter by name or client. | `./rvkit eng list` |
 | **New engagement** | Name, client, targets, tiers, rate, network and the private-worker switch, validated before anything is created. | `./rvkit new` |
 | Engagement **Overview** | Findings by severity, the active scope and rules, pending approvals for this engagement, and a ready prompt to paste into the agent UI. | `./rvkit show` |
+| **Live** | What the engagement is doing now, refreshed every few seconds: the commands running in the Kali sandbox (with their tier and time against their timeout), worker tasks and their current step and model, approvals waiting for you, today's OpenRouter spend against the daily budget, and the latest commands, refusals and approvals. | `./rvkit status`, `./rvkit audit` |
 | **Scope & rules** | Edit `SCOPE.md` and `RULES.md`, **Preview changes** (a diff, the parser's warnings, and exactly what the firewall will allow), then **Apply**. Preview writes nothing. | `./rvkit scope <eng>` |
 | **Findings** | Sort by severity and filter by status. Click a finding to change its status (including `duplicate` with the finding it duplicates), severity and notes, and read the description, reproduction, remediation and evidence. **Check evidence integrity** shows a badge per evidence file: verified, code ref, not audited, or what's wrong. | the findings tools in chat |
 | **Worker tasks** | Every task the planner handed to the worker model, newest first: status, tier, which model served it, each command it ran and its summary. Refreshes every few seconds while a task is running. Tasks interrupted by a restart show as `interrupted`. | `list_tasks` in chat, `evidence/tasks/` |
@@ -62,8 +63,8 @@ Open the printed sign-in link on your own machine.
 
 ## Not in the console yet
 
-- Watching the planner live (its current command and spend per run): use the OpenHands UI and `./rvkit status`.
-  Worker tasks are on the engagement's **Worker tasks** tab.
+- The planner's own reasoning and messages: use the OpenHands UI. The **Live** tab shows what it runs (every
+  Kali command and worker task) and the spend, but not the conversation, and spend is for the whole kit, not per run.
 - Starting the agent: the Overview gives you the prompt; paste it into the OpenHands UI.
 - Continuing the agent automatically after an approval: tell it to run the command again.
 - Models and the worker (Colab, fallback, budget): use `./rvkit worker`, `./rvkit budget` and `/rv-start`.

@@ -79,7 +79,7 @@ bash evals/ci_prepare.sh
 | `phase3_policy_test.sh` | scope enforcement: sandbox isolation, tiers, scope pre-check false positives, firewall, rate caps, approvals, halt, audit log | `demo-code`, `net-test`, internet (pip-audit check) | `bash evals/phase3_policy_test.sh` |
 | `tools_smoke.sh` | every tool in the Kali image starts; supply-chain and code tools work through the sandbox (osv-scanner, trivy, syft, grype, semgrep offline rules, Joern); vulnerability intel ranking | `demo-code`, internet (vulnerability databases, OSV / NVD / KEV) | `bash evals/tools_smoke.sh` |
 | `phase5_e2e.sh` | audited tool runs, findings citing hashed evidence, final report, tamper detection, close-out manifest and archive | the demo app in your projects folder; it creates and resets its own engagement `p5-e2e` | `bash evals/phase5_e2e.sh` |
-| `console_test.sh` | the console: sign-in, host-header check, CSRF header, read API, report-file limits, preview writes nothing | `demo-code` | `bash evals/console_test.sh` |
+| `console_test.sh` | the console: sign-in, host-header check, CSRF header, read API, report-file limits, preview writes nothing, live view | `demo-code` | `bash evals/console_test.sh` |
 | `lab_test.sh` | lab isolation: an engagement reaches only its own lab target; lab targets have no internet and can't reach the kit's services; DVWA login works | `./rvkit lab up`, `demo-code`, `net-test`; it creates `lab-juice` and `lab-dvwa` itself | `bash evals/lab_test.sh` |
 | `planner_smoke.py` | each planner route answers an authorised engagement brief with a usable plan, not a refusal; records latency and tokens | `OPENROUTER_API_KEY` (costs a few cents) | `python3 evals/planner_smoke.py [model ...]` |
 

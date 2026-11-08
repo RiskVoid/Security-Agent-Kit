@@ -11,6 +11,7 @@ header, which a cross-site form or link can't send.
 Python 3.9+, standard library only.
 """
 import calendar, hmac, json, mimetypes, os, re, secrets, sqlite3, subprocess, sys, threading, time, urllib.parse
+import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 KIT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -194,6 +195,47 @@ def stack_status():
     return _status["text"]
 
 
+def worker_tasks(eng):
+    """Worker tasks, saved by worker-mcp next to their evidence, newest first."""
+    tdir = eng_path(eng, "evidence", "tasks")
+    out = []
+    for tid in (os.listdir(tdir) if os.path.isdir(tdir) else []):
+        try:
+            t = json.load(open(os.path.join(tdir, tid, "task.json")))
+        except (OSError, ValueError):
+            t = transcript_task(os.path.join(tdir, tid), tid)  # tasks from before task.json existed
+            if not t:
+                continue
+        res = t.get("result") or {}
+        out.append({"id": t.get("id"), "status": t.get("status"), "tier": t.get("tier"), "goal": t.get("goal"),
+                    "started": t.get("started"), "finished": t.get("finished"), "models": t.get("served_by", []),
+                    "steps": [s.get("args", {}).get("command") or s.get("args", {}).get("query")
+                              or s.get("args", {}).get("url") or s.get("args", {}).get("path") or s.get("tool")
+                              for s in t.get("steps", [])],
+                    "candidates": len(t.get("candidates", [])), "summary": res.get("summary"),
+                    "confidence": res.get("confidence"), "error": t.get("error")})
+    return sorted(out, key=lambda t: t.get("started") or 0, reverse=True)[:100]
+
+
+_spend = {"at": 0, "data": None}
+
+
+def spend():
+    """Today's OpenRouter spend against the daily budget, from LiteLLM (cached 15 s; None if it doesn't answer)."""
+    if time.time() - _spend["at"] > 15:
+        data = None
+        try:
+            req = urllib.request.Request(f"http://127.0.0.1:{E.get('LITELLM_PORT') or 4000}/provider/budgets",
+                                         headers={"Authorization": f"Bearer {E.get('LITELLM_MASTER_KEY', '')}"})
+            with urllib.request.urlopen(req, timeout=3) as r:
+                b = (json.load(r).get("providers") or {}).get("openrouter") or {}
+            data = {"spend": float(b.get("spend") or 0), "budget": float(E.get("OPENROUTER_DAILY_BUDGET") or 0) or None}
+        except (OSError, ValueError, TypeError):
+            pass
+        _spend.update(at=time.time(), data=data)
+    return _spend["data"]
+
+
 # ---------------------------------------------------------------- API
 def api_get(path, q):
     if path == "/api/overview":
@@ -229,25 +271,13 @@ def api_get(path, q):
         n = max(1, min(int(q.get("n", ["300"])[0]), 2000))
         lines = ctl("audit", eng, str(n)).splitlines()
         return {"entries": [json.loads(l) for l in lines if l.startswith("{")][::-1]}
-    if what == "tasks":  # worker tasks, saved by worker-mcp next to their evidence
-        tdir = eng_path(eng, "evidence", "tasks")
-        out = []
-        for tid in (os.listdir(tdir) if os.path.isdir(tdir) else []):
-            try:
-                t = json.load(open(os.path.join(tdir, tid, "task.json")))
-            except (OSError, ValueError):
-                t = transcript_task(os.path.join(tdir, tid), tid)  # tasks from before task.json existed
-                if not t:
-                    continue
-            res = t.get("result") or {}
-            out.append({"id": t.get("id"), "status": t.get("status"), "tier": t.get("tier"), "goal": t.get("goal"),
-                        "started": t.get("started"), "finished": t.get("finished"), "models": t.get("served_by", []),
-                        "steps": [s.get("args", {}).get("command") or s.get("args", {}).get("query")
-                                  or s.get("args", {}).get("url") or s.get("args", {}).get("path") or s.get("tool")
-                                  for s in t.get("steps", [])],
-                        "candidates": len(t.get("candidates", [])), "summary": res.get("summary"),
-                        "confidence": res.get("confidence"), "error": t.get("error")})
-        return {"tasks": sorted(out, key=lambda t: t.get("started") or 0, reverse=True)[:100]}
+    if what == "tasks":
+        return {"tasks": worker_tasks(eng)}
+    if what == "live":  # what is happening now: running commands, worker tasks, latest events, spend
+        live, tasks = json.loads(ctl("live", eng, "15")), worker_tasks(eng)
+        busy = [t for t in tasks if t["status"] in ("running", "queued")]
+        return {**live, "now": time.time(), "events": live["events"][::-1], "spend": spend(),
+                "tasks": busy + [t for t in tasks if t not in busy][:3]}
     if what == "evidence":
         return findings_py(
             "import json,sys,report,findings_db as db\n"

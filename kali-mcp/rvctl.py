@@ -8,6 +8,8 @@
   rvctl.py approve|deny <eng> <id>   decide an approval
   rvctl.py halt|resume <eng>         stop all running commands and block new ones / allow again
   rvctl.py audit [eng] [n]           last n audit entries (authoritative log)
+  rvctl.py running [eng]             commands running now, as JSON
+  rvctl.py live <eng> [n]            running commands, last n audit entries, pending approvals, halt state (JSON)
   rvctl.py close <eng>               export audit extract, SHA-256 manifest, archive to _archive/, halt
   rvctl.py delete <eng> [--force]    unregister a closed engagement; its folder becomes _deleted-<eng>-<time>
   rvctl.py apply                     rebuild firewall + DNS for all engagements
@@ -67,6 +69,15 @@ def main(a):
     if cmd in ("halt", "resume"):
         core.halt(rest[0], cmd == "halt")
         print(f"{rest[0]}: {'halted (running commands killed)' if cmd == 'halt' else 'resumed'}"); return 0
+    if cmd == "running":  # running [eng]: commands running now, as JSON
+        print(json.dumps(core.running(rest[0] if rest else None))); return 0
+    if cmd == "live":  # live <eng> [n]: running commands, last n audit entries, pending approvals, halt (one call)
+        eng, n = rest[0], int(rest[1]) if len(rest) > 1 else 15
+        lines = open(core.AUDIT).read().splitlines() if os.path.exists(core.AUDIT) else []
+        events = [json.loads(l) for l in lines if f'"engagement": "{eng}"' in l][-n:]
+        print(json.dumps({"running": core.running(eng), "events": [e for e in events if e.get("engagement") == eng],
+                          "approvals": [dict(a, engagement=eng) for a in core.approvals(eng, "pending")],
+                          "halted": core.info(eng)["halted"]})); return 0
     if cmd == "audit":
         eng = rest[0] if rest and not rest[0].isdigit() else None
         n = int(rest[-1]) if rest and rest[-1].isdigit() else 20

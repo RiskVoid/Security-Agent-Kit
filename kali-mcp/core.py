@@ -610,6 +610,8 @@ def run(command, eng, timeout_s=600, approval_id=None):
     p = subprocess.Popen(["unshare", "-m", "-p", "-f", "--mount-proc", "--propagation", "private",
                           os.path.join(HERE, "rv-sandbox.sh")], env=env, stdout=subprocess.PIPE,
                          stderr=subprocess.PIPE, text=True, start_new_session=True)
+    marker = _running_mark(eng, p.pid, {"command": final, "tier": tier, "started": t0,
+                                        "timeout_s": min(int(timeout_s or 600), 3600), "approval": approval_id})
     try:
         out, errout = p.communicate(timeout=min(int(timeout_s or 600), 3600))
         code = p.returncode
@@ -617,6 +619,11 @@ def run(command, eng, timeout_s=600, approval_id=None):
         os.killpg(p.pid, signal.SIGKILL)
         out, errout = p.communicate()
         out, code = f"TIMEOUT after {timeout_s}s\n{(out or '')[-5000:]}", -1
+    finally:
+        try:
+            os.remove(marker)
+        except OSError:
+            pass
     outputs = _outputs(root, before)
     seconds = round(time.time() - t0, 1)
     res = (out or "") + ("\n[stderr]\n" + errout if errout else "")
@@ -641,6 +648,38 @@ def run(command, eng, timeout_s=600, approval_id=None):
 
 
 RUNS_DIR = os.path.join("evidence", "runs")
+
+
+def _running_mark(eng, pid, data):
+    """A file per running command in /control/<eng>/running/, removed when it ends (for the console's live view)."""
+    d = os.path.join(ctl_dir(eng), "running")
+    os.makedirs(d, exist_ok=True)
+    path = os.path.join(d, f"{pid}.json")
+    with open(path, "w") as f:
+        json.dump({**data, "engagement": eng, "pid": pid}, f)
+    return path
+
+
+def running(eng=None):
+    """Commands running now, oldest first. Markers left by a restarted server (process gone) are removed."""
+    if eng:
+        require(eng)
+    out = []
+    for e in ([eng] if eng else engagements()):
+        d = os.path.join(ctl_dir(e), "running")
+        for name in (os.listdir(d) if os.path.isdir(d) else []):
+            path = os.path.join(d, name)
+            try:
+                r = json.load(open(path))
+                os.kill(int(r["pid"]), 0)
+            except (OSError, ValueError, KeyError):
+                try:
+                    os.remove(path)
+                except OSError:
+                    pass
+                continue
+            out.append(r)
+    return sorted(out, key=lambda r: r.get("started", 0))
 
 
 def run_output_path(command):
