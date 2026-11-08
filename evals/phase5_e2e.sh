@@ -49,6 +49,10 @@ S=/src/rv-demo-app
 check "bandit output hashed" "$(kali "bandit -q -r $S -f json -o bandit.json")" 'evidence recorded: .*bandit.json'
 check "semgrep output hashed" "$(kali "semgrep --config /opt/semgrep-rules/python/flask --metrics=off -q --json -o semgrep.json $S")" 'evidence recorded: .*semgrep.json'
 check "joern output hashed" "$(kali "rv-joern taint $S joern-flows.json")" 'evidence recorded: .*joern-flows.json'
+out="$(kali "ls $S")"
+RUN="$(echo "$out" | sed -n 's/.*verified evidence: \(.*\)\]/\1/p')"
+check "command output saved as evidence" "$RUN" '/evidence/runs/.*-ls-.*\.txt$'
+check "saved output verified" "$(call $KALI evidence_provenance "{\"engagement\": \"$ENG\", \"paths\": [\"$RUN\"]}")" '"status": "verified"'
 check "pip-audit output hashed" "$(kali "pip-audit -r $S/requirements.txt -f json -o pip-audit.json --progress-spinner off")" 'evidence recorded: .*pip-audit.json'
 
 echo "== 2. findings"

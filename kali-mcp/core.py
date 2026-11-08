@@ -614,17 +614,36 @@ def run(command, eng, timeout_s=600, approval_id=None):
         out, errout = p.communicate()
         out, code = f"TIMEOUT after {timeout_s}s\n{(out or '')[-5000:]}", -1
     outputs = _outputs(root, before)
-    _audit({**entry, "exit": code, "seconds": round(time.time() - t0, 1), **({"outputs": outputs} if outputs else {})})
+    seconds = round(time.time() - t0, 1)
     res = (out or "") + ("\n[stderr]\n" + errout if errout else "")
+    # The command's own output, saved by kali-mcp (not the sandbox) and hashed in the same audit entry: it is
+    # verified evidence the agent can cite, instead of a copy it would write itself (which can't be verified).
+    rel = run_output_path(entry["command"])
+    full = os.path.join(root, rel)
+    os.makedirs(os.path.dirname(full), exist_ok=True)
+    with open(full, "w") as f:
+        f.write(f"# {entry['command']}\n# exit={code} tier={tier} seconds={seconds} "
+                f"at={datetime.datetime.now(datetime.timezone.utc).isoformat(timespec='seconds')}\n\n{res}")
+    outputs[rel] = sha256_file(full)
+    _audit({**entry, "exit": code, "seconds": seconds, "outputs": outputs})
     if final != command:
         res = f"[rate limit applied: {final}]\n" + res
-    if outputs:
-        res += "\n[evidence recorded: " + ", ".join(sorted(outputs)[:20]) + (" …" if len(outputs) > 20 else "") + "]"
+    files = sorted(k for k in outputs if k != rel)
+    if files:
+        res += "\n[evidence recorded: " + ", ".join(files[:20]) + (" …" if len(files) > 20 else "") + "]"
     if len(res) > MAX_OUT:
-        path = os.path.join(WORK, eng, f"out-{datetime.datetime.utcnow():%Y%m%dT%H%M%S}.txt")
-        open(path, "w").write(res)
-        res = res[:MAX_OUT] + f"\n... truncated, full output saved to {path}"
-    return f"exit={code} tier={tier}\n{res}"
+        res = res[:MAX_OUT] + "\n... truncated"
+    return f"exit={code} tier={tier}\n{res}\n[output saved as verified evidence: /work/{eng}/{rel}]"
+
+
+RUNS_DIR = os.path.join("evidence", "runs")
+
+
+def run_output_path(command):
+    """evidence/runs/<UTC time>-<program>-<short id>.txt (relative to the engagement folder)."""
+    prog = next((p for p, _ in _segments(command)), "cmd")
+    prog = re.sub(r"[^A-Za-z0-9._-]", "", prog)[:24] or "cmd"
+    return os.path.join(RUNS_DIR, f"{datetime.datetime.utcnow():%Y%m%dT%H%M%S}-{prog}-{uuid.uuid4().hex[:6]}.txt")
 
 
 # ---------------------------------------------------------------- close-out

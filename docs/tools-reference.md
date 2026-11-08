@@ -42,7 +42,9 @@ Output notes:
 - With `timeout_s` over 1,800, call it through the worker: OpenHands stops waiting for a direct kali call after
   30 minutes.
 - Files the command wrote are listed at the end: `[evidence recorded: …]`.
-- Output over 30,000 characters is cut, and the full text is saved to `/work/<engagement>/out-<timestamp>.txt`.
+- The full output is always saved and hashed as `/work/<engagement>/evidence/runs/<time>-<program>-<id>.txt`; the
+  last line is `[output saved as verified evidence: <path>]`. Cite that path as evidence.
+- Output over 30,000 characters is cut in the result; the saved file has all of it.
 - A command that runs past `timeout_s` is killed and returns `TIMEOUT after <n>s` with the last output.
 
 ## `worker`: delegation to the worker model

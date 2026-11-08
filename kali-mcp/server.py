@@ -68,6 +68,8 @@ def run(command: str, engagement: str, timeout_s: int = 600, approval_id: str = 
     """Run a shell command in the Kali sandbox for an engagement.
 
     cwd is /work/<engagement> (write output files here). In-scope client code is read-only under /src.
+    The full output is saved as verified evidence in evidence/runs/ (the result ends with its path): cite that
+    path rather than copying the output into a file yourself.
     Network access is limited to the engagement scope (plus package/vulnerability-database sites when the
     engagement is online); everything else is blocked. Tools:
       recon:        nmap, naabu, dnsx, subfinder, amass, katana, httpx-toolkit, whatweb, gowitness (screenshots)
