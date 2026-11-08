@@ -156,7 +156,9 @@ def parse_scope(text):
             (sc["paths"].append(p) if p.startswith("/src/") or p == "/src"
              else sc["warnings"].append(f"path outside /src ignored: {s}"))
             continue
-        host = re.sub(r"^[a-z]+://", "", s.lower()).split("/")[0]
+        host = re.sub(r"^[a-z]+://", "", s.lower())
+        if not re.fullmatch(r"\d{1,3}(\.\d{1,3}){3}/\d{1,2}", host):  # keep a CIDR's prefix; drop a URL's path
+            host = host.split("/")[0]
         host = host.rsplit(":", 1)[0] if host.count(":") == 1 else host
         try:
             net = ipaddress.ip_network(host, strict=False)
@@ -228,6 +230,20 @@ def diff(eng):
     return "\n".join(out)
 
 
+def preview(eng, scope_text, rules_text):
+    """What applying this SCOPE.md / RULES.md would change, without writing anything: unified diff against the
+    active copies, the parsed result and the parser's warnings."""
+    if not _name_ok(eng):
+        raise ValueError(f"invalid engagement name: {eng}")
+    out = []
+    for f, new in (("SCOPE.md", scope_text), ("RULES.md", rules_text)):
+        old = read_ctl(eng, f) if eng in registry() else ""
+        out += difflib.unified_diff(old.splitlines(), new.splitlines(), f"active/{f}", f"proposed/{f}", lineterm="")
+    sc, rules = parse_scope(scope_text), parse_rules(rules_text)
+    return {"diff": "\n".join(out), "warnings": sc["warnings"], "rules": rules,
+            "scope": {k: sc[k] for k in ("nets", "domains", "paths")}}
+
+
 def sync(eng):
     """Import the host's SCOPE.md/RULES.md as the authoritative copy (rvkit only), then rebuild the firewall."""
     if not _name_ok(eng):
@@ -243,15 +259,29 @@ def sync(eng):
             open(os.path.join(ctl_dir(eng), f), "w").write("")
     reg = registry()
     if eng not in reg:
-        reg[eng] = max(list(reg.values()) + [UID_BASE]) + 1
-        if reg[eng] > UID_BASE + 250:
-            raise ValueError("too many engagements (max 250); archive old ones")
+        free = sorted(set(range(UID_BASE + 1, UID_BASE + 251)) - set(reg.values()))  # deleted engagements free uids
+        if not free:
+            raise ValueError("too many engagements (max 250): delete closed ones with ./rvkit eng delete")
+        reg[eng] = free[0]
         json.dump(reg, open(REGISTRY, "w"), indent=1)
     apply_network()
+    _grant(eng, reg[eng])
     sc = parse_scope(read_ctl(eng, "SCOPE.md"))
     _audit({"engagement": eng, "event": "scope-sync", "scope": {k: sc[k] for k in ("nets", "domains", "paths")},
             "rules": parse_rules(read_ctl(eng, "RULES.md"))})
     return sc["warnings"]
+
+
+def _grant(eng, uid):
+    """Let the engagement's sandbox user write its own folder. On Linux the folder belongs to the host user (on
+    macOS Docker bind mounts ignore ownership): give the uid a read-write ACL, inherited by new subfolders (evidence/
+    and report/ are created by root-run services), and its own tool home (.home)."""
+    root = os.path.join(WORK, eng)
+    home = os.path.join(root, ".home")
+    os.makedirs(home, exist_ok=True)
+    subprocess.run(["chown", "-R", f"{uid}:{uid}", home], capture_output=True)
+    subprocess.run(["setfacl", "-R", "-m", f"u:{uid}:rwX", "-m", f"d:u:{uid}:rwX", "--", root],
+                   capture_output=True)  # fails harmlessly where the filesystem has no ACLs
 
 
 def _ensure_user(uid):
@@ -624,3 +654,77 @@ def close(eng):
     _audit({"engagement": eng, "event": "closed", "archive": os.path.basename(arc), "sha256": digest,
             "files": len(rows)})
     return {"archive": f"_archive/{os.path.basename(arc)}", "sha256": digest, "files": len(rows)}
+
+
+def archives(eng):
+    d = os.path.join(WORK, "_archive")
+    return sorted(f for f in os.listdir(d) if f.startswith(eng + "-") and f.endswith(".tar.gz")) \
+        if os.path.isdir(d) else []
+
+
+def delete(eng, force=False):
+    """Unregister an engagement: kill its commands, drop its scope, approvals and firewall rules, free its uid.
+    The audit log keeps its history. Its folder is renamed to _deleted-<eng>-<time> (nothing is removed), so the
+    name can be used again. Only closed engagements (halted, with an archive), unless force."""
+    uid = require(eng)
+    closed = info(eng)["halted"] and archives(eng)
+    if not closed and not force:
+        raise ValueError(f"{eng} is not closed. Close it first (./rvkit close {eng}: archive + manifest), "
+                         "or pass --force to delete it without an archive")
+    subprocess.run(["pkill", "-KILL", "-u", str(uid)], capture_output=True)
+    reg = registry()
+    reg.pop(eng, None)
+    json.dump(reg, open(REGISTRY, "w"), indent=1)
+    shutil.rmtree(ctl_dir(eng), ignore_errors=True)
+    moved = None
+    src = os.path.join(WORK, eng)
+    if os.path.isdir(src):
+        stamp = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        moved = f"_deleted-{eng}-{stamp}"
+        os.rename(src, os.path.join(WORK, moved))
+    apply_network()
+    _audit({"engagement": eng, "event": "deleted", "uid": uid, "forced": bool(force and not closed),
+            "folder": moved})
+    return {"folder": moved, "archives": archives(eng), "closed": bool(closed)}
+
+
+# ---------------------------------------------------------------- semgrep community rules
+RULES_DIR = "/opt/semgrep-rules"
+
+
+def fetch_rules():
+    """Download the semgrep community rules at the pinned commit into their volume (first start only). They are
+    not baked into the image because the Semgrep Rules License doesn't allow redistributing them."""
+    commit = os.environ.get("SEMGREP_RULES_COMMIT", "")
+    marker = os.path.join(RULES_DIR, ".commit")
+    if not commit or (os.path.exists(marker) and open(marker).read().strip() == commit):
+        return
+    tmp = RULES_DIR + "/.download"
+    shutil.rmtree(tmp, ignore_errors=True); os.makedirs(tmp)
+    url = f"https://codeload.github.com/semgrep/semgrep-rules/tar.gz/{commit}"
+    r = subprocess.run(f"curl -fsSL --retry 3 '{url}' | tar xz -C '{tmp}' --strip-components 1",
+                       shell=True, capture_output=True, text=True, timeout=600)
+    if r.returncode:
+        shutil.rmtree(tmp, ignore_errors=True)
+        raise RuntimeError(f"semgrep rules download failed: {r.stderr.strip()[:300]}")
+    for name in os.listdir(RULES_DIR):  # replace the old set
+        if name != ".download":
+            p = os.path.join(RULES_DIR, name)
+            shutil.rmtree(p) if os.path.isdir(p) and not os.path.islink(p) else os.remove(p)
+    for name in os.listdir(tmp):
+        os.rename(os.path.join(tmp, name), os.path.join(RULES_DIR, name))
+    os.rmdir(tmp)
+    subprocess.run(["chmod", "-R", "a+rX", RULES_DIR])
+    open(marker, "w").write(commit + "\n")
+
+
+def fetch_rules_background():
+    import sys, threading
+
+    def go():
+        try:
+            fetch_rules()
+        except Exception as e:
+            print(f"WARNING: {e}. Offline semgrep scans need /opt/semgrep-rules; restart kali-mcp to retry.",
+                  file=sys.stderr)
+    threading.Thread(target=go, daemon=True).start()

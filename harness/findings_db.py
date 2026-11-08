@@ -6,9 +6,9 @@ import datetime, json, os, re, sqlite3
 
 WORK = "/work"
 SEVERITIES = ("critical", "high", "medium", "low", "info")
-STATUSES = ("candidate", "confirmed", "false-positive", "fixed", "accepted-risk")
+STATUSES = ("candidate", "confirmed", "false-positive", "duplicate", "fixed", "accepted-risk")
 FIELDS = ("title", "severity", "cvss_vector", "cvss_score", "cwe", "asset", "description", "impact",
-          "reproduction", "remediation", "evidence", "status", "source", "notes")
+          "reproduction", "remediation", "evidence", "status", "source", "notes", "duplicate_of")
 
 
 def engagement_dir(engagement: str) -> str:
@@ -28,6 +28,8 @@ def _db(engagement: str) -> sqlite3.Connection:
         cwe TEXT, asset TEXT, description TEXT, impact TEXT, reproduction TEXT, remediation TEXT,
         evidence TEXT DEFAULT '[]', status TEXT NOT NULL DEFAULT 'candidate', source TEXT, notes TEXT,
         created TEXT, updated TEXT)""")
+    if "duplicate_of" not in {r[1] for r in con.execute("PRAGMA table_info(findings)")}:  # databases before v0.2
+        con.execute("ALTER TABLE findings ADD COLUMN duplicate_of TEXT")
     return con
 
 
@@ -75,6 +77,20 @@ def update(engagement: str, finding_id: str, **fields) -> dict:
         raise ValueError("nothing to update")
     f["updated"] = _now()
     with _db(engagement) as con:
+        if f.get("status") == "duplicate" or f.get("duplicate_of"):
+            orig = f.get("duplicate_of") or ""
+            if f.get("status", "duplicate") != "duplicate":
+                raise ValueError("duplicate_of goes with status=duplicate")
+            if not orig or orig == finding_id:
+                raise ValueError("status=duplicate needs duplicate_of: the id of the finding to keep")
+            row = con.execute("SELECT status, duplicate_of FROM findings WHERE id=?", (orig,)).fetchone()
+            if not row:
+                raise ValueError(f"duplicate_of: no finding {orig}")
+            if row["status"] == "duplicate":
+                raise ValueError(f"{orig} is itself a duplicate of {row['duplicate_of']}: point to that one")
+            f["status"] = "duplicate"
+        elif "status" in f:
+            f["duplicate_of"] = None  # leaving the duplicate status drops the link
         cur = con.execute(f"UPDATE findings SET {','.join(k + '=?' for k in f)} WHERE id=?",
                           [*f.values(), finding_id])
         if not cur.rowcount:

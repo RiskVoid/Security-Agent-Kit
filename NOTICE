@@ -1,0 +1,14 @@
+RiskVoid Security Agent Kit
+Copyright 2026 RiskVoid
+
+This product is licensed under the Apache License, Version 2.0 (see LICENSE).
+
+The RiskVoid name and logo are trademarks of RiskVoid. The Apache License does
+not grant permission to use them, except as needed to describe the origin of
+the work (see section 6 of the License).
+
+The kit pulls, installs or uses third-party software, models, fonts, rule sets
+and data at build time and at runtime. These are not part of this product and
+keep their own licences and terms. See THIRD_PARTY.md for the list.
+
+This product uses the NVD API but is not endorsed or certified by the NVD.

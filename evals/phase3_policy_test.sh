@@ -36,6 +36,7 @@ check "control plane hidden"                      'exit=0'                      
 check "runs unprivileged"                         'uid=2000[0-9]'               "$(run demo-code 'id')"
 check "cannot change firewall"                    'Operation not permitted|denied' "$(run demo-code 'nft flush ruleset')"
 check "own pid namespace (no server processes)"   '^0$'                         "$(run demo-code 'ps -eo args --no-headers | grep -cE "[p]ython3 .*server.py|[d]nsmasq"')"
+check "git trusts client repos (history scans)"   'safe.directory=\*'           "$(run demo-code 'git config --list | grep safe.directory')"
 
 echo "== tiers and pre-check false positives (demo-code: passive only)"
 check "semgrep (passive) runs"                    'exit=0 tier=passive'         "$(run demo-code 'semgrep --config p/python --metrics=off -q /src/rv-demo-app/app.py --json -o semgrep.json; echo rc=$?')"
@@ -54,6 +55,11 @@ check "out-of-scope IP blocked by firewall"       'BLOCKED'                     
 check "out-of-scope name does not resolve"        'NORESOLVE'                   "$(run net-test 'getent hosts github.io || echo NORESOLVE')"
 check "internal services blocked (litellm)"       'BLOCKED'                     "$(run net-test 'curl -s -m 5 -o /dev/null http://litellm:4000/health && echo REACHED || echo BLOCKED')"
 check "loopback services blocked (kali-mcp)"      'BLOCKED'                     "$(run net-test "python3 -c 'import urllib.request as u; u.urlopen(\"http://127.0.0.1:8090/mcp\", timeout=5)' >/dev/null 2>&1 && echo REACHED || echo BLOCKED")"
+
+scope_of() { docker compose exec -T kali-mcp python3 -c 'import sys,json; sys.path.insert(0,"/opt/kali-mcp"); import core
+print(json.dumps(core.parse_scope(sys.argv[1])["nets"]))' "$1"; }
+check "CIDR scope keeps its prefix"               '"203.0.113.0/28", "10.0.0.0/24"' "$(scope_of $'- 203.0.113.0/28\n- 10.0.0.5/24')"
+check "URL scope keeps only the host"             '"10.250.0.10/32"'            "$(scope_of '- http://10.250.0.10:3000/login')"
 
 echo "== rate caps (net-test: max 20/s)"
 check "rate flag injected"                        'rate limit applied: ffuf -rate 20'  "$(run net-test 'ffuf -V')"
@@ -76,6 +82,19 @@ check "halt kills running command"                '^exit=-?(9|137|1)\b|exit=-9' 
 check "halted engagement refuses commands"        'halted'                      "$(run net-test 'echo hi')"
 ctl resume net-test >/dev/null
 check "resume allows commands again"              'exit=0'                      "$(run net-test 'echo hi')"
+
+echo "== engagement lifecycle (rv-del-test)"
+./rvkit engagement rv-del-test 198.51.100.7 >/dev/null 2>&1
+check "existing engagement not silently replaced" 'exists'                      "$(./rvkit engagement rv-del-test 198.51.100.8 2>&1)"
+check "scope unchanged after refusal"             '198.51.100.7/32'            "$(ctl show rv-del-test)"
+./rvkit engagement rv-del-test --replace 198.51.100.8 >/dev/null 2>&1
+check "--replace applies the new scope"           '198.51.100.8/32'            "$(ctl show rv-del-test)"
+check "delete refuses an open engagement"         'not closed'                  "$(ctl delete rv-del-test 2>&1)"
+ctl close rv-del-test >/dev/null 2>&1
+check "delete a closed engagement"                'deleted'                     "$(ctl delete rv-del-test 2>&1)"
+check "deleted engagement unregistered"           'unknown engagement'          "$(run rv-del-test 'echo hi')"
+check "deletion is audited"                       '"event": "deleted"'          "$(ctl audit rv-del-test 5)"
+docker compose exec -T kali-mcp sh -c 'rm -rf /work/_deleted-rv-del-test-* /work/_archive/rv-del-test-*' </dev/null
 
 echo "== audit"
 check "audit log records refusals and approvals"  'approval-approved'           "$(ctl audit net-test 50)"

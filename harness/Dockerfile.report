@@ -1,8 +1,10 @@
 # findings-mcp + report generator: python-docx/openpyxl for the branded report, LibreOffice for the PDF copy,
 # and the RiskVoid brand fonts (OFL, google/fonts pinned commit, checksum-verified) so the PDF renders on brand.
+# fonts-liberation renders Arial / Courier New (the plain brand's fonts) metric-compatibly; fonts-dejavu-core is the
+# fallback font fontconfig pulled in before (keep it: it renders glyphs the brand fonts lack). Branding: branding.py.
 FROM python:3.13-slim
 RUN apt-get update && apt-get install -y --no-install-recommends libreoffice-writer-nogui curl ca-certificates \
-        fontconfig && rm -rf /var/lib/apt/lists/*
+        fontconfig fonts-dejavu-core fonts-liberation && rm -rf /var/lib/apt/lists/*
 ARG FONTS_COMMIT=47d54ca1ebb14fd864695f1d39dc734f39017c33
 RUN set -eu; mkdir -p /usr/share/fonts/truetype/riskvoid; cd /usr/share/fonts/truetype/riskvoid; \
     get() { curl -fsSLo "$2" "https://raw.githubusercontent.com/google/fonts/${FONTS_COMMIT}/$1"; \
@@ -12,10 +14,11 @@ RUN set -eu; mkdir -p /usr/share/fonts/truetype/riskvoid; cd /usr/share/fonts/tr
     get "ofl/intertight/InterTight-Italic%5Bwght%5D.ttf" InterTight-Italic.ttf 15d3edf0c3d2560658529b8c4c7398d06c730a4695484c680b6c9ca9e4385be2; \
     get "ofl/jetbrainsmono/JetBrainsMono%5Bwght%5D.ttf" JetBrainsMono.ttf 48715a42ec242c21e9f02692891e147d022299a52e48d5e413e1a942193ffeda; \
     fc-cache -f
-RUN pip install --no-cache-dir "mcp==1.30.0" "python-docx>=1.1,<2" "openpyxl>=3.1,<4" "pillow>=11,<13"
+RUN pip install --no-cache-dir "mcp==1.30.0" "python-docx==1.2.0" "openpyxl==3.1.5" "pillow==12.3.0"
 WORKDIR /opt/harness
-COPY findings_db.py findings.py report.py redact.py ./
+COPY findings_db.py findings.py report.py report_html.py redact.py branding.py ./
 COPY brand/ ./brand/
+COPY brands/ ./brands/
 COPY playbooks/ ./playbooks/
 COPY assets/ ./assets/
 EXPOSE 8092

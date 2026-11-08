@@ -1,0 +1,102 @@
+# Publishes the kit's images to GHCR for amd64 and arm64 when a version tag (v0.1.0, ...) is pushed. The tag must
+# match VERSION, which is also the default image tag in docker-compose.yml. Users' ./rvkit setup then pulls these
+# images instead of building them (it still builds any image it can't pull). The Integration tests run first.
+#
+# Native runners per architecture (no emulation: the Kali image takes hours under QEMU). ubuntu-24.04-arm runners
+# are free for public repositories only.
+name: Release images
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+permissions:
+  contents: read
+  packages: write
+env:
+  REGISTRY: ghcr.io/riskvoid/security-agent-kit
+
+jobs:
+  test:   # the full-stack tests must pass before anything is published
+    uses: ./.github/workflows/integration.yml
+
+  version:
+    needs: test
+    runs-on: ubuntu-24.04
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - id: v
+        run: |
+          v="$(cat VERSION)"
+          if [ "${{ github.ref_type }}" = tag ] && [ "${{ github.ref_name }}" != "v$v" ]; then
+            echo "tag ${{ github.ref_name }} doesn't match VERSION ($v)"; exit 1; fi
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+
+  build:
+    needs: version
+    strategy:
+      fail-fast: false
+      matrix:
+        image:
+          - {name: egress, context: egress, file: egress/Dockerfile}
+          - {name: harness, context: harness, file: harness/Dockerfile}
+          - {name: report, context: harness, file: harness/Dockerfile.report}
+          - {name: kali, context: kali-mcp, file: kali-mcp/Dockerfile}
+        platform:
+          - {arch: amd64, runner: ubuntu-24.04}
+          - {arch: arm64, runner: ubuntu-24.04-arm}
+    runs-on: ${{ matrix.platform.runner }}
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4.7.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - id: build
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: ${{ matrix.image.context }}
+          file: ${{ matrix.image.file }}
+          platforms: linux/${{ matrix.platform.arch }}
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.version=${{ needs.version.outputs.version }}
+            org.opencontainers.image.licenses=Apache-2.0
+          outputs: type=image,name=${{ env.REGISTRY }}-${{ matrix.image.name }},push-by-digest=true,name-canonical=true,push=true
+      - name: Save digest
+        run: |
+          mkdir -p digests && echo "${{ steps.build.outputs.digest }}" > "digests/${{ matrix.platform.arch }}"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: digest-${{ matrix.image.name }}-${{ matrix.platform.arch }}
+          path: digests/*
+          retention-days: 1
+
+  manifest:
+    needs: [version, build]
+    runs-on: ubuntu-24.04
+    strategy:
+      matrix:
+        name: [egress, harness, report, kali]
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: digest-${{ matrix.name }}-*
+          path: digests
+          merge-multiple: true
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4.7.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Multi-arch tag
+        run: |
+          img="${REGISTRY}-${{ matrix.name }}"
+          docker buildx imagetools create -t "$img:${{ needs.version.outputs.version }}" -t "$img:latest" \
+            $(for f in digests/*; do printf '%s@%s ' "$img" "$(cat "$f")"; done)
+          docker buildx imagetools inspect "$img:${{ needs.version.outputs.version }}"

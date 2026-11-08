@@ -1,14 +1,16 @@
-"""RiskVoid-branded assessment report from an engagement's findings database.
+"""Branded assessment report from an engagement's findings database (RiskVoid design by default).
 
   python3 report.py <engagement>      (on the host: ./rvkit report <engagement>)
 
-Writes /work/<eng>/report/<eng>-report-<date>.docx, a PDF copy and a findings register (.xlsx).
+Writes /work/<eng>/report/<eng>-report-<date>.html (self-contained, the report as a web page), .docx, a PDF copy
+and a findings register (.xlsx).
 Inputs, all optional, written by the planner or the consultant:
   /work/<eng>/report/meta.txt               "Client: ...", "Prepared by: ...", "Version: ..." (template created on
                                             the first run)
   /work/<eng>/report/executive-summary.md   executive summary (required for a final report)
   /work/<eng>/report/methodology.md         extra methodology text (the tool/tier summary is automatic)
   /work/<eng>/report/conclusion.md          closing remarks
+Branding (name, logo, colours, fonts) comes from REPORT_BRAND / ORG_NAME / REPORT_BRAND_DIR: see branding.py.
 Only confirmed, fixed and accepted-risk findings are reported. Evidence is checked against the kali audit log
 (evidence_provenance): every file gets its SHA-256 and the command that produced it. The report is marked DRAFT
 while anything blocks delivery (missing summary, open candidates, missing/modified evidence).
@@ -17,12 +19,15 @@ import asyncio, datetime, json, os, re, subprocess, sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent / "brand"))
-from rv_brand import RVDoc, rv_workbook, run_props, el, P, FONT_M  # noqa: E402
+import rv_brand as rvb  # noqa: E402
+from rv_brand import run_props, el, P  # noqa: E402
+import branding  # noqa: E402
 from docx.shared import Pt, Twips  # noqa: E402
 from docx.oxml.ns import qn  # noqa: E402
 from mcp import ClientSession  # noqa: E402
 from mcp.client.streamable_http import streamablehttp_client  # noqa: E402
 import findings_db as db  # noqa: E402
+import report_html  # noqa: E402
 from redact import redact  # noqa: E402
 
 KALI_MCP = os.environ.get("KALI_MCP_URL", "http://kali-mcp:8090/mcp")
@@ -30,7 +35,7 @@ SEV_ORDER = {s: i for i, s in enumerate(db.SEVERITIES)}
 REPORTED = ("confirmed", "fixed", "accepted-risk")
 STATUS_LABEL = {"confirmed": "Open", "fixed": "Resolved", "accepted-risk": "Accepted risk"}
 META_TEMPLATE = """Client:
-Prepared by: RiskVoid
+Prepared by: {prepared_by}
 Version: 1.0
 Classification: Confidential
 """
@@ -58,11 +63,11 @@ def read_opt(path):
         return ""
 
 
-def meta(eng):
+def meta(eng, prepared_by):
     p = Path(db.WORK, eng, "report", "meta.txt")
     if not p.exists():
         p.parent.mkdir(parents=True, exist_ok=True)
-        p.write_text(META_TEMPLATE)
+        p.write_text(META_TEMPLATE.format(prepared_by=prepared_by))
     out = {}
     for line in p.read_text().splitlines():
         if ":" in line and not line.lstrip().startswith("#"):
@@ -118,7 +123,7 @@ def code_block(d, text):
     for line in text.rstrip("\n").split("\n"):
         p = d._p()
         r = p.add_run(line or " ")
-        run_props(r, FONT_M, 8, P["INK0"])
+        run_props(r, rvb.FONT_M, 8, P["INK0"])
         pf = p.paragraph_format
         pf.space_after = Pt(0)
         pf.space_before = Pt(0)
@@ -135,7 +140,7 @@ def rich(p, text):
         if part.startswith("**") and part.endswith("**"):
             p.add_run(part[2:-2]).bold = True
         elif part.startswith("`") and part.endswith("`"):
-            run_props(p.add_run(part[1:-1]), FONT_M, 9, P["INK0"])
+            run_props(p.add_run(part[1:-1]), rvb.FONT_M, 9, P["INK0"])
         else:
             p.add_run(part)
 
@@ -192,10 +197,14 @@ def fmt_ts(ts):
 
 # ---------------------------------------------------------------- build
 def build(eng):
+    brand = branding.load()  # fails before anything is written if the brand is misconfigured
     db.engagement_dir(eng)
     info = kali("engagement_info", {"engagement": eng})
     act = kali("engagement_activity", {"engagement": eng})
-    m = meta(eng)
+    # program names only: the audit's first word can be a fragment of an inline script (print(json.loads(...)
+    act["tools"] = {k: v for k, v in act["tools"].items() if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._+-]*", k)
+                    and not re.fullmatch(r"[\d.]+", k)}
+    m = meta(eng, brand.prepared_by)
     rdir = Path(db.WORK, eng, "report")
     exec_md, meth_md, concl_md = (read_opt(rdir / n) for n in ("executive-summary.md", "methodology.md",
                                                                 "conclusion.md"))
@@ -206,6 +215,7 @@ def build(eng):
     ev, issues = evidence_index(eng, findings)
     cands = [f for f in allf if f["status"] == "candidate"]
     fps = [f for f in allf if f["status"] == "false-positive"]
+    dups = [f for f in allf if f["status"] == "duplicate"]
     if not exec_md:
         issues.insert(0, "no executive summary (report/executive-summary.md)")
     if cands:
@@ -218,18 +228,19 @@ def build(eng):
     sc = info["scope"]
     scope_short = ", ".join(sc["domains"] + sc["nets"] + [os.path.basename(p) for p in sc["paths"]])[:120]
 
-    d = RVDoc(header_tag="SECURITY ASSESSMENT")
+    d = brand.doc(header_tag="SECURITY ASSESSMENT")
     # rv_brand bug workaround: the default template's theme-font attributes (asciiTheme etc.) override the named
     # brand fonts in Word and LibreOffice, so headings render in the theme font. Strip them from every style.
     for rf in d.doc.styles.element.iter(qn("w:rFonts")):
         for att in ("w:asciiTheme", "w:hAnsiTheme", "w:eastAsiaTheme", "w:cstheme"):
             rf.attrib.pop(qn(att), None)
-    cover(d, "Security Assessment Report",
-          f"Results of the security assessment of {scope_short or 'the agreed scope'}: findings ranked by "
-          "severity, with evidence and remediation guidance.",
-          [("Client", m.get("client")), ("Engagement", eng), ("Testing period", period),
-           ("Report date", today), ("Prepared by", m.get("prepared by", "RiskVoid")),
-           ("Version / status", f"{m.get('version', '1.0')} · {'DRAFT' if draft else 'Final'}")])
+    description = (f"Results of the security assessment of {scope_short or 'the agreed scope'}: findings ranked by "
+                   "severity, with evidence and remediation guidance.")
+    cover_pairs = [("Client", m.get("client")), ("Engagement", eng), ("Testing period", period),
+                   ("Report date", today), ("Prepared by", m.get("prepared by", brand.prepared_by)),
+                   ("Version / status", f"{m.get('version', '1.0')} · {'DRAFT' if draft else 'Final'}"),
+                   ("Classification", m.get("classification") or "Confidential")]
+    cover(d, "Security Assessment Report", description, cover_pairs)
 
     if draft:
         d.guidance("DRAFT, not for client delivery. Resolve before sending: " + "; ".join(issues) + ".")
@@ -311,7 +322,7 @@ def build(eng):
         if f.get("cvss_vector"):
             p = d._p()
             p.add_run("CVSS vector: ").bold = True
-            run_props(p.add_run(f["cvss_vector"]), FONT_M, 8.5, P["INK1"])
+            run_props(p.add_run(f["cvss_vector"]), rvb.FONT_M, 8.5, P["INK1"])
         for label, key in (("Description", "description"), ("Impact", "impact"),
                            ("Steps to reproduce", "reproduction"), ("Remediation", "remediation")):
             if f.get(key):
@@ -357,7 +368,8 @@ def build(eng):
          f"{act['approvals']['requested']} / {act['approvals']['approved']} / {act['approvals']['denied']}"],
         ["Emergency halts", str(act["halts"])],
         ["Scope changes", str(act["scope_changes"])],
-        ["Results triaged as false positives", str(len(fps))]], col_weights=[2.5, 3])
+        ["Results triaged as false positives", str(len(fps))],
+        ["Results merged as duplicates", str(len(dups))]], col_weights=[2.5, 3])
 
     # output
     rdir.mkdir(parents=True, exist_ok=True)
@@ -366,10 +378,17 @@ def build(eng):
         old.unlink()
     docx = rdir / f"{stem}.docx"
     d.save(str(docx))
+    html = report_html.write(rdir / f"{stem}.html", {
+        "brand": brand, "engagement": eng, "client": m.get("client") or "", "date": today, "draft": draft,
+        "issues": issues, "classification": m.get("classification") or "Confidential",
+        "version": m.get("version", "1.0"), "description": description, "cover": cover_pairs[:6],
+        "exec_md": redact(exec_md), "meth_md": redact(meth_md), "concl_md": redact(concl_md),
+        "findings": findings, "evidence": ev, "activity": act, "info": info, "period": period,
+        "status_label": STATUS_LABEL, "fmt_ts": fmt_ts, "n_fp": len(fps), "n_dup": len(dups)})
 
     cols = [("ID", 9), ("Severity", 12), ("Finding", 46), ("Asset", 28), ("CWE", 14), ("CVSS", 8),
             ("Status", 14), ("Remediation", 60)]
-    wb = rv_workbook("Findings Register", meta=["Client", "Engagement", "Report date"], columns=cols,
+    wb = brand.workbook("Findings Register", meta=["Client", "Engagement", "Report date"], columns=cols,
                      n_rows=max(len(findings), 1))
     ws = wb.active
     hdr = next(r for r in range(1, 30) if ws.cell(row=r, column=1).value == "ID")
@@ -387,9 +406,9 @@ def build(eng):
     r = subprocess.run(["soffice", "--headless", "--convert-to", "pdf", "--outdir", str(rdir), str(docx)],
                        capture_output=True, text=True, timeout=300,
                        env={**os.environ, "HOME": "/tmp"})
-    return {"docx": str(docx), "pdf": str(pdf) if pdf.exists() else f"PDF conversion failed: {r.stderr[-300:]}",
+    return {"html": html, "docx": str(docx), "pdf": str(pdf) if pdf.exists() else f"PDF conversion failed: {r.stderr[-300:]}",
             "xlsx": str(xlsx), "status": "DRAFT" if draft else "final", "issues": issues,
-            "findings": len(findings), "excluded": {"candidate": len(cands), "false-positive": len(fps)}}
+            "findings": len(findings), "excluded": {"candidate": len(cands), "false-positive": len(fps), "duplicate": len(dups)}}
 
 
 if __name__ == "__main__":

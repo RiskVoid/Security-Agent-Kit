@@ -3,13 +3,15 @@
 # hashed evidence. Uses engagement "p5-e2e" (scope: the demo app, passive), reset on every run.
 #   1. tools run through the audited kali sandbox; their output files are hashed in the audit log
 #   2. findings recorded and confirmed through the findings MCP, citing those files
-#   3. generate_report -> final (not draft); every evidence row in the .docx says Pass; PDF + XLSX exist
+#   3. generate_report -> final (not draft); every evidence row in the .docx says Pass; PDF + XLSX exist; the HTML
+#      report is self-contained and has the same findings
 #   4. tampering with an evidence file is detected (report goes back to DRAFT); re-running the tool restores it
 #   5. ./rvkit close: manifest verifies, archive checksum verifies, engagement refuses new commands
 # Run: bash evals/phase5_e2e.sh
 cd "$(dirname "$0")/.." || exit 1
 ENG=p5-e2e
-ENGDIR="${ENGAGEMENTS_DIR:-$HOME/projects/engagements}/$ENG"
+E="${ENGAGEMENTS_DIR:-$(grep -E '^ENGAGEMENTS_DIR=' .env 2>/dev/null | head -1 | cut -d= -f2-)}"; E="${E:-~/riskvoid/engagements}"
+ENGDIR="${E/#\~/$HOME}/$ENG"
 pass=0; fail=0
 ok()  { pass=$((pass+1)); echo "PASS  $1"; }
 bad() { fail=$((fail+1)); echo "FAIL  $1"; [ -n "${2:-}" ] && echo "$2" | head -6 | sed 's/^/      /'; }
@@ -37,8 +39,8 @@ if [ -d "$ENGDIR" ]; then
   ./rvkit resume $ENG >/dev/null 2>&1
   docker compose exec -T findings-mcp sh -c "cd /work/$ENG && rm -rf findings.db report evidence *.json *.jsonl *.txt MANIFEST.sha256" </dev/null
 fi
-./rvkit engagement $ENG /src/rv-demo-app >/dev/null 2>&1
-sed -i.bak 's/^Allowed tiers:.*/Allowed tiers: passive/' "$ENGDIR/RULES.md" && rm -f "$ENGDIR/RULES.md.bak"
+./rvkit engagement $ENG --replace /src/rv-demo-app >/dev/null 2>&1
+sed -i.bak 's/^- Allowed tiers:.*/- Allowed tiers: passive/' "$ENGDIR/RULES.md" && rm -f "$ENGDIR/RULES.md.bak"
 ./rvkit scope $ENG --yes >/dev/null 2>&1
 check "engagement ready" "$(call $KALI engagement_info "{\"engagement\": \"$ENG\"}")" '"passive"'
 
@@ -60,6 +62,11 @@ while IFS= read -r f; do
   call $FIND update_finding "{\"engagement\": \"$ENG\", \"finding_id\": \"$id\", \"status\": \"$st\", \"notes\": \"e2e\"}" >/dev/null
 done
 check "3 confirmed + 1 false positive" "$(call $FIND list_findings "{\"engagement\": \"$ENG\", \"status\": \"confirmed\"}" | grep -c '"id"')" '^3$'
+dup=$(call $FIND record_finding "{\"engagement\": \"$ENG\", \"title\": \"Same SQL injection, found twice\", \"severity\": \"high\", \"asset\": \"app.py\", \"description\": \"dup\"}" | python3 -c 'import json,sys; print(json.load(sys.stdin)["id"])' 2>/dev/null)
+j1="{\"engagement\": \"$ENG\", \"finding_id\": \"$dup\", \"status\": \"duplicate\"}"
+j2="{\"engagement\": \"$ENG\", \"finding_id\": \"$dup\", \"status\": \"duplicate\", \"duplicate_of\": \"F-001\"}"
+check "duplicate needs duplicate_of" "$(call $FIND update_finding "$j1")" 'needs duplicate_of'
+check "duplicate links the kept finding" "$(call $FIND update_finding "$j2")" '"duplicate_of": "F-001"'
 
 echo "== 3. report"
 mkdir -p "$ENGDIR/report"
@@ -72,14 +79,24 @@ DOCX="$(ls "$ENGDIR"/report/*.docx 2>/dev/null | head -1)"
 xml="$(unzip -p "$DOCX" word/document.xml 2>/dev/null)"
 for f in F-001 F-002 F-003; do check "$f in report" "$xml" "$f"; done
 check "false positive excluded" "$(echo "$xml" | grep -c 'Scanner noise')" '^0$'
+check "duplicate excluded" "$(echo "$xml" | grep -c 'found twice')" '^0$'
+check "classification on the cover" "$xml" 'Classification.*Confidential'
 passes=$(echo "$xml" | grep -o '>Pass<' | wc -l | tr -d ' ')
 check "every evidence file verified (Pass rows: $passes)" "$(echo "$xml" | grep -cE '>(Fail|Not audited)<')" '^0$'
 [ "$passes" -ge 10 ] && ok "evidence rows in detail + appendix ($passes)" || bad "evidence rows" "$passes"
 check "client and summary in report" "$xml" 'Test Client Ltd.*|demo application'
 check "cover not draft" "$(echo "$xml" | grep -c 'DRAFT')" '^0$'
+HTML="$(ls "$ENGDIR"/report/*.html 2>/dev/null | head -1)"
+page="$(cat "$HTML" 2>/dev/null)"
+check "HTML report written" "$HTML" '\.html$'
+check "HTML: every confirmed finding" "$(for f in F-001 F-002 F-003; do echo "$page" | grep -q "id=\"$f\"" && echo "$f"; done | wc -l | tr -d ' ')" '^3$'
+check "HTML: false positive and duplicate excluded" "$(echo "$page" | grep -cE 'Scanner noise|found twice')" '^0$'
+check "HTML: no scripts, nothing fetched" "$(echo "$page" | grep -ciE '<script|src="https?:|url\(https?:')" '^0$'
+check "HTML: fonts and logo embedded" "$(echo "$page" | grep -o 'data:font/woff2\|data:image/png' | sort -u | wc -l | tr -d ' ')" '^2$'
 
 echo "== 4. tamper detection"
-echo " " >> "$ENGDIR/bandit.json"
+# modify it from a container: on Linux the file belongs to the engagement's sandbox user, not to us
+docker compose exec -T findings-mcp sh -c "echo ' ' >> /work/$ENG/bandit.json" </dev/null
 out="$(call $FIND generate_report "{\"engagement\": \"$ENG\"}")"
 check "tampered evidence -> DRAFT" "$out" '"status": "DRAFT"'
 check "issue names the file" "$out" 'bandit.json is MODIFIED'

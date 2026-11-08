@@ -1,0 +1,137 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>RiskVoid Console</title>
+<link rel="icon" href="/assets/riskvoid-logo.png">
+<link rel="preload" href="/assets/fonts/inter-latin.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="stylesheet" href="/app.css">
+</head>
+<body>
+<div class="rv-app-shell">
+  <aside class="rv-sidebar" aria-label="Main">
+    <div class="rv-brand">
+      <img src="/assets/riskvoid-logo.png" alt="">
+      <b>RiskVoid</b>
+      <span class="rv-tag">Console</span>
+    </div>
+
+    <div class="rv-side-label">Workspace</div>
+    <nav class="rv-side-nav">
+      <a class="rv-sidebar-item" href="#engagements" data-view="engagements">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/></svg>
+        <span>Engagements</span><span id="eng-count" class="rv-count"></span>
+      </a>
+      <a class="rv-sidebar-item" href="#approvals" data-view="approvals">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><path d="m9 12 2 2 4-4"/></svg>
+        <span>Approvals</span><span id="appr-badge" class="rv-count danger" hidden>0</span>
+      </a>
+      <a class="rv-sidebar-item" href="#status" data-view="status">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></svg>
+        <span>Stack status</span>
+      </a>
+    </nav>
+
+    <div class="rv-side-label">Agent</div>
+    <nav class="rv-side-nav">
+      <a id="agent-ui" class="rv-sidebar-item" href="http://localhost:8000/" target="_blank" rel="noopener">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 3h6v6"/><path d="M10 14 21 3"/><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/></svg>
+        <span>Open agent UI</span>
+      </a>
+    </nav>
+
+    <div class="rv-side-foot">
+      <span><span class="rv-dot ok"></span> local · 127.0.0.1 only</span>
+      <span id="side-version"></span>
+    </div>
+  </aside>
+
+  <div class="rv-main">
+    <header class="rv-topbar">
+      <button id="menu-btn" class="rv-btn ghost sm rv-menu-btn" aria-label="Menu">☰</button>
+      <div id="crumbs" class="rv-crumbs"><span>Console</span></div>
+      <div class="rv-topbar-right">
+        <button id="new-btn" class="rv-btn accent">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>
+          New engagement
+        </button>
+      </div>
+    </header>
+
+    <main class="rv-page">
+      <section id="view-engagements">
+        <div class="rv-split">
+          <div class="rv-split-list">
+            <div class="rv-search">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg>
+              <input id="eng-filter" class="rv-input" type="search" placeholder="Filter engagements" aria-label="Filter engagements">
+            </div>
+            <div id="eng-list" class="rv-list" role="list"></div>
+          </div>
+          <div id="detail" class="rv-split-detail">
+            <div class="rv-empty">Pick an engagement, or create one.</div>
+          </div>
+        </div>
+      </section>
+
+      <section id="view-approvals" class="rv-stack" hidden>
+        <div class="rv-banner">
+          <div class="rv-banner-body">
+            <p class="rv-banner-title">Intrusive commands wait here until you decide</p>
+            <p class="rv-banner-sub">Each approval works once, for this exact command. After you approve, tell the agent to run it again.</p>
+          </div>
+          <button id="notify-btn" class="rv-btn sm">Enable desktop notifications</button>
+        </div>
+        <div id="appr-all" class="rv-stack"></div>
+      </section>
+
+      <section id="view-status" hidden>
+        <div class="rv-card">
+          <div class="rv-card-head"><h3>./rvkit status</h3><button id="status-refresh" class="rv-btn sm">Refresh</button></div>
+          <pre id="status-text" class="rv-status">Loading…</pre>
+        </div>
+      </section>
+    </main>
+  </div>
+</div>
+
+<dialog id="new-dlg" class="rv-modal">
+  <form id="new-form" method="dialog">
+    <div class="rv-modal-head">
+      <h2>New engagement</h2>
+      <p>Scope and rules are enforced by the sandbox firewall from the moment it's created.</p>
+    </div>
+    <div class="rv-modal-body">
+      <label class="rv-field"><span class="rv-field-label">Name</span>
+        <input class="rv-input" name="name" required pattern="[A-Za-z0-9][A-Za-z0-9._-]{0,63}" placeholder="acme-2026-11"></label>
+      <label class="rv-field"><span class="rv-field-label">Client</span>
+        <input class="rv-input" name="client" placeholder="Acme Ltd"></label>
+      <label class="rv-field"><span class="rv-field-label">Targets, one per line</span>
+        <textarea class="rv-input" name="targets" rows="5" required placeholder="app.acme.com&#10;*.acme.io&#10;203.0.113.0/28&#10;/src/acme-repo"></textarea></label>
+      <fieldset class="rv-field">
+        <legend class="rv-field-label">Allowed tiers</legend>
+        <label class="rv-check"><input type="checkbox" name="tiers" value="passive" checked> <span class="rv-tag passive">passive</span> code, config, research</label>
+        <label class="rv-check"><input type="checkbox" name="tiers" value="active" checked> <span class="rv-tag active-tier">active</span> scans, crawls, fingerprinting</label>
+        <label class="rv-check"><input type="checkbox" name="tiers" value="intrusive"> <span class="rv-tag intrusive">intrusive</span> each command needs approval</label>
+      </fieldset>
+      <div class="rv-form-grid">
+        <label class="rv-field"><span class="rv-field-label">Max rate per second</span>
+          <input class="rv-input" name="rate" type="number" min="1" value="100"></label>
+        <label class="rv-field"><span class="rv-field-label">Network</span>
+          <select class="rv-select" name="network"><option value="online">online</option><option value="offline">offline</option></select></label>
+      </div>
+      <label class="rv-check"><input type="checkbox" name="private"> Private worker: never send this client's tool output to the fallback model</label>
+      <p id="new-err" class="err" hidden></p>
+    </div>
+    <div class="rv-modal-foot">
+      <button type="button" id="new-cancel" class="rv-btn ghost">Cancel</button>
+      <button type="submit" class="rv-btn accent">Create engagement</button>
+    </div>
+  </form>
+</dialog>
+
+<div id="toast" class="rv-toast" role="status" hidden></div>
+<script src="/app.js"></script>
+</body>
+</html>

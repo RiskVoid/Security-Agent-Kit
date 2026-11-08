@@ -33,18 +33,21 @@ def update_finding(engagement: str, finding_id: str, status: str | None = None, 
                    title: str | None = None, description: str | None = None, impact: str | None = None,
                    reproduction: str | None = None, remediation: str | None = None,
                    evidence: list[str] | None = None, cvss_vector: str | None = None,
-                   cvss_score: float | None = None, cwe: str | None = None, notes: str | None = None) -> str:
+                   cvss_score: float | None = None, cwe: str | None = None, notes: str | None = None,
+                   duplicate_of: str | None = None) -> str:
     """Update a finding. Use status=confirmed after verifying a candidate, status=false-positive (with the reason
-    in notes) when it doesn't hold, fixed or accepted-risk after client feedback. Only given fields change."""
+    in notes) when it doesn't hold, status=duplicate with duplicate_of=<id of the finding to keep> when it is the
+    same issue as another finding (merge its evidence into that one first), fixed or accepted-risk after client
+    feedback. Only given fields change."""
     return _out(db.update(engagement, finding_id, status=status, severity=severity, title=title,
                           description=description, impact=impact, reproduction=reproduction,
                           remediation=remediation, evidence=evidence, cvss_vector=cvss_vector,
-                          cvss_score=cvss_score, cwe=cwe, notes=notes))
+                          cvss_score=cvss_score, cwe=cwe, notes=notes, duplicate_of=duplicate_of))
 
 
 @mcp.tool()
 def list_findings(engagement: str, status: str | None = None, severity: str | None = None) -> str:
-    """List findings, most severe first. Filter by status (candidate|confirmed|false-positive|fixed|accepted-risk)
+    """List findings, most severe first. Filter by status (candidate|confirmed|false-positive|duplicate|fixed|accepted-risk)
     and/or severity. Returns id, title, severity, status, asset for each."""
     rows = db.list_(engagement, status, severity)
     return _out([{k: r[k] for k in ("id", "title", "severity", "status", "asset", "source")} for r in rows]
@@ -55,6 +58,37 @@ def list_findings(engagement: str, status: str | None = None, severity: str | No
 def get_finding(engagement: str, finding_id: str) -> str:
     """Get one finding with all fields."""
     return _out(db.get(engagement, finding_id))
+
+
+import re  # noqa: E402
+
+# Files the planner may write in an engagement folder. Its own workspace sees /work read-only, so PLAN.md, notes and
+# the report text go through this tool; evidence is written only by kali commands (hashed in the audit log), and
+# findings only through the findings tools.
+WRITABLE = re.compile(r"(PLAN\.md|NOTES\.md|notes/[A-Za-z0-9._-]+\.(md|txt)|"
+                      r"report/(executive-summary|methodology|conclusion)\.md|report/meta\.txt)")
+MAX_WRITE = 1_000_000
+
+
+@mcp.tool()
+def write_file(engagement: str, path: str, content: str, append: bool = False) -> str:
+    """Write a working file in the engagement folder (your workspace sees /work read-only, so use this tool).
+    path is relative to /work/<engagement>/ and must be one of: PLAN.md, NOTES.md, notes/<name>.md|.txt,
+    report/executive-summary.md, report/methodology.md, report/conclusion.md, report/meta.txt.
+    append=true adds to the end instead of replacing. Evidence files can't be written here: produce them with
+    kali commands, which hash them in the audit log."""
+    base = db.engagement_dir(engagement)
+    rel = path.strip().removeprefix(f"/work/{engagement}/").lstrip("/")
+    if not WRITABLE.fullmatch(rel):
+        return ("REFUSED: allowed paths are PLAN.md, NOTES.md, notes/<name>.md|.txt, report/executive-summary.md, "
+                "report/methodology.md, report/conclusion.md, report/meta.txt")
+    if len(content.encode()) > MAX_WRITE:
+        return f"REFUSED: content is larger than {MAX_WRITE} bytes"
+    full = os.path.join(base, rel)
+    os.makedirs(os.path.dirname(full), exist_ok=True)
+    with open(full, "a" if append else "w") as f:
+        f.write(content)
+    return f"{'appended to' if append else 'wrote'} /work/{engagement}/{rel} ({os.path.getsize(full)} bytes)"
 
 
 PLAYBOOKS = os.path.join(os.path.dirname(os.path.abspath(__file__)), "playbooks")
@@ -83,8 +117,8 @@ def get_playbook(name: str) -> str:
 
 @mcp.tool()
 async def generate_report(engagement: str) -> str:
-    """Build the RiskVoid-branded report (.docx + PDF) and findings register (.xlsx) in /work/<eng>/report/
-    (workspace: /projects/engagements/<eng>/report/). Includes confirmed, fixed and accepted-risk findings, each
+    """Build the branded report (brand set by REPORT_BRAND) as a web page (.html), .docx + PDF, and findings register (.xlsx) in /work/<eng>/report/
+    (the same path in your workspace, read-only). Includes confirmed, fixed and accepted-risk findings, each
     with its evidence SHA-256 and the audited command that produced it. Before calling it, write
     report/executive-summary.md (and optionally methodology.md, conclusion.md); the client name is in
     report/meta.txt. Returns paths, DRAFT/final status and the issues that keep it a draft (fix them and

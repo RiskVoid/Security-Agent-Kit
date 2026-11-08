@@ -1,0 +1,19 @@
+# Domains the OpenHands agent container may reach (each with its subdomains), through the egress proxy.
+# Package registries and vulnerability databases only: web research goes through the search / fetch tools,
+# and targets only through the kali tool. Add your own in .env: EGRESS_EXTRA_DOMAINS=example.com,other.org
+# (then ./rvkit up). Everything else, including your engagement targets, is refused.
+pypi.org
+files.pythonhosted.org
+registry.npmjs.org
+github.com
+githubusercontent.com
+proxy.golang.org
+sum.golang.org
+rubygems.org
+repo.maven.apache.org
+repo1.maven.org
+crates.io
+osv.dev
+nvd.nist.gov
+api.first.org
+cisa.gov
