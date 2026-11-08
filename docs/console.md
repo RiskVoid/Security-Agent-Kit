@@ -21,11 +21,11 @@ It runs in the foreground; Ctrl-C stops it. The address is `http://127.0.0.1:810
 |---|---|---|
 | **Engagements** list | Every engagement with its client, status (active, halted, closed), confirmed findings, how many wait for triage, and pending approvals. Filter by name or client. | `./rvkit eng list` |
 | **New engagement** | Name, client, targets, tiers, rate, network and the private-worker switch, validated before anything is created. | `./rvkit new` |
-| Engagement **Overview** | Findings by severity, the active scope and rules, pending approvals for this engagement, and a ready prompt to paste into the agent UI. | `./rvkit show` |
+| Engagement **Overview** | Findings by severity, the active scope and rules (with where client data may go), pending approvals for this engagement, and a ready prompt to paste into the agent UI. **Models** shows where each model route sends data now and flags routes the engagement's `Client data:` rule doesn't allow. **Conversations**: start an OpenHands conversation bound to the engagement (with an optional first message), open or unbind one. **Credentials**: store, replace or remove a credential the agent uses by reference; values are never shown. | `./rvkit show`, `conversation`, `cred` |
 | **Live** | What the engagement is doing now, refreshed every few seconds: the commands running in the Kali sandbox (with their tier and time against their timeout), worker tasks and their current step and model, approvals waiting for you, today's OpenRouter spend against the daily budget, and the latest commands, refusals and approvals. | `./rvkit status`, `./rvkit audit` |
 | **Scope & rules** | Edit `SCOPE.md` and `RULES.md`, **Preview changes** (a diff, the parser's warnings, and exactly what the firewall will allow), then **Apply**. Preview writes nothing. | `./rvkit scope <eng>` |
 | **Findings** | Sort by severity and filter by status. Click a finding to change its status (including `duplicate` with the finding it duplicates), severity and notes, and read the description, reproduction, remediation and evidence. **Check evidence integrity** shows a badge per evidence file: verified, code ref, not audited, or what's wrong. | the findings tools in chat |
-| **Worker tasks** | Every task the planner handed to the worker model, newest first: status, tier, which model served it, each command it ran and its summary. Refreshes every few seconds while a task is running. Tasks interrupted by a restart show as `interrupted`. | `list_tasks` in chat, `evidence/tasks/` |
+| **Worker tasks** | Every task the planner handed to the worker model, newest first: status, tier, which model served it, what it depends on, each command it ran and its summary. A task waiting for an approval shows the approval id. A task interrupted by a restart shows the recovery decision and what was in flight, with **Resume from checkpoint**. **Cancel** stops a task. Refreshes every few seconds while a task is active. | `list_tasks` in chat, `./rvkit task` |
 | **Report** | Edit the cover details (client, prepared by, version, classification) and the executive summary, **Generate report**, see whether it's DRAFT and why, **View HTML report**, and download the `.html`, `.docx`, `.pdf` and `.xlsx`. | `./rvkit report` |
 | **Audit log** | Every command, refusal, approval, halt and scope change for the engagement, newest first. | `./rvkit audit` |
 | **Halt now / Resume / Close out / Delete** | The engagement controls, each with a confirmation step where it matters. | `./rvkit halt`, `resume`, `close`, `eng delete` |
@@ -113,7 +113,9 @@ becomes a menu and the tab strip scrolls sideways; nothing scrolls the whole pag
 
 - The planner's own reasoning and messages: use the OpenHands UI. The **Live** tab shows what it runs (every
   Kali command and worker task) and the spend, but not the conversation, and spend is for the whole kit, not per run.
-- Starting the agent: the Overview gives you the prompt; paste it into the OpenHands UI.
-- Continuing the agent automatically after an approval: tell it to run the command again.
+- The conversation itself: **New conversation** creates and binds it and can send the first message; you follow
+  it in the OpenHands UI.
+- Continuing the planner automatically after an approval: tell it to run the command again. Worker tasks continue
+  by themselves.
 - Models and the worker (Colab, fallback, budget): use `./rvkit worker`, `./rvkit budget` and `/rv-start`.
 - Several users: there is one token per kit and approvals don't record who approved.

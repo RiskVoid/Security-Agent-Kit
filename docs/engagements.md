@@ -212,6 +212,7 @@ and add `*.` entries where you meant subdomains.
 # - Execution: controlled
 # - Strict tiers: on
 # - Worker model: private
+# - Client data: local, colab
 ```
 
 | Rule | Values | Default (rule missing) |
@@ -231,6 +232,7 @@ and add `*.` entries where you meant subdomains.
 | `Approval expiry:` | `1h` to `168h` | `24h` |
 | `Strict tiers:` | `on` or `off` | `off` |
 | `Worker model:` | `private` or `auto` | `auto` |
+| `Client data:` | `any`, or where model calls about this engagement may go: any of `local`, `colab`, `api`, `openrouter`, `anthropic`, `openai` ([below](#where-client-data-may-go)) | `any` |
 | `Stop condition:` | free text, one per line: shown to the agent with the rules, kept in each policy revision | none |
 | `Note:` | free text kept with the rules | none |
 
@@ -241,6 +243,24 @@ case. **An unknown rule, a line that isn't `Key: value` or an invalid value stop
 **Worker model: private** means the worker's tool work for this engagement always uses the `private-llm` model: the
 worker endpoint only, never the OpenRouter fallback, even when you have turned the fallback on. See
 [models.md](models.md).
+
+### Where client data may go
+
+`Client data:` limits where model calls about this engagement are sent. The model gateway (LiteLLM) knows where
+each model route goes: `local` (a model on your machine or network), `colab` (the Colab tunnel), `api` (another
+remote endpoint), or a provider (`openrouter`, `anthropic`, `openai`). A call is tied to the engagement when it
+comes from a conversation bound to it ([below](#conversations)), from one of its worker tasks, or when its tool
+calls or your messages name the engagement or its `/work/<eng>` or in-scope `/src` paths. Tool results don't
+count, so a page or file the agent reads can't tie a call to an engagement or untie it.
+
+- A call whose model goes somewhere the rule doesn't allow is refused with `[RiskVoid] refused by policy:
+  engagement acme allows its client data only to local, colab; ...`. It shows in the **Model log**.
+- A call that is allowed, but whose fallback model isn't, runs without the fallback.
+- The console's Overview shows where each model route goes now and flags the ones the rule doesn't allow.
+- With `Client data: local, colab`, start conversations with **New conversation** (or `./rvkit conversation <eng>
+  new`): it picks `riskvoid-local` when the planner's route isn't allowed.
+
+The rule only adds restrictions: nothing the agent reads or writes can loosen it.
 
 ---
 
@@ -468,6 +488,88 @@ The rules:
 
 The engagement's rate limit is applied to approved commands too.
 
+A worker task that hits an approval pauses (`awaiting_approval`, with the approval id) without holding the worker
+model. Once you approve, it runs the approved action by itself, exactly once; a denied or stale approval is
+reported to the model instead. You don't need to tell the agent anything.
+
+---
+
+## Credentials
+
+Give the agent a password, token or API key without putting it in a chat or a file it can read:
+
+```sh
+./rvkit cred acme-2026-11 set APP_PASS      # asks for the value (hidden); it is never printed
+./rvkit cred acme-2026-11 list              # names and when they were set, no values
+./rvkit cred acme-2026-11 rm APP_PASS
+```
+
+The console's Overview has the same in its **Credentials** card. Values are stored in the engagement's control
+folder (`/control/eng/<eng>/credentials.json`, root only, mode 0600), never in the engagement folder.
+
+The agent sees only the names (kali tool `list_credentials`) and uses a credential by reference:
+
+- in a command: `$RV_CRED_APP_PASS`. The sandbox gets the variable only when the command has network.
+- in the request tool: `{{cred:APP_PASS}}` in the URL, a header or the body. The approval covers the reference,
+  not the value, and the value is not sent on to another host after a redirect.
+
+Wherever a value would show up (command output, evidence files, saved requests and responses, the audit log), it
+is replaced by its reference. The audit log records which credentials a command used. Report exports aren't
+scrubbed: don't paste a value into a finding by hand.
+
+---
+
+## Conversations
+
+An OpenHands conversation can be **bound** to one engagement. Every model call it makes then follows that
+engagement at the model gateway: its `Client data:` rule, and its halt. That holds if you switch the
+conversation's model or agent profile later.
+
+```sh
+./rvkit conversation acme-2026-11 new "Review /src/acme for injection flaws"   # create, bind, send a first message
+./rvkit conversation acme-2026-11 list                                        # bound conversations and their status
+./rvkit conversation acme-2026-11 bind <conversation-id>                      # bind one you started in the UI
+./rvkit conversation acme-2026-11 unbind <conversation-id>
+```
+
+The console's Overview does the same in its **Conversations** card (New conversation, Unbind, and a link that opens
+each in OpenHands). A conversation belongs to at most one engagement. Conversations you start in the OpenHands UI
+without binding them still follow an engagement whenever their tool calls name it.
+
+---
+
+## Worker tasks
+
+A task handed to the worker model is durable: its state, each step and the conversation so far are saved in
+`evidence/tasks/<task_id>/`. Each action is recorded as started before it runs and as done after, so after a
+restart the worker knows exactly what may have happened.
+
+| Status | Meaning |
+|---|---|
+| `queued`, `waiting` | not started yet; `waiting` means it waits for the tasks in its `depends_on` |
+| `running` | working |
+| `awaiting_approval` | paused until you decide its approval; continues by itself afterwards |
+| `done`, `error` | finished |
+| `blocked` | a task it depends on failed |
+| `cancelled` | stopped by you or the planner; its running command was killed |
+| `halted` | the engagement was halted |
+| `interrupted` | the worker restarted while it was running |
+
+After a worker restart, queued tasks start again, tasks waiting for an approval keep waiting, and running tasks
+become `interrupted` with a recovery decision:
+
+- **resumable**: no action was in flight; resuming continues where it stopped.
+- **needs review**: an action that can change state (an intrusive command, a POST request) was in flight. It is
+  never repeated automatically: check the target, then resume; the model is told the result is unknown.
+
+```sh
+./rvkit task cancel <task-id>     # stop a task and kill its running command
+./rvkit task resume <task-id>     # continue an interrupted task from its last checkpoint
+```
+
+The console's **Worker tasks** tab has Cancel and Resume from checkpoint buttons. Resuming checks the engagement's
+current policy first.
+
 ---
 
 ## Halt and resume
@@ -478,7 +580,9 @@ The engagement's rate limit is applied to approved commands too.
 ```
 
 Halting kills all processes of the engagement's user at once and refuses new Kali commands and worker tasks with
-`engagement is halted`. Use it whenever something looks wrong. It doesn't affect other engagements.
+`engagement is halted`. It also stops the engagement's worker tasks (status `halted`), pauses its bound
+conversations, and the model gateway refuses their model calls and those of its worker tasks. Use it whenever
+something looks wrong. It doesn't affect other engagements.
 
 ## Testing window
 

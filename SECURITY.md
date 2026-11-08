@@ -49,7 +49,14 @@ is weaker than described here.
    root-only control volume that only `./rvkit` changes.
 8. **The Colab worker endpoint is on the internet.** It is reached through a Cloudflare or ngrok tunnel and is
    protected only by its API key. Keep the key secret, and stop the runtime when you're done.
-9. **Tested platforms.** So far the kit has been verified on macOS (Apple Silicon) with OrbStack. Linux and amd64
+9. **The model gateway's data rules assume the planner reaches models only through LiteLLM.** `Client data:` and
+   halt are enforced at LiteLLM. The agent's terminal runs in the same container as OpenHands and has the LiteLLM
+   key OpenHands uses, so a compromised agent could call LiteLLM with a request that names no engagement; such a
+   call is allowed by the data rule. It still can't reach a provider other than through LiteLLM's configured
+   routes, and every call is in LiteLLM's logs.
+10. **Credential values are scrubbed from output, evidence and the audit log, not from reports.** If a value is
+   copied into a finding by hand, the report shows it.
+11. **Tested platforms.** So far the kit has been verified on macOS (Apple Silicon) with OrbStack. Linux and amd64
    have not been through the full test suites yet.
 
 ### How the agent's network access is limited in this release
@@ -80,7 +87,13 @@ is weaker than described here.
   text through the findings server's `write_file` tool (a fixed list of paths); evidence is written only by kali
   commands, which hash it in the audit log.
 - **Approvals.** Intrusive commands wait for a human: `./rvkit approve <eng> <id>`. An approval is single-use,
-  bound to the exact command, and expires after 24 hours. `./rvkit halt <eng>` stops everything for an engagement.
+  bound to the exact command, and expires after 24 hours. `./rvkit halt <eng>` stops everything for an engagement:
+  commands, worker tasks, bound conversations and their model calls.
+- **Where client data goes.** `Client data:` in `RULES.md` limits which model destinations (local, Colab, an API,
+  OpenRouter, Anthropic, OpenAI) may receive calls about an engagement; the model gateway refuses the others and
+  drops fallbacks that aren't allowed. Content the agent reads can't change which engagement a call is about.
+- **Credentials by reference.** The agent uses stored credentials as `$RV_CRED_<NAME>` or `{{cred:NAME}}` without
+  seeing them; values are kept in the control volume and replaced by the reference in output and evidence.
 
 ---
 

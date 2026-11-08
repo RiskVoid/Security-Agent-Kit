@@ -142,6 +142,8 @@ What happens between "Engagement `acme`: review `/src/acme`…" and a finished r
    exactly that content). It builds the `.docx`, converts it to PDF with LibreOffice and writes the findings
    register `.xlsx`. Anything that blocks delivery keeps the report a DRAFT.
 
+Every model call in steps 1, 3 and 4 passes the model gateway's policy check first ([below](#model-gateway-and-data-routes)).
+
 The `riskvoid-local` agent follows the same path without step 3: it runs on `private-llm` and calls the kali tool
 itself. More on the agents and models: [running-the-agent.md](running-the-agent.md) and [models.md](models.md).
 
@@ -190,6 +192,47 @@ calls can't both use it. A policy change makes pending and unused approvals stal
 Budgets (`Max requests`, `Max commands`) are counted in the control volume under a file lock, so the planner,
 every worker task and the console share them. `Max parallel` limits concurrent network commands and divides
 `Max rate` between them; the request tool spaces its requests to `Max rate`.
+
+### Model gateway and data routes
+
+LiteLLM runs a pre-call hook (`litellm/rv_events.py`, which calls the pure module `litellm/rv_routes.py`) on every
+model call. It works out where the call's route goes (`local`, `colab`, `api`, `openrouter`, `anthropic`,
+`openai`, from `.env`: the worker endpoint, the planner models and the fallbacks), and which engagements the call
+is about:
+
+- the engagement the OpenHands conversation is bound to (OpenHands sends the conversation id as
+  `x-litellm-session-id`);
+- the `x-rv-engagement` header the worker sends with each task's calls;
+- engagements named in tool-call arguments (`"engagement": "..."`, `/work/<eng>` paths, in-scope `/src` paths) and
+  in your messages. Tool results are never read, so content the agent fetches can't add or remove an engagement.
+
+The call is refused (HTTP 403, `[RiskVoid] refused by policy: ...`, recorded in the model log) when a bound or
+calling engagement is halted or deleted, or when its route's destination isn't in an engagement's `Client data:`
+list. When the route is allowed but a fallback isn't, the call runs with fallbacks disabled. Engagement detection
+can only add restrictions.
+
+kali-mcp publishes the inputs as a routing table, `routes.json` on the `kali-routes` volume (read-only in
+LiteLLM): each engagement's `Client data:` list, in-scope paths and halt state, and the conversation bindings. It
+rewrites it on every scope change, bind, halt, resume and delete, and at startup.
+
+### Worker task lifecycle
+
+`worker-mcp` saves each task (`task.json`: status, lease, steps; `messages.json`: the model conversation) next to
+its evidence. Each tool call is a step recorded as `started` before it runs and `done` after, with its effect
+(`read` or `write`). A task waiting for an approval polls `approval_status` without holding the model slot, then
+runs the approved action, which kali-mcp consumes once. On startup the worker recovers saved tasks: queued and
+waiting ones start, approval waits continue, and a task whose lease belonged to the previous run becomes
+`interrupted` with a decision (`resumable`, or `needs_review` when a write was in flight). Resuming answers an
+in-flight call with "result unknown" instead of repeating it. Cancel and resume requests from the host and the
+console go through `/work/.control/tasks/`, which only the host and `worker-mcp` can write; `kali-mcp` kills a
+cancelled task's commands by the task id in their running markers.
+
+### Credentials
+
+Credential values live in `/control/eng/<eng>/credentials.json` (root only). `run` adds `RV_CRED_<NAME>` variables
+to the sandbox only for commands with network; the request tool expands `{{cred:NAME}}` after the approval digest
+is computed (so approvals cover the reference) and doesn't forward credentials across hosts on a redirect. Output,
+evidence, saved requests and the audit log have each value replaced by its reference.
 
 `SCOPE.md` and `RULES.md` in the engagement folder are what you edit. They take effect only when you run
 `./rvkit scope <engagement> --yes`, which copies them into `/control` and rebuilds the firewall. So an agent that

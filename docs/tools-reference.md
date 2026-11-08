@@ -29,6 +29,9 @@ the agent did, to write better task prompts, or to extend the kit.
 | `analyze_source` | `engagement`, `tool` (semgrep, gitleaks, trufflehog, bandit), `path`, `rulesets`, `task` | Runs a source-analysis tool on in-scope code in the sandbox with no network at all; the JSON report goes to `evidence/source/`. |
 | `evidence_provenance` | `engagement`, `paths` | For each evidence file: current SHA-256 and status: `verified` (with the producing command, time, tier, exit code), `MODIFIED after it was produced`, `not produced by an audited kali command`, `missing`, or `not an engagement file` (a path outside the engagement folder). |
 | `engagement_activity` | `engagement` | Summary of the audit log: time range, commands run and refused, counts per tier and per tool, evidence files, approvals, halts and scope changes. The report's methodology section uses it. |
+| `approval_status` | `engagement`, `approval_id` | Where an approval stands: `pending`, `approved`, `denied`, `used` or `stale` (the scope or rules changed), as JSON. |
+| `list_credentials` | `engagement` | The names of the credentials stored for the engagement (never the values). Use one as `$RV_CRED_<NAME>` in `run`, or `{{cred:NAME}}` in an `http_request` URL, header or body. See [engagements.md](engagements.md#credentials). |
+| `cancel_task` | `engagement`, `task` | Kills the commands a worker task is running now. `worker-mcp` calls it when a task is cancelled or halted. |
 
 What `run` does, in order: refuses if the engagement is halted or outside its testing window, dates or days;
 classifies the tier and refuses it if `RULES.md` or the task's `max_tier` doesn't allow it; refuses out-of-scope,
@@ -56,11 +59,14 @@ Output notes:
 
 | Tool | Parameters | What it does |
 |---|---|---|
-| `delegate_task` | `goal`, `engagement`, `tier` (`passive` default, `active`, `intrusive`), `max_steps` (default 15, 1–40), `timeout_min` (default 30, 1–180), `wait_s` (default 240, max 600) | Starts one focused task on the worker model. Refuses if the engagement is halted or the tier isn't allowed by `RULES.md`. Returns the result, or a `task_id` with a note if it's still running after `wait_s`. |
+| `delegate_task` | `goal`, `engagement`, `tier` (`passive` default, `active`, `intrusive`), `max_steps` (default 15, 1–40), `timeout_min` (default 30, 1–180), `wait_s` (default 240, max 600), `depends_on` (task ids) | Starts one focused task on the worker model. Refuses if the engagement is halted or the tier isn't allowed by `RULES.md`. With `depends_on`, it waits until those tasks are done (and is `blocked` if one fails). Returns the result, or a `task_id` with a note if it's still running after `wait_s`. |
 | `get_task` | `task_id`, `wait_s` (default 240, max 600) | Waits for a task and returns its result. |
-| `list_tasks` | `engagement` (optional) | Saved tasks, newest first (up to 50), including those from before a worker restart. |
+| `cancel_task` | `task_id` | Stops a task; a running command is killed. |
+| `resume_task` | `task_id`, `wait_s` | Continues an interrupted task from its last checkpoint, after checking the engagement's policy again. An action that was in flight is not repeated: the model is told its result is unknown. |
+| `list_tasks` | `engagement` (optional) | Saved tasks, newest first (up to 50), including those from before a worker restart, with their approval and recovery decision. |
 
-A result has: `task_id`, `status` (`queued`, `running`, `done`, `error`, `interrupted`), `elapsed_s`, the `commands` it ran, the
+A result has: `task_id`, `status` (`queued`, `waiting`, `running`, `awaiting_approval`, `done`, `error`, `blocked`,
+`cancelled`, `halted`, `interrupted`), `elapsed_s`, the `commands` it ran, the
 `candidate_findings` it recorded, the `evidence_dir`, the `model` that served it (shows when the fallback model
 was used) and `result` (`summary`, `observations`, `open_questions`, `confidence`). Secrets are redacted from it.
 
@@ -68,10 +74,15 @@ Things to know:
 
 - **One task at a time** by default: Colab handles one request at a time, so later tasks queue. Raise
   `WORKER_PARALLEL_TASKS` in `.env` for an endpoint that serves parallel requests.
-- **Tasks survive restarts.** Each task's state is saved in `/work/<engagement>/evidence/tasks/<task_id>/task.json`,
-  next to every step's full output (`step-NN-<tool>.txt`) and the whole exchange (`transcript.jsonl`). A task that
-  was running when `worker-mcp` restarted shows as `interrupted`; delegate it again to finish it.
-  `list_tasks(engagement)` lists one engagement's tasks, newest first.
+- **Tasks survive restarts.** Each task's state and checkpoints are saved in
+  `/work/<engagement>/evidence/tasks/<task_id>/task.json` (the conversation so far in `messages.json`), next to
+  every step's full output (`step-NN-<tool>.txt`) and the whole exchange (`transcript.jsonl`). A task that was
+  running when `worker-mcp` restarted shows as `interrupted` with a recovery decision; `resume_task` continues it.
+  See [engagements.md](engagements.md#worker-tasks).
+- **Approvals pause the task.** An action that needs approval sets the task to `awaiting_approval` (with the
+  approval id) without holding the worker model; it continues by itself once you decide.
+- **The worker's model calls carry the engagement**, so the model gateway applies its `Client data:` rule and
+  halt to them.
 - **Private engagements.** With `Worker model: private` in `RULES.md`, the task runs on `private-llm`, which
   never falls back to OpenRouter. See [models.md](models.md).
 - If the worker model can't be reached, the task ends with `error: worker model unreachable …`. The planner then
@@ -83,7 +94,7 @@ Inside a task, the worker model has these tools (they aren't MCP tools; `worker-
 
 | Tool | What it does |
 |---|---|
-| `kali_run` | `command`, `timeout_s` (default 600, max 3600): calls the kali `run` tool for the task's engagement with the task's tier as `max_tier`. Same checks, same audit log. An intrusive command makes it stop and report the approval id. |
+| `kali_run` | `command`, `timeout_s` (default 600, max 3600): calls the kali `run` tool for the task's engagement with the task's tier as `max_tier`. Same checks, same audit log. An intrusive command pauses the task until you decide; the model then gets the result or the denial. |
 | `http_request` | `method`, `url`, `headers`, `body`: calls the kali `http_request` tool with the task's tier as `max_tier`. |
 | `analyze_source` | `tool`, `path`, `rulesets`: calls the kali `analyze_source` tool (no network). |
 | `vuln_intel` | `ids`: ranks up to 50 vulnerability ids with the intel `prioritize` tool. |
