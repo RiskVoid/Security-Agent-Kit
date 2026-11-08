@@ -81,7 +81,7 @@ async function refresh() {
     $("#agent-ui").href = o.ui_url;
     if (o.version) $("#side-version").textContent = "kit " + o.version;
     $("#eng-count").textContent = o.engagements.length || "";
-    renderList(); renderApprovals();
+    renderList(); renderApprovals(); renderModelAlert(o.model_events || []);
     const ids = new Set(o.approvals.map((a) => a.id));
     if (state.seenApprovals) {
       const fresh = o.approvals.filter((a) => !state.seenApprovals.has(a.id));
@@ -93,6 +93,25 @@ async function refresh() {
   } catch (e) {
     $("#eng-list").innerHTML = `<div class="rv-empty err">${esc(e.message)}</div>`;
   }
+}
+
+// Model problems of the last 30 minutes (litellm/rv_events.py): failed calls as a red banner, calls another model
+// answered instead as one quiet line. A new failure also raises a desktop notification.
+function renderModelAlert(events) {
+  const box = $("#model-alert");
+  const problems = events.filter((e) => e.problem), recovered = events.filter((e) => !e.problem);
+  const time = (ts) => new Date(ts).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  const row = (e) => `<li><span class="t">${esc(time(e.ts))}</span> ${esc(e.message)}${e.count > 1 ? ` <span class="n">x${e.count}</span>` : ""}</li>`;
+  if (!events.length) { box.hidden = true; box.innerHTML = ""; return; }
+  box.hidden = false;
+  box.className = "rv-model-alert" + (problems.length ? " bad" : "");
+  box.innerHTML = (problems.length ? `<div class="h">Model calls failed in the last 30 minutes</div><ul>${problems.slice(0, 4).map(row).join("")}</ul>` : "") +
+    (recovered.length ? `<div class="r">${recovered.length === 1 ? "Once" : recovered.length + " times"}, another model answered instead (refusal or error): ${esc(recovered[0].message)}</div>` : "");
+  const key = problems.map((e) => e.ts + e.kind).join("|");
+  if (state.seenModel !== undefined && key && key !== state.seenModel && "Notification" in window && Notification.permission === "granted") {
+    new Notification("RiskVoid: model call failed", { body: problems[0].message.slice(0, 160) });
+  }
+  state.seenModel = key;
 }
 
 function notify(fresh) {

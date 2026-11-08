@@ -14,6 +14,9 @@ import calendar, hmac, json, mimetypes, os, re, secrets, sqlite3, subprocess, sy
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import model_events  # noqa: E402  (log written by litellm/rv_events.py)
+
 KIT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 HERE = os.path.join(KIT, "scripts", "console")
 ASSETS = os.path.join(KIT, "harness", "assets")   # brand logo and fonts, shared with the report
@@ -252,7 +255,9 @@ def api_get(path, q):
                 for f in os.listdir(os.path.join(ENG_DIR, "_archive")))
             e["closed"] = bool(closed and e["halted"])
         return {"engagements": engs, "approvals": json.loads(ctl("approvals", "--json") or "[]"),
-                "ui_url": f"http://localhost:{E.get('GATEWAY_PORT') or 8000}/", "version": VERSION}
+                "ui_url": f"http://localhost:{E.get('GATEWAY_PORT') or 8000}/", "version": VERSION,
+                # model problems of the last 30 min (refusals, no credits, worker down, ...): the page banner
+                "model_events": model_events.recent(1800)[:8]}
     if path == "/api/status":
         return {"text": stack_status()}
     m = re.match(r"^/api/eng/([^/]+)(?:/(\w+))?$", path)

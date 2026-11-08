@@ -54,6 +54,9 @@ model_list:
 
 litellm_settings:
   drop_params: true
+  # litellm/rv_events.py: keeps the planner fallback working when OpenHands streams, puts a "[RiskVoid] ..." reason
+  # in the chat when no model answers, and logs model problems to .rvkit/events/ (console, ./rvkit status/doctor/watch)
+  callbacks: ["rv_events.handler"]
 
 router_settings:
   # If the planner errors (outage, rate limit, content-policy error), retry once on the fallback.

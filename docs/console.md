@@ -32,6 +32,11 @@ It runs in the foreground; Ctrl-C stops it. The address is `http://127.0.0.1:810
 | **Approvals** | Every pending intrusive command across engagements, with Approve and Deny. **Enable desktop notifications** alerts you when a new one arrives while the page is open. The tab title shows the count. | `./rvkit watch` |
 | **Status** | The output of `./rvkit status`: services, worker, planner, spend, engagements. | `./rvkit status` |
 
+A banner at the top of every page lists failed model calls of the last 30 minutes, each with what to do (top up
+credits, raise the budget, restart Colab, ...), and notes when another model answered instead of the planner.
+With desktop notifications on, a new failure also raises one. See
+[models.md](models.md#when-a-model-call-fails).
+
 After you approve a command, tell the agent to run it again (the approval is for that exact command, once).
 
 ## Security

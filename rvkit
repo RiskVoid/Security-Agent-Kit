@@ -53,8 +53,8 @@ need_env() {
   envensure WORKER_MODEL_ID "openai/qwen38-27b-obl"
   envensure WORKER_FALLBACK_MODEL "openrouter/deepseek/deepseek-v4.1-flash"
   envensure WORKER_FALLBACK "off"
-  envensure PLANNER_MODEL "openrouter/anthropic/claude-sonnet-5.5"
-  envensure PLANNER_FALLBACK_MODEL "openrouter/openai/gpt-6.1-sol"
+  envensure PLANNER_MODEL "openrouter/openai/gpt-6.1-sol"
+  envensure PLANNER_FALLBACK_MODEL "openrouter/deepseek/deepseek-v4-pro"
   envensure OPENROUTER_DAILY_BUDGET "20"
   envensure REDIS_PASSWORD "$(rand 24)"
   envensure OPENHANDS_API_KEY "oh-rv-$(rand 24)"
@@ -314,12 +314,28 @@ cmd_doctor() {
   if [ "${1:-}" = "--models" ]; then
     llm planner | grep -q '"choices"' && pass "Planner answers ($(envget PLANNER_MODEL))" || fail "Planner call failed (./rvkit test planner)"
   else echo "   ${D}planner not called (costs a fraction of a cent): ./rvkit doctor --models${N}"; fi
+  if [ -n "$(python3 scripts/model_events.py --since 86400 --problems 2>/dev/null)" ]; then
+    note "Model calls failed in the last 24 hours:"; python3 scripts/model_events.py --since 86400 --problems | head -5 | sed 's/^/   /'
+  else pass "No failed model calls in the last 24 hours"; fi
 
   bold "Result"
   if [ "$fails" -eq 0 ]; then if [ "$warns" -gt 0 ]; then ok "No problems found ($warns warning(s))"; else ok "No problems found"; fi; else bad "$fails problem(s), $warns warning(s)"; exit 1; fi
 }
 
 # ---------------------------------------------------------------- status
+# model problems logged by litellm/rv_events.py: model_problems <seconds> <label>
+model_problems() {
+  local p r
+  p="$(python3 scripts/model_events.py --since "$1" --problems 2>/dev/null || true)"
+  r="$(python3 scripts/model_events.py --since "$1" 2>/dev/null | grep -c 'recovered: ' || true)"
+  if [ -n "$p" ]; then
+    warn "Model problems $2 (newest first):"
+    echo "$p" | head -5 | sed 's/^/   /'
+    [ "$(echo "$p" | grep -c .)" -le 5 ] || echo "   ${D}... more in the console, or: python3 scripts/model_events.py --since $1${N}"
+  else ok "No model problems $2"; fi
+  [ "${r:-0}" -gt 0 ] && echo "   ${D}$r time(s) another model answered instead (refusal or error): python3 scripts/model_events.py --since $1${N}"
+  return 0
+}
 cmd_status() {
   local all running list
   all="$(docker compose config --services 2>/dev/null | grep -v '^lab-' | sort)"
@@ -334,6 +350,7 @@ cmd_status() {
                                        || echo "   fallback off"
   if [ -n "$(envget "$(planner_key)")" ]; then ok "Planner: $(envget PLANNER_MODEL)"; else warn "Planner: no $(planner_key) in .env"; fi
   echo "   Model spend today: \$$(spend_sum) (daily budget \$$(envget OPENROUTER_DAILY_BUDGET) per provider)"
+  model_problems 3600 "in the last hour"
   if list="$(kctl list --json 2>/dev/null)"; then
     echo "$list" | G="$G" Y="$Y" N="$N" python3 -c 'import sys,json
 rows=json.load(sys.stdin); p=sum(r["pending"] for r in rows); h=sum(1 for r in rows if r["halted"])
@@ -349,9 +366,21 @@ notify() {
 }
 cmd_watch() {
   interactive || die "./rvkit watch needs a terminal (it asks you to approve or deny each command)"
-  bold "Watching for intrusive commands that need approval (all engagements). Ctrl-C to stop."
-  local seen=" " rows id eng tier command a
+  bold "Watching for intrusive commands that need approval, and for failed model calls (all engagements). Ctrl-C to stop."
+  local seen=" " rows id eng tier command a mline mnew
+  mline="$(python3 scripts/model_events.py --count 2>/dev/null || echo 0)"
   while true; do
+    # model problems (litellm/rv_events.py): print and notify each new one; recovered ones are printed only
+    mnew="$(python3 scripts/model_events.py --from-line "$mline" --json 2>/dev/null || echo '[]')"
+    if [ "$mnew" != "[]" ]; then
+      mline="$(python3 scripts/model_events.py --count 2>/dev/null || echo "$mline")"
+      while IFS=$'\t' read -r a command; do
+        [ -n "$command" ] || continue
+        if [ "$a" = problem ]; then notify "RiskVoid: model call failed" "${command:0:120}"; warn "model: $command"
+        else echo "   ${D}model (recovered): $command${N}"; fi
+      done <<< "$(echo "$mnew" | python3 -c 'import sys,json
+for e in json.load(sys.stdin): print(("problem" if e["problem"] else "info") + "\t" + e.get("message","").replace("\t"," "))')"
+    fi
     rows="$(kctl approvals --json 2>/dev/null | python3 -c 'import sys,json
 for r in json.load(sys.stdin): print("\t".join([r["id"], r["engagement"], r["tier"], r["command"].replace("\t"," ").replace("\n"," ")]))' 2>/dev/null || true)"
     while IFS=$'\t' read -r id eng tier command; do

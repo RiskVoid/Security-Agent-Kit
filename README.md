@@ -201,6 +201,7 @@ approve its own requests. Ctrl-C stops it.
 | <img src="docs/img/icons/code.svg" width="20" height="20" alt=""> | **Findings** | Triage: confirm, mark false positive or duplicate, change severity, add notes, check evidence integrity. |
 | <img src="docs/img/icons/file-text.svg" width="20" height="20" alt=""> | **Report** | Fill in the cover and executive summary, generate, view the HTML report, and download Word, PDF and Excel. |
 | <img src="docs/img/icons/stop.svg" width="20" height="20" alt=""> | **Halt, close, audit** | Stop an engagement instantly, seal and archive it, and read its full audit log. |
+| <img src="docs/img/icons/cpu.svg" width="20" height="20" alt=""> | **Model problems** | A banner on every page says when a model call failed and what to do: no credits, budget used up, Colab stopped, a refusal. |
 
 <details>
 <summary><b>See the engagement overview</b></summary>
@@ -290,7 +291,7 @@ flowchart LR
 | Piece | What it does |
 |---|---|
 | **Agent UI** ([OpenHands](https://github.com/All-Hands-AI/OpenHands)) | Where you talk to the agent. Its container has **no direct internet**. |
-| **Planner** | A frontier model (default Claude Sonnet via OpenRouter, ZDR providers only) that plans, triages and writes. |
+| **Planner** | A frontier model (default GPT-6.1 via OpenRouter, ZDR providers only) that plans, triages and writes. |
 | **Worker** | Qwen3.8-27B on Colab, your GPU or any OpenAI-compatible endpoint. It runs the tools and reads the code. |
 | **Kali sandbox** | The tools, isolated per engagement, behind the scope firewall, with tiers, rate caps and approvals. |
 | **Console** | A local web page for engagements, the live run view, approvals, findings triage, reports and the audit log. |
