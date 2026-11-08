@@ -1,5 +1,5 @@
-# Full-stack regression tests: builds every image, starts the kit and runs the policy, console, tool, end-to-end
-# and lab tests (no model or API key needed). It takes 15-20 minutes, so it doesn't run on every pull request:
+# Full-stack regression tests: builds every image, starts the kit and runs the policy, console, tool, worker
+# agent-loop (scripted model), end-to-end and lab tests (no model or API key needed). It takes 15-20 minutes, so it doesn't run on every pull request:
 #   - on demand: Actions > Integration > Run workflow (pick a branch)
 #   - on a pull request that has the "full-ci" label (add the label to run it; new pushes re-run it while it's there)
 #   - nightly on main
@@ -31,8 +31,18 @@ jobs:
       RVKIT_YES: "1"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # The kali image (garak's CPU torch, ZAP, chromium) needs well over the ~32 GB a runner starts with free:
+      # BuildKit keeps the layers and loading the image into Docker stores another copy. Remove preinstalled
+      # SDKs this job doesn't use (it uses the system python3 and the runner's own node for actions).
       - name: Free disk space
-        run: sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL && df -h /
+        run: |
+          df -h /
+          sudo swapoff -a && sudo rm -f /mnt/swapfile /swapfile
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/local/.ghcup /opt/hostedtoolcache \
+            /usr/share/swift /usr/local/share/boost /usr/local/share/powershell /usr/local/share/chromium \
+            /usr/lib/jvm /opt/microsoft /opt/google /opt/az /usr/local/julia* /usr/share/miniconda
+          docker system prune -af >/dev/null
+          df -h /
       - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
       - name: Compose settings for the build
         run: cp .env.example .env && echo REDIS_PASSWORD=ci >> .env   # ./rvkit setup fills in the rest
@@ -67,6 +77,8 @@ jobs:
         run: bash evals/console_test.sh
       - name: Tool smoke test
         run: bash evals/tools_smoke.sh
+      - name: Worker agent loop (scripted model)
+        run: bash evals/agent_loop_test.sh
       - name: End to end (evidence, report, close-out)
         run: bash evals/phase5_e2e.sh
       - name: Lab isolation

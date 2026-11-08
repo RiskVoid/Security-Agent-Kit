@@ -79,7 +79,7 @@ bash evals/ci_prepare.sh
 | `phase3_policy_test.sh` | scope enforcement: sandbox isolation, tiers, scope pre-check false positives, firewall, rate caps, approvals, halt, audit log | `demo-code`, `net-test`, internet (pip-audit check) | `bash evals/phase3_policy_test.sh` |
 | `tools_smoke.sh` | every tool in the Kali image starts; supply-chain and code tools work through the sandbox (osv-scanner, trivy, syft, grype, semgrep offline rules, Joern); vulnerability intel ranking | `demo-code`, internet (vulnerability databases, OSV / NVD / KEV) | `bash evals/tools_smoke.sh` |
 | `phase5_e2e.sh` | audited tool runs, findings citing hashed evidence, final report, tamper detection, close-out manifest and archive | the demo app in your projects folder; it creates and resets its own engagement `p5-e2e` | `bash evals/phase5_e2e.sh` |
-| `console_test.sh` | the console: sign-in, host-header check, CSRF header, read API, report-file limits, preview writes nothing | `demo-code` | `bash evals/console_test.sh` |
+| `console_test.sh` | the console: sign-in, host-header check, CSRF header, read API, report-file limits, preview writes nothing, live view | `demo-code` | `bash evals/console_test.sh` |
 | `lab_test.sh` | lab isolation: an engagement reaches only its own lab target; lab targets have no internet and can't reach the kit's services; DVWA login works | `./rvkit lab up`, `demo-code`, `net-test`; it creates `lab-juice` and `lab-dvwa` itself | `bash evals/lab_test.sh` |
 | `planner_smoke.py` | each planner route answers an authorised engagement brief with a usable plan, not a refusal; records latency and tokens | `OPENROUTER_API_KEY` (costs a few cents) | `python3 evals/planner_smoke.py [model ...]` |
 
@@ -176,12 +176,13 @@ A tool needs five changes. Missing one of them leaves the agent unaware of it, o
    checked against the publisher's SHA-256 (amd64 and arm64); a pinned Git commit. Make it readable by the
    engagement users (`chmod -R a+rX`) and link it into `/usr/local/bin` (the sandbox's login shell resets `PATH`).
    Add it to the tool list comment at the top.
-2. **`kali-mcp/core.py`:** put the program name in the right tier set: `INTRUSIVE` (exploitation, brute force,
-   fuzzing, anything that changes state or can cause a denial of service), `ACTIVE` (scanning, crawling,
+2. **`kali-mcp/tiers.yaml`:** put the program name in the right list: `intrusive` (exploitation, brute force,
+   fuzzing, anything that changes state or can cause a denial of service), `active` (scanning, crawling,
    fingerprinting, any request to a target) or neither (passive: offline analysis). Programs not listed are
-   **passive**, so a network tool you forget here runs without the tier checks. If it can rate-limit, add its flag
-   to `RATE_FLAGS` (and `RATE_FMT` if the value isn't a bare number). If its risk depends on a subcommand or flag,
-   add rules to `SUBCOMMAND_TIERS`.
+   **passive**, so a network tool you forget here runs without the tier checks. If it can rate-limit, add it under
+   `rate_flags` (with `format` if the value isn't a bare number, `after` if the option belongs to a subcommand).
+   If its risk depends on a subcommand or flag, add `subcommands` rules. You don't need to touch the policy code;
+   `python3 evals/unit_test.py` checks the file (unknown keys, bad regexes, a program in two tiers).
 3. **`evals/tools_smoke.sh`:** add a line to the "tools start" list (a version check). If it analyses code or
    dependencies, add a check that runs through the sandbox on `demo-code`.
 4. **`kali-mcp/server.py`:** add it to the `run` tool's docstring, under the right area, with a short usage hint.

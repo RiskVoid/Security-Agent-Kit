@@ -69,6 +69,14 @@ render_litellm() {
   mkdir -p .rvkit
   python3 scripts/render_litellm.py || die "could not render the LiteLLM config (see above)"
 }
+planner_key() { # the .env key the planner model uses: planner_key [model]
+  case "${1:-$(envget PLANNER_MODEL)}" in anthropic/*) echo ANTHROPIC_API_KEY ;; openai/*) echo OPENAI_API_KEY ;; *) echo OPENROUTER_API_KEY ;; esac
+}
+spend_sum() { # today's spend across the providers LiteLLM budgets (OpenRouter, and Anthropic when used directly)
+  curl -s -m 5 $LITELLM_URL/provider/budgets -H "Authorization: Bearer $(envget LITELLM_MASTER_KEY)" | python3 -c 'import sys,json
+try: print("%.2f" % sum((b.get("spend") or 0) for b in json.load(sys.stdin)["providers"].values()))
+except Exception: print("?")' 2>/dev/null || echo "?"
+}
 recreate_litellm() { render_litellm; docker compose up -d --force-recreate litellm >/dev/null 2>&1; wait_litellm; }
 need_docker() {
   command -v docker >/dev/null || die "Docker is not installed. Install Docker Desktop or OrbStack (macOS), or Docker Engine (Linux)."
@@ -176,6 +184,7 @@ write_engagement() { # write_engagement <name> <client> <tiers> <rate> <network>
     echo "- Max rate: $rate"
     echo "- Network: $network"
     echo "# - Window (UTC): 08:00-18:00"
+    echo "# - Strict tiers: on       (scripts and interpreters, and curl/wget sending data, count as intrusive)"
     if [ "$private" = y ]; then echo "- Worker model: private"
     else echo "# - Worker model: private      (never use the OpenRouter fallback model for this engagement's tool work)"; fi
     echo "# Tiers: passive (code review, DNS, research), active (scans, crawling), intrusive (exploitation, brute force;"
@@ -226,7 +235,7 @@ cmd_setup() {
 
   bold "4/5 Configuring OpenHands (LLM profiles, MCP servers, agent profiles)"
   config_openhands && ok "OpenHands ready"
-  [ -n "$(envget OPENROUTER_API_KEY)" ] || warn "No OpenRouter key: add OPENROUTER_API_KEY to .env (then ./rvkit up) for the planner, or use the riskvoid-local agent (worker model only)"
+  [ -n "$(envget "$(planner_key)")" ] || warn "No planner key: add $(planner_key) to .env (then ./rvkit up), or use the riskvoid-local agent (worker model only)"
 
   bold "5/5 Worker model (runs the tools and sees client code)"
   worker="later"
@@ -275,7 +284,7 @@ cmd_doctor() {
 
   bold "Settings"
   for v in PROJECTS_DIR ENGAGEMENTS_DIR; do [ -d "$(expand "$(envget $v)")" ] && pass "$v: $(envget $v)" || fail "$v folder missing: $(envget $v)"; done
-  [ -n "$(envget OPENROUTER_API_KEY)" ] && pass "OpenRouter key set (planner)" || note "OPENROUTER_API_KEY empty: only the riskvoid-local agent works"
+  [ -n "$(envget "$(planner_key)")" ] && pass "$(planner_key) set (planner)" || note "$(planner_key) empty: only the riskvoid-local agent works"
   [ "$(envget WORKER_FALLBACK)" = on ] && note "Worker fallback ON: while the worker is down, tool output and code go to $(envget WORKER_FALLBACK_MODEL)" || pass "Worker fallback off"
 
   bold "Services"
@@ -310,7 +319,7 @@ cmd_doctor() {
 
 # ---------------------------------------------------------------- status
 cmd_status() {
-  local all running spend list
+  local all running list
   all="$(docker compose config --services 2>/dev/null | grep -v '^lab-' | sort)"
   running="$(docker compose ps --status running --services 2>/dev/null | sort)"
   local n_all n_run; n_all="$(echo "$all" | grep -c . || true)"; n_run="$(comm -12 <(echo "$all") <(echo "$running") | grep -c . || true)"
@@ -321,12 +330,8 @@ cmd_status() {
   else warn "Worker: not reachable at $(envget WORKER_API_BASE) (Colab: /rv-start; other: ./rvkit worker)"; fi
   [ "$(envget WORKER_FALLBACK)" = on ] && echo "   fallback ON: $(envget WORKER_FALLBACK_MODEL) (sees client data while the worker is down)" \
                                        || echo "   fallback off"
-  if [ -n "$(envget OPENROUTER_API_KEY)" ]; then ok "Planner: $(envget PLANNER_MODEL)"; else warn "Planner: no OPENROUTER_API_KEY in .env"; fi
-  spend="$(curl -s -m 5 $LITELLM_URL/provider/budgets -H "Authorization: Bearer $(envget LITELLM_MASTER_KEY)" |
-    python3 -c 'import sys,json
-try: print("%.2f" % (json.load(sys.stdin)["providers"]["openrouter"].get("spend") or 0))
-except Exception: print("?")' 2>/dev/null || echo "?")"
-  echo "   OpenRouter spend: \$$spend of \$$(envget OPENROUTER_DAILY_BUDGET) per 24 h"
+  if [ -n "$(envget "$(planner_key)")" ]; then ok "Planner: $(envget PLANNER_MODEL)"; else warn "Planner: no $(planner_key) in .env"; fi
+  echo "   Model spend today: \$$(spend_sum) (daily budget \$$(envget OPENROUTER_DAILY_BUDGET) per provider)"
   if list="$(kctl list --json 2>/dev/null)"; then
     echo "$list" | G="$G" Y="$Y" N="$N" python3 -c 'import sys,json
 rows=json.load(sys.stdin); p=sum(r["pending"] for r in rows); h=sum(1 for r in rows if r["halted"])
@@ -574,7 +579,8 @@ ${B}Models${N}
                                 llama-server on this machine
   worker fallback [on|off|<model>]  OpenRouter model used while the worker is down (off by default)
   planner [<model> [fallback]]  show / set the planner models (OpenRouter ids)
-  budget [usd]                  today's OpenRouter spend / set the daily budget
+  planner --direct <provider/model> [fallback]   use Anthropic or OpenAI directly (asks for the key once)
+  budget [usd]                  today's model spend / set the daily budget (per provider)
   test [planner]                send a test prompt to the worker (or the planner)
   key [colab|litellm|openhands] print a key (colab = paste into the notebook)
   openhands                     re-apply the OpenHands configuration
@@ -643,12 +649,12 @@ case "$cmd" in
   budget)
     need_env
     if [ $# -eq 0 ]; then
-      echo "OpenRouter daily budget: \$$(envget OPENROUTER_DAILY_BUDGET)"
+      echo "Daily budget: \$$(envget OPENROUTER_DAILY_BUDGET) per provider (OpenRouter; Anthropic / OpenAI when the planner uses them directly)"
       curl -s -m 10 $LITELLM_URL/provider/budgets -H "Authorization: Bearer $(envget LITELLM_MASTER_KEY)" |
         python3 -c 'import sys,json
-try: b=json.load(sys.stdin)["providers"]["openrouter"]
+try: p=json.load(sys.stdin)["providers"]
 except Exception: sys.exit()
-print("spent in the current 24 h period: $%.4f" % (b.get("spend") or 0))' || true
+for k, b in p.items(): print("%s: spent $%.4f in the current 24 h period" % (k, b.get("spend") or 0))' || true
       exit 0
     fi
     [[ "$1" =~ ^[0-9]+(\.[0-9]+)?$ ]] || die "usage: ./rvkit budget <usd-per-day>"
@@ -657,8 +663,21 @@ print("spent in the current 24 h period: $%.4f" % (b.get("spend") or 0))' || tru
   planner)
     need_env
     case "${1:-show}" in
-      show) echo "planner: $(envget PLANNER_MODEL)   fallback: $(envget PLANNER_FALLBACK_MODEL)   (OpenRouter, zero-data-retention providers)"
+      show) echo "planner: $(envget PLANNER_MODEL)   fallback: $(envget PLANNER_FALLBACK_MODEL)"
+            echo "   openrouter/...: zero-data-retention providers only. anthropic/... or openai/...: that provider's API directly, under its own data terms"
             exit 0 ;;
+      --direct)
+            shift; [ $# -ge 1 ] || die "usage: ./rvkit planner --direct anthropic/<model>|openai/<model> [fallback]"
+            for m in "$@"; do
+              [[ "$m" =~ ^(anthropic|openai|openrouter)/[A-Za-z0-9._:/-]+$ ]] || die "model ids must start with anthropic/, openai/ or openrouter/: $m"
+              k="$(planner_key "$m")"
+              if [ -z "$(envget "$k")" ]; then
+                key="$(ask_secret "$k for $m (hidden input)")"
+                [ -n "$key" ] || die "$k is needed for $m"; envset "$k" "$key"
+              fi
+            done
+            envset PLANNER_MODEL "$1"; [ $# -ge 2 ] && envset PLANNER_FALLBACK_MODEL "$2"
+            recreate_litellm; "$SELF" planner show; test_model planner ;;
       *)    envset PLANNER_MODEL "openrouter/${1#openrouter/}"
             [ $# -ge 2 ] && envset PLANNER_FALLBACK_MODEL "openrouter/${2#openrouter/}"
             recreate_litellm; "$SELF" planner show; test_model planner ;;

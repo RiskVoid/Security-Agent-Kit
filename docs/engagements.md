@@ -95,7 +95,7 @@ The agent and tools see it as `/work/<engagement>/`.
 
 ```
 ~/riskvoid/engagements/
-├── audit.log                     convenience copy of the audit log (all engagements)
+├── audit.log                     informational copy of the audit log (all engagements); see below
 ├── _archive/                     archives written by ./rvkit close
 │   ├── acme-2026-11-20261121T163000Z.tar.gz
 │   └── acme-2026-11-20261121T163000Z.tar.gz.sha256
@@ -119,6 +119,11 @@ The agent and tools see it as `/work/<engagement>/`.
     ├── audit.jsonl               after close: this engagement's audit entries
     └── MANIFEST.sha256           after close: SHA-256 of every file
 ```
+
+The top-level `audit.log` is a convenience copy for reading on the host. The worker and findings containers
+can write to this folder, so the copy is not trusted: evidence checks, the activity summary in reports, close-out
+extracts, `./rvkit audit` and the console all read the authoritative log in the Kali control volume
+(`/control/audit.log`), which nothing but the Kali server writes.
 
 Who writes what:
 
@@ -177,6 +182,7 @@ online engagements, the infrastructure domains). Their addresses become reachabl
 - Max rate: 100
 - Network: online
 # - Window (UTC): 08:00-18:00
+# - Strict tiers: on
 # - Worker model: private
 ```
 
@@ -186,6 +192,7 @@ online engagements, the infrastructure domains). Their addresses become reachabl
 | `Max rate:` | requests or packets per second, a whole number | `100` |
 | `Network:` | `online` or `offline` | `online` |
 | `Window (UTC):` | `HH:MM-HH:MM`, in UTC. An overnight window such as `22:00-06:00` works | no window: any time |
+| `Strict tiers:` | `on`, or anything else for off | off |
 | `Worker model:` | `private`, or anything else for the default | not private |
 
 Lines starting with `#` are comments, so remove the `#` to turn on a rule. Rule names are matched without regard to
@@ -236,10 +243,25 @@ Special cases:
 - A command line with several programs (`a | b`, `a && b`, `$(…)`) gets the highest tier of any of them. Wrappers
   like `timeout`, `env`, `nice` and `sudo` are skipped to find the real program.
 
+- `sh -c '…'`, `bash -lc "…"` and `eval '…'` get the tier of what they run, and rate caps apply inside them.
+
 **Known limitation.** Tiers are decided by program name. A program the kit doesn't list, including `python3`,
 `bash` and your own scripts, counts as passive; `curl` counts as active. Such commands can send intrusive traffic
 to in-scope hosts without approval. The firewall still limits them to the scope. See
 [SECURITY.md](../SECURITY.md#known-limitations).
+
+**Strict tiers.** Add `- Strict tiers: on` to `RULES.md` (then `./rvkit scope <eng>`) to close the common cases:
+
+- interpreters running code count as intrusive: `python3 x.py`, `python3 -c …`, `perl`, `ruby`, `node`, `php`,
+  `bash script.sh`, `socat`, … (`python3 --version` and `--help` stay passive);
+- `curl` and `wget` sending data count as intrusive: `-d`, `--data*`, `--json`, `-F`, `-T`, `-X POST/PUT/PATCH/DELETE`,
+  `--post-data`, `--method=POST`, ….
+
+Every such command then waits for your approval, so use it on engagements where that is worth the extra approvals
+(production systems, fragile targets). It still goes by the command line, not by what the code does. The lists
+are in the `strict` section of `kali-mcp/tiers.yaml`.
+
+All the tier lists, subcommand rules and rate flags are in [`kali-mcp/tiers.yaml`](../kali-mcp/tiers.yaml).
 
 The tier lists also name programs that aren't installed in the Kali image (`hydra`, `medusa`, `msfconsole`,
 `netexec`, `hashcat`, `john`, `hping3`, `slowhttptest`, `masscan`, `dirsearch`, and ProjectDiscovery `httpx`; the

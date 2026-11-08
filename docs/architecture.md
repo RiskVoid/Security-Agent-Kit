@@ -90,7 +90,7 @@ All published ports bind to `127.0.0.1` only:
 | Name | Mounted in | Holds |
 |---|---|---|
 | `PROJECTS_DIR` (host folder) | `/src`, read-only in every container | client code, one folder per repository |
-| `ENGAGEMENTS_DIR` (host folder) | `/work`: read-only in `agent-canvas`, read-write in `kali-mcp`, `worker-mcp`, `findings-mcp` | one folder per engagement, plus `audit.log` (a convenience copy) and `_archive/` |
+| `ENGAGEMENTS_DIR` (host folder) | `/work`: read-only in `agent-canvas`, read-write in `kali-mcp`, `worker-mcp`, `findings-mcp` | one folder per engagement, plus `audit.log` (an informational copy; nothing reads it) and `_archive/` |
 | `openhands-data` | `agent-canvas` | conversations, LLM profiles, agent profiles, MCP settings |
 | `kali-control` | `kali-mcp` at `/control` (root-only) | the authoritative scope, rules, approvals, halt flags, engagement registry and audit log |
 | `litellm-spend` | `redis` | OpenRouter spend counter |
@@ -181,7 +181,9 @@ edits them changes nothing. Inside the sandbox, the files are replaced by the re
   sandbox. An escape to its root would be serious: that's in scope for security reports.
 
 The firewall is the hard boundary. Tiers, rate caps and the host precheck are guardrails against mistakes: a
-script (passive tier) or `curl` (active tier) can still send intrusive traffic to in-scope hosts.
+script (passive tier) or `curl` (active tier) can still send intrusive traffic to in-scope hosts, unless the
+engagement sets `Strict tiers: on` (interpreters and `curl`/`wget` sending data are then intrusive). The tier
+lists, subcommand rules, rate flags and strict rules are in `kali-mcp/tiers.yaml`.
 
 ### The agent's own container
 
@@ -238,7 +240,7 @@ All settings are listed in [configuration.md](configuration.md).
 | **Planner and worker are separate models** | A frontier model is best at planning, triage and writing; tool output and client code are the bulk of the tokens and the most sensitive data. The worker sees those; the planner gets short, redacted summaries. You can also run everything on the worker (`riskvoid-local`). |
 | **MCP is the integration boundary** | Every capability the agent has is an MCP tool with a narrow interface. The kit's controls live in those servers, not in the agent runtime, so they hold whichever agent or model calls them (OpenHands today, any MCP client tomorrow). |
 | **The firewall is the hard boundary; tiers are guardrails** | Network policy built from the scope can't be argued with or worked around by rephrasing. Tiers, rate caps and the precheck catch honest mistakes and keep the agent within the agreed intensity. |
-| **Tiers by program name** | Classifying arbitrary code by what it might send isn't reliable. Program names are predictable and easy to review. The cost (scripts run at the passive tier, `curl` at the active tier, without approval) is documented in [SECURITY.md](../SECURITY.md). |
+| **Tiers by program name** | Classifying arbitrary code by what it might send isn't reliable. Program names are predictable and easy to review. The cost (scripts run at the passive tier, `curl` at the active tier, without approval) is documented in [SECURITY.md](../SECURITY.md); `Strict tiers: on` per engagement trades more approvals for closing the common cases. |
 | **Human approvals bound to the exact command** | An approval covers one run of one exact command (matched by hash), expires after 24 hours, and can only be given on the host. The agent can't approve itself or reuse an approval for something else. |
 | **Evidence hashed when it's written** | `kali-mcp` hashes every file a command creates or changes, in the same step, into a log the agent can't write. The report then proves each evidence file is unchanged and names the command that produced it. |
 | **Files on the host** | Engagements are plain folders (Markdown, SQLite, tool output) you can read, back up, archive and hand over without the kit. Client code is mounted read-only. |
@@ -262,6 +264,7 @@ scripts/                    openhands_config.py (OpenHands API setup), render_li
 kali-mcp/
   server.py                 MCP tools: list_engagements, engagement_info, all_scopes, run, evidence_provenance, …
   core.py                   policy: scope parsing, tiers, rate caps, approvals, halt, firewall, DNS, audit, close-out
+  tiers.yaml, tierconf.py   tool tiers, subcommand rules, rate flags, strict mode; and their loader and checks
   rvctl.py                  admin CLI behind ./rvkit (sync, approve, halt, audit, close, …)
   rv-sandbox.sh             per-command sandbox (mount namespace, unprivileged user)
   infra_domains.txt         package / vulnerability-database domains for online engagements

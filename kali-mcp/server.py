@@ -21,7 +21,7 @@ def list_engagements() -> str:
         out.append(f"## {e}{'  (HALTED)' if i['halted'] else ''}\n"
                    f"scope: nets={i['scope']['nets']} domains={i['scope']['domains']} code={i['scope']['paths']}\n"
                    f"rules: tiers={r['tiers']} max_rate={r['max_rate']}/s network={r['network']}"
-                   + (f" window_utc={r['window']}" if r["window"] else ""))
+                   + (" strict_tiers=on" if r.get("strict") else "") + (f" window_utc={r['window']}" if r["window"] else ""))
     return "\n".join(out) or "no engagements; the user creates them on the host with ./rvkit engagement"
 
 
@@ -68,6 +68,8 @@ def run(command: str, engagement: str, timeout_s: int = 600, approval_id: str = 
     """Run a shell command in the Kali sandbox for an engagement.
 
     cwd is /work/<engagement> (write output files here). In-scope client code is read-only under /src.
+    The full output is saved as verified evidence in evidence/runs/ (the result ends with its path): cite that
+    path rather than copying the output into a file yourself.
     Network access is limited to the engagement scope (plus package/vulnerability-database sites when the
     engagement is online); everything else is blocked. Tools:
       recon:        nmap, naabu, dnsx, subfinder, amass, katana, httpx-toolkit, whatweb, gowitness (screenshots)

@@ -51,7 +51,9 @@ Rules:
   (or under ./evidence/). /src is read-only client code: never `cd /src && … > file`; pass /src paths as
   arguments instead. Read only what you need from long output.
 - Scanner output is a lead, not a finding. Record a candidate only with concrete evidence (file:line, request/
-  response, version + advisory). Don't invent results: if a tool failed or you didn't check, say so.
+  response, version + advisory). For evidence, cite the path kali_run prints after "output saved as verified
+  evidence" (and any "evidence recorded" files), plus /src file:line references. Don't invent results: if a
+  tool failed or you didn't check, say so.
 - You have at most {max_steps} tool calls. Finish early when the goal is met.
 """
 

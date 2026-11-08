@@ -181,10 +181,13 @@ Every change recreates LiteLLM and sends a test prompt.
 ```sh
 ./rvkit planner                                  # show
 ./rvkit planner <openrouter-model> [fallback]    # set, e.g. anthropic/claude-sonnet-5.5 openai/gpt-6.1-sol
+./rvkit planner --direct anthropic/<model> [fallback]   # Anthropic or OpenAI directly, without OpenRouter
 ```
 
 Shows or sets the planner model and its fallback (OpenRouter ids; the `openrouter/` prefix is optional). Setting
-recreates LiteLLM and sends a test prompt.
+recreates LiteLLM and sends a test prompt. With `--direct`, ids start with `anthropic/`, `openai/` or
+`openrouter/`, and the command asks for `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` if it isn't set
+([Models](models.md#anthropic-or-openai-directly)).
 
 ### budget
 

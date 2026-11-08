@@ -8,7 +8,7 @@ const esc = (v) => String(v ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "
 const enc = encodeURIComponent;
 const SEV = ["critical", "high", "medium", "low", "info"];
 const STATUSES = ["candidate", "confirmed", "false-positive", "duplicate", "fixed", "accepted-risk"];
-const TABS = { overview: "Overview", scope: "Scope & rules", findings: "Findings", tasks: "Worker tasks", report: "Report", audit: "Audit log" };
+const TABS = { overview: "Overview", live: "Live", scope: "Scope & rules", findings: "Findings", tasks: "Worker tasks", report: "Report", audit: "Audit log" };
 
 const state = { overview: null, current: null, detail: null, tab: "overview", seenApprovals: null, findingFilter: "all", openFinding: null, preview: null, evidence: null, view: "engagements" };
 
@@ -191,7 +191,7 @@ function renderDetail() {
       await act(btn, () => api(`/api/eng/${enc(d.engagement)}/delete`, { force: !ov.closed }), "Deleted.");
       state.current = null; location.hash = "engagements"; $("#detail").innerHTML = `<div class="rv-empty">Pick an engagement, or create one.</div>`; refresh(); show("engagements");
     }));
-  ({ overview: paneOverview, scope: paneScope, findings: paneFindings, tasks: paneTasks, report: paneReport, audit: paneAudit })[state.tab]();
+  ({ overview: paneOverview, live: paneLive, scope: paneScope, findings: paneFindings, tasks: paneTasks, report: paneReport, audit: paneAudit })[state.tab]();
 }
 
 function confirmBox(title, text, label, fn) {
@@ -232,7 +232,7 @@ function paneOverview() {
       <div class="rv-card"><div class="rv-card-head"><h3>Scope and rules</h3><button class="rv-btn ghost sm" data-goto="scope">Edit</button></div>
         <div class="rv-card-body"><dl class="rv-kv">
           <dt>Targets</dt><dd>${codeChips([...sc.nets, ...sc.domains, ...sc.paths])}</dd>
-          <dt>Tiers</dt><dd>${tierTags(i.rules.tiers)}</dd>
+          <dt>Tiers</dt><dd>${tierTags(i.rules.tiers)}${i.rules.strict ? " " + tag("strict", "warn") : ""}</dd>
           <dt>Rate</dt><dd>${esc(i.rules.max_rate)} per second</dd>
           <dt>Network</dt><dd>${esc(i.rules.network)}</dd>
           <dt>Window</dt><dd>${i.rules.window ? esc(i.rules.window.join(":")) + " UTC" : "any time"}</dd>
@@ -278,7 +278,7 @@ function previewHtml(p) {
     <div class="rv-card"><div class="rv-card-head"><h3>Preview</h3>${p.diff ? tag("changes", "warn") : tag("no changes")}</div><div class="rv-card-body">
       ${p.diff ? `<pre class="rv-pre">${lines}</pre>` : ""}
       <dl class="rv-kv"><dt>Will allow</dt><dd>${codeChips([...p.scope.nets, ...p.scope.domains, ...p.scope.paths])}</dd>
-      <dt>Tiers</dt><dd>${tierTags(p.rules.tiers)}</dd><dt>Rate / network</dt><dd>${esc(p.rules.max_rate)}/s · ${esc(p.rules.network)}</dd></dl>
+      <dt>Tiers</dt><dd>${tierTags(p.rules.tiers)}${p.rules.strict ? " " + tag("strict", "warn") : ""}</dd><dt>Rate / network</dt><dd>${esc(p.rules.max_rate)}/s · ${esc(p.rules.network)}</dd></dl>
     </div></div>`;
 }
 
@@ -402,6 +402,111 @@ async function paneTasks() {
       if (r.tasks.some((t) => t.status === "running" || t.status === "queued")) setTimeout(load, 5000);
     } catch (e) { $("#tasks-out").textContent = e.message; }
   };
+  load();
+}
+
+// ---------------------------------------------------------------- live run view
+const dur = (s) => {
+  s = Math.max(0, Math.round(s)); const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), x = s % 60;
+  return h ? `${h}h ${String(m).padStart(2, "0")}m` : m ? `${m}m ${String(x).padStart(2, "0")}s` : `${x}s`;
+};
+
+function liveEvent(e) {
+  const t = e.ts ? new Date(e.ts) : null;
+  const time = t && !isNaN(t) ? t.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" }) : "";
+  const tier = e.tier ? tag(e.tier, TIER_CLASS[e.tier] || "") : "";
+  let dot, body;
+  if (e.refused) {
+    dot = "c-critical";
+    body = `<span>Refused: ${esc(e.refused)}</span>${e.command ? `<code>${esc(e.command)}</code>` : ""}`;
+  } else if (e.command && e.exit !== undefined) {
+    dot = e.exit === 0 ? "c-ok" : "c-high";
+    body = `<code>${esc(e.command)}</code><span class="rv-meta">${tier}<span>exit ${esc(e.exit)}</span><span>${esc(e.seconds)} s</span>${e.approval ? `<span>approval ${esc(e.approval)}</span>` : ""}</span>`;
+  } else {
+    const ev = String(e.event || "event");
+    dot = ev === "approval-requested" ? "c-medium" : ev === "halted" ? "c-critical" : "c-info";
+    body = `<span>${esc(ev.replace(/-/g, " "))}</span>${e.command ? `<code>${esc(e.command)}</code>` : ""}`;
+  }
+  return `<li><time>${esc(time)}</time><span class="rv-dot ${dot}"></span><div class="what">${body}</div></li>`;
+}
+
+async function paneLive() {
+  const d = state.detail, eng = d.engagement, gen = (state.liveGen = (state.liveGen || 0) + 1);
+  const active = () => state.tab === "live" && state.current === eng && state.liveGen === gen;
+  let skew = 0;
+  const now = () => Date.now() / 1000 - skew;
+  $("#pane").innerHTML = `<p class="hint">What this engagement is doing now. Refreshes every few seconds while this tab is open.</p><div id="live-out" class="rv-empty">Loading…</div>`;
+  const tick = () => {
+    $$("#live-out [data-since]").forEach((el) => { el.textContent = dur(now() - Number(el.dataset.since)); });
+    $$("#live-out [data-meter]").forEach((el) => {
+      const [s, t] = el.dataset.meter.split(",").map(Number);
+      el.style.width = `${Math.min(100, (100 * (now() - s)) / t).toFixed(1)}%`;
+    });
+  };
+  const kpi = (label, value, color, delta) => `<div class="rv-kpi"><span class="rv-label">${color ? `<span class="rv-dot ${color}"></span>` : ""}${label}</span><span class="rv-value">${value}</span><span class="rv-delta">${delta}</span></div>`;
+  const render = (r) => {
+    const busy = r.tasks.filter((t) => t.status === "running" || t.status === "queued");
+    const first = r.running[0], last = r.events[0];
+    let status;
+    if (r.halted) {
+      status = `<div class="rv-banner danger"><div class="rv-banner-body"><p class="rv-banner-title">Halted</p><p class="rv-banner-sub">Running commands were stopped and new ones are refused until you resume the engagement.</p></div></div>`;
+    } else if (first || busy.length) {
+      const title = first ? first.command : busy[0].steps.slice(-1)[0] || busy[0].goal;
+      status = `<div class="rv-progress-status"><div style="min-width:0"><span class="rv-progress-status-label"><span class="rv-progress-dot"></span>Running</span>
+        <p class="rv-progress-status-title"><code>${esc(String(title || "").slice(0, 240))}</code></p>
+        <p class="rv-progress-elapsed">${r.running.length} command(s) running${busy.length ? ` · ${busy.length} worker task(s)` : ""}${first ? ` · for <span data-since="${Number(first.started)}"></span>` : ""}</p></div></div>`;
+    } else {
+      status = `<div class="rv-progress-status idle"><div><span class="rv-progress-status-label"><span class="rv-progress-dot"></span>Idle</span>
+        <p class="rv-progress-status-title">Nothing running</p>
+        <p class="rv-progress-elapsed">${last ? `Last activity ${fmtTime(last.ts)}` : "No activity yet. Start the agent in the OpenHands UI with the prompt on the Overview tab."}</p></div></div>`;
+    }
+    const sp = r.spend;
+    // the budget is per provider, so the bar shows the provider closest to its cap
+    const pct = sp && sp.budget ? Math.min(100, (100 * (sp.top ?? sp.spend)) / sp.budget) : 0;
+    const provs = sp && sp.providers && sp.providers.length > 1 ? ` (${sp.providers.join(", ")})` : "";
+    const spendKpi = sp ? kpi("Model spend today", `$${sp.spend.toFixed(2)}`, "", sp.budget ? `$${sp.budget.toFixed(2)} daily budget per provider${esc(provs)} · ${pct.toFixed(0)}%` : "no daily budget set")
+      : kpi("Model spend today", "–", "", "LiteLLM isn't answering");
+    const runs = r.running.map((c) => `<div class="rv-run">${tag(c.tier, TIER_CLASS[c.tier] || "")}<code>${esc(c.command)}</code>
+        <span class="rv-elapsed"><span data-since="${Number(c.started)}"></span> / ${dur(c.timeout_s)}</span>
+        <div class="rv-meter" title="Time used of the command's timeout"><span data-meter="${Number(c.started)},${Number(c.timeout_s) || 600}"></span></div></div>`).join("");
+    const tasks = r.tasks.map((t) => `<div class="rv-run">${tag(t.status, t.status)}<span>${esc((t.goal || "").slice(0, 140))}</span>
+        <span class="rv-elapsed">${t.status === "running" ? `<span data-since="${Number(t.started)}"></span>` : t.finished && t.started ? dur(t.finished - t.started) : ""}</span>
+        <div class="rv-meta" style="grid-column:1/-1">${t.steps.length ? `<span>step ${t.steps.length}: ${esc(String(t.steps.slice(-1)[0]).slice(0, 120))}</span>` : "<span>no steps yet</span>"}${t.models.length ? `<span>model: ${t.models.map(esc).join(", ")}</span>` : ""}${t.candidates ? `<span>${esc(t.candidates)} candidate(s)</span>` : ""}</div></div>`).join("");
+    $("#live-out").outerHTML = `<div id="live-out" class="rv-stack">
+      ${status}
+      ${r.approvals.length ? `<div class="rv-stack"><span class="rv-label">Waiting for your approval</span>${r.approvals.map((a) => approvalCard(a, false)).join("")}</div>` : ""}
+      <div class="rv-stack"><div class="rv-kpi-grid">
+        ${kpi("Running commands", r.running.length, r.running.length ? "c-low" : "", "in the Kali sandbox")}
+        ${kpi("Worker tasks", busy.length, busy.length ? "c-low" : "", "running or queued")}
+        ${kpi("Approvals", r.approvals.length, r.approvals.length ? "c-medium" : "", "waiting for you")}
+        ${spendKpi}
+      </div>${sp && sp.budget ? `<div class="rv-budget ${pct >= 90 ? "over" : ""}"><div class="rv-sev-bar" role="img" aria-label="Spend against the daily budget: ${pct.toFixed(0)}%"><span style="width:${pct.toFixed(1)}%"></span></div></div>` : ""}</div>
+      <div class="rv-two">
+        <div class="rv-stack">
+          <div class="rv-card"><div class="rv-card-head"><h3>Running now</h3>${tag(String(r.running.length), r.running.length ? "running" : "")}</div>
+            <div class="rv-card-body flush">${runs || `<div class="rv-empty">No command running.</div>`}</div></div>
+          <div class="rv-card"><div class="rv-card-head"><h3>Worker</h3><button class="rv-btn ghost sm" data-goto="tasks">All tasks</button></div>
+            <div class="rv-card-body flush">${tasks || `<div class="rv-empty">No worker tasks yet.</div>`}</div></div>
+        </div>
+        <div class="rv-card"><div class="rv-card-head"><h3>Latest events</h3><button class="rv-btn ghost sm" data-goto="audit">Audit log</button></div>
+          <div class="rv-card-body flush">${r.events.length ? `<ol class="rv-timeline">${r.events.map(liveEvent).join("")}</ol>` : `<div class="rv-empty">No activity yet.</div>`}</div></div>
+      </div></div>`;
+    $$("#live-out [data-goto]").forEach((b) => b.addEventListener("click", () => { state.tab = b.dataset.goto; renderDetail(); }));
+    tick();
+  };
+  const load = async () => {
+    if (!active()) return;
+    if (!document.hidden) {
+      try {
+        const r = await api(`/api/eng/${enc(eng)}/live`);
+        if (!active()) return;
+        skew = Date.now() / 1000 - r.now;
+        render(r);
+      } catch (e) { const o = $("#live-out"); if (o) o.textContent = e.message; }
+    }
+    setTimeout(load, 3000);
+  };
+  const timer = setInterval(() => { if (!active()) clearInterval(timer); else tick(); }, 1000);
   load();
 }
 

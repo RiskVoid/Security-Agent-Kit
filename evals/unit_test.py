@@ -1,13 +1,14 @@
-"""Fast checks that need no Docker, no model and no network: tier classification, rate caps, scope and rules
+"""Fast checks that need no Docker, no model and no network: tier classification (tiers.yaml), rate caps, scope and rules
 parsing, the scope pre-check, the findings database, the web-fetch guard and the console's request checks.
 They run on every pull request in about a second. The full stack is tested by the Integration workflow.
 Run: python3 evals/unit_test.py
 """
-import os, sys, tempfile, unittest
+import importlib.util, os, sys, tempfile, unittest
 
 KIT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path[:0] = [os.path.join(KIT, "kali-mcp"), os.path.join(KIT, "harness"), os.path.join(KIT, "scripts")]
 import core  # noqa: E402
+import tierconf  # noqa: E402
 import findings_db as db  # noqa: E402
 import webfetch  # noqa: E402
 
@@ -40,6 +41,106 @@ class Tiers(unittest.TestCase):
         self.assertEqual(core.apply_rate("nmap --max-rate 10 h", 50)[0], "nmap --max-rate 10 h")
         self.assertEqual(core.apply_rate("ls", 50)[0], "ls")
         self.assertIn("run --rate-limit 5/s", core.apply_rate("schemathesis run spec.json", 5)[0])
+        self.assertEqual(core.apply_rate("rv-llm payloads", 5)[0], "rv-llm payloads")  # only 'probe' takes --rate
+        self.assertEqual(core.apply_rate("bash -c 'nmap h'", 5)[0], "bash -c 'nmap --max-rate 5 h'")
+        self.assertIsNone(core.apply_rate('sh -c "nmap --max-rate 900 h"', 5)[0])
+
+    def test_shell_strings(self):  # what sh -c '...' and eval run counts, in every mode
+        self.assertEqual(core.classify('bash -c "sqlmap -u http://a.test; ls"'), "intrusive")
+        self.assertEqual(core.classify("sh -lc 'hydra -l a h'"), "intrusive")
+        self.assertEqual(core.classify('eval "nmap h"'), "active")
+        self.assertEqual(core.classify("bash -c 'ls -la'"), "passive")
+
+    def test_strict(self):
+        cases = {
+            "ls -la /src": "passive",
+            "cat f | grep sh": "passive",
+            "python3 --version": "passive",
+            "python3 exploit.py http://a.test": "intrusive",
+            'python3.12 -c "print(1)"': "intrusive",
+            "perl x.pl": "intrusive",
+            "bash run.sh": "intrusive",
+            'bash -c "ls; cat x"': "passive",
+            "curl http://a.test": "active",
+            "curl -d a=1 http://a.test": "intrusive",
+            "curl -X POST http://a.test": "intrusive",
+            "curl --data-binary @f http://a.test": "intrusive",
+            "wget --post-data=x http://a.test": "intrusive",
+            "nmap -sV h": "active",
+        }
+        for cmd, tier in cases.items():
+            with self.subTest(cmd=cmd):
+                self.assertEqual(core.classify(cmd, strict=True), tier)
+        self.assertEqual(core.classify("python3 exploit.py"), "passive")  # not strict: by program name
+        self.assertEqual(core.classify("curl -d a=1 http://a.test"), "active")
+        self.assertTrue(core.parse_rules("- Strict tiers: on")["strict"])
+        self.assertFalse(core.parse_rules("- Strict tiers: off")["strict"])
+        self.assertFalse(core.parse_rules("- Max rate: 5")["strict"])
+
+
+class TierFile(unittest.TestCase):
+    """kali-mcp/tiers.yaml and its loader (kali-mcp/tierconf.py)."""
+    TEXT = open(os.path.join(KIT, "kali-mcp", "tiers.yaml")).read()
+
+    def test_file_loads(self):
+        p = core.POLICY
+        self.assertIn("sqlmap", p["intrusive"])
+        self.assertIn("nmap", p["active"])
+        self.assertEqual(p["rate_flags"]["st"], {"flags": ["--rate-limit"], "format": "{}/s", "after": "run"})
+        self.assertIn("python3", p["interpreters"])
+
+    @unittest.skipUnless(importlib.util.find_spec("yaml"), "PyYAML not installed")
+    def test_same_as_pyyaml(self):  # the fallback parser reads the file exactly as a real YAML parser does
+        import yaml
+        self.assertEqual(tierconf.parse_yaml(self.TEXT), yaml.safe_load(self.TEXT))
+
+    def test_parser(self):
+        y = tierconf.parse_yaml(r"""
+a:            # comment
+  - x
+  - 'q # not a comment'
+  - {k: v, n: [1, 'two', "th\\ree"]}
+b: [p, q,
+    r]
+c:
+- program: z
+  match: 'a''b\s'
+d: true
+""")
+        self.assertEqual(y, {"a": ["x", "q # not a comment", {"k": "v", "n": [1, "two", "th\\ree"]}],
+                             "b": ["p", "q", "r"], "c": [{"program": "z", "match": "a'b\\s"}], "d": True})
+        for bad in ("a: [x", "a: 'x", "a: 1\na: 2", "a:\n\t- x", "a: &anchor x", "  a: 1"):
+            with self.subTest(bad=bad), self.assertRaises(tierconf.ConfigError):
+                tierconf.parse_yaml(bad)
+
+    def test_checks(self):
+        for bad in ({"intrusive": ["nmap"], "active": ["nmap"]},           # in two tiers
+                    {"activ": ["nmap"]},                                      # unknown key
+                    {"subcommands": [{"program": "x", "match": "(", "tier": "active"}]},   # bad regex
+                    {"subcommands": [{"program": "x", "match": ".", "tier": "loud"}]},     # bad tier
+                    {"rate_flags": {"x": {"flags": ["rate"]}}},               # not an option
+                    {"intrusive": ["rm -rf"]}):                               # not a program name
+            with self.subTest(bad=bad), self.assertRaises(tierconf.ConfigError):
+                tierconf.build(bad)
+
+
+class LiteLLMConfig(unittest.TestCase):
+    """scripts/render_litellm.py: planner models on OpenRouter or a direct provider."""
+    def test_planners(self):
+        import contextlib, io, re, render_litellm as r
+        t = open(os.path.join(KIT, "litellm", "config.yaml")).read()
+        self.assertEqual(r.planners(t, {"PLANNER_MODEL": "openrouter/a/b", "PLANNER_FALLBACK_MODEL": "openrouter/c"}, "20"), t)
+        with contextlib.redirect_stderr(io.StringIO()):
+            out = r.planners(t, {"PLANNER_MODEL": "anthropic/m", "PLANNER_FALLBACK_MODEL": "openai/n"}, "7")
+        block = lambda n: re.search(r"  - model_name: %s\n(?:    .*\n)+" % n, out).group(0)
+        self.assertIn("os.environ/ANTHROPIC_API_KEY", block("planner"))
+        self.assertNotIn("zdr", block("planner"))                         # OpenRouter-only routing option dropped
+        self.assertIn("max_budget: 7\n      budget_duration: 1d", block("planner-fallback"))  # not a provider budget:
+        self.assertNotIn("    openai: {budget_limit", out)                 # the worker also counts as "openai"
+        self.assertIn("    anthropic: {budget_limit: 7, time_period: 1d}", out)
+        self.assertIn("zdr: true", block("colab-qwen-fallback"))           # worker fallback untouched
+        with self.assertRaises(SystemExit):
+            r.planners(t, {"PLANNER_MODEL": "gemini/x"}, "20")
 
 
 class Scope(unittest.TestCase):

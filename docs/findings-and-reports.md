@@ -63,6 +63,12 @@ changed (SHA-256) and stores the hashes in the audit log with the command. The t
 `[evidence recorded: semgrep.json, …]`. Files in `.home/`, Joern's `workspace/`, `node_modules/` and `.git/`
 are skipped, and files over 512 MB are listed without a hash.
 
+The command's own output (stdout and stderr, with the command, exit code, tier and time at the top) is saved by
+the Kali server too, as `evidence/runs/<time>-<program>-<id>.txt`, and hashed in the same audit entry. The result
+ends with `[output saved as verified evidence: …]`, so any command's output can be cited and shows as **Pass**,
+even when the tool only prints to the screen. The agents are told to cite these paths instead of copying output
+into files themselves.
+
 A finding's evidence entries point at those files, optionally with a note:
 
 ```
@@ -91,8 +97,8 @@ new file with another Kali command. The agent's own workspace sees engagement fi
 them by accident.
 
 Worker step files (`evidence/tasks/<task_id>/step-NN-<tool>.txt`) are written by the worker, not by Kali commands,
-so they show as Not audited. The Kali commands inside those tasks still produce audited files when they write
-output to files.
+so they show as Not audited. Each Kali command inside a task has its own verified `evidence/runs/` file, and the
+worker cites that one.
 
 ### Secrets
 
