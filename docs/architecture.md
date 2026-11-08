@@ -152,8 +152,23 @@ itself. More on the agents and models: [running-the-agent.md](running-the-agent.
 | Where | Who can change it | What it holds |
 |---|---|---|
 | `/control` (volume `kali-control`, root-only in `kali-mcp`) | only `rvctl.py`, which only `./rvkit` runs (`docker compose exec`) | the active `SCOPE.md` / `RULES.md` per engagement, approvals, `HALT` flags, the engagement registry (name → uid), the authoritative `audit.log`, optional `infra_domains.txt` override |
-| RiskVoid Console (`./rvkit console`, a host process on `127.0.0.1`) | you, signed in with the token in `.rvkit/console.token` | nothing of its own: it calls the same `rvctl.py`, `findings_db` and `report.py` as `./rvkit`. The agent's containers can't reach it ([console.md](console.md#security)) |
+| RiskVoid Console (`./rvkit console`, a host process on `127.0.0.1`) | you, signed in with the token in `.rvkit/console.token` | nothing of its own: it calls the same `rvctl.py` and `harness/ops.py` operations as `./rvkit`. The agent's containers can't reach it; other containers can open the port but have no token ([console.md](console.md#security)) |
 | `/work/<engagement>/` (host folder) | you; kali commands; the worker; `findings-mcp` (`write_file`, findings, reports) | the files you edit (`SCOPE.md`, `RULES.md`), plan, notes, evidence, findings database, report |
+
+### Shared operations, revisions and history
+
+Engagement records are changed through one set of validated operations, whichever interface is used:
+
+- **Scope, rules, approvals, halt, close, delete**: `rvctl.py` in `kali-mcp` (`./rvkit`, the console).
+- **Findings, report cover details, executive summary, report**: `harness/ops.py` in `findings-mcp`, a fixed list
+  of operations used by the console, `./rvkit finding` and the findings MCP server.
+
+Every change names its **actor**: `console:<login>`, `cli:<login>` or `agent:<name>`. Records carry a revision: a
+counter per finding (`findings.db` schema version 2), a digest for the scope and rules and for the report files.
+A change based on an older revision is refused with a conflict (HTTP `409`, `rvctl` exit 3) instead of
+overwriting. Changes go into the authoritative audit log with actor and revisions before and after (`rvctl record`
+for changes made in `findings-mcp`). `findings.db` is migrated in place (`PRAGMA user_version`); a database from a
+newer kit is refused rather than written with an older schema.
 
 `SCOPE.md` and `RULES.md` in the engagement folder are what you edit. They take effect only when you run
 `./rvkit scope <engagement> --yes`, which copies them into `/control` and rebuilds the firewall. So an agent that
@@ -278,6 +293,7 @@ kali-mcp/
 harness/
   worker.py                 worker MCP server (delegate_task) and the worker model's tool loop
   findings.py, findings_db.py   findings MCP server, SQLite store, write_file, playbooks, generate_report
+  ops.py                    the shared, validated operations on findings and report details (console, CLI, agent)
   report.py, branding.py, brand/, brands/example/   report generator and branding
   intel.py                  vulnerability intelligence MCP server
   web.py, webfetch.py       web research MCP server and the scope-aware fetch
