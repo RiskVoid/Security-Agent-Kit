@@ -461,9 +461,11 @@ async function paneLive() {
         <p class="rv-progress-elapsed">${last ? `Last activity ${fmtTime(last.ts)}` : "No activity yet. Start the agent in the OpenHands UI with the prompt on the Overview tab."}</p></div></div>`;
     }
     const sp = r.spend;
-    const pct = sp && sp.budget ? Math.min(100, (100 * sp.spend) / sp.budget) : 0;
-    const spendKpi = sp ? kpi("OpenRouter today", `$${sp.spend.toFixed(2)}`, "", sp.budget ? `of $${sp.budget.toFixed(2)} daily budget · ${pct.toFixed(0)}%` : "no daily budget set")
-      : kpi("OpenRouter today", "–", "", "LiteLLM isn't answering");
+    // the budget is per provider, so the bar shows the provider closest to its cap
+    const pct = sp && sp.budget ? Math.min(100, (100 * (sp.top ?? sp.spend)) / sp.budget) : 0;
+    const provs = sp && sp.providers && sp.providers.length > 1 ? ` (${sp.providers.join(", ")})` : "";
+    const spendKpi = sp ? kpi("Model spend today", `$${sp.spend.toFixed(2)}`, "", sp.budget ? `$${sp.budget.toFixed(2)} daily budget per provider${esc(provs)} · ${pct.toFixed(0)}%` : "no daily budget set")
+      : kpi("Model spend today", "–", "", "LiteLLM isn't answering");
     const runs = r.running.map((c) => `<div class="rv-run">${tag(c.tier, TIER_CLASS[c.tier] || "")}<code>${esc(c.command)}</code>
         <span class="rv-elapsed"><span data-since="${Number(c.started)}"></span> / ${dur(c.timeout_s)}</span>
         <div class="rv-meter" title="Time used of the command's timeout"><span data-meter="${Number(c.started)},${Number(c.timeout_s) || 600}"></span></div></div>`).join("");

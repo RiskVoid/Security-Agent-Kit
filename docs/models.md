@@ -239,10 +239,36 @@ outage, a rate limit or a content-policy refusal. Choose a model that is good at
 Without `OPENROUTER_API_KEY` in `.env`, the planner doesn't work: use `riskvoid-local`, or add the key and run
 `./rvkit up`.
 
+### Anthropic or OpenAI directly
+
+If you have an Anthropic or OpenAI API account and don't want OpenRouter in between:
+
+```sh
+./rvkit planner --direct anthropic/claude-opus-5-5                         # planner on Anthropic
+./rvkit planner --direct anthropic/claude-opus-5-5 openai/gpt-6.1          # fallback on OpenAI
+./rvkit planner --direct anthropic/claude-opus-5-5 openrouter/openai/gpt-6.1-sol   # mix: fallback on OpenRouter
+```
+
+Model ids use LiteLLM's names (`anthropic/<model>`, `openai/<model>`). If `ANTHROPIC_API_KEY` or `OPENAI_API_KEY`
+isn't in `.env` yet, the command asks for it (hidden input). To go back to OpenRouter, run `./rvkit planner
+<openrouter-model>` again.
+
+What changes:
+
+- **Data terms.** OpenRouter calls ask for zero-data-retention providers only. A direct call follows that
+  provider's own API terms (for example, API data isn't used for training, but may be kept for a while for abuse
+  monitoring). Zero retention needs an agreement with the provider. Check this against your client agreements.
+- **Budget.** The daily budget (`./rvkit budget`) applies to each provider separately. Anthropic gets a provider
+  budget. OpenAI gets a budget on each planner model instead, because the worker is also an OpenAI-style endpoint
+  and a provider budget would block it too. `./rvkit budget` and the console show OpenRouter and Anthropic
+  spend, but not spend on a direct OpenAI model.
+- The worker and its fallback are unchanged.
+
 ## Costs and budget
 
 **OpenRouter.** Spend on OpenRouter (the planner, plus the worker fallback when it's on) is capped per 24 hours.
-The default is **$20**.
+The default is **$20**. The same cap applies separately to Anthropic or OpenAI when the planner uses them
+directly ([above](#anthropic-or-openai-directly)).
 
 ```sh
 ./rvkit budget            # the cap and what's been spent in the current period
@@ -275,7 +301,7 @@ off, and use the L4 unless you need the longer context.
 |---|---|---|
 | Worker model (`colab-qwen`, `private-llm`) | tool output, client code, evidence | **Colab** (default): processed by Google on your Colab account. **Local / your own endpoint**: stays with you |
 | Worker fallback (off by default) | the same as the worker, while the endpoint is down | OpenRouter, zero-data-retention providers only |
-| Planner (`riskvoid-planner` agent) | task descriptions, the worker's redacted summaries, findings, files it chooses to open | OpenRouter, zero-data-retention providers only |
+| Planner (`riskvoid-planner` agent) | task descriptions, the worker's redacted summaries, findings, files it chooses to open | OpenRouter, zero-data-retention providers only; or Anthropic / OpenAI directly under their API terms (`--direct`) |
 | Web search and page fetch (`web` tool) | search queries, public URLs | SearXNG's upstream search engines; the public site |
 | Vulnerability intel, package installs | CVE and package ids, package names | NVD, EPSS, CISA KEV, OSV; package registries (through the egress proxy) |
 | Everything else (findings, evidence, audit log, reports) | everything | your machine |

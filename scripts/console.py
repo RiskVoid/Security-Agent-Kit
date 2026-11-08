@@ -221,15 +221,18 @@ _spend = {"at": 0, "data": None}
 
 
 def spend():
-    """Today's OpenRouter spend against the daily budget, from LiteLLM (cached 15 s; None if it doesn't answer)."""
+    """Today's model spend (all budgeted providers) against the daily budget, from LiteLLM (cached 15 s; None if it doesn't answer)."""
     if time.time() - _spend["at"] > 15:
         data = None
         try:
             req = urllib.request.Request(f"http://127.0.0.1:{E.get('LITELLM_PORT') or 4000}/provider/budgets",
                                          headers={"Authorization": f"Bearer {E.get('LITELLM_MASTER_KEY', '')}"})
             with urllib.request.urlopen(req, timeout=3) as r:
-                b = (json.load(r).get("providers") or {}).get("openrouter") or {}
-            data = {"spend": float(b.get("spend") or 0), "budget": float(E.get("OPENROUTER_DAILY_BUDGET") or 0) or None}
+                provs = json.load(r).get("providers") or {}
+            # one daily budget per provider (OpenRouter, Anthropic when the planner uses it directly): show the busiest
+            top = max(provs.values(), key=lambda b: float(b.get("spend") or 0), default={})
+            data = {"spend": sum(float(b.get("spend") or 0) for b in provs.values()), "providers": sorted(provs),
+                    "budget": float(E.get("OPENROUTER_DAILY_BUDGET") or 0) or None, "top": float(top.get("spend") or 0)}
         except (OSError, ValueError, TypeError):
             pass
         _spend.update(at=time.time(), data=data)

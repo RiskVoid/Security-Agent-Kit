@@ -124,6 +124,25 @@ d: true
                 tierconf.build(bad)
 
 
+class LiteLLMConfig(unittest.TestCase):
+    """scripts/render_litellm.py: planner models on OpenRouter or a direct provider."""
+    def test_planners(self):
+        import contextlib, io, re, render_litellm as r
+        t = open(os.path.join(KIT, "litellm", "config.yaml")).read()
+        self.assertEqual(r.planners(t, {"PLANNER_MODEL": "openrouter/a/b", "PLANNER_FALLBACK_MODEL": "openrouter/c"}, "20"), t)
+        with contextlib.redirect_stderr(io.StringIO()):
+            out = r.planners(t, {"PLANNER_MODEL": "anthropic/m", "PLANNER_FALLBACK_MODEL": "openai/n"}, "7")
+        block = lambda n: re.search(r"  - model_name: %s\n(?:    .*\n)+" % n, out).group(0)
+        self.assertIn("os.environ/ANTHROPIC_API_KEY", block("planner"))
+        self.assertNotIn("zdr", block("planner"))                         # OpenRouter-only routing option dropped
+        self.assertIn("max_budget: 7\n      budget_duration: 1d", block("planner-fallback"))  # not a provider budget:
+        self.assertNotIn("    openai: {budget_limit", out)                 # the worker also counts as "openai"
+        self.assertIn("    anthropic: {budget_limit: 7, time_period: 1d}", out)
+        self.assertIn("zdr: true", block("colab-qwen-fallback"))           # worker fallback untouched
+        with self.assertRaises(SystemExit):
+            r.planners(t, {"PLANNER_MODEL": "gemini/x"}, "20")
+
+
 class Scope(unittest.TestCase):
     def test_parse_scope(self):
         sc = core.parse_scope("""

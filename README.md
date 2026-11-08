@@ -150,7 +150,8 @@ tool output on the worker endpoint only" in `./rvkit new` (or add `- Worker mode
 ### Costs and limits
 
 - **Planner models:** `./rvkit planner` shows them (default Claude Sonnet 5.5, GPT-6.1 as fallback);
-  `./rvkit planner <openrouter-model> [fallback-model]` changes them.
+  `./rvkit planner <openrouter-model> [fallback-model]` changes them. `./rvkit planner --direct
+  anthropic/<model>` uses Anthropic (or `openai/<model>`, OpenAI) directly instead of OpenRouter.
 - **Budget:** OpenRouter spend is capped per 24 hours (default **$20**): `./rvkit budget` shows the cap and what's
   spent, `./rvkit budget 50` changes it. Over the cap, OpenRouter calls are refused until the period ends. Spend
   is stored in the `redis` service, so restarting the stack doesn't reset it.
@@ -355,7 +356,7 @@ an FAQ: [docs/troubleshooting.md](docs/troubleshooting.md).
 |---|---|---|
 | Worker model (`colab-qwen`, `private-llm`) | tool output, client code, evidence | **Colab** (default): processed by Google on your Colab account. **Local / your own endpoint**: stays with you |
 | Worker fallback (off by default) | the same as the worker, while the endpoint is down | OpenRouter, zero-data-retention providers only |
-| Planner (`riskvoid-planner` agent) | task descriptions, the worker's redacted summaries, findings, files it chooses to open | OpenRouter, zero-data-retention providers only |
+| Planner (`riskvoid-planner` agent) | task descriptions, the worker's redacted summaries, findings, files it chooses to open | OpenRouter, zero-data-retention providers only; or Anthropic / OpenAI directly under their API terms (`--direct`) |
 | Web search and page fetch (`web` tool) | search queries, public URLs | SearXNG's upstream engines; the public site |
 | Vulnerability intel, package installs | CVE / package ids, package names | NVD, EPSS, CISA KEV, OSV; package registries (through the egress proxy) |
 | Everything else (findings, evidence, audit log, reports) | everything | your machine |
