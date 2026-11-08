@@ -1,5 +1,5 @@
-# Full-stack regression tests: builds every image, starts the kit and runs the policy, console, tool, end-to-end
-# and lab tests (no model or API key needed). It takes 15-20 minutes, so it doesn't run on every pull request:
+# Full-stack regression tests: builds every image, starts the kit and runs the policy, console, tool, worker
+# agent-loop (scripted model), end-to-end and lab tests (no model or API key needed). It takes 15-20 minutes, so it doesn't run on every pull request:
 #   - on demand: Actions > Integration > Run workflow (pick a branch)
 #   - on a pull request that has the "full-ci" label (add the label to run it; new pushes re-run it while it's there)
 #   - nightly on main
@@ -67,6 +67,8 @@ jobs:
         run: bash evals/console_test.sh
       - name: Tool smoke test
         run: bash evals/tools_smoke.sh
+      - name: Worker agent loop (scripted model)
+        run: bash evals/agent_loop_test.sh
       - name: End to end (evidence, report, close-out)
         run: bash evals/phase5_e2e.sh
       - name: Lab isolation

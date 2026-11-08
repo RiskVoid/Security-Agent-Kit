@@ -193,6 +193,7 @@ The `evals/` folder also holds the kit's own tests. All but the first run agains
 | `evals/tools_smoke.sh` | every tool in the Kali image starts; code and supply-chain tools work through the sandbox | `demo-code` |
 | `evals/phase5_e2e.sh` | end to end: audited tools, hashed evidence, findings, a final report, tamper detection, close-out | the demo app |
 | `evals/console_test.sh` | the console's sign-in, host check, CSRF header, read API and file limits; preview writes nothing | `demo-code` |
+| `evals/agent_loop_test.sh` | the worker's agent loop with a scripted model (`evals/mock_llm.py`, no GPU or API key): tools sent, kali command run in the sandbox, candidate recorded citing the verified output, task saved | the stack, `/src/rv-demo-app` |
 | `evals/lab_test.sh` | lab isolation: only in-scope engagements reach a lab target, the lab has no internet and can't reach the kit | `./rvkit lab up` |
 | `evals/planner_smoke.py` | each planner route answers the planner prompt with a plan, not a refusal; records latency and tokens | an OpenRouter key |
 
