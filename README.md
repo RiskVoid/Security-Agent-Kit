@@ -201,7 +201,7 @@ approve its own requests. Ctrl-C stops it.
 | <img src="docs/img/icons/code.svg" width="20" height="20" alt=""> | **Findings** | Triage: confirm, mark false positive or duplicate, change severity, add notes, check evidence integrity. |
 | <img src="docs/img/icons/file-text.svg" width="20" height="20" alt=""> | **Report** | Fill in the cover and executive summary, generate, view the HTML report, and download Word, PDF and Excel. |
 | <img src="docs/img/icons/stop.svg" width="20" height="20" alt=""> | **Halt, close, audit** | Stop an engagement instantly, seal and archive it, and read its full audit log. |
-| <img src="docs/img/icons/cpu.svg" width="20" height="20" alt=""> | **Model problems** | A banner on every page says when a model call failed and what to do: no credits, budget used up, Colab stopped, a refusal. |
+| <img src="docs/img/icons/cpu.svg" width="20" height="20" alt=""> | **Model log** | Failed model calls with what to do (no credits, budget used up, Colab stopped, a refusal), per engagement and for all of them. |
 
 <details>
 <summary><b>See the engagement overview</b></summary>

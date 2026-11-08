@@ -289,6 +289,15 @@ class ModelEvents(unittest.TestCase):
                                                          "worker_down": "connect"}[k], 402 if k == "credits" else None))[1]
                                 for w in ("./rvkit", "/rv-start", "openrouter.ai")))
 
+    def test_engagement_of(self):
+        e = self.rv.engagement_of
+        self.assertEqual(e({"messages": [{"role": "user", "content": "Engagement `lab-juice`: web test"}]}), "lab-juice")
+        call = {"role": "assistant", "tool_calls": [{"function": {"arguments": '{"engagement": "acme-2026", "command": "id"}'}}]}
+        self.assertEqual(e({"messages": [{"role": "user", "content": [{"type": "text", "text": "Engagement `old`"}]}, call]}),
+                         "acme-2026")                                         # the newest tool call wins over the brief
+        self.assertIsNone(e({"messages": [{"role": "user", "content": "hello"}]}))
+        self.assertIsNone(e({}))
+
     def test_log_and_reader(self):
         import model_events as me
         with tempfile.TemporaryDirectory() as d:
@@ -304,6 +313,9 @@ class ModelEvents(unittest.TestCase):
             self.assertEqual(me.recent(3600, path=log, now=__import__("time").time() + 7200), [])
             self.assertEqual(len(me.read(3, path=log)), 1)                       # --from-line, for ./rvkit watch
             self.assertIn("(x3)", me.line(ev[0] if ev[0]["kind"] == "credits" else ev[1]))
+            self.rv.record("worker_down", "colab-qwen", "colab-qwen is not reachable", engagement="lab-juice")
+            self.assertEqual([x["kind"] for x in me.recent(3600, path=log, engagement="lab-juice")], ["worker_down"])
+            self.assertEqual(me.recent(3600, path=log, engagement="lab-juice")[0]["text"], "Is not reachable")
 
 
 if __name__ == "__main__":

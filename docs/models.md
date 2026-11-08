@@ -313,7 +313,8 @@ visible:
   | Refused by the model and its fallback | rephrase with the engagement context, or `./rvkit planner <model> [fallback]` |
 
 - **Every problem is logged** to `.rvkit/events/model-events.jsonl` on this machine. These show it:
-  - the console's banner (the last 30 minutes);
+  - the console's **Model log**: each engagement's tab, and a page with every call. The kit matches a call to an
+    engagement from the engagement its tool calls name, or from the brief;
   - `./rvkit status` (the last hour);
   - `./rvkit doctor` (the last 24 hours);
   - `./rvkit watch`, which also raises a desktop notification.

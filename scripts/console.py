@@ -254,10 +254,18 @@ def api_get(path, q):
                 f.startswith(e["engagement"] + "-") and f.endswith(".tar.gz")
                 for f in os.listdir(os.path.join(ENG_DIR, "_archive")))
             e["closed"] = bool(closed and e["halted"])
+            e["model_problems"] = len(model_events.recent(86400, problems_only=True, engagement=e["engagement"]))
         return {"engagements": engs, "approvals": json.loads(ctl("approvals", "--json") or "[]"),
                 "ui_url": f"http://localhost:{E.get('GATEWAY_PORT') or 8000}/", "version": VERSION,
-                # model problems of the last 30 min (refusals, no credits, worker down, ...): the page banner
-                "model_events": model_events.recent(1800)[:8]}
+                # failed model calls of the last 24 h (litellm/rv_events.py): the Model log badges
+                "model_problems": len(model_events.recent(86400, problems_only=True))}
+    if path == "/api/models":  # the model log: all calls, or one engagement's (eng=<name>)
+        eng = q.get("eng", [None])[0]
+        if eng and not NAME_RX.match(eng):
+            raise Fail("bad engagement name")
+        raw = (q.get("since") or ["604800"])[0]
+        since = min(max(int(raw) if raw.isdigit() else 604800, 60), 30 * 86400)
+        return {"events": model_events.recent(since, engagement=eng)[:300]}
     if path == "/api/status":
         return {"text": stack_status()}
     m = re.match(r"^/api/eng/([^/]+)(?:/(\w+))?$", path)

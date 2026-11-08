@@ -363,13 +363,8 @@ fieldset.rv-field legend { padding: 0; margin-bottom: 8px; }
 .rv-budget .rv-sev-bar span { background: var(--rv-accent); }
 .rv-budget.over .rv-sev-bar span { background: var(--rv-sev-critical); }
 
-/* model problems banner (litellm/rv_events.py events, last 30 min) */
-.rv-model-alert { margin: 12px 24px 0; padding: 10px 14px; border: 1px solid var(--rv-border); border-radius: var(--rv-radius-md);
-  background: var(--rv-sev-info-bg); color: var(--rv-text-1); font-size: 13px; }
-.rv-model-alert.bad { border-color: var(--rv-sev-critical); background: var(--rv-sev-critical-bg); color: var(--rv-text-0); }
-.rv-model-alert .h { font-weight: 600; margin-bottom: 4px; }
-.rv-model-alert ul { margin: 0; padding-left: 0; list-style: none; }
-.rv-model-alert li { margin: 2px 0; overflow-wrap: anywhere; }
-.rv-model-alert .t, .rv-model-alert .n { font-family: var(--mono); color: var(--rv-text-2); font-size: 12px; }
-.rv-model-alert .r { color: var(--rv-text-2); margin-top: 4px; overflow-wrap: anywhere; }
-@media (max-width: 720px) { .rv-model-alert { margin: 12px 16px 0; } }
+/* model log (litellm/rv_events.py events) */
+.rv-model-text { overflow-wrap: anywhere; min-width: 260px; }
+.rv-model-filters { display: flex; gap: 8px; align-items: center; }
+.rv-input.sm { padding: 4px 8px; font-size: 12px; width: auto; }
+.mono.sm { font-size: 11px; }

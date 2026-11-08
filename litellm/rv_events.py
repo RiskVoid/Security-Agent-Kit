@@ -89,6 +89,29 @@ def classify(group, exc=None, status=None, text=""):
     return "error", f"{who} failed ({status or name or 'error'}): {short}"
 
 
+ENG_ARG = re.compile(r'\\?"engagement\\?"\s*:\s*\\?"([A-Za-z0-9][A-Za-z0-9._-]{0,63})\\?"')
+ENG_TEXT = re.compile(r"\b[Ee]ngagement[:\s]+`?([A-Za-z0-9][A-Za-z0-9._-]{0,63})`?")
+
+
+def engagement_of(request):
+    """The engagement a model call belongs to, best effort: the newest tool call that names one (every kit tool takes
+    an `engagement` argument), else the brief ("Engagement `lab-juice`: ..."). None when nothing names one."""
+    msgs = (request or {}).get("messages") or []
+    for m in reversed(msgs):
+        for tc in (m.get("tool_calls") or []) if isinstance(m, dict) else []:
+            hit = ENG_ARG.search(str((tc.get("function") or {}).get("arguments") or ""))
+            if hit:
+                return hit.group(1)
+    for m in msgs:
+        if isinstance(m, dict) and m.get("role") == "user":
+            c = m.get("content")
+            text = c if isinstance(c, str) else " ".join(str(x.get("text", "")) for x in c or [] if isinstance(x, dict))
+            hit = ENG_TEXT.search(text)
+            if hit:
+                return hit.group(1)
+    return None
+
+
 def record(kind, group, message, **extra):
     """Append one event to the log; never raises (a logging problem must not break a model call)."""
     ev = {"ts": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), "kind": kind, "model": group,
@@ -172,7 +195,7 @@ def no_answer_text(group, kind, fallback=None, fb_error=None):
 
 class RvEvents(CustomLogger):
     async def async_post_call_streaming_iterator_hook(self, user_api_key_dict, response, request_data):
-        group = request_data.get("model")
+        group, eng = request_data.get("model"), engagement_of(request_data)
         held, sent, finish = [], False, None
         async for chunk in response:
             if sent:
@@ -191,7 +214,7 @@ class RvEvents(CustomLogger):
         kind = "refusal" if finish == "content_filter" else "empty"
         fb, fb_error = fallback_for(group), None
         if fb:
-            record(kind, group, f"{model_name(group)} " + ("refused this request" if kind == "refusal" else
+            record(kind, group, engagement=eng, message=f"{model_name(group)} " + ("refused this request" if kind == "refusal" else
                    "returned an empty reply") + f"; answering with the fallback {model_name(fb)}.", fallback=fb)
             try:
                 from litellm.proxy.proxy_server import llm_router
@@ -228,22 +251,22 @@ class RvEvents(CustomLogger):
         else:
             raw = None
         text = no_answer_text(group, kind, fb, fb_error)
-        record("no_answer", group, text[len(PREFIX):], reason=kind, fallback=fb, **({"error": raw} if raw else {}))
+        record("no_answer", group, text[len(PREFIX):], engagement=eng, reason=kind, fallback=fb, **({"error": raw} if raw else {}))
         for c in notice_chunks(group, text):
             yield c
 
     async def async_post_call_success_hook(self, data, user_api_key_dict, response):
-        group = data.get("model")
+        group, eng = data.get("model"), engagement_of(data)
         hp = getattr(response, "_hidden_params", None) or {}
         served = hp.get("model_group") or (hp.get("additional_headers") or {}).get("x-litellm-model-group")
         if served and group and served != group:
-            record("fallback", group, f"{model_name(group)} failed or refused; the answer came from {model_name(served)}.",
+            record("fallback", group, engagement=eng, message=f"{model_name(group)} failed or refused; the answer came from {model_name(served)}.",
                    fallback=served)
         if not empty_message(response):
             return None
         refused = any(getattr(c, "finish_reason", None) == "content_filter" for c in _choices(response))
         text = no_answer_text(group, "refusal" if refused else "empty", served if served != group else None)
-        record("no_answer", group, text[len(PREFIX):], reason="refusal" if refused else "empty")
+        record("no_answer", group, text[len(PREFIX):], engagement=eng, reason="refusal" if refused else "empty")
         c = _choices(response)[0]
         c.message.content, c.finish_reason = text, "stop"
         return response
@@ -251,7 +274,7 @@ class RvEvents(CustomLogger):
     async def async_post_call_failure_hook(self, request_data, original_exception, user_api_key_dict, traceback_str=None):
         group = request_data.get("model")
         kind, text = classify(group, original_exception)
-        record(kind, group, text, status=getattr(original_exception, "status_code", None))
+        record(kind, group, text, engagement=engagement_of(request_data), status=getattr(original_exception, "status_code", None))
         try:
             from fastapi import HTTPException
             code = int(getattr(original_exception, "status_code", None) or 500)

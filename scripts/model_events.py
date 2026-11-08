@@ -36,6 +36,11 @@ def read(from_line=0, path=LOG):
                 except ValueError:
                     continue
                 e["problem"] = e.get("kind") not in RECOVERED
+                # the message without its leading "planner (model id)" label, for pages that show the model apart
+                label = f"{e.get('model')} ({e.get('model_id')})" if e.get("model_id") else str(e.get("model"))
+                msg = e.get("message") or ""
+                e["text"] = msg[len(label):].lstrip(" :") if msg.startswith(label) else msg
+                e["text"] = e["text"][:1].upper() + e["text"][1:]
                 out.append(e)
     except OSError:
         pass
@@ -50,14 +55,17 @@ def count(path=LOG):
         return 0
 
 
-def recent(since=3600, problems_only=False, path=LOG, now=None):
-    """Events of the last `since` seconds, newest first, with repeats (same kind, model and message) collapsed."""
+def recent(since=3600, problems_only=False, path=LOG, now=None, engagement=None):
+    """Events of the last `since` seconds, newest first, with repeats (same kind, model, engagement and message)
+    collapsed. engagement: only that engagement's events ("" = events no engagement could be matched to)."""
     cutoff = (now or time.time()) - since
     groups = {}
     for e in read(path=path):
         if _epoch(e.get("ts")) < cutoff or (problems_only and not e["problem"]):
             continue
-        k = (e.get("kind"), e.get("model"), e.get("message"))
+        if engagement is not None and (e.get("engagement") or "") != engagement:
+            continue
+        k = (e.get("kind"), e.get("model"), e.get("engagement"), e.get("message"))
         g = groups.get(k)
         if g:
             g["count"] += 1
