@@ -163,6 +163,27 @@ For a GPU server, RunPod, Modal, vLLM or a hosted API with a fixed URL:
 ./rvkit worker api https://gpu.example.com/v1 <model-name> [api-key]
 ```
 
+**Rented GPUs.** On RunPod, Vast.ai, Lambda or Modal, start a GPU (24 GB or more for Qwen3.8-27B) with vLLM,
+llama.cpp's `llama-server` or Ollama, expose its OpenAI-compatible port with an API key, and point the worker at
+it with the command above. Stop the GPU when you're done: these services bill by the hour.
+
+### Option 4: no GPU at all (a hosted model on OpenRouter)
+
+If you have no GPU and no Colab, the worker can be a hosted model through your OpenRouter key:
+
+```sh
+./rvkit worker openrouter                              # DeepSeek V4.1 Flash (the default)
+./rvkit worker openrouter moonshotai/kimi-k2.6         # or another OpenRouter model
+```
+
+Like every OpenRouter call in the kit, it asks for zero-data-retention providers that don't collect prompts, and
+its spend counts toward the daily budget (`./rvkit budget`). DeepSeek V4.1 Flash is cheap, uses tools well and
+didn't refuse authorised pentest tasks in our tests; Kimi K2.6, Qwen3 235B and Mistral Large 4 also passed.
+
+**The trade-off: tool output and client code then go to OpenRouter.** That includes engagements with
+`Worker model: private` and the `riskvoid-local` agent: "private" means "only the worker you chose", and here
+that worker is a cloud model. For work where nothing may leave your machine, use Option 2.
+
 Every `worker` command recreates LiteLLM and sends a test prompt.
 
 ### Which model

@@ -1,5 +1,7 @@
 # secrets and local state
 .env
+# internal roadmap, kept locally only
+IMPLEMENTATION_PLAN.md
 .claude/settings.local.json
 # your runs (benchmark and smoke-test results can contain model output about your targets)
 evals/results/

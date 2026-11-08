@@ -37,7 +37,7 @@ The kit uses two models with different jobs.
 | Model | Job | Sees |
 |---|---|---|
 | **Planner**: a frontier model via OpenRouter (default Claude Sonnet 5.5) | plans, decides what to run next, verifies, writes findings and the report | task descriptions, the worker's redacted summaries, findings, files it chooses to open |
-| **Worker**: Qwen3.8-27B on a Colab GPU, your own GPU, or any OpenAI-compatible endpoint | carries out one focused, hands-on task at a time: runs tools, reads code, records candidates | raw tool output, client code, evidence |
+| **Worker**: Qwen3.8-27B on a Colab GPU, your own or a rented GPU, any OpenAI-compatible endpoint, or a hosted model on OpenRouter (no GPU) | carries out one focused, hands-on task at a time: runs tools, reads code, records candidates | raw tool output, client code, evidence |
 
 The split keeps the bulk of client data with the worker. The planner hands over a goal ("run semgrep and bandit
 on `/src/acme`, check the top results in the code, record candidates with file:line evidence") through the
@@ -136,7 +136,7 @@ Use it only on systems you own or have written permission to test.
 | **Approval** | Your OK for one intrusive command, given with `./rvkit watch` or `./rvkit approve <engagement> <id>`. Single-use, exact command only, valid 24 hours. |
 | **Halt** | An emergency stop for one engagement (`./rvkit halt <engagement>`): running commands are killed and new ones refused until `./rvkit resume <engagement>`. |
 | **Planner** | The frontier model (via OpenRouter) that plans, verifies and writes up. Used by the `riskvoid-planner` agent. |
-| **Worker** | The model that does the hands-on tool work and sees raw output and client code. Qwen3.8-27B by default, on Colab, your GPU or any OpenAI-compatible endpoint. |
+| **Worker** | The model that does the hands-on tool work and sees raw output and client code. Qwen3.8-27B by default, on Colab, your GPU or any OpenAI-compatible endpoint; or a hosted model on OpenRouter when you have no GPU. |
 | **Fallback** | An optional OpenRouter model that takes over worker calls while the worker endpoint is down. Off by default, because it then sees client data. |
 | **Private worker** | `Worker model: private` in `RULES.md`: this engagement's tool work never uses the fallback, even when it's on. |
 | **Playbook** | A methodology checklist for one testing type (`harness/playbooks/`). |

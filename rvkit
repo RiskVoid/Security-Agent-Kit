@@ -243,11 +243,13 @@ cmd_setup() {
     echo "   colab  Qwen3.8-27B on a Google Colab GPU (Colab Pro); started per session"
     echo "   local  a server on this machine: Ollama, LM Studio, llama-server, vLLM (detected automatically)"
     echo "   api    any OpenAI-compatible URL you run (RunPod, Modal, your GPU server)"
+    echo "   openrouter  no GPU: a hosted model with your OpenRouter key (client data goes to OpenRouter)"
     echo "   later  decide later (./rvkit worker)"
     worker="$(ask "Worker" "${RVKIT_WORKER:-colab}")"
   fi
   case "$worker" in
     local) "$SELF" worker local || true ;;
+    openrouter) "$SELF" worker openrouter || true ;;
     api)   local u m k; u="$(ask "Endpoint base URL (ending in /v1)" "")"; m="$(ask "Model name" "")"
            k="$(ask_secret "API key")"; [ -n "$u" ] && [ -n "$m" ] && "$SELF" worker api "$u" "$m" "${k:-none}" || true ;;
     colab) cat <<EOF
@@ -479,6 +481,9 @@ cmd_worker() {
   case "${1:-show}" in
     show)
       echo "worker endpoint: $(envget WORKER_API_BASE)   model: $(envget WORKER_MODEL_ID)"
+      case "$(envget WORKER_MODEL_ID)" in openrouter/*)
+        echo "  hosted on OpenRouter (zero-data-retention providers): tool output and client code go there, also for"
+        echo "  'Worker model: private' engagements and the riskvoid-local agent. For fully local work: ./rvkit worker local" ;; esac
       if [ "$(envget WORKER_FALLBACK)" = "on" ]; then
         echo "fallback (when the endpoint is down): $(envget WORKER_FALLBACK_MODEL) via OpenRouter, zero-data-retention providers"
         echo "  while it is in use, tool output and client code go to that model"
@@ -510,7 +515,13 @@ cmd_worker() {
     api)   # any OpenAI-compatible endpoint with a fixed URL: RunPod, Modal, a GPU server, vLLM, ...
       [ $# -ge 3 ] || die "usage: ./rvkit worker api <base-url/v1> <model-name> [api-key]"
       envset WORKER_API_BASE "$2"; envset WORKER_API_KEY "${4:-none}"; envset WORKER_MODEL_ID "openai/$3" ;;
-    *) die "usage: ./rvkit worker [show | colab | local [url] [model] [key] | api <url> <model> [key] | fallback [on|off|<openrouter-model>]]" ;;
+    openrouter) # no GPU at all: a hosted model through the OpenRouter key (zero-data-retention providers)
+      [ -n "$(envget OPENROUTER_API_KEY)" ] || die "needs OPENROUTER_API_KEY in .env (https://openrouter.ai/keys), then ./rvkit up"
+      local m="${2:-$(envget WORKER_FALLBACK_MODEL)}"; m="${m#openrouter/}"
+      warn "Tool output and client code will go to $m on OpenRouter (zero-data-retention providers only)."
+      envset WORKER_API_BASE "https://openrouter.ai/api/v1"; envset WORKER_API_KEY none
+      envset WORKER_MODEL_ID "openrouter/${m:-deepseek/deepseek-v4.1-flash}" ;;
+    *) die "usage: ./rvkit worker [show | colab | local [url] [model] [key] | api <url> <model> [key] | openrouter [model] | fallback [on|off|<openrouter-model>]]" ;;
   esac
   recreate_litellm; ok "Worker: $(envget WORKER_API_BASE) ($(envget WORKER_MODEL_ID))"; test_model
 }
@@ -537,7 +548,7 @@ _rvkit() {
   if [ "\$COMP_CWORD" -eq 1 ]; then COMPREPLY=( \$(compgen -W "$COMMANDS" -- "\$cur") ); return; fi
   case "\$prev" in
     eng) COMPREPLY=( \$(compgen -W "$ENG_SUB" -- "\$cur") ) ;;
-    worker) COMPREPLY=( \$(compgen -W "show colab local api fallback" -- "\$cur") ) ;;
+    worker) COMPREPLY=( \$(compgen -W "show colab local api openrouter fallback" -- "\$cur") ) ;;
     lab) COMPREPLY=( \$(compgen -W "up down status" -- "\$cur") ) ;;
     show|scope|approvals|approve|deny|halt|resume|audit|report|close|delete)
       engs="\$(ls "\$(grep -E '^ENGAGEMENTS_DIR=' "$KIT/.env" 2>/dev/null | cut -d= -f2- | sed "s|^~|\$HOME|")" 2>/dev/null | grep -v '^_')"
@@ -551,7 +562,7 @@ EOF
       echo "complete -c rvkit -f"
       echo "complete -c rvkit -n '__fish_use_subcommand' -a '$COMMANDS'"
       echo "complete -c rvkit -n '__fish_seen_subcommand_from eng' -a '$ENG_SUB'"
-      echo "complete -c rvkit -n '__fish_seen_subcommand_from worker' -a 'show colab local api fallback'"
+      echo "complete -c rvkit -n '__fish_seen_subcommand_from worker' -a 'show colab local api openrouter fallback'"
       echo "complete -c rvkit -n '__fish_seen_subcommand_from lab' -a 'up down status'"
       echo "complete -c rvkit -n '__fish_seen_subcommand_from show scope approvals approve deny halt resume audit report close delete' -a \"(ls (grep -E '^ENGAGEMENTS_DIR=' $KIT/.env | cut -d= -f2- | string replace -r '^~' \$HOME) 2>/dev/null | string match -v '_*')\""
       ;;
@@ -575,8 +586,8 @@ ${B}Start${N}
 
 ${B}Models${N}
   connect <url> [key] [model]   point the worker at a running Colab model (the notebook prints this line)
-  worker [show|colab|local|api …]   switch the worker endpoint; 'worker local' finds Ollama / LM Studio /
-                                llama-server on this machine
+  worker [show|colab|local|api|openrouter …]   switch the worker endpoint; 'worker local' finds Ollama /
+                                LM Studio / llama-server on this machine; 'worker openrouter' needs no GPU
   worker fallback [on|off|<model>]  OpenRouter model used while the worker is down (off by default)
   planner [<model> [fallback]]  show / set the planner models (OpenRouter ids)
   planner --direct <provider/model> [fallback]   use Anthropic or OpenAI directly (asks for the key once)

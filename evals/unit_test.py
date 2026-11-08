@@ -142,6 +142,17 @@ class LiteLLMConfig(unittest.TestCase):
         with self.assertRaises(SystemExit):
             r.planners(t, {"PLANNER_MODEL": "gemini/x"}, "20")
 
+    def test_worker_on_openrouter(self):  # ./rvkit worker openrouter: no GPU
+        import re, render_litellm as r
+        t = open(os.path.join(KIT, "litellm", "config.yaml")).read()
+        self.assertEqual(r.worker(t, {"WORKER_MODEL_ID": "openai/qwen38-27b"}), t)
+        out = r.worker(t, {"WORKER_MODEL_ID": "openrouter/deepseek/x", "OPENROUTER_API_KEY": "k"})
+        for name in ("colab-qwen", "private-llm"):
+            block = re.search(r"  - model_name: %s\n(?:    .*\n)+" % name, out).group(0)
+            self.assertIn("os.environ/OPENROUTER_API_KEY", block)
+            self.assertNotIn("WORKER_API_BASE", block)
+            self.assertIn("zdr: true", block)
+
 
 class Scope(unittest.TestCase):
     def test_parse_scope(self):

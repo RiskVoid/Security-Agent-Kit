@@ -10,7 +10,7 @@ the UI, and the steps for your first real engagement.
 | Computer | macOS or Linux with **Docker** (Docker Desktop, OrbStack or Docker Engine) and Docker Compose v2. 16 GB of memory for Docker is recommended (8 GB minimum), and about 25 GB of free disk. |
 | Command-line tools | `python3`, `curl`, `perl`, `openssl` (setup checks for them) |
 | Planner | An **OpenRouter** API key (https://openrouter.ai/keys). Optional: without it, only the `riskvoid-local` agent works. |
-| Worker model | One of: **Google Colab Pro** (default, nothing to install), a local model server (Ollama, LM Studio, llama.cpp, vLLM; about 24 GB of VRAM for Qwen 27B), or any OpenAI-compatible endpoint. Optional for a first look: without one, the planner runs the Kali tools itself. |
+| Worker model | One of: **a hosted model on OpenRouter** (no GPU, just your OpenRouter key), **Google Colab Pro** (default, nothing to install), a local model server (Ollama, LM Studio, llama.cpp, vLLM; about 24 GB of VRAM for Qwen 27B), or any OpenAI-compatible endpoint. Optional for a first look: without one, the planner runs the Kali tools itself. |
 | Optional | **Claude Code** (or another coding agent) and `uv`, for the one-command Colab start |
 
 The kit has been verified on macOS (Apple Silicon) with OrbStack. Linux and amd64 haven't been through the full
@@ -83,6 +83,7 @@ The worker model runs the tools and sees client code. Pick where it runs:
 | `colab` | You have Colab Pro and no local GPU | Started per session with `/rv-start` in Claude Code, or the notebook by hand |
 | `local` | You run Ollama, LM Studio, llama-server or vLLM on this machine | `./rvkit worker local` finds it on the usual ports |
 | `api` | You have a fixed OpenAI-compatible endpoint (RunPod, Modal, your GPU server) | `./rvkit worker api <url/v1> <model> [key]` |
+| `openrouter` | You have no GPU and no Colab | `./rvkit worker openrouter`: a hosted model with your OpenRouter key; client data goes to OpenRouter (zero-data-retention providers) |
 | `later` | You want to look around first | `./rvkit worker` any time |
 
 You can switch at any time without changing anything else. Details, GPU costs and the fallback model:

@@ -163,6 +163,7 @@ end with "Model reachable".
 ./rvkit worker colab                                   # back to the last Colab URL (from connect)
 ./rvkit worker local [url] [model] [key]               # a server on this machine
 ./rvkit worker api <url> <model> [key]                 # any OpenAI-compatible endpoint
+./rvkit worker openrouter [model]                      # no GPU: a hosted model with your OpenRouter key
 ./rvkit worker fallback [show|on|off|<openrouter-model>]
 ```
 
@@ -170,6 +171,8 @@ end with "Model reachable".
   and 5000, and uses the first model it lists. Containers reach it as `http://host.docker.internal:<port>/v1`. On
   Linux the server must listen on an address containers can reach (Ollama: `OLLAMA_HOST=0.0.0.0`).
 - `api` takes a base URL ending in `/v1` and the model name the server expects. The key defaults to `none`.
+- `openrouter` makes the worker a hosted model on OpenRouter (default DeepSeek V4.1 Flash), with zero-data-retention
+  providers and the daily budget. Tool output and client code then go to OpenRouter ([Models](models.md#option-4-no-gpu-at-all-a-hosted-model-on-openrouter)).
 - `fallback on` lets worker calls go to an OpenRouter model while the endpoint is down (default model DeepSeek V4.1
   Flash). `fallback <model>` sets the model and turns it on; `fallback off` turns it off (the default). While the
   fallback is in use, **that model sees tool output and client code**.

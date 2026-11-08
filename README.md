@@ -24,6 +24,8 @@
 <p align="center">
   <a href="#quick-start">Quick start</a> ·
   <a href="#what-it-can-do">What it can do</a> ·
+  <a href="#where-the-worker-model-runs">No GPU? Fine</a> ·
+  <a href="#the-console">Console</a> ·
   <a href="#how-it-works">How it works</a> ·
   <a href="#safety-built-in">Safety</a> ·
   <a href="docs/README.md">Documentation</a>
@@ -44,7 +46,7 @@ It's built so you can **trust it on client work**:
 
 | | |
 |:-:|---|
-| <img src="docs/img/icons/sparkles.svg" width="22" alt=""> | **Two models, one team.** A strong cloud model **plans** and writes. A separate **worker** model on a GPU you control runs the tools and reads the client's code. Raw tool output and source code stay with the worker. |
+| <img src="docs/img/icons/sparkles.svg" width="22" alt=""> | **Two models, one team.** A strong cloud model **plans** and writes. A separate **worker** model runs the tools and reads the client's code, so raw tool output and source code stay with the worker. The worker can run on your own GPU, a rented one, or a hosted model, so **you don't need a GPU**. |
 | <img src="docs/img/icons/lock.svg" width="22" alt=""> | **A locked sandbox.** Every tool runs in a Kali Linux sandbox with a firewall that only reaches the targets you authorised. Nothing else is reachable. |
 | <img src="docs/img/icons/shield-check.svg" width="22" alt=""> | **You stay in charge.** Risky (intrusive) steps wait for your approval. One command stops everything. |
 | <img src="docs/img/icons/file-text.svg" width="22" alt=""> | **Evidence you can defend.** Every command is logged, and every piece of evidence is hashed (SHA-256) and linked to the command that produced it. |
@@ -86,10 +88,31 @@ The full list, with the tier of each tool (passive, active or intrusive), is in
 
 | | Requirement | Notes |
 |:-:|---|---|
-| <img src="docs/img/icons/laptop.svg" width="20" alt=""> | **A Mac or Linux computer** with **Docker** | Docker Desktop, OrbStack or Docker Engine. 16 GB RAM recommended (8 GB minimum), ~25 GB free disk |
-| <img src="docs/img/icons/key.svg" width="20" alt=""> | **A planner key** (optional) | An [OpenRouter](https://openrouter.ai/keys) key, or an Anthropic / OpenAI key. Without one, use the fully local agent |
-| <img src="docs/img/icons/cpu.svg" width="20" alt=""> | **A GPU for the worker model** | **Google Colab Pro** (default, nothing to install), or your own GPU (Ollama, LM Studio, llama.cpp, vLLM; ~24 GB VRAM), or any OpenAI-compatible API |
+| <img src="docs/img/icons/laptop.svg" width="20" alt=""> | **A Mac or Linux computer** with **Docker** | Docker Desktop, OrbStack or Docker Engine. 16 GB RAM recommended (8 GB minimum), ~25 GB free disk. No GPU needed |
+| <img src="docs/img/icons/key.svg" width="20" alt=""> | **An [OpenRouter](https://openrouter.ai/keys) key** | Pays for the planner, and for the worker if you have no GPU (see below). A few dollars covers many runs, with a daily cap (default $20) |
+| <img src="docs/img/icons/cpu.svg" width="20" alt=""> | **Somewhere for the worker to run** | Pick one of five options [below](#where-the-worker-model-runs), from "no GPU at all" to "fully on your own hardware" |
 | <img src="docs/img/icons/terminal.svg" width="20" alt=""> | `python3`, `curl`, `perl`, `openssl` | Already on most Macs and Linux machines |
+
+> [!TIP]
+> **The minimum:** a computer with Docker and an OpenRouter key. That's enough to run everything.
+
+### Where the worker model runs
+
+The worker is the model that runs the tools. Pick whichever suits your budget and privacy needs, and switch
+any time with one command:
+
+| | Option | You need | Client data goes to | Command |
+|:-:|---|---|---|---|
+| <img src="docs/img/icons/globe.svg" width="20" alt=""> | **Hosted model, no GPU** (simplest) | only your OpenRouter key | OpenRouter, zero-data-retention providers only | `./rvkit worker openrouter` |
+| <img src="docs/img/icons/cpu.svg" width="20" alt=""> | **Google Colab** (default) | Colab Pro (about $10/month) | Google, on your Colab account | `/rv-start` in Claude Code, or [by hand](docs/models.md#option-1-google-colab-default) |
+| <img src="docs/img/icons/server.svg" width="20" alt=""> | **Rented GPU**: RunPod, Vast.ai, Lambda, Modal… | a GPU running vLLM, llama.cpp or Ollama | the GPU you rent | `./rvkit worker api <url> <model> [key]` |
+| <img src="docs/img/icons/laptop.svg" width="20" alt=""> | **Your own GPU** (~24 GB VRAM for Qwen 27B; smaller models work on less) | Ollama, LM Studio, llama.cpp or vLLM | **nowhere: it stays on your machine** | `./rvkit worker local` |
+| <img src="docs/img/icons/plug.svg" width="20" alt=""> | **Any OpenAI-compatible API** | a URL and a key | that provider | `./rvkit worker api <url> <model> [key]` |
+
+`./rvkit worker openrouter` uses DeepSeek V4.1 Flash by default (cheap, uses tools well, doesn't refuse
+authorised pentest tasks in our tests). Pass another model to change it, for example
+`./rvkit worker openrouter moonshotai/kimi-k2.6`. Spend counts toward the same daily cap as the planner.
+More detail: [Models](docs/models.md).
 
 ---
 
@@ -104,8 +127,8 @@ cd Security-Agent-Kit
 `setup` asks four questions (press Enter for the defaults):
 - where to keep client files;
 - your organisation name;
-- your planner key (hidden input);
-- where the worker model runs.
+- your OpenRouter key (hidden input);
+- where the worker model runs. Answer `openrouter` if you have no GPU.
 
 It then starts everything, which takes about 10 minutes the first time.
 
@@ -114,7 +137,12 @@ It then starts everything, which takes about 10 minutes the first time.
 ./rvkit quickstart    # a practice engagement against a vulnerable app in an isolated lab
 ```
 
-Open **http://localhost:8000**, pick the **`riskvoid-planner`** agent and start talking.
+You now have two pages:
+
+| Page | Open it with | What it's for |
+|---|---|---|
+| **Agent UI** | **http://localhost:8000** | Talk to the agent: pick **`riskvoid-planner`** and tell it what to test |
+| **RiskVoid Console** | **`./rvkit console`** (opens http://127.0.0.1:8100, signed in) | Watch and control the work: approvals, live view, findings, reports ([below](#the-console)) |
 
 > [!TIP]
 > Using **Claude Code**? Type `/rv-setup`, then `/rv-start`, in the kit folder, and it does all of the above,
@@ -143,6 +171,44 @@ engagement with a checksum manifest.
 <p align="center">
   <img src="docs/img/canvas-home.png" alt="The agent UI" width="85%">
 </p>
+
+---
+
+## The console
+
+The **RiskVoid Console** is your control room. You talk to the agent in the agent UI. In the console you watch
+what it does, approve or stop it, triage what it found and build the report.
+
+```sh
+./rvkit console      # starts it and opens it in your browser, already signed in
+```
+
+It runs only on your computer (127.0.0.1:8100). The agent's containers can't reach it, so the agent can't
+approve its own requests. Ctrl-C stops it.
+
+<p align="center">
+  <img src="docs/img/console-findings.png" alt="The RiskVoid Console: findings for an engagement" width="100%">
+</p>
+
+| | Page | What you do there |
+|:-:|---|---|
+| <img src="docs/img/icons/layers.svg" width="20" alt=""> | **Engagements** | See every engagement with its status, findings and waiting approvals, and create new ones with a form. |
+| <img src="docs/img/icons/gauge.svg" width="20" alt=""> | **Live** | Watch what's running right now: commands with timers, worker tasks, approvals and today's model spend. |
+| <img src="docs/img/icons/shield-check.svg" width="20" alt=""> | **Approvals** | Approve or deny intrusive commands. The sidebar badge counts what's waiting. |
+| <img src="docs/img/icons/target.svg" width="20" alt=""> | **Scope & rules** | Edit targets and rules, preview exactly what the firewall will allow, then apply. |
+| <img src="docs/img/icons/code.svg" width="20" alt=""> | **Findings** | Triage: confirm, mark false positive or duplicate, change severity, add notes, check evidence integrity. |
+| <img src="docs/img/icons/file-text.svg" width="20" alt=""> | **Report** | Fill in the cover and executive summary, generate, view the HTML report, and download Word, PDF and Excel. |
+| <img src="docs/img/icons/stop.svg" width="20" alt=""> | **Halt, close, audit** | Stop an engagement instantly, seal and archive it, and read its full audit log. |
+
+<details>
+<summary><b>See the engagement overview</b></summary>
+<br>
+<p align="center">
+  <img src="docs/img/console-overview.png" alt="Console engagement overview: findings by severity, scope and rules, a ready prompt for the agent" width="100%">
+</p>
+</details>
+
+Everything in the console can also be done with `./rvkit` in a terminal. Full guide: [The console](docs/console.md).
 
 ---
 
@@ -201,7 +267,7 @@ Known limitations and how to report a vulnerability: [SECURITY.md](SECURITY.md).
 
 | Part | Sees | Runs on |
 |---|---|---|
-| **Worker model** | tool output, client code, evidence | Colab (your Google account), **or your own GPU / endpoint** |
+| **Worker model** | tool output, client code, evidence | wherever you [chose](#where-the-worker-model-runs): OpenRouter (zero-data-retention), Colab (your Google account), a rented GPU, **or your own GPU** |
 | **Planner** | task descriptions, redacted summaries, findings | OpenRouter (zero-data-retention providers only), or Anthropic / OpenAI directly |
 | **Everything else** | findings, evidence, audit log, reports | **your machine** |
 
@@ -236,7 +302,7 @@ new [name]             create an engagement          watch                 appro
 eng list               engagements + scope           scope <eng> [--yes]   apply SCOPE.md / RULES.md edits
 approvals | approve | deny | halt | resume | audit | show | report | close <eng> …
 
-connect <url> [key] [model]       Colab worker       worker [local|api|colab|fallback …]
+connect <url> [key] [model]       Colab worker       worker [openrouter|local|api|colab|fallback …]
 planner [--direct] <model>        planner model      budget [usd]          daily spend cap
 lab up|down|status                practice targets   bench <name|all>      benchmarks
 ```
