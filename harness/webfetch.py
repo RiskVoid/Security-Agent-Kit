@@ -2,10 +2,11 @@
 
 Research fetches must never reach an engagement target (targets are tested only through the kali tool, which is
 scope-checked and audit-logged) or anything non-public (the kit's own services, the lab, cloud metadata). Each
-check resolves the host name and tests every address it resolves to, and runs again on every redirect.
-Residual risk: the name is resolved again when connecting (DNS rebinding); the kali firewall is the hard boundary.
+check resolves the host name and tests every address it resolves to, and runs again on every redirect. The
+connection then goes to one of those checked addresses (the name is not resolved again), so a DNS answer that
+changes between the check and the connection (rebinding) can't reach anything else. TLS still verifies the name.
 """
-import html, ipaddress, re, socket, urllib.error, urllib.parse, urllib.request
+import html, http.client, ipaddress, re, socket, urllib.error, urllib.parse, urllib.request
 
 UA = "Mozilla/5.0 (rvkit research)"
 
@@ -14,8 +15,9 @@ def in_scope_name(host, domains):
     return any(host == d or host.endswith("." + d) for d in domains)
 
 
-def refusal(url, nets, domains):
-    """Why this URL must not be fetched, or None. nets/domains: the scope(s) to keep away from."""
+def refusal(url, nets, domains, pins=None):
+    """Why this URL must not be fetched, or None. nets/domains: the scope(s) to keep away from.
+    pins: when given, the checked addresses are recorded in it (host -> [ip, ...]) for the connection to use."""
     u = urllib.parse.urlparse(url)
     if u.scheme not in ("http", "https") or not u.hostname:
         return "only http(s) URLs"
@@ -34,18 +36,66 @@ def refusal(url, nets, domains):
                     "Use the kali tool (scope-checked and audit-logged).")
         if not ip.is_global:
             return f"REFUSED: {host} resolves to non-public address {ip}; this tool is for public research only."
+    if pins is not None:
+        pins[host] = sorted(addrs)
     return None
 
 
 class _CheckedRedirect(urllib.request.HTTPRedirectHandler):
-    def __init__(self, nets, domains):
-        self.nets, self.domains = nets, domains
+    def __init__(self, nets, domains, pins):
+        self.nets, self.domains, self.pins = nets, domains, pins
 
     def redirect_request(self, req, fp, code, msg, headers, newurl):
-        why = refusal(newurl, self.nets, self.domains)
+        why = refusal(newurl, self.nets, self.domains, self.pins)
         if why:
             raise urllib.error.URLError(f"redirect to {newurl} blocked: {why}")
         return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
+def _pinned(base, pins):
+    """An http.client connection class that connects only to the checked addresses of its host."""
+    class Pinned(base):
+        def __init__(self, *a, **k):
+            super().__init__(*a, **k)
+
+            def create(address, *args, **kwargs):
+                host, port = address
+                ips = pins.get(host.lower().strip("[]"))
+                if not ips:
+                    raise OSError(f"{host} was not checked before connecting")
+                err = None
+                for ip in ips:
+                    try:
+                        return socket.create_connection((ip, port), *args, **kwargs)
+                    except OSError as e:
+                        err = e
+                raise err
+            self._create_connection = create
+    return Pinned
+
+
+class _PinnedHTTP(urllib.request.HTTPHandler):
+    def __init__(self, pins):
+        super().__init__()
+        self.pins = pins
+
+    def http_open(self, req):
+        return self.do_open(_pinned(http.client.HTTPConnection, self.pins), req)
+
+
+class _PinnedHTTPS(urllib.request.HTTPSHandler):
+    def __init__(self, pins):
+        super().__init__()
+        self.pins = pins
+
+    def https_open(self, req):
+        return self.do_open(_pinned(http.client.HTTPSConnection, self.pins), req, context=self._context)
+
+
+def opener(nets, domains, pins):
+    """No proxy; every redirect re-checked; every connection pinned to addresses in pins."""
+    return urllib.request.build_opener(urllib.request.ProxyHandler({}), _PinnedHTTP(pins), _PinnedHTTPS(pins),
+                                       _CheckedRedirect(nets, domains, pins))
 
 
 def html_to_text(raw):
@@ -58,12 +108,12 @@ def html_to_text(raw):
 
 def fetch(url, nets, domains, max_bytes=2_000_000, timeout=30):
     """Fetch a public URL as text (HTML stripped), or return a REFUSED / error string."""
-    why = refusal(url, nets, domains)
+    pins = {}
+    why = refusal(url, nets, domains, pins)
     if why:
         return why
     req = urllib.request.Request(url, headers={"User-Agent": UA})
-    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), _CheckedRedirect(nets, domains))
-    with opener.open(req, timeout=timeout) as r:
+    with opener(nets, domains, pins).open(req, timeout=timeout) as r:
         ctype = r.headers.get("Content-Type", "")
         raw = r.read(max_bytes).decode("utf-8", "replace")
     return html_to_text(raw) if "html" in ctype or raw.lstrip()[:1] == "<" else raw

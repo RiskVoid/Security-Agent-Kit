@@ -30,7 +30,8 @@ is weaker than described here.
 2. **The planner's web fetch tool checks names and addresses, not content.** The `web` MCP server (`web-mcp`)
    refuses every engagement target (the union of all engagements' scope) and every non-public address, on the
    first request and on each redirect, and fails closed when it can't read the scopes. Its requests are not in the
-   audit log. A DNS rebinding window remains between the check and the connection. The worker has no internet of
+   audit log. Each connection goes to an address that passed the check (the name is not resolved again), so DNS
+   rebinding can't redirect it. The worker has no internet of
    its own: its `web_search` and `fetch_url` tools go through this server, with the same checks.
 3. **Kit services can reach the internet.** `web-mcp`, `intel-mcp`, `kali-mcp` (for its own updates and rule
    downloads, not agent commands), LiteLLM and SearXNG have outbound access. The two agent-facing containers,
