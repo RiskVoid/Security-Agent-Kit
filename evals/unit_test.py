@@ -240,6 +240,24 @@ class WebFetch(unittest.TestCase):
         self.assertEqual(webfetch.refusal("file:///etc/passwd", [], []), "only http(s) URLs")
 
 
+class ColabPrebuilt(unittest.TestCase):
+    """colab/serve.py picks the llama.cpp CUDA build for the driver, never the runtime-only cudart package."""
+    NAMES = ["cudart-llama-b1-bin-ubuntu-cuda-12.8-x64.tar.gz", "cudart-llama-b1-bin-ubuntu-cuda-13.4-x64.tar.gz",
+             "llama-b1-bin-ubuntu-cuda-12.8-x64.tar.gz", "llama-b1-bin-ubuntu-cuda-13.4-x64.tar.gz",
+             "llama-b1-bin-ubuntu-cuda-13.4-arm64.tar.gz", "llama-b1-bin-ubuntu-x64.tar.gz"]
+
+    def test_pick(self):
+        spec = importlib.util.spec_from_file_location("serve", os.path.join(KIT, "colab", "serve.py"))
+        serve = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(serve)
+        pick = serve.pick_prebuilt
+        self.assertEqual(pick(self.NAMES, "b1", (12, 8)), ("llama-b1-bin-ubuntu-cuda-12.8-x64.tar.gz",
+                                                          "cudart-llama-b1-bin-ubuntu-cuda-12.8-x64.tar.gz"))
+        self.assertEqual(pick(self.NAMES, "b1", (13, 6))[0], "llama-b1-bin-ubuntu-cuda-13.4-x64.tar.gz")
+        self.assertEqual(pick(self.NAMES, "b1", (12, 4)), (None, None))  # driver too old: build from source
+        self.assertEqual(pick(self.NAMES, "b1", None)[0], "llama-b1-bin-ubuntu-cuda-12.8-x64.tar.gz")
+
+
 class Console(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
