@@ -47,7 +47,9 @@ check "planner refused (/work path in a request)" "$(llm -d '{"model":"planner",
 CID=00000000-0000-4000-8000-$(printf '%012x' $RANDOM$RANDOM)
 ctl bind $ENG "$CID" "state test" >/dev/null
 check "conversation bound"                       "$(ctl conversations $ENG)" "$CID"
-check "bound conversation refused, any route"   "$(llm -H "x-litellm-session-id: $CID" -d '{"model":"colab-qwen","max_tokens":5,"messages":[{"role":"user","content":"hi"}]}')" \
+# The session header alone must tie the call to the engagement. Use the planner: it is off-machine by default, while
+# the worker counts as local when it is not connected (CI's .env.example points it at a .invalid host).
+check "bound conversation refused, any route"   "$(llm -H "x-litellm-session-id: $CID" -d '{"model":"planner","max_tokens":5,"messages":[{"role":"user","content":"hi"}]}')" \
       "allows its client data only to local"
 ctl halt $ENG >/dev/null
 check "halted: bound conversation refused"      "$(llm -H "x-litellm-session-id: ${CID//-/}" -d '{"model":"private-llm","max_tokens":5,"messages":[{"role":"user","content":"hi"}]}')" \
