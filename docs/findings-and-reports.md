@@ -7,7 +7,7 @@ page (`.html`), a `.docx`, a PDF and a findings register `.xlsx`. It also covers
 
 ## Findings
 
-Each engagement has its own findings database, `/work/<engagement>/findings.db` (SQLite). Findings get ids in
+Each engagement has its own findings database, `/work/<engagement>/.rv/findings.db` (SQLite), which kali commands can only read. Findings get ids in
 order: `F-001`, `F-002`, …
 
 ### Fields

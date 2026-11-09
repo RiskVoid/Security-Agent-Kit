@@ -190,7 +190,7 @@ You can also ask the agent: "list the worker tasks" (`list_tasks`), "what's the 
 
 ## Picking up again
 
-The engagement's state lives in its folder, not in the conversation: `PLAN.md`, `NOTES.md`, `findings.db`, the
+The engagement's state lives in its folder, not in the conversation: `PLAN.md`, `NOTES.md`, `.rv/findings.db`, the
 evidence files and the audit log. So you can always continue, in the same conversation or a new one.
 
 | Situation | What to do |

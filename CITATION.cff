@@ -1,0 +1,25 @@
+cff-version: 1.2.0
+message: "If you use the Security Agent Kit in research, please cite it as below."
+type: software
+title: "RiskVoid Security Agent Kit"
+abstract: >-
+  A self-hosted AI security agent for authorised penetration testing and code review: a planner and a worker
+  model, a scoped Kali Linux sandbox with tiers and approvals, hashed evidence, a findings database, client
+  reports and an evidence-based benchmark harness.
+authors:
+  - given-names: Ruslan
+    family-names: Sazonov
+    affiliation: RiskVoid
+  - name: RiskVoid
+    website: "https://riskvoid.com"
+repository-code: "https://github.com/RiskVoid/Security-Agent-Kit"
+url: "https://riskvoid.com/security-agent-kit"
+license: Apache-2.0
+version: 0.1.0
+keywords:
+  - penetration testing
+  - application security
+  - AI agents
+  - large language models
+  - model context protocol
+  - benchmark

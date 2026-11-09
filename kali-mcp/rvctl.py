@@ -28,7 +28,7 @@
   rvctl.py vault rotate              replace the vault key and re-encrypt every credential and session
   rvctl.py identity <eng> list [--json] | set <name> (JSON spec on stdin) | check <name> | revoke <name> | rm <name>
   rvctl.py capture <eng> list | import [--name N] (HAR/Burp XML on stdin) | show <id> | raw <id> | replay <id> | rm <id>
-  rvctl.py authz <eng> list | show <name> | approve <name> [--digest D] | run <name>
+  rvctl.py authz <eng> list | show <name> | review <name> | approve <name> [--digest D] | run <name>
   rvctl.py appmap <eng> <path> [--build-url U] [--routes F]   Laravel application map (no code runs)
   rvctl.py php <eng> check <path>    the host path of an in-scope /src path, for the PHP profile (RW-013)
   rvctl.py php <eng> record <kind> <rel>... [--approved]   audit the PHP profile's outputs (evidence provenance)
@@ -267,14 +267,17 @@ def main(a):
         eng, sub = rest[0], (rest[1] if len(rest) > 1 else "list")
         if sub == "list":
             print(json.dumps(authz.listing(eng), indent=1)); return 0
-        if sub == "show":
-            print(json.dumps(authz.proposal(eng, rest[2]), indent=1)); return 0
+        if sub == "show":  # validated, with the digest an approval will have: what the console reviews
+            print(json.dumps(authz.review(eng, rest[2]), indent=1)); return 0
+        if sub == "review":  # the same as text, last line "digest <D>": what ./rvkit authz approve shows
+            print(authz.review_text(authz.review(eng, rest[2]))); return 0
         if sub == "approve":
             r = authz.approve(eng, rest[2], _opt(rest, "--digest"))
             print(f"matrix {rest[2]} approved (digest {r['digest']}, policy revision {r['policy_revision']})"); return 0
         if sub == "run":
             r = authz.run(eng, rest[2]); print(r["text"]); return 0
-        raise ValueError("usage: authz <eng> list | show <name> | approve <name> [--digest D] | run <name>")
+        raise ValueError("usage: authz <eng> list | show <name> | review <name> | approve <name> [--digest D] | "
+                         "run <name>")
     if cmd == "appmap":
         import actions
         build, routes = _opt(rest, "--build-url"), _opt(rest, "--routes")
@@ -290,9 +293,8 @@ def main(a):
             p = actions._source_path(eng, i, rest[2])
             if not p.startswith("/src/"):
                 raise ValueError("the PHP profile runs on client code under /src")
-            out = os.path.join(core.WORK, eng, "evidence", "php")
-            os.makedirs(out, exist_ok=True)
-            os.chown(out, i["uid"], i["uid"])  # the profile runs as the engagement's user
+            out = actions.work_dir(eng, "evidence", "php")  # chowned: never through a link the agent made
+            os.chown(out, i["uid"], i["uid"], follow_symlinks=False)  # the profile runs as the engagement's user
             print(json.dumps({"path": p, "relative": p[len("/src/"):], "uid": i["uid"]})); return 0
         if sub == "record":
             approved = "--approved" in rest
@@ -301,8 +303,8 @@ def main(a):
                 raise ValueError("kind: lint or routes")
             outs = {}
             for rel in rels:
-                full = os.path.normpath(os.path.join(core.WORK, eng, rel))
-                if not full.startswith(os.path.join(core.WORK, eng, "evidence", "php") + "/") or \
+                full = os.path.realpath(os.path.join(core.WORK, eng, rel))  # links resolved: hashed as root
+                if not full.startswith(os.path.realpath(os.path.join(core.WORK, eng, "evidence", "php")) + "/") or \
                         not os.path.isfile(full):
                     raise ValueError(f"{rel}: not a PHP profile output of {eng}")
                 outs[rel] = core.sha256_file(full)

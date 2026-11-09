@@ -38,26 +38,46 @@ is weaker than described here.
    OpenHands and the worker, are on an internal network without it.
 4. **IPv6 targets are not supported.** All IPv6 traffic from engagement commands is dropped, and IPv6 scope
    entries are ignored with a warning.
-5. **A domain in scope includes its subdomains.** `acme.com` in `SCOPE.md` also allows `anything.acme.com`. You
-   can't yet limit scope to one exact host name.
+5. **An excluded name can share an address with an in-scope host.** Scope is enforced by address and port. A
+   tool that sets the `Host` header itself can reach an excluded virtual host on an in-scope address; exclude the
+   address too if that matters. `./rvkit policy <eng>` lists what the kit can't enforce for a given scope.
 6. **Secret redaction is pattern-based.** The worker removes secrets from what it sends back to the planner using
-   regular expressions (gitleaks-style patterns). It will miss secrets that don't match a pattern. Treat it as a
-   safety net, not a guarantee.
+   regular expressions (gitleaks-style patterns), and imported captures (HAR, proxy exports) are sanitized the
+   same way before the agent sees them. Tokens and keys that don't match a pattern stay: in response bodies (HTML,
+   JavaScript), URL path segments, or headers and fields with unusual names. Treat it as a safety net, not a
+   guarantee.
 7. **OpenHands' local API answers without the session key on 127.0.0.1.** Any process inside the `agent-canvas`
    container, including the agent's own terminal, can call it and change OpenHands settings (LLM profiles, MCP
    servers, agent prompts). It can't change engagement scope, rules or approvals: those live in a separate,
    root-only control volume that only `./rvkit` changes.
 8. **The Colab worker endpoint is on the internet.** It is reached through a Cloudflare or ngrok tunnel and is
    protected only by its API key. Keep the key secret, and stop the runtime when you're done.
-9. **The model gateway's data rules assume the planner reaches models only through LiteLLM.** `Client data:` and
-   halt are enforced at LiteLLM. The agent's terminal runs in the same container as OpenHands and has the LiteLLM
-   key OpenHands uses, so a compromised agent could call LiteLLM with a request that names no engagement; such a
-   call is allowed by the data rule. It still can't reach a provider other than through LiteLLM's configured
-   routes, and every call is in LiteLLM's logs.
-10. **Credential values are scrubbed from output, evidence and the audit log, not from reports.** If a value is
-   copied into a finding by hand, the report shows it.
-11. **Tested platforms.** So far the kit has been verified on macOS (Apple Silicon) with OrbStack. Linux and amd64
-   have not been through the full test suites yet.
+9. **The model gateway's data rules depend on knowing which engagement a call is about.** `Client data:` and
+   halt are enforced at LiteLLM. A conversation started for an engagement is bound to it. A conversation that
+   isn't bound is matched to an engagement by the names in its messages, and tool results aren't scanned, so an
+   honest agent that reads client files through a glob or a relative path can send them to the planner's provider
+   without a refusal: start client work from a bound conversation. The agent's terminal also has the LiteLLM key
+   OpenHands uses, so a compromised agent could call LiteLLM with a request that names no engagement. It still
+   can't reach a provider other than through LiteLLM's configured routes, and every call is in LiteLLM's logs.
+10. **Credentials are hidden from the model, not from code the agent runs.** A command that names
+   `$RV_CRED_<NAME>` gets that one value in its environment, and agent-written code in the same command can read
+   it. The kit replaces literal values in command output, saved requests and the audit log, but not encoded or
+   transformed values (base64, hex), not files a tool writes, and not text copied into a finding or a report by
+   hand. Use credentials of dedicated test accounts. The vault key is in the same control volume as the vault, so
+   the encryption protects copies of individual files, not a copy of the whole volume.
+11. **The browser and the PHP profile run target or client code.** A "read-only" browser run still sends the GET
+   requests a page makes, which some applications use to change state. `Browser support:` domains are reachable by
+   every command of an online engagement, not only by the browser. Identity cookies are set for their domain, so
+   they can reach in-scope subdomains outside the identity's hosts. Screenshots mask only password fields and the
+   selectors you give. A PHP route export runs the client's and its vendors' code (with no network, on a copy);
+   its output in `evidence/php` is untrusted, like any tool output.
+12. **Kit services write into the engagement folder, which agent code can change.** Kali commands can create links
+   in their own engagement folder. kali-mcp (root) refuses to write through a link that leads out of the folder and
+   doesn't follow one at the final file, but a link swapped in between its check and its write isn't fully
+   excluded. The control volume and the state folder (`.rv/`) aren't writable from commands.
+13. **Tested platforms.** CI runs every suite on Linux amd64 (Ubuntu 24.04, Docker Engine); the kit is developed
+   on macOS (Apple Silicon) with OrbStack and Docker Desktop. Linux arm64 images are built but the suites don't
+   run there yet. Windows isn't supported.
 
 ### How the agent's network access is limited in this release
 
@@ -74,7 +94,10 @@ is weaker than described here.
   scope is applied. URL path limits are enforced only by the request tool, so raw commands can't reach those
   hosts at all.
 - **Kali tools.** Every command runs as an unprivileged user for that engagement, in a sandbox that sees only its
-  own engagement folder and in-scope code (read-only). An nftables firewall lets that user reach only in-scope IPs
+  own engagement folder and in-scope code (read-only). The kit's state in that folder (`.rv/`, the findings
+  database with its approvals, exceptions and review history) is read-only to the command, and each command gets a
+  fresh home folder, so files written by one command (shell profiles, tool configs) can't change what a later,
+  approved command does. An nftables firewall lets that user reach only in-scope IPs
   and domains, plus package and vulnerability-database sites for online engagements. Link-local and cloud metadata
   addresses and the kit's own services are always blocked. Of loopback, only 127.0.0.1 on unprivileged ports other
   than kali-mcp's own (8090) is open, so a tool can drive a helper it started (gowitness and its Chromium).
@@ -92,8 +115,9 @@ is weaker than described here.
 - **Where client data goes.** `Client data:` in `RULES.md` limits which model destinations (local, Colab, an API,
   OpenRouter, Anthropic, OpenAI) may receive calls about an engagement; the model gateway refuses the others and
   drops fallbacks that aren't allowed. Content the agent reads can't change which engagement a call is about.
-- **Credentials by reference.** The agent uses stored credentials as `$RV_CRED_<NAME>` or `{{cred:NAME}}` without
-  seeing them; values are encrypted in the control volume and replaced by the reference in output and evidence.
+- **Credentials by reference.** The model uses stored credentials as `$RV_CRED_<NAME>` or `{{cred:NAME}}` without
+  seeing them; values are encrypted in the control volume, a command gets only the ones it names, and literal
+  values are replaced by the reference in output and evidence (limits in item 10).
 - **Client code doesn't run by default.** The Laravel map reads source only. The optional PHP profile boots an
   application only when the researcher confirms, on a copy, with no network and a generated environment.
 - **Identities, captures and the browser.** Test-account sessions are encrypted like credentials and added to

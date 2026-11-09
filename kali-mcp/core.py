@@ -906,6 +906,13 @@ def cred_env(eng):
     return {f"RV_CRED_{k}": v["value"] for k, v in _creds(eng).items() if not _expired(v.get("expires"))}
 
 
+def _used_creds(eng, command):
+    """Only the credentials a command names reach its environment: agent code in the same sandbox can read every
+    variable it gets (and print it encoded, past the scrubber), so the others stay out."""
+    used = set(cred_used(eng, command))
+    return {k: v for k, v in cred_env(eng).items() if k[len("RV_CRED_"):] in used}
+
+
 def cred_used(eng, text):
     """Names of this engagement's credentials a command or request refers to."""
     names = set(_creds(eng))
@@ -1027,7 +1034,7 @@ def precheck(command, info_, pol=None):
 
 
 # ---------------------------------------------------------------- evidence integrity
-SKIP_DIRS = {".home", "workspace", "node_modules", ".git"}  # tool caches, Joern CPG workspace
+SKIP_DIRS = {".home", ".rv", "workspace", "node_modules", ".git"}  # tool caches, the kit's own state, Joern CPG workspace
 MAX_HASH = 512 * 1024 * 1024
 
 
@@ -1245,7 +1252,7 @@ def _execute(eng, i, entry, final, tier, timeout_s, network, approval_id, note="
     uid = i["uid"]
     env = {"RV_ENG": eng, "RV_UID": str(uid), "RV_HOME": f"/work/{eng}/.home",
            "RV_SRC": "\n".join(i["scope"]["paths"]), "RV_CMD": final, "PATH": os.environ.get("PATH", ""),
-           **(cred_env(eng) if network else {}), **(extra_env or {})}
+           **(_used_creds(eng, final) if network else {}), **(extra_env or {})}
     root = os.path.join(WORK, eng)
     before = _snapshot(root)
     t0 = time.time()
@@ -1280,7 +1287,12 @@ def _execute(eng, i, entry, final, tier, timeout_s, network, approval_id, note="
     rel = run_output_path(entry["command"])
     full = os.path.join(root, rel)
     os.makedirs(os.path.dirname(full), exist_ok=True)
-    with open(full, "w") as f:
+    # root writes here, in a folder the sandbox can change: refuse a link that leads out, and never follow one
+    real_root, real_dir = os.path.realpath(root), os.path.realpath(os.path.dirname(full))
+    if os.path.commonpath([real_root, real_dir]) != real_root:
+        raise ValueError(f"/work/{eng}/{RUNS_DIR} leads outside the engagement folder (a link?)")
+    full = os.path.join(real_dir, os.path.basename(full))
+    with os.fdopen(os.open(full, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o644), "w") as f:
         f.write(f"# {entry['command']}\n# exit={code} tier={tier} seconds={seconds} "
                 f"at={datetime.datetime.now(datetime.timezone.utc).isoformat(timespec='seconds')}"
                 f"{'' if network else ' network=none'}\n\n{res}")

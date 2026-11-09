@@ -100,3 +100,40 @@ jobs:
           docker buildx imagetools create -t "$img:${{ needs.version.outputs.version }}" -t "$img:latest" \
             $(for f in digests/*; do printf '%s@%s ' "$img" "$(cat "$f")"; done)
           docker buildx imagetools inspect "$img:${{ needs.version.outputs.version }}"
+
+  install-check:   # what a new user gets: a clean machine pulls the images just published and passes the policy tests
+    needs: [version, manifest]
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [ubuntu-24.04, ubuntu-24.04-arm]
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    env:
+      RVKIT_YES: "1"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # Public packages pull anonymously, as users will. While the repository is private, sign in to read them.
+      - if: github.event.repository.private
+        uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4.7.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Setup from published images
+        run: ./rvkit setup --yes
+      - name: The kit's images were pulled, not built
+        run: |
+          v="${{ needs.version.outputs.version }}"
+          for n in egress harness report kali; do
+            d="$(docker image inspect "${REGISTRY}-$n:$v" --format '{{join .RepoDigests " "}}')"
+            [ -n "$d" ] || { echo "${REGISTRY}-$n:$v was built locally, not pulled"; exit 1; }
+            echo "pulled $d"
+          done
+      - name: Doctor
+        run: ./rvkit doctor || true   # no worker model or OpenRouter key here: warnings expected
+      - name: Policy (scope, isolation, tiers, approvals, halt)
+        run: bash evals/ci_prepare.sh && bash evals/phase3_policy_test.sh
+      - name: Logs on failure
+        if: failure()
+        run: docker compose logs --tail 150

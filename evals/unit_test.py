@@ -388,7 +388,8 @@ class Findings(unittest.TestCase):
         con.commit(); con.close()
         r = db.get("e", "F-001")
         self.assertEqual((r["title"], r["revision"], r["updated_by"], r["duplicate_of"]), ("old", 1, None, None))
-        con = sqlite3.connect(os.path.join(self.tmp.name, "e", "findings.db"))
+        self.assertFalse(os.path.exists(os.path.join(self.tmp.name, "e", "findings.db")))   # moved into .rv
+        con = sqlite3.connect(os.path.join(self.tmp.name, "e", ".rv", "findings.db"))
         self.assertEqual(con.execute("PRAGMA user_version").fetchone()[0], db.SCHEMA_VERSION)
         con.execute(f"PRAGMA user_version={db.SCHEMA_VERSION + 1}"); con.commit(); con.close()
         with self.assertRaises(ValueError):  # from a newer kit: refused, not downgraded
@@ -825,10 +826,139 @@ class AuthenticatedTesting(Credentials):
                                        "allow_writes": True, "no_cleanup_reason": "idempotent"})
         self.assertEqual((w["operations"][0]["effect"], w["max_writes"]), ("write", 2))
 
+    def _ids(self):
+        import identities
+        core.cred_set("e1", "TOK", "token-value-1")
+        spec = {"kind": "bearer", "secret": "TOK", "check": {"url": "https://example.com/me"}}
+        identities.identity_set("e1", "a", spec)
+        identities.identity_set("e1", "b", spec)
+
+    def test_authz_effect_from_method(self):  # the method decides, not the agent's declaration
+        import authz
+        self._ids()
+        exp = {"d": {"a": "allow"}}
+        with self.assertRaisesRegex(ValueError, "DELETE can change state"):
+            authz.validate("e1", "t", {"operations": [{"id": "d", "method": "DELETE", "url": "https://example.com/x",
+                                                       "effect": "read"}], "identities": ["a"], "expect": exp})
+        with self.assertRaisesRegex(ValueError, "allow_writes"):  # derived: DELETE needs allow_writes
+            authz.validate("e1", "t", {"operations": [{"id": "d", "method": "delete", "url": "https://example.com/x"}],
+                                       "identities": ["a"], "expect": exp})
+        with self.assertRaisesRegex(ValueError, "allow_writes"):  # a GET may be declared a write, never the reverse
+            authz.validate("e1", "t", {"operations": [{"id": "d", "url": "https://example.com/x", "effect": "write"}],
+                                       "identities": ["a"], "expect": exp})
+        with self.assertRaisesRegex(ValueError, "unknown fields"):  # nothing the review wouldn't show
+            authz.validate("e1", "t", {"operations": [{"id": "d", "url": "https://example.com/x", "note": "x"}],
+                                       "identities": ["a"], "expect": exp})
+        self.assertTrue(authz._writes({"method": "DELETE", "effect": "read"}))  # old approved records too
+        m = {"operations": [{"id": "d", "method": "PUT", "url": "https://example.com/x",
+                             "headers": {"X-Token": "{{cred:TOK}}"}, "body": {"role": "admin\u001b[2J"}}],
+             "identities": ["a"], "expect": exp, "allow_writes": True,
+             "cleanup": [{"method": "DELETE", "url": "https://example.com/x/9", "body": "undo", "identity": "a"}]}
+        authz.propose("e1", "t", m)
+        r = authz.review("e1", "t")
+        text = authz.review_text(r)
+        for want in ("PUT", "X-Token: {{cred:TOK}}", '"role": "admin\\u001b[2J"', "DELETE", "https://example.com/x/9",
+                     "body undo", "as a", "CHANGES STATE"):
+            self.assertIn(want, text)
+        self.assertNotIn("\x1b", text)
+        self.assertEqual(text.splitlines()[-1], f"digest {r['digest']}")
+        self.assertEqual(authz.approve("e1", "t", r["digest"])["digest"], r["digest"])
+
+    def test_authz_cleanup_counts_as_writes(self):
+        import actions, authz, identities
+        self._ids()
+        op = [{"id": "w", "method": "PATCH", "url": "https://example.com/p"}]
+        cl = [{"method": "POST", "url": "https://example.com/undo"},
+              {"method": "DELETE", "url": "https://example.com/p"}]
+        base = {"operations": op, "identities": ["a", "b"], "expect": {"w": {"a": "allow", "b": "deny"}},
+                "allow_writes": True, "cleanup": cl}
+        self.assertEqual(authz.validate("e1", "t", dict(base))["max_writes"], 4)  # 2 cells + 2 cleanup requests
+        with self.assertRaisesRegex(ValueError, "cover the 2 cleanup"):
+            authz.validate("e1", "t", dict(base, max_writes=2))
+        with self.assertRaisesRegex(ValueError, "allow_writes"):  # a cleanup that writes needs allow_writes too
+            authz.validate("e1", "t", {"operations": [{"id": "r", "url": "https://example.com/r"}], "identities": ["a"],
+                                       "expect": {"r": {"a": "allow"}}, "cleanup": cl})
+        authz.propose("e1", "t", dict(base, max_writes=3))
+        authz.approve("e1", "t")
+        sent, saved = [], (actions.send, identities.check)
+        actions.send = lambda eng, method, url, *a, **k: sent.append((method, url)) or {"status": 200, "body": b"ok"}
+        identities.check = lambda eng, n: {"state": "valid"}
+        try:
+            res = authz.run("e1", "t")
+        finally:
+            actions.send, identities.check = saved
+        self.assertEqual(res["writes"], 1)  # 3 - 2 kept for the cleanup
+        self.assertIn("max_writes reached", [c["reason"] for c in res["cells"]])
+        self.assertEqual(sent[1:], [("POST", "https://example.com/undo"), ("DELETE", "https://example.com/p")])
+
+    def test_basic_auth_value_scrubbed(self):  # F6: base64(user:secret) is sent, so it is scrubbed too
+        import base64, identities
+        core.cred_set("e1", "PW", "basic-pass-1")
+        identities.identity_set("e1", "bob", {"kind": "basic", "username": "bob", "secret": "PW",
+                                              "check": {"url": "https://example.com/me"}})
+        identities.identity_set("e1", "key", {"kind": "header", "header": "X-Api-Key", "secret": "PW",
+                                              "check": {"url": "https://example.com/me"}})
+        sent = identities.auth_headers("e1", "bob", "https://example.com/me")["Authorization"]
+        b64 = base64.b64encode(b"bob:basic-pass-1").decode()
+        self.assertEqual(sent, "Basic " + b64)
+        page = f"<pre>Authorization: {sent}\nX-Echo: {b64}\npw basic-pass-1</pre>"
+        out = core.scrub("e1", page)
+        self.assertNotIn(b64, out)
+        self.assertEqual(out, "<pre>Authorization: {{session:bob}}\nX-Echo: {{session:bob}}\npw {{cred:PW}}</pre>")
+        self.assertNotIn(b64.encode(), core.scrub("e1", page.encode()))
+
+    def test_source_links_out_of_scope(self):  # F5: a link in /work to another client's code, or into /control
+        import actions
+        i = core.info("e1")
+        other = os.path.join(self.tmp.name, "src", "other")
+        os.makedirs(os.path.join(other, "routes"))
+        open(os.path.join(other, "artisan"), "w").write("")
+        open(os.path.join(other, "routes", "web.php"), "w").write("<?php Route::get('/secret', fn () => 1);")
+        work = os.path.join(core.WORK, "e1")
+        os.makedirs(os.path.join(work, "app", "routes"))
+        os.symlink(other, os.path.join(work, "x"))
+        with self.assertRaisesRegex(ValueError, "not in scope"):
+            actions._source_path("e1", i, os.path.join(work, "x"))
+        self.assertTrue(actions.appmap("e1", f"{work}/x").startswith("REFUSED"))
+        app = os.path.join(work, "app")
+        open(os.path.join(app, "artisan"), "w").write("")
+        self.assertEqual(actions._source_path("e1", i, app + "/../app"), os.path.realpath(app))
+        os.symlink(core.REGISTRY, os.path.join(work, "routes.json"))
+        self.assertIn("must be a file in /work/e1", actions.appmap("e1", app, routes_file="routes.json"))
+        os.symlink(os.path.join(core.CONTROL), os.path.join(work, "evidence-link"))
+        os.makedirs(os.path.join(work, "evidence"))
+        os.symlink(core.CONTROL, os.path.join(work, "evidence", "appmap"))  # root would write and chown there
+        self.assertIn("leads outside", actions.appmap("e1", app))
+        with self.assertRaises(actions.Refused):
+            actions.work_dir("e1", "evidence-link", "x")
+        self.assertFalse(os.path.exists(os.path.join(core.CONTROL, "x")))
+
 
 class LaravelMap(unittest.TestCase):
     """RW-012: the static Laravel map on the lab's source (vulnerable and fixed) and on synthetic route files."""
     LAB = os.path.join(KIT, "evals", "targets", "rv-laravel-lab")
+
+    def test_links_inside_the_tree(self):  # F5: links in the tree are not followed out of it
+        import laravel_map as lm
+        with tempfile.TemporaryDirectory() as d:
+            app, other = os.path.join(d, "app"), os.path.join(d, "other")
+            for p in (os.path.join(app, "app", "Models"), os.path.join(app, "routes"),
+                      os.path.join(other, "Secret"), os.path.join(other, "views")):
+                os.makedirs(p)
+            open(os.path.join(other, "Secret", "Leak.php"), "w").write("<?php\nnamespace X;\nclass Leak {}\n")
+            open(os.path.join(other, "web.php"), "w").write("<?php Route::get('/other-client', fn () => 1);")
+            open(os.path.join(other, "views", "x.blade.php"), "w").write("{!! $leak !!}")
+            open(os.path.join(app, "routes", "api.php"), "w").write("<?php Route::get('/mine', fn () => 1);")
+            os.symlink(os.path.join(other, "web.php"), os.path.join(app, "routes", "web.php"))
+            os.symlink(os.path.join(other, "Secret"), os.path.join(app, "app", "Secret"))
+            os.symlink(os.path.join(other, "Secret", "Leak.php"), os.path.join(app, "app", "Models", "Leak.php"))
+            os.makedirs(os.path.join(app, "resources"))
+            os.symlink(os.path.join(other, "views"), os.path.join(app, "resources", "views"))
+            m = lm.analyze(app)
+            self.assertEqual([r["uri"] for r in m["routes"]], ["/api/mine"])
+            self.assertNotIn("Leak", json.dumps(m["models"]) + json.dumps(m["controllers"]))
+            self.assertEqual((m["views"], m["sinks"]), ([], []))
+            self.assertIsNone(lm._SCOPE.root)
 
     def test_lab(self):
         import laravel_map as lm
@@ -909,6 +1039,20 @@ class Workspace(unittest.TestCase):
 
     def tearDown(self):
         self.tmp.cleanup()
+
+    def test_import_path_links(self):  # a link in the engagement folder is judged by where it leads
+        e = os.path.join(self.tmp.name, "e")
+        outside = os.path.join(self.tmp.name, "other.json")
+        open(outside, "w").write("[]")
+        open(os.path.join(e, "findings.db"), "w").write("")
+        os.symlink(outside, os.path.join(e, "out.json"))
+        os.symlink(os.path.join(e, "findings.db"), os.path.join(e, "db.json"))
+        for name in ("out.json", "db.json"):
+            with self.subTest(name=name), self.assertRaisesRegex(ValueError, "leads outside"):
+                self.ws._rel("e", name)
+        open(os.path.join(e, "evidence", "ok.json"), "w").write("[]")
+        os.symlink(os.path.join(e, "evidence", "ok.json"), os.path.join(e, "ok.json"))
+        self.assertEqual(self.ws._rel("e", "ok.json")[0], "ok.json")
 
     def test_cvss31(self):
         for vec, score in (("CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H", 9.8),
@@ -1124,6 +1268,66 @@ class ConcurrentOpen(unittest.TestCase):
                 out = [p.communicate() for p in procs]
                 self.assertEqual(sorted(o.strip() for o, _ in out), [f"F-{i:03d}" for i in range(1, 11)],
                                  [e[-300:] for _, e in out if e])
+
+
+class LegacyDatabase(unittest.TestCase):
+    """An engagement from 0.1.0-era kits (unversioned findings.db, no duplicate_of) opens with every finding kept."""
+
+    def test_unversioned_database_migrates(self):
+        import sqlite3
+        with tempfile.TemporaryDirectory() as tmp:
+            os.makedirs(os.path.join(tmp, "old"))
+            con = sqlite3.connect(os.path.join(tmp, "old", "findings.db"))
+            con.execute("""CREATE TABLE findings (
+                id TEXT PRIMARY KEY, title TEXT NOT NULL, severity TEXT NOT NULL, cvss_vector TEXT, cvss_score REAL,
+                cwe TEXT, asset TEXT, description TEXT, impact TEXT, reproduction TEXT, remediation TEXT,
+                evidence TEXT DEFAULT '[]', status TEXT NOT NULL DEFAULT 'candidate', source TEXT, notes TEXT,
+                created TEXT, updated TEXT)""")
+            con.execute("INSERT INTO findings (id, title, severity, cwe, asset, evidence, status, created, updated) "
+                        "VALUES ('F-001', 'SQL injection in /login', 'high', 'CWE-89', '/login', "
+                        "'[\"evidence/runs/1.txt\"]', 'confirmed', '2026-11-01T00:00:00Z', '2026-11-01T00:00:00Z')")
+            con.commit(); con.close()
+            saved = db.WORK
+            db.WORK = tmp
+            try:
+                f = db.get("old", "F-001")
+                self.assertEqual((f["status"], f["revision"], f["evidence"]), ("confirmed", 1, ["evidence/runs/1.txt"]))
+                self.assertEqual(f["verification"], "unverified")
+                self.assertEqual(sqlite3.connect(os.path.join(tmp, "old", ".rv", "findings.db"))
+                                 .execute("PRAGMA user_version").fetchone()[0], db.SCHEMA_VERSION)
+                u = db.update("old", "F-001", expected_revision=1, actor="test:legacy", notes="after the upgrade")
+                self.assertEqual(u["revision"], 2)
+                self.assertEqual(db.record("old", title="new", severity="low", asset="a", description="d")["id"], "F-002")
+            finally:
+                db.WORK = saved
+
+
+class StateFolder(unittest.TestCase):
+    """The findings database lives in .rv, which the sandbox mounts read-only; a link there is refused."""
+
+    def test_links_refused_and_root_files_ignored(self):
+        import sqlite3
+        with tempfile.TemporaryDirectory() as tmp:
+            saved = db.WORK
+            db.WORK = tmp
+            try:
+                os.makedirs(os.path.join(tmp, "a", ".rv"))
+                db.record("a", title="real", severity="low", asset="x", description="d")
+                # a database planted in the engagement folder after .rv exists is never read
+                con = sqlite3.connect(os.path.join(tmp, "a", "findings.db"))
+                con.execute("CREATE TABLE findings (id TEXT)"); con.commit(); con.close()
+                self.assertEqual([f["title"] for f in db.list_("a")], ["real"])
+                os.makedirs(os.path.join(tmp, "b"))
+                os.symlink(os.path.join(tmp, "a", ".rv"), os.path.join(tmp, "b", ".rv"))
+                with self.assertRaises(ValueError):
+                    db.list_("b")
+                os.makedirs(os.path.join(tmp, "c", ".rv"))
+                os.symlink(os.path.join(tmp, "a", ".rv", "findings.db"), os.path.join(tmp, "c", ".rv", "findings.db"))
+                with self.assertRaises(ValueError):
+                    db.list_("c")
+            finally:
+                db.WORK = saved
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=1)

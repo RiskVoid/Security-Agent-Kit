@@ -34,6 +34,10 @@ New here? Read [What the kit is](overview.md), then [Getting started](getting-st
 | [Findings and reports](findings-and-reports.md) | Finding statuses, evidence and its verification, the report, DRAFT checks, branding |
 | [Tools reference](tools-reference.md) | Every agent tool, the Kali toolbox with tiers, `rv-llm`, Joern, playbooks, adding your own |
 | [Practice lab and benchmarks](lab-and-benchmarks.md) | Vulnerable practice targets, scoring the agent on known targets |
+| [Authenticated testing](authenticated-testing.md) | Test accounts per role and tenant, request captures, the sandboxed browser, authorization matrices |
+| [Laravel](laravel.md) | The complete source-plus-staging workflow: application map, build check, optional PHP profile |
+| [Capability baselines](capability-baselines.md) | What each stack is tested and measured for, and what isn't supported |
+| [Regression matrix](regression-matrix.md) | Each safety control and the test that fails if it breaks |
 
 ## Run and fix
 
@@ -46,6 +50,8 @@ New here? Read [What the kit is](overview.md), then [Getting started](getting-st
 ## Project
 
 - [Security policy and known limitations](../SECURITY.md): read this before client work.
+- [How the kit compares](comparison.md) with other open-source AI pentest agents.
+- [Roadmap](../ROADMAP.md) and [changelog](../CHANGELOG.md).
 - [Third-party components and licences](../THIRD_PARTY.md)
 - [Contributing](../CONTRIBUTING.md): development setup, tests, releases.
 - [Licence](../LICENSE): Apache-2.0.

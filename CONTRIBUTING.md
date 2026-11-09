@@ -226,10 +226,11 @@ Actions are pinned to a commit SHA, with the release tag in a comment.
 
 - `.github/workflows/ci.yml` runs on every push and pull request and takes about a minute: shellcheck, Python
   compile, compose validation, the notebook-is-generated check, and the unit tests (`python3 evals/unit_test.py`:
-  tiers, rate caps, scope and rules parsing, the scope pre-check, findings, the web-fetch guard, the console). It
+  tiers, rate caps, scope and rules parsing, the scope pre-check, findings and their migrations, the web-fetch
+  guard, the console). It
   builds no images. This is the check a pull request needs.
 - `.github/workflows/integration.yml` builds every image and runs the full-stack suites: `evals/ci_prepare.sh`,
-  then policy, console, tools, end-to-end and lab (amd64, no model or API key needed). Image layers are cached
+  then the 15 suites listed in [Tests](#tests) (amd64, no model or API key needed). Image layers are cached
   between runs, so a run that changes little takes much less than the first one (15–20 minutes). It runs:
   - on demand: **Actions > Integration > Run workflow**, on any branch;
   - on a pull request with the **`full-ci`** label (add it when a change touches the Kali image, the sandbox,
@@ -240,7 +241,11 @@ Actions are pinned to a commit SHA, with the release tag in a comment.
   The benchmarks need models and cost money, so they don't run in CI.
 - `.github/workflows/release.yml` publishes the images to GHCR for amd64 and arm64 when you push a tag `vX.Y.Z`
   that matches `VERSION`. To release: bump `VERSION` and the `RVKIT_VERSION:-…` defaults in `docker-compose.yml`
-  together (CI checks they match), merge, then tag.
+  together (CI checks they match), add the version's notes to `CHANGELOG.md`, merge, then tag. After publishing,
+  an install check on clean amd64 and arm64 runners runs `./rvkit setup --yes`, confirms the kit's images were
+  pulled rather than built, and runs the policy suite.
+- Dependabot (`.github/dependabot.yml`) proposes updates for GitHub Actions and the kit's own images once a release
+  is two weeks old. It leaves the practice lab targets alone: their old versions are the point.
 
 ---
 

@@ -1,0 +1,33 @@
+# Version updates for the kit's own pins. Every pin in the kit must be at least two weeks old (see
+# CONTRIBUTING.md), hence the cooldown. Not covered on purpose: evals/targets/ (deliberately vulnerable lab apps
+# whose old versions are the point) and the pinned binaries in kali-mcp/Dockerfile (updated by hand with their
+# checksums).
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 14
+    groups:
+      actions:
+        patterns: ["*"]
+  - package-ecosystem: docker
+    directories: [/egress, /harness, /kali-mcp, /php-runner]
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 14
+  - package-ecosystem: docker-compose
+    directory: /
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 14
+    ignore:   # practice lab targets: their old, vulnerable versions are the point
+      - dependency-name: bkimminich/juice-shop
+      - dependency-name: erev0s/vampi
+      - dependency-name: dolevf/dvga
+      - dependency-name: ghcr.io/digininja/dvwa
+      - dependency-name: mariadb

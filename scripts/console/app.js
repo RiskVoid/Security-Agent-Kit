@@ -825,9 +825,19 @@ async function paneTesting() {
   }));
   $$("[data-mxshow]").forEach((b) => b.addEventListener("click", async () => {
     const m = await api(`/api/eng/${e}/matrix?name=${enc(b.dataset.mxshow)}`);
-    $(`#mx-${b.dataset.mxshow}`).innerHTML = `<p class="rv-dim">digest ${esc(m.digest)} · proposed by ${esc(m.proposed_by)} ${fmtTime(m.proposed_at)}${m.allow_writes ? ` · <b>changes state</b>: at most ${m.max_writes} write(s), cleanup ${m.cleanup.length} request(s)` : " · read-only"}</p>
+    // everything the approved digest covers, as escaped text: headers and bodies are agent-written
+    const one = (v) => typeof v === "string" ? v : JSON.stringify(v);
+    const reqText = (r) => [...Object.entries(r.headers || {}).map(([k, v]) => `${k}: ${v}`),
+      ...(r.body == null || r.body === "" ? [] : ["", one(r.body)])].join("\n");
+    const writes = m.operations.some((o) => o.effect === "write") || m.cleanup.length > 0;
+    $(`#mx-${b.dataset.mxshow}`).innerHTML = `<p class="rv-dim">digest ${esc(m.digest)} · proposed by ${esc(m.proposed_by)} ${fmtTime(m.proposed_at)}${m.allow_writes || writes ? ` · <b>changes state</b>: at most ${esc(m.max_writes)} write(s), cleanup included` : " · read-only"}</p>
       <table class="rv-table"><thead><tr><th>Operation</th><th>Request</th>${m.identities.map((i) => `<th>${esc(i)}</th>`).join("")}</tr></thead><tbody>
-      ${m.operations.map((o) => `<tr><td>${esc(o.id)}${o.effect === "write" ? " <b>(write)</b>" : ""}</td><td><code>${esc(o.method || "GET")} ${esc(o.url)}</code>${o.marker ? `<br><span class="rv-dim">marker ${esc(o.marker)}</span>` : ""}</td>${m.identities.map((i) => `<td>${esc(m.expect[o.id][i])}</td>`).join("")}</tr>`).join("")}</tbody></table>
+      ${m.operations.map((o) => `<tr><td>${esc(o.id)}${o.effect === "write" ? " <b>(write)</b>" : ""}</td><td><code>${esc(o.method || "GET")} ${esc(o.url)}</code>${o.marker ? `<br><span class="rv-dim">marker ${esc(o.marker)}</span>` : ""}${reqText(o) ? `<pre class="rv-pre">${esc(reqText(o))}</pre>` : ""}</td>${m.identities.map((i) => `<td>${esc(m.expect[o.id][i])}</td>`).join("")}</tr>`).join("")}</tbody></table>
+      ${m.cleanup.length ? `<p class="rv-dim">Cleanup, run after the writes (counted in max writes):</p>
+      <table class="rv-table"><thead><tr><th>Request</th><th>Identity</th></tr></thead><tbody>
+      ${m.cleanup.map((c) => `<tr><td><code>${esc(c.method || "POST")} ${esc(c.url)}</code>${reqText(c) ? `<pre class="rv-pre">${esc(reqText(c))}</pre>` : ""}</td><td>${esc(c.identity || "no identity")}</td></tr>`).join("")}</tbody></table>`
+      : m.no_cleanup_reason ? `<p class="rv-dim">No cleanup: ${esc(m.no_cleanup_reason)}</p>` : ""}
+      <p class="rv-dim">Header values are as proposed: {{cred:NAME}} references are filled in only when sent.</p>
       <div class="rv-actions start"><button class="rv-btn sm" data-mxapprove="${esc(m.name)}" data-digest="${esc(m.digest)}">Approve this version</button></div>`;
     $(`[data-mxapprove="${m.name}"]`).addEventListener("click", async (ev) => {
       const x = await act(ev.currentTarget, () => api(`/api/eng/${e}/authz`, { name: m.name, op: "approve", digest: ev.currentTarget.dataset.digest }), "Approved.");

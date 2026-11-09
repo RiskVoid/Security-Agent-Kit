@@ -61,6 +61,11 @@ Deliberately vulnerable targets on an isolated network. Pulled only when you sta
 
 The RiskVoid LLM lab (`evals/targets/rv-llm-lab`) is RiskVoid's own code (Apache-2.0), built on `python:3.13-slim`.
 
+Ledgerly (`evals/targets/rv-laravel-lab`, a vulnerable and a fixed build) is RiskVoid's own application code
+(Apache-2.0), built locally on the pinned `php` and `composer` images (section 2). Composer installs the Laravel
+framework (MIT) and its dependencies from `composer.lock` at build time; each package keeps its own licence, listed
+in `vendor/composer/installed.json` inside the image.
+
 ---
 
 ## 2. Base images for the images the kit builds
@@ -70,6 +75,8 @@ The RiskVoid LLM lab (`evals/targets/rv-llm-lab`) is RiskVoid's own code (Apache
 | `kalilinux/kali-rolling` | `kali-mcp` | A Linux distribution: every package keeps its own licence (section 3). Kali's policies (open source policy, EULA): https://www.kali.org/docs/policy/ |
 | `python:3.13-slim` | `web-mcp`, `worker-mcp`, `findings-mcp`, `intel-mcp`, lab LLM | Debian packages under their own licences; Python under the PSF License |
 | `alpine:3.24.3` | `egress-proxy` | Alpine packages under their own licences |
+| `php:8.4-cli-alpine` (pinned digest) | optional PHP profile (`php-runner`), Ledgerly lab | PHP under the PHP License 3.01; Alpine packages under their own licences |
+| `composer:2.8` (pinned digest) | Composer binary copied into `php-runner` and the Ledgerly build | MIT |
 
 **The Kali base is rolling.** `apt-get install` takes whatever the Kali repository has on the day you build, so two
 builds a week apart can contain different versions. The versions below are from a build on 2026-11-07.
@@ -91,7 +98,7 @@ builds a week apart can contain different versions. The versions below are from 
 | | httpx (httpx-toolkit) | 1.9.0 | MIT | dpkg |
 | | whatweb | 0.6.4 | GPL-2.0-or-later | dpkg |
 | | gowitness | 3.2.2 | GPL-3.0-or-later | dpkg |
-| | chromium (for gowitness) | 156.0.8078.47 | BSD-3-Clause, plus many bundled components under other licences | dpkg |
+| | chromium (for gowitness and the sandboxed browser tool) | 156.0.8078.47 | BSD-3-Clause, plus many bundled components under other licences | dpkg |
 | | dig (bind9-dnsutils) | 9.20.30 | MPL-2.0 (plus ISC, BSD) | dpkg |
 | | whois | 5.6.6 | GPL-2.0-or-later | dpkg |
 | | netcat-openbsd | 1.238 | BSD-3-Clause / BSD-2-Clause | dpkg |
@@ -150,6 +157,7 @@ Licences with conditions worth knowing:
 | clairvoyance | 2.5.5 | MIT | pip |
 | garak (NVIDIA) | 0.17.1 | Apache-2.0 | pip |
 | PyTorch (CPU, for garak) | 2.14.1 | BSD-3-Clause and other permissive licences (Apache-2.0, MIT, BSL-1.0, ...) | pip |
+| Playwright for Python (drives the system Chromium; no browser download) | 1.55.0 | Apache-2.0 | pip |
 
 ### Tools from GitHub (pinned commits) and release binaries (pinned, checksum-verified)
 
@@ -204,6 +212,7 @@ engagements only). That data comes from many sources, each under its own terms. 
 | | Pillow | 12.3.0 | MIT-CMU | pip |
 | | LibreOffice Writer (no GUI, Debian) | 25.2.3 | MPL-2.0 | dpkg |
 | `egress-proxy` | tinyproxy (Alpine package) | Alpine 3.24 | GPL-2.0 | upstream |
+| `php-runner` (optional, built locally by `./rvkit php`) | PHP, Composer | 8.4.27, 2.8 | PHP License 3.01, MIT | upstream |
 
 ### Brand fonts (report image)
 
@@ -215,6 +224,14 @@ the **SIL Open Font License 1.1** (verified: the `OFL.txt` next to each font at 
 | Space Grotesk | The Space Grotesk Project Authors |
 | Inter Tight | The Inter Project Authors |
 | JetBrains Mono | The JetBrains Mono Project Authors |
+
+The console and the HTML report use the same three fonts, vendored as Latin subsets in `harness/assets/fonts/`
+(OFL-1.1), so neither makes third-party requests.
+
+### Icons
+
+The SVG icons in `docs/img/icons/` are from [Lucide](https://lucide.dev) (ISC licence, Copyright (c) Lucide
+Contributors), recoloured.
 
 ---
 

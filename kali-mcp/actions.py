@@ -91,11 +91,27 @@ def http_action(method, url, headers, body, identity=None):
     return a
 
 
+def _inside(path, root):
+    return path == root or path.startswith(root.rstrip("/") + "/")
+
+
+def work_dir(eng, *parts):
+    """A folder of /work/<eng> that kali-mcp (root) writes into, created if needed, as its real path. The sandbox
+    can write /work, so any part of it may be a link the agent made: one that leads out is refused."""
+    base = os.path.realpath(os.path.join(core.WORK, eng))
+    d = os.path.join(core.WORK, eng, *parts)
+    for _ in range(2):  # before creating anything through a link, and after
+        if not _inside(os.path.realpath(d), base):
+            raise Refused(f"/work/{eng}/{'/'.join(parts)} leads outside the engagement folder (a link?)")
+        os.makedirs(d, exist_ok=True)
+    return os.path.realpath(d)
+
+
 def _evidence_path(eng, method, host, kind="http"):
     ts = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%dT%H%M%S")
     rel = os.path.join("evidence", kind, f"{ts}-{method.lower()}-{re.sub(r'[^a-z0-9.-]', '_', host)[:60]}-"
                        f"{os.urandom(3).hex()}.txt")
-    os.makedirs(os.path.join(core.WORK, eng, os.path.dirname(rel)), exist_ok=True)
+    work_dir(eng, "evidence", kind)
     return rel
 
 
@@ -460,19 +476,20 @@ def browse(eng, url, steps=None, identity=None, approval_id=None, max_tier=None,
     scrub_map = {v: r for v, r in core.secret_values(eng).items()}
     bid = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%dT%H%M%S") + "-" + os.urandom(3).hex()
     rel = os.path.join("evidence", "browser", bid)
-    out = os.path.join(core.WORK, eng, rel)
-    os.makedirs(out, exist_ok=True)
+    try:
+        out = work_dir(eng, "evidence", "browser", bid)  # chowned below: never through a link
+        jobdir = work_dir(eng, ".browser")
+    except Refused as e:
+        return refuse(str(e))
     job = {"url": url, "steps": steps, "policy": pol, "out": f"/work/{eng}/{rel}", "writes": writes,
            "identity_hosts": hosts, "support": rules.get("browser_support") or [], "mask": mask or [],
            "max_requests": min(int(max_requests or 300), 2000)}
-    jobdir = os.path.join(core.WORK, eng, ".browser")
-    os.makedirs(jobdir, exist_ok=True)
     job_path = os.path.join(jobdir, f"{bid}.json")
     core._write_json(job_path, job)
     os.chmod(job_path, 0o644)
     try:
         uid = i["uid"]
-        os.chown(out, uid, uid)
+        os.chown(out, uid, uid, follow_symlinks=False)
     except (OSError, KeyError):
         pass
     command = f"{BROWSER} /opt/kali-mcp/browser_runner.py /work/{eng}/.browser/{bid}.json"
@@ -508,10 +525,15 @@ EXT_RULES = {".php": "php", ".py": "python", ".js": "javascript", ".jsx": "javas
 
 
 def _source_path(eng, i, path):
-    p = os.path.normpath(path or "")
-    allowed = list(i["scope"]["paths"]) + [os.path.join(core.WORK, eng)]
-    if not any(p == a or p.startswith(a.rstrip("/") + "/") for a in allowed):
+    """The real path of an in-scope /src path or a path under /work/<eng>. Resolved before the check: the agent can
+    make links in /work (ln -s /src/<other-client> /work/<eng>/x), and kali-mcp reads as root."""
+    if not str(path or "").startswith("/"):
         raise ValueError(f"{path} is not in scope: use a /src path from SCOPE.md or a path under /work/{eng}")
+    p = os.path.realpath(path)
+    allowed = [os.path.realpath(a) for a in list(i["scope"]["paths"]) + [os.path.join(core.WORK, eng)]]
+    if not any(_inside(p, a) for a in allowed):
+        raise ValueError(f"{path} is not in scope: use a /src path from SCOPE.md or a path under /work/{eng}"
+                         + (f" (it leads to {p})" if p != os.path.normpath(path) else ""))
     if not os.path.exists(p):
         raise ValueError(f"{path} does not exist")
     return p
@@ -550,7 +572,10 @@ def analyze_source(eng, tool, path, rulesets=None, task=None, timeout_s=1800):
         return refuse(str(e))
     ts = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%dT%H%M%S")
     out = f"evidence/source/{tool}-{ts}-{os.urandom(2).hex()}.json"
-    os.makedirs(os.path.join(core.WORK, eng, "evidence", "source"), exist_ok=True)
+    try:
+        work_dir(eng, "evidence", "source")
+    except Refused as e:
+        return refuse(str(e))
     q = core.shlex.quote
     if tool == "semgrep":
         names = rulesets or _languages(p)
@@ -621,18 +646,19 @@ def appmap(eng, path, build_url=None, routes_file=None, max_tier=None, task=None
         return f"REFUSED: {e}"
     if not (os.path.isfile(os.path.join(p, "artisan")) or os.path.isfile(os.path.join(p, "bootstrap", "app.php"))):
         return f"REFUSED: {path} doesn't look like a Laravel application (no artisan or bootstrap/app.php)"
-    m = laravel_map.analyze(p)
+    m = laravel_map.analyze(p)  # reads nothing whose real path leaves p
     m["source_path"] = p
     if routes_file:
-        rf = os.path.normpath(routes_file if routes_file.startswith("/") else os.path.join(core.WORK, eng, routes_file))
-        if not rf.startswith(os.path.join(core.WORK, eng) + "/") or not os.path.isfile(rf):
+        work = os.path.realpath(os.path.join(core.WORK, eng))  # resolved: a link could lead into /control
+        rf = os.path.realpath(routes_file if routes_file.startswith("/") else os.path.join(core.WORK, eng, routes_file))
+        if not rf.startswith(work + "/") or not os.path.isfile(rf):
             return f"REFUSED: the route export must be a file in /work/{eng}"
         try:
             export = json.load(open(rf))
         except ValueError:
             return "REFUSED: the route export isn't JSON (php artisan route:list --json)"
         m["route_comparison"] = {**laravel_map.compare_routes(m["routes"], export),
-                                 "export": os.path.relpath(rf, os.path.join(core.WORK, eng))}
+                                 "export": os.path.relpath(rf, work)}
     if build_url:
         build, how, ev = _deployed_build(eng, build_url, max_tier, task)
         if build:
@@ -644,12 +670,14 @@ def appmap(eng, path, build_url=None, routes_file=None, max_tier=None, task=None
         m["build"]["deployed_error"] = "no build URL given (a version endpoint or header of the deployment)"
     ts = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%dT%H%M%S")
     rel = os.path.join("evidence", "appmap", f"laravel-{ts}-{os.urandom(2).hex()}.json")
-    full = os.path.join(core.WORK, eng, rel)
-    os.makedirs(os.path.dirname(full), exist_ok=True)
+    try:
+        full = os.path.join(work_dir(eng, "evidence", "appmap"), os.path.basename(rel))  # chowned below
+    except Refused as e:
+        return f"REFUSED: {e}"
     with open(full, "w") as f:
         json.dump(m, f, indent=1)
     if os.geteuid() == 0:  # the engagement's user owns its files, like the sandbox's own output
-        os.chown(full, i["uid"], i["uid"])
+        os.chown(full, i["uid"], i["uid"], follow_symlinks=False)
     core._audit({**entry, "command": f"appmap laravel {p}", "tier": "passive", "network": "none",
                  "leads": len(m["leads"]), "source_digest": m["build"]["source_digest"],
                  "build_match": m["build"].get("match"), "outputs": {rel: core.sha256_file(full)}})

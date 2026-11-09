@@ -1,6 +1,9 @@
 """Findings store shared by the findings MCP (planner-facing) and the worker (candidates only).
 
-One SQLite database per engagement: /work/<engagement>/findings.db
+One SQLite database per engagement: /work/<engagement>/.rv/findings.db. The .rv folder is created by the kit's
+services (kali-mcp before any command runs, or the first open here) and is mounted read-only in every command's
+sandbox, so agent code can't edit the database or plant a rollback journal next to it. Databases from older kits
+(/work/<engagement>/findings.db) are moved into it when the folder is created.
 
 Schema versions (PRAGMA user_version), applied in order when a database is opened:
   1  findings table with duplicate_of (databases from before versioning get it added)
@@ -47,6 +50,40 @@ def engagement_dir(engagement: str) -> str:
     if not os.path.isdir(path):
         raise ValueError(f"unknown engagement '{engagement}' (create it with ./rvkit engagement)")
     return path
+
+
+STATE = ".rv"
+DB_FILES = ("findings.db", "findings.db-journal", "findings.db-wal", "findings.db-shm")
+
+
+def adopt_state(root: str) -> str:
+    """Create <root>/.rv once, moving an older kit's findings.db (and its journal) into it. Shared with kali-mcp,
+    which calls it before every sandboxed command, so the folder always exists, root-made, before agent code runs."""
+    import fcntl
+    d = os.path.join(root, STATE)
+    if os.path.islink(d) or (os.path.exists(d) and not os.path.isdir(d)):
+        raise ValueError(f"{d} is not the kit's state folder (a link or a file): refusing to use it")
+    if os.path.isdir(d):
+        return d
+    fd = os.open(root, os.O_RDONLY)   # lock the engagement folder itself: no lock file for agent code to swap
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        if not os.path.isdir(d):
+            os.makedirs(d, exist_ok=True)
+            for name in DB_FILES:
+                old = os.path.join(root, name)
+                if os.path.isfile(old) and not os.path.islink(old) and not os.path.exists(os.path.join(d, name)):
+                    os.replace(old, os.path.join(d, name))
+    finally:
+        os.close(fd)
+    return d
+
+
+def db_path(engagement: str) -> str:
+    p = os.path.join(adopt_state(engagement_dir(engagement)), "findings.db")
+    if os.path.islink(p):
+        raise ValueError(f"{p} is a link: refusing to use it")
+    return p
 
 
 class Conflict(ValueError):
@@ -131,7 +168,7 @@ def _migrate(con: sqlite3.Connection) -> None:
 
 
 def _db(engagement: str) -> sqlite3.Connection:
-    con = sqlite3.connect(os.path.join(engagement_dir(engagement), "findings.db"), timeout=30)
+    con = sqlite3.connect(db_path(engagement), timeout=30)
     con.row_factory = sqlite3.Row
     with con:
         _migrate(con)

@@ -37,7 +37,7 @@ kali() { call $KALI run "{\"engagement\": \"$ENG\", \"command\": $(python3 -c 'i
 echo "== 0. reset $ENG"
 if [ -d "$ENGDIR" ]; then
   ./rvkit resume $ENG >/dev/null 2>&1
-  docker compose exec -T findings-mcp sh -c "cd /work/$ENG && rm -rf findings.db report evidence *.json *.jsonl *.txt MANIFEST.sha256" </dev/null
+  docker compose exec -T findings-mcp sh -c "cd /work/$ENG && rm -rf .rv findings.db report evidence *.json *.jsonl *.txt MANIFEST.sha256" </dev/null
 fi
 ./rvkit engagement $ENG --replace /src/rv-demo-app >/dev/null 2>&1
 sed -i.bak 's/^- Allowed tiers:.*/- Allowed tiers: passive/' "$ENGDIR/RULES.md" && rm -f "$ENGDIR/RULES.md.bak"

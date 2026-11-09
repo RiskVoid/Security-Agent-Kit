@@ -18,6 +18,10 @@
    ],
    "any": [
     "introspection"
+   ],
+   "asset": "(^|/)graphql\\b|__schema",
+   "requires": [
+    "evidence"
    ]
   },
   {
@@ -29,6 +33,10 @@
    ],
    "any": [
     "graphiql"
+   ],
+   "asset": "/graphiql\\b",
+   "requires": [
+    "evidence"
    ]
   },
   {
@@ -43,6 +51,12 @@
     "os command",
     "systemdiagnostics",
     "importpaste"
+   ],
+   "asset": "importpaste|systemdiagnostics|systemdebug",
+   "requires": [
+    "evidence",
+    "verification",
+    "reproduction"
    ]
   },
   {
@@ -54,6 +68,12 @@
    "any": [
     "ssrf",
     "server-side request forgery"
+   ],
+   "asset": "importpaste",
+   "requires": [
+    "evidence",
+    "verification",
+    "reproduction"
    ]
   },
   {
@@ -65,6 +85,12 @@
    "any": [
     "sql injection",
     "sqli"
+   ],
+   "asset": "\\bpastes\\b",
+   "requires": [
+    "evidence",
+    "verification",
+    "reproduction"
    ]
   },
   {
@@ -76,6 +102,12 @@
    "any": [
     "xss",
     "cross-site scripting"
+   ],
+   "asset": "(create|edit|upload|import)paste",
+   "requires": [
+    "evidence",
+    "verification",
+    "reproduction"
    ]
   },
   {
@@ -92,6 +124,12 @@
     "depth",
     "denial of service",
     "dos"
+   ],
+   "asset": "(^|/)graphql\\b|systemupdate|\\bpastes\\b",
+   "requires": [
+    "evidence",
+    "verification",
+    "reproduction"
    ]
   },
   {
@@ -104,6 +142,10 @@
    "any": [
     "field suggestion",
     "did you mean"
+   ],
+   "asset": "(^|/)graphql\\b",
+   "requires": [
+    "evidence"
    ]
   },
   {
@@ -116,6 +158,12 @@
     "path traversal",
     "directory traversal",
     "uploadpaste"
+   ],
+   "asset": "uploadpaste",
+   "requires": [
+    "evidence",
+    "verification",
+    "reproduction"
    ]
   }
  ]
