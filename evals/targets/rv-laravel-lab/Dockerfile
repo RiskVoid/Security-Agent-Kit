@@ -3,7 +3,8 @@
 #   FIXED=1  the same app with the fixed/ overlay (lab-laravel-fixed, 10.250.0.17:8000), for retests
 # The source digest (BUILD) is computed the way the kit's app map computes it from the source tree
 # (rvkit source digest v1), so a deployment can be matched to the source it was built from.
-FROM composer:2.8 AS build
+# composer:2.8 and php:8.4-cli-alpine (PHP 8.4.27), pinned by digest
+FROM composer@sha256:5248900ab8b5f7f880c2d62180e40960cd87f60149ec9a1abfd62ac72a02577c AS build
 WORKDIR /app
 COPY src/composer.json src/composer.lock ./
 RUN composer install --no-dev --no-scripts --no-autoloader --no-interaction --prefer-dist
@@ -16,7 +17,7 @@ RUN set -e; if [ "$FIXED" = 1 ]; then cp -R /fixed/. ./; fi; \
     composer dump-autoload --optimize --no-dev --no-scripts; \
     mkdir -p storage/framework/cache/data storage/framework/sessions storage/framework/views storage/logs storage/app/private
 
-FROM php:8.4-cli-alpine
+FROM php@sha256:b58f9a66fe9734250fc42818edc77d679a071a83cefdcda87b21b668a91094b1
 COPY --from=build /app /app
 WORKDIR /app
 ARG FIXED=0
@@ -24,7 +25,7 @@ ARG FIXED=0
 RUN set -e; { echo "APP_NAME=Ledgerly"; echo "APP_ENV=lab"; echo "APP_KEY=base64:cnZsYWItbGVkZ2VybHktbGFiLWtleS0wMDAwMDAwMDA="; \
       echo "APP_URL=http://localhost:8000"; echo "DB_CONNECTION=sqlite"; echo "DB_DATABASE=/app/database/lab.sqlite"; \
       echo "SESSION_DRIVER=file"; echo "CACHE_STORE=file"; echo "QUEUE_CONNECTION=sync"; echo "MAIL_MAILER=log"; \
-      echo "LOG_CHANNEL=stderr"; echo "LOG_LEVEL=info"; \
+      echo "LOG_CHANNEL=stack"; echo "LOG_STACK=single,stderr"; echo "LOG_LEVEL=debug"; \
       if [ "$FIXED" = 1 ]; then echo "APP_DEBUG=false"; echo "LAB_VARIANT=fixed"; \
       else echo "APP_DEBUG=true"; echo "LAB_VARIANT=vulnerable"; fi; } > .env; \
     chown -R www-data:www-data storage database bootstrap/cache

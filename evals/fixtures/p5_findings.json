@@ -1,55 +1,59 @@
 [
- {
-  "title": "SQL injection in /user",
-  "severity": "critical",
-  "asset": "/src/rv-demo-app/app.py:11-14",
-  "cwe": "CWE-89",
-  "cvss_vector": "CVSS:4.0/AV:N/AC:L/AT:N/PR:N/UI:N/VC:H/VI:H/VA:N/SC:N/SI:N/SA:N",
-  "cvss_score": 9.3,
-  "description": "The `name` parameter is concatenated into a SQL query:\n\n```python\ndb.execute(\"SELECT * FROM users WHERE name = '\" + name + \"'\")\n```\n\nJoern traces `request.args` to `db.execute` with no sanitiser.",
-  "impact": "An unauthenticated user can read or change any data in the database.",
-  "reproduction": "- Code review: app.py lines 11-14\n- Joern flow in joern-flows.json",
-  "remediation": "Use a parameterised query:\n\n```python\ndb.execute(\"SELECT * FROM users WHERE name = ?\", (name,))\n```",
-  "evidence": [
-   "/work/p5-e2e/bandit.json (B608 app.py:14)",
-   "/work/p5-e2e/joern-flows.json",
-   "/src/rv-demo-app/app.py:11-14"
-  ],
-  "_status": "confirmed"
- },
- {
-  "title": "OS command injection in /ping",
-  "severity": "critical",
-  "asset": "/src/rv-demo-app/app.py:17-20",
-  "cwe": "CWE-78",
-  "description": "`host` reaches `subprocess.check_output(..., shell=True)`.",
-  "remediation": "Pass an argument list without a shell and validate `host` as an IP address or hostname.",
-  "evidence": [
-   "/work/p5-e2e/semgrep.json",
-   "/work/p5-e2e/joern-flows.json"
-  ],
-  "_status": "confirmed"
- },
- {
-  "title": "Vulnerable PyYAML 5.3",
-  "severity": "high",
-  "asset": "/src/rv-demo-app/requirements.txt",
-  "cwe": "CWE-502",
-  "description": "PyYAML 5.3 has known arbitrary code execution vulnerabilities.",
-  "remediation": "Upgrade to PyYAML 5.4 or later.",
-  "evidence": [
-   "/projects/engagements/p5-e2e/pip-audit.json"
-  ],
-  "_status": "confirmed"
- },
- {
-  "title": "Scanner noise",
-  "severity": "low",
-  "asset": "app.py",
-  "description": "x",
-  "evidence": [
-   "/work/p5-e2e/bandit.json"
-  ],
-  "_status": "false-positive"
- }
+  {
+    "title": "SQL injection in /user",
+    "severity": "critical",
+    "asset": "/src/rv-demo-app/app.py:11-14",
+    "cwe": "CWE-89",
+    "cvss_vector": "CVSS:4.0/AV:N/AC:L/AT:N/PR:N/UI:N/VC:H/VI:H/VA:N/SC:N/SI:N/SA:N",
+    "cvss_score": 9.3,
+    "description": "The `name` parameter is concatenated into a SQL query:\n\n```python\ndb.execute(\"SELECT * FROM users WHERE name = '\" + name + \"'\")\n```\n\nJoern traces `request.args` to `db.execute` with no sanitiser.",
+    "impact": "An unauthenticated user can read or change any data in the database.",
+    "reproduction": "- Code review: app.py lines 11-14\n- Joern flow in joern-flows.json",
+    "remediation": "Use a parameterised query:\n\n```python\ndb.execute(\"SELECT * FROM users WHERE name = ?\", (name,))\n```",
+    "evidence": [
+      "/work/p5-e2e/bandit.json (B608 app.py:14)",
+      "/work/p5-e2e/joern-flows.json",
+      "/src/rv-demo-app/app.py:11-14"
+    ],
+    "_status": "confirmed"
+  },
+  {
+    "title": "OS command injection in /ping",
+    "severity": "critical",
+    "asset": "/src/rv-demo-app/app.py:17-20",
+    "cwe": "CWE-78",
+    "description": "`host` reaches `subprocess.check_output(..., shell=True)`.",
+    "remediation": "Pass an argument list without a shell and validate `host` as an IP address or hostname.",
+    "evidence": [
+      "/work/p5-e2e/semgrep.json",
+      "/work/p5-e2e/joern-flows.json"
+    ],
+    "_status": "confirmed",
+    "impact": "An attacker who reaches /src/rv-demo-app/app.py:17-20 can exploit this without credentials.",
+    "reproduction": "Send a crafted request to /src/rv-demo-app/app.py:17-20 (see the evidence)."
+  },
+  {
+    "title": "Vulnerable PyYAML 5.3",
+    "severity": "high",
+    "asset": "/src/rv-demo-app/requirements.txt",
+    "cwe": "CWE-502",
+    "description": "PyYAML 5.3 has known arbitrary code execution vulnerabilities.",
+    "remediation": "Upgrade to PyYAML 5.4 or later.",
+    "evidence": [
+      "/projects/engagements/p5-e2e/pip-audit.json"
+    ],
+    "_status": "confirmed",
+    "impact": "An attacker who reaches /src/rv-demo-app/requirements.txt can exploit this without credentials.",
+    "reproduction": "Send a crafted request to /src/rv-demo-app/requirements.txt (see the evidence)."
+  },
+  {
+    "title": "Scanner noise",
+    "severity": "low",
+    "asset": "app.py",
+    "description": "x",
+    "evidence": [
+      "/work/p5-e2e/bandit.json"
+    ],
+    "_status": "false-positive"
+  }
 ]

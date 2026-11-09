@@ -1,4 +1,5 @@
 ---
+version: 1
 title: API security test (REST, GraphQL)
 standard: OWASP API Security Top 10 2023, OWASP WSTG (APIT)
 tiers: passive, active; fuzzing and exploitation are intrusive (approval)

@@ -196,7 +196,9 @@ def fmt_ts(ts):
 
 
 # ---------------------------------------------------------------- build
-def build(eng):
+def collect(eng):
+    """Everything a report is built from, as plain data: frozen with a report revision so the same report can be
+    rebuilt from it later (delivery.py)."""
     brand = branding.load()  # fails before anything is written if the brand is misconfigured
     db.engagement_dir(eng)
     info = kali("engagement_info", {"engagement": eng})
@@ -204,15 +206,31 @@ def build(eng):
     # program names only: the audit's first word can be a fragment of an inline script (print(json.loads(...)
     act["tools"] = {k: v for k, v in act["tools"].items() if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._+-]*", k)
                     and not re.fullmatch(r"[\d.]+", k)}
-    m = meta(eng, brand.prepared_by)
     rdir = Path(db.WORK, eng, "report")
-    exec_md, meth_md, concl_md = (read_opt(rdir / n) for n in ("executive-summary.md", "methodology.md",
-                                                                "conclusion.md"))
     allf = db.list_(eng)
+    reported = [redact(f) for f in allf if f["status"] in REPORTED]
+    ev, issues = evidence_index(eng, reported)
+    return {"engagement": eng, "date": datetime.date.today().isoformat(), "info": info, "activity": act,
+            "meta": meta(eng, brand.prepared_by),
+            "texts": {n: read_opt(rdir / n) for n in ("executive-summary.md", "methodology.md", "conclusion.md")},
+            "findings": allf, "evidence": ev, "evidence_issues": issues, "readiness_issues": []}
+
+
+def build(eng, inp=None, out_dir=None):
+    """Render the report from collected inputs (collect() now, or a revision's frozen inputs) into out_dir
+    (report/ by default)."""
+    brand = branding.load()
+    inp = inp or collect(eng)
+    info, act, m = inp["info"], inp["activity"], inp["meta"]
+    rdir = Path(out_dir) if out_dir else Path(db.WORK, eng, "report")
+    rdir.mkdir(parents=True, exist_ok=True)
+    exec_md, meth_md, concl_md = (inp["texts"].get(n, "") for n in ("executive-summary.md", "methodology.md",
+                                                                     "conclusion.md"))
+    allf = inp["findings"]
     findings = sorted([f for f in allf if f["status"] in REPORTED],
                       key=lambda f: (SEV_ORDER.get(f["severity"], 9), f["id"]))
     findings = [redact(f) for f in findings]
-    ev, issues = evidence_index(eng, findings)
+    ev, issues = inp["evidence"], list(inp["evidence_issues"])
     cands = [f for f in allf if f["status"] == "candidate"]
     fps = [f for f in allf if f["status"] == "false-positive"]
     dups = [f for f in allf if f["status"] == "duplicate"]
@@ -222,8 +240,9 @@ def build(eng):
         issues.append(f"{len(cands)} candidate finding(s) not yet triaged: " + ", ".join(f["id"] for f in cands))
     if not m.get("client"):
         issues.append("client name not set (report/meta.txt)")
+    issues += [i for i in inp.get("readiness_issues", []) if i not in issues]
     draft = bool(issues)
-    today = datetime.date.today().isoformat()
+    today = inp["date"]
     period = f"{fmt_ts(act['first'])[:10]} to {fmt_ts(act['last'])[:10]}" if act["first"] else "n/a"
     sc = info["scope"]
     scope_short = ", ".join(sc["domains"] + sc["nets"] + [os.path.basename(p) for p in sc["paths"]])[:120]

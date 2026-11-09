@@ -220,6 +220,19 @@ services:
     networks: {rvlab: {ipv4_address: 10.250.0.17}}    # http://10.250.0.17:8000
     restart: "no"
 
+  php-runner:   # the optional PHP profile (RW-013), started only by ./rvkit php: no network, read-only, no capabilities
+    build: ./php-runner
+    image: riskvoid-php-runner:local
+    profiles: ["php"]
+    network_mode: none
+    read_only: true
+    tmpfs: ["/tmp:size=2g"]
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    pids_limit: 256
+    mem_limit: 2g
+    restart: "no"
+
   lab-dvwa:
     image: ghcr.io/digininja/dvwa@sha256:8029450682bd70e2e8cd1ffe8e46dd1885ff2a913296091cebfa8ba0a7d36498
     profiles: ["lab"]

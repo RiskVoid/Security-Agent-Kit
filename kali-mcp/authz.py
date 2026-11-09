@@ -206,7 +206,8 @@ def run(eng, name, task=None):
         order = ([owner] if owner else []) + [n for n in m["identities"] if n != owner]
         for n in order:
             exp = m["expect"][op["id"]][n]
-            cell = {"operation": op["id"], "identity": n, "expected": exp}
+            cell = {"operation": op["id"], "method": op.get("method", "GET"), "url": op["url"], "identity": n,
+                    "expected": exp}
             if session[n]["state"] != "valid":
                 cell.update(outcome="blocked", reason=f"session {session[n]['state']}: {session[n].get('reason')}",
                             verdict="blocked")

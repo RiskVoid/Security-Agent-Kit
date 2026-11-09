@@ -3,6 +3,7 @@
 # folder and creates the engagements the tests expect.
 #   demo-code  scope /src/rv-demo-app, passive                         (phase3_policy_test, tools_smoke)
 #   net-test   example.com and 1.1.1.1, all tiers, max rate 20          (phase3_policy_test)
+# and copies the Laravel lab's source (vulnerable and fixed) to <projects>/rv-laravel-lab[-fixed] (laravel_test).
 # Run after ./rvkit setup: bash evals/ci_prepare.sh
 set -euo pipefail
 cd "$(dirname "$0")/.."
@@ -11,6 +12,10 @@ P="$(envget PROJECTS_DIR)"; P="${P/#\~/$HOME}"
 E="$(envget ENGAGEMENTS_DIR)"; E="${E/#\~/$HOME}"
 mkdir -p "$P" "$E"
 for t in rv-demo-app rv-node-api rv-smoke; do rm -rf "${P:?}/$t"; cp -R "evals/targets/$t" "$P/$t"; done
+# the Laravel lab's source as client code (laravel_test.sh): the vulnerable build and the fixed one
+rm -rf "${P:?}/rv-laravel-lab" "${P:?}/rv-laravel-lab-fixed"
+cp -R evals/targets/rv-laravel-lab/src "$P/rv-laravel-lab"
+cp -R evals/targets/rv-laravel-lab/src "$P/rv-laravel-lab-fixed" && cp -R evals/targets/rv-laravel-lab/fixed/. "$P/rv-laravel-lab-fixed/"
 
 engagement() { # engagement <name> <tiers> <rate> <target>...
   local name="$1" tiers="$2" rate="$3"; shift 3

@@ -276,6 +276,7 @@ EOF
   echo
   ok "Done. Open ${B}$UI_URL${N} and talk to the ${B}riskvoid-planner${N} agent."
   echo "   First try, no client data: ./rvkit quickstart     Check everything: ./rvkit doctor"
+  echo "   What each stack is tested and measured for: docs/capability-baselines.md"
 }
 
 # ---------------------------------------------------------------- doctor
@@ -576,7 +577,7 @@ cmd_worker() {
 }
 
 # ---------------------------------------------------------------- install / completion
-COMMANDS="setup up down update console status doctor logs connect worker planner budget test key openhands new engagement eng quickstart watch scope show policy finding approvals approve deny halt resume conversation cred identity capture authz vault task audit report close delete lab bench install completion help"
+COMMANDS="setup up down update console status doctor logs connect worker planner budget test key openhands new engagement eng quickstart watch scope show policy finding approvals approve deny halt resume conversation cred identity capture authz vault appmap php task audit report close delete lab bench install completion help"
 ENG_SUB="list new show scope approvals approve deny halt resume audit report close delete"
 cmd_install() {
   local dir="${1:-$HOME/.local/bin}"
@@ -648,6 +649,29 @@ print(json.dumps({"engagement": eng, "actor": actor, "id": fid, "fields": fields
   printf '%s' "$out" | python3 -c 'import json,sys; f=json.loads(sys.stdin.read())["result"]; print("%s: %s, %s (revision %s) %s" % (f["id"], f["status"], f["severity"], f["revision"], f["title"]))'
 }
 
+cmd_report() { # report <eng> [revisions|approve|except|verify|rebuild|export|sent ...]
+  local u="usage: ./rvkit report <engagement> [revisions | approve <R-id> [note] | except <check> <rationale> | verify <R-id> | rebuild <R-id> | export [--draft] | sent <R-id> <to> <channel>]"
+  [ $# -ge 1 ] || die "$u"
+  local eng="$1" sub="${2:-build}" out; shift; [ $# -gt 0 ] && shift
+  rq() { python3 -c 'import json,sys; d=dict(zip(sys.argv[3::2], sys.argv[4::2])); d.update(engagement=sys.argv[1], actor=sys.argv[2]); d.update(draft=True) if d.get("draft") else None; print(json.dumps(d))' "$eng" "$(actor)" "$@"; }
+  show() { printf '%s' "$out" | python3 scripts/report_cli.py "$1"; }
+  case "$sub" in
+    build)     out="$(ops report.build "$(rq)")" || exit 1; show build ;;
+    revisions) out="$(ops report.revisions "$(rq)")" || exit 1; show revisions ;;
+    approve)   [ $# -ge 1 ] || die "$u"; out="$(ops report.approve "$(rq revision "$1" note "${2:-}")")" || exit 1
+               ok "$1 approved for client delivery (nothing was sent)" ;;
+    except)    [ $# -ge 2 ] || die "$u"; out="$(ops report.exception "$(rq check "$1" rationale "$2")")" || exit 1
+               ok "exception recorded for $1: generate the report again" ;;
+    verify)    [ $# -ge 1 ] || die "$u"; out="$(ops report.verify "$(rq revision "$1")")" || exit 1; show verify ;;
+    rebuild)   [ $# -ge 1 ] || die "$u"; out="$(ops report.rebuild "$(rq revision "$1")")" || exit 1; show rebuild ;;
+    export)    if [ "${1:-}" = "--draft" ]; then out="$(ops export.build "$(rq draft 1)")" || exit 1
+               else out="$(ops export.build "$(rq)")" || exit 1; fi; show export ;;
+    sent)      [ $# -ge 3 ] || die "$u"; out="$(ops report.transmitted "$(rq revision "$1" to "$2" channel "$3")")" || exit 1
+               ok "recorded: $1 sent to $2 via $3" ;;
+    *) die "$u" ;;
+  esac
+}
+
 cmd_help() {
   cat <<EOF
 ${B}rvkit: RiskVoid agent kit${N}   UI: $UI_URL
@@ -692,16 +716,20 @@ ${B}Engagements${N}  (also as: rvkit eng <command>)
   capture <eng> [list|import <file>|show|raw|rm]   HAR / Burp captures (sanitized for the agent; raw kept encrypted)
   authz <eng> [list|show|approve|run <name>]   review and approve authorization matrices the agent proposes
   vault rotate                  replace the vault key (credentials and sessions are re-encrypted)
+  appmap <eng> <path> [--build-url U] [--routes F]   Laravel application map from source (no code runs)
+  php <eng> lint|routes <path>  optional PHP profile: parse check, or boot the app for a route export (asks)
   task cancel|resume <task-id>  stop a worker task / continue an interrupted one
   audit [eng] [n]               last n audit-log entries
   finding <eng> <F-id> k=v...   change a finding: status=, severity=, notes=, title=, duplicate_of= (audited)
-  report <eng>                  report (.html + .docx + .pdf) and findings register (.xlsx) in <eng>/report/
+  report <eng>                  new report revision (.html + .docx + .pdf + .xlsx) with its readiness checks
+  report <eng> revisions|approve <R-id>|except <check> <why>|verify|rebuild <R-id>|export [--draft]|sent <R-id> <to> <how>
   close <eng>                   close-out: audit extract + SHA-256 manifest + archive, then halt
   eng delete <eng> [--force]    unregister a closed engagement (frees its slot; folder kept, renamed)
 
 ${B}Practice and tests${N}
   lab up|down|status            vulnerable practice targets on an isolated network
-  bench <name|all>              run a benchmark (evals/benchmarks/)
+  bench <name|all> [--repeat N] run a benchmark (evals/benchmarks/); --history, --score
+                                what is tested and measured per stack: docs/capability-baselines.md
 
 ${B}Shell${N}
   install [dir]                 put rvkit on your PATH (default ~/.local/bin)
@@ -872,6 +900,38 @@ if m.get("allow_writes"): print(f"  writes allowed: at most {m[\"max_writes\"]};
         kctl authz "$eng" approve "$2" --digest "$d" ;;
       *) die "usage: ./rvkit authz <engagement> [list | show <name> | approve <name> | run <name>]" ;;
     esac ;;
+  appmap)
+    need_env; [ $# -ge 2 ] || die "usage: ./rvkit appmap <engagement> </src/path> [--build-url URL] [--routes evidence/php/routes-....json]"
+    kctl appmap "$@" ;;
+  php)
+    need_env; [ $# -ge 3 ] || die "usage: ./rvkit php <engagement> lint|routes </src/path>"
+    eng="$1"; kind="$2"; src="$3"
+    case "$kind" in lint|routes) ;; *) die "usage: ./rvkit php <engagement> lint|routes </src/path>" ;; esac
+    c="$(kctl php "$eng" check "$src")" || exit 1
+    rel="$(printf '%s' "$c" | python3 -c 'import json,sys; print(json.load(sys.stdin)["relative"])')"
+    uid="$(printf '%s' "$c" | python3 -c 'import json,sys; print(json.load(sys.stdin)["uid"])')"
+    host_src="$(expand "$(envget PROJECTS_DIR)")/$rel"
+    out="$(eng_dir "$eng")/evidence/php"
+    [ -d "$host_src" ] || die "$host_src not found on this machine"
+    approved=""
+    if [ "$kind" = routes ]; then
+      warn "This boots the application's own code (service providers, configuration) to list its routes."
+      echo "   It runs on a throwaway copy, with no network, a generated .env (no client secrets), as $eng's user."
+      yesno "Run it?" "$([ -n "${RVKIT_YES:-}" ] && echo y || echo n)" || die "not run"
+      approved="--approved"
+    fi
+    docker image inspect riskvoid-php-runner:local >/dev/null 2>&1 || docker compose --profile php build php-runner \
+      || die "could not build the PHP profile image"
+    stamp="$(mktemp)"
+    docker compose --profile php run --rm --no-deps --user "$uid:$uid" -v "$host_src:/src:ro" -v "$out:/out" \
+      php-runner "$kind"; rc=$?
+    new="$(find "$out" -maxdepth 1 -type f -newer "$stamp" -exec basename {} \; | sort | sed 's|^|evidence/php/|')"
+    rm -f "$stamp"
+    # shellcheck disable=SC2086
+    [ -n "$new" ] && kctl php "$eng" record "$kind" $new $approved >/dev/null
+    [ -n "$new" ] && ok "saved: $(printf '%s ' $new)"
+    [ "$kind" = routes ] && [ $rc -eq 0 ] && echo "   Compare: ./rvkit appmap $eng $src --routes $(printf '%s\n' $new | grep -v meta | head -1)"
+    exit $rc ;;
   vault)
     need_env; [ "${1:-}" = rotate ] || die "usage: ./rvkit vault rotate   (new vault key; every credential and session re-encrypted)"
     kctl vault rotate ;;
@@ -907,11 +967,10 @@ if m.get("allow_writes"): print(f"  writes allowed: at most {m[\"max_writes\"]};
       *) die "usage: ./rvkit lab up|down|status|reset" ;;
     esac ;;
   bench)
-    need_env; [ $# -ge 1 ] || die "usage: ./rvkit bench <name|all> [--agent riskvoid-planner|riskvoid-local]   (list: ls evals/benchmarks)"
+    need_env; [ $# -ge 1 ] || die "usage: ./rvkit bench <name|all> [--agent riskvoid-planner|riskvoid-local] [--repeat N] | --history | --score <name> <bench-engagement>   (list: ls evals/benchmarks)"
     python3 evals/run_benchmark.py "$@" ;;
   finding)    need_env; cmd_finding "$@" ;;
-  report)     need_env; [ $# -ge 1 ] || die "usage: ./rvkit report <engagement>"
-              docker compose exec -T findings-mcp python3 report.py "$1" ;;
+  report)     need_env; cmd_report "$@" ;;
   close)      need_env; [ $# -ge 1 ] || die "usage: ./rvkit close <engagement>"; kctl close "$1" ;;
   delete)
     need_env; [ $# -ge 1 ] || die "usage: ./rvkit eng delete <engagement> [--force]   (closed engagements; --force for any)"

@@ -189,6 +189,24 @@ def cancel_task(engagement: str, task: str) -> str:
 
 
 @mcp.tool()
+async def laravel_map(engagement: str, path: str, build_url: str = "", routes_file: str = "", max_tier: str = "",
+                      task: str = "") -> str:
+    """Map a Laravel application from its source (RW-012) without running any of it: framework and PHP versions,
+    routes with their effective middleware, controllers (bound models, Form Requests, authorization calls, how
+    input is used), models (mass-assignable columns, global/tenant scopes), policies, views and sinks. Returns
+    leads (candidate issues with the reasoning and how to verify them), controls (protections found: don't report
+    those as flaws without runtime evidence) and gaps. path: an in-scope /src path. build_url: the deployment's
+    version endpoint (X-Build-Id header or JSON "build"), compared with the source digest: results from a
+    deployment that doesn't match the source may not apply to it. routes_file: a runtime route export
+    (php artisan route:list --json) in the engagement folder, compared with the static routes."""
+    try:
+        return await _thread(actions.appmap, engagement, path, build_url or None, routes_file or None,
+                             max_tier or None, task or None)
+    except ValueError as e:
+        return f"REFUSED: {e}"
+
+
+@mcp.tool()
 def list_identities(engagement: str) -> str:
     """The engagement's test identities (RW-008): name, role, tenant, hosts, allowed tiers and effects, the fixture
     records each owns (with marker text only that record contains) and session status. Secrets are never shown.

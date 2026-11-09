@@ -16,15 +16,20 @@ order: `F-001`, `F-002`, …
 |---|---|
 | `title` | short name of the issue |
 | `severity` | `critical`, `high`, `medium`, `low` or `info` |
-| `cvss_vector`, `cvss_score` | CVSS 4.0 vector and score (optional) |
+| `cvss_vector`, `cvss_score` | a CVSS 3.1 vector, whose base score is computed (a different score given with it is refused), or a CVSS 4.0 vector with the score from the FIRST calculator (optional) |
 | `cwe` | for example `CWE-89` |
 | `asset` | what is affected: host, URL, API operation, `file:line` |
 | `description`, `impact`, `reproduction`, `remediation` | short markdown; it goes into the report as written |
 | `evidence` | list of evidence paths, each optionally followed by a space and a note |
 | `status` | see below |
 | `source` | `planner`, or `worker:<task_id>` for candidates the worker recorded |
-| `notes` | internal notes, such as why something is a false positive. Not printed in the report |
-| `created`, `updated` | UTC timestamps |
+| `notes` | internal notes. Not printed in the report |
+| `priority` | remediation order, `P1` to `P4`, set separately from the technical severity |
+| `prerequisites` | what a reproduction needs: an account, a role, a tenant, data |
+| `instances` | the affected locations: observations linked to the finding (file:line, route, package) |
+| `root_cause` | the shared cause, when several instances have one |
+| `verification`, `verified_by`, `verified_method`, `verified_at` | `unverified`, `verified` or `not-reproducible`; who verified it, how (`runtime-reproduction`, `replay`, `authorization-matrix`, `source-review`, `tool-output`, `retest`, `client-confirmation`, or `not stated`) and when |
+| `revision`, `created`, `updated` | revision number (each change adds one) and UTC timestamps |
 
 ### Statuses
 
@@ -32,7 +37,7 @@ order: `F-001`, `F-002`, …
 |---|---|---|
 | `candidate` | found but not verified (scanner output, worker lead) | no; untriaged candidates keep the report DRAFT |
 | `confirmed` | verified by reproducing it, reading the code path or checking the version | yes, as **Open** |
-| `false-positive` | checked and doesn't hold; the reason is in `notes` | no; counted in the activity summary |
+| `false-positive` | checked and doesn't hold; the reason is kept with the decision | no; counted in the activity summary |
 | `duplicate` | the same issue as another finding, named in `duplicate_of` (its evidence is merged into that one) | no; counted in the activity summary |
 | `fixed` | fixed by the client and retested | yes, as **Resolved** |
 | `accepted-risk` | the client accepts the risk | yes, as **Accepted risk** |
@@ -42,13 +47,80 @@ order: `F-001`, `F-002`, …
 - **The worker** records `candidate` findings only (title, severity, asset, description, evidence, CWE), with the
   evidence from its task.
 - **The planner** sees them with `list_findings` and `get_finding`, verifies each one and sets the status with
-  `update_finding` (`confirmed`, `false-positive` with the reason in `notes`, or `duplicate` with `duplicate_of`
-  set to the finding it keeps). It records issues it finds itself
+  `update_finding` (`confirmed` with the verification `method`, `false-positive` with the `reason`, or `duplicate`
+  with `duplicate_of` set to the finding it keeps). It records issues it finds itself
   with `record_finding`, and fills in CVSS, impact, reproduction and remediation.
 - **After client feedback**, the planner sets `fixed` or `accepted-risk`.
 
 You can ask the agent to change any finding ("lower F-004 to medium: it needs an admin session", "mark F-007 as
-accepted risk"). There's no `./rvkit` command for findings.
+accepted risk"), or change it in the console's **Findings** tab. There's no `./rvkit` command for findings.
+
+### Decisions, reasons and history
+
+Every change keeps the finding's earlier revision, and every decision is recorded with who made it and why:
+
+- `false-positive` and `accepted-risk` need a reason, so does a severity change and a change to a priority that
+  was already set. The change is refused without one.
+- Confirming a finding records the verification method; without one it says `not stated`, and the handover lists
+  it as a pending decision.
+- **Not reproducible** (console, or the `finding.not_reproducible` operation) records that a retest couldn't
+  reproduce a finding, with the reason; the status stays as it was until someone decides.
+- `get_finding` with `history=true` (or **History** in the console) shows every revision and decision.
+
+## Investigation workspace
+
+What an engagement must answer, how far testing got and what still needs a decision, kept in the same
+`findings.db` so it survives restarts, model switches and a change of researcher.
+
+### Observations
+
+An observation is what a tool reported, before anyone decides whether it's a finding. `import_observations` (or
+**Import tool output** in the console's **Investigation** tab) reads a tool's output from the engagement folder
+(`semgrep.json`, `evidence/authz/...`; not the findings database, the audit log, the report or hidden files):
+
+| Parser | File |
+|---|---|
+| `semgrep` | Semgrep JSON (`--json`) |
+| `osv-scanner`, `pip-audit` | their JSON output |
+| `bandit`, `gitleaks` | their JSON reports |
+| `authz` | an authorization-matrix run (`evidence/authz/`): `FAIL` and unexpected-deny cells; blocked cells are limitations |
+| `laravel_map` | an application map (`evidence/appmap/`): its leads; its gaps are limitations |
+| `http` | an HTTP exchange the sandbox wrote (`evidence/http/`, replays) |
+
+Each observation has a fingerprint (tool, rule, location, the normalized snippet), so importing the same output
+again counts it as seen again instead of adding it twice. Parser errors and what the tool says it skipped are kept
+with the import and shown; a file no parser recognizes is an import with an error, not a silent nothing.
+
+Grouping is a person's (or the planner's) decision. The workspace suggests groups (same rule in the same file, the
+same package, the same route template) but never merges them: you **link** the observations that share a root
+cause to one finding (they become its instances and their evidence is added), mark one a **duplicate** of
+another, or **dismiss** it with the reason.
+
+### Coverage
+
+The plan is a list of tests. `plan_tests` with a playbook name (or **Add its checklist to the plan**) adds one item
+per checklist line of that playbook, with the playbook's version and the standard references it names (ASVS,
+WSTG, OWASP API Top 10 2023, OWASP LLM Top 10 2025). Each item ends in one of:
+
+| Outcome | Needs |
+|---|---|
+| `tested` | the evidence it produced |
+| `failed` | the finding it produced |
+| `blocked` | the reason, and what would unblock it |
+| `excluded`, `not-applicable` | the rationale |
+
+An outcome records the build (source digest or deployed build) and the policy revision it ran on. **Reassess**
+with a new build or policy revision marks earlier outcomes recorded against another one as stale, for a retest.
+Coverage is reported per state and per standard. OWASP Top 10 lists are risk categories, not checklists: coverage
+is measured against the planned tests and the requirements they reference, not "Top 10 covered".
+
+### Objective and handover
+
+The objective is what the engagement must answer (`set_objective`, or the console). The handover is built from the
+records each time it's read: the objective, finding counts, material findings (critical and high, candidate or
+confirmed), observations to triage, coverage, blocked and stale tests, import problems, pending decisions and the
+next useful actions, plus a free-text note you edit. The planner reads it with `get_handover` when it resumes an
+engagement; the console shows it in the **Investigation** tab.
 
 ---
 
@@ -150,7 +222,8 @@ Only `confirmed`, `fixed` and `accepted-risk` findings are included.
 
 ### DRAFT or final
 
-The report is marked DRAFT (on the cover, in the file name and in the tool result) while any of these is true:
+The report is marked DRAFT (on the cover, in the file name and in the tool result) while any readiness check
+blocks delivery. These are facts about the record, to be fixed:
 
 - `report/executive-summary.md` is missing or empty;
 - there are untriaged `candidate` findings;
@@ -158,7 +231,83 @@ The report is marked DRAFT (on the cover, in the file name and in the tool resul
 - a reported finding has no evidence;
 - an evidence file is missing, was modified after it was produced, or is outside the engagement folder.
 
+These are methodology checks. A person (console or CLI, not the agent) may record an exception for one, with the
+rationale, and the exception is listed in the revision:
+
+| Check | Blocks when |
+|---|---|
+| `coverage-plan` | there is no coverage plan |
+| `coverage-open` | planned tests have no outcome |
+| `coverage-stale` | outcomes were recorded on another build or policy revision |
+| `fields:<F-id>` | a reported finding has no asset, description, impact, reproduction or remediation |
+| `verification:<F-id>` | a confirmed finding has no verification method |
+| `retest:<F-id>` | a finding is marked fixed without a resolved retest record |
+
+Warnings don't block: untriaged observations, open cleanup obligations, and finding text that looks like it holds
+a secret (the report redacts it; remove it from the finding).
+
 The result lists each issue. Fix them (or ask the agent to) and generate again.
+
+### Revisions, approval and sending
+
+Each generation is a new **report revision** (`R-001`, `R-002`, ...) in `report/revisions/<R-id>/`: the files, the
+inputs they were built from (`inputs.json`: the finding revisions, report texts, details, coverage and the
+activity summary) and the SHA-256 of every file. Earlier revisions, of the same day or not, are kept as they were;
+the latest is also copied to `report/` as before.
+
+| State | Meaning |
+|---|---|
+| `generated` | built, but a readiness check blocks delivery |
+| `ready` | nothing blocks delivery: every check passes or has an exception |
+| `approved` | a person approved it for client delivery |
+| `superseded` | a later revision was approved |
+
+**Approve** (console, or `./rvkit report <eng> approve R-003`) is a person's decision; the agent can't approve. It
+is refused unless the revision is the latest, is `ready`, its files still match their hashes, and the findings,
+coverage, exceptions and report texts are unchanged since it was generated. If anything changed, generate again
+and approve the new revision. Approval sends nothing: when you send the report, **Record sending** (or
+`./rvkit report <eng> sent R-003 "<to>" "<how>"`) adds that to the revision.
+
+**Verify** re-hashes a revision's files. **Rebuild** renders the report again from the revision's frozen
+`inputs.json` into `report/revisions/<R-id>-rebuild-<time>/` and compares the HTML byte for byte (the `.docx`,
+`.pdf` and `.xlsx` embed creation times, so they differ in metadata only).
+
+### Retests
+
+A retest links a confirmed or fixed finding to the build it was retested on and its regression cases, each with
+its result (`pass`, `fail`, `partial`), the evidence of the retest (required) and the earlier evidence (the
+finding's, unless given). Its outcome:
+
+- `resolved` (every case passes): the finding becomes `fixed` in a new revision, with the method `retest`;
+- `partial` or `unresolved`: it stays, or goes back to, `confirmed`.
+
+The original reproduction and every earlier revision stay in the finding's history. The record keeps the build
+the finding was found on (from its coverage item), and when the retest needed scope or access re-authorized, who
+did that and when. The agent records retests with `record_retest`; the console's **Report** tab lists them.
+
+### Cleanup and retention
+
+Cleanup obligations are what has to be undone or decided before close-out: test data and fixture changes,
+credentials to revoke, access to remove, what to keep or delete (`fixture`, `credential`, `data`, `access`,
+`retention`, `other`). Each stays open until it's recorded done (with what was done) or waived (a person's
+decision, with the reason). Open ones are pending decisions in the handover and a warning in the readiness checks.
+
+### Notices and exports
+
+A **notice** is a draft about one confirmed critical or high finding, for you to review before it's shared:
+`report/notices/N-001-F-004.md`, tied to the finding's revision. **Mark reviewed** is refused if the finding or
+the file changed since it was prepared. Nothing is sent from the kit.
+
+**Export** builds, from the approved revision's frozen findings (or the latest revision, marked DRAFT, when you
+ask for that), in `report/exports/<R-id>/`:
+
+| File | Content |
+|---|---|
+| `findings.json` | the reported findings (schema `rvkit-findings/1`), each with its revision, and the report revision and approval |
+| `findings.sarif` | SARIF 2.1.0: one rule and one result per finding, with a source location for `file:line` assets and instances, otherwise the asset as a logical location; `security-severity` from the CVSS score |
+| `issues/<F-id>.md` | issue-ready text per finding |
+
+Ticket systems and client portals aren't connected: upload the files yourself.
 
 ### Generating
 
@@ -168,8 +317,8 @@ The agent calls `generate_report` at the end of a run. You can run it yourself a
 ./rvkit report acme-2026-11
 ```
 
-It takes about a minute (the PDF is made with LibreOffice) and prints the paths, the status and the issues. Files
-in `/work/<engagement>/report/`:
+It takes about a minute (the PDF is made with LibreOffice) and prints the revision, its state and the readiness
+checks. Files in `/work/<engagement>/report/revisions/<R-id>/`, the latest also in `/work/<engagement>/report/`:
 
 | File | Content |
 |---|---|
@@ -178,7 +327,8 @@ in `/work/<engagement>/report/`:
 | `<eng>-report-<date>.pdf` | PDF of the same |
 | `<eng>-findings-<date>.xlsx` | findings register |
 
-Generating again on the same day replaces that day's files, DRAFT or not. Reports from earlier days are kept.
+Generating again on the same day replaces that day's files in `report/`; every revision keeps its own copy in
+`report/revisions/`.
 
 The `.html` report is a single file with its fonts and logo embedded: it loads nothing from the internet, so you
 can email it, archive it or open it offline. It has no scripts. Print it from a browser for a PDF with one page

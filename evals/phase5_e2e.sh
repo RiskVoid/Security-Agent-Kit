@@ -63,7 +63,7 @@ while IFS= read -r f; do
   args=$(echo "$f" | python3 -c 'import json,sys; d=json.load(sys.stdin); d.pop("_status"); d["engagement"]="p5-e2e"; print(json.dumps(d))')
   id=$(call $FIND record_finding "$args" | python3 -c 'import json,sys; print(json.load(sys.stdin)["id"])' 2>/dev/null)
   [ -n "$id" ] || { echo "      record_finding failed: $(echo "$f" | cut -c1-60)"; continue; }
-  call $FIND update_finding "{\"engagement\": \"$ENG\", \"finding_id\": \"$id\", \"status\": \"$st\", \"notes\": \"e2e\"}" >/dev/null
+  call $FIND update_finding "{\"engagement\": \"$ENG\", \"finding_id\": \"$id\", \"status\": \"$st\", \"notes\": \"e2e\", \"method\": \"source-review\"}" >/dev/null
 done
 check "3 confirmed + 1 false positive" "$(call $FIND list_findings "{\"engagement\": \"$ENG\", \"status\": \"confirmed\"}" | grep -c '"id"')" '^3$'
 dup=$(call $FIND record_finding "{\"engagement\": \"$ENG\", \"title\": \"Same SQL injection, found twice\", \"severity\": \"high\", \"asset\": \"app.py\", \"description\": \"dup\"}" | python3 -c 'import json,sys; print(json.load(sys.stdin)["id"])' 2>/dev/null)
@@ -72,12 +72,21 @@ j2="{\"engagement\": \"$ENG\", \"finding_id\": \"$dup\", \"status\": \"duplicate
 check "duplicate needs duplicate_of" "$(call $FIND update_finding "$j1")" 'needs duplicate_of'
 check "duplicate links the kept finding" "$(call $FIND update_finding "$j2")" '"duplicate_of": "F-001"'
 
+# coverage: what was planned and what each test found (the report can't be final without outcomes)
+plan="$(call $FIND plan_tests "{\"engagement\": \"$ENG\", \"items\": [{\"title\": \"Injection in request handlers\", \"refs\": [\"WSTG-INPV-05\", \"WSTG-INPV-12\"]}, {\"title\": \"Vulnerable dependencies\", \"refs\": [\"ASVS V15\"]}]}")"
+check "coverage planned" "$(echo "$plan" | tr -d " \n")" '"ids":\["P-001","P-002"\]'
+call $FIND update_coverage "{\"engagement\": \"$ENG\", \"item\": \"P-001\", \"state\": \"failed\", \"finding_id\": \"F-001\"}" >/dev/null
+call $FIND update_coverage "{\"engagement\": \"$ENG\", \"item\": \"P-002\", \"state\": \"failed\", \"finding_id\": \"F-003\"}" >/dev/null
+
 echo "== 3. report"
 mkdir -p "$ENGDIR/report"
 printf 'Client: Test Client Ltd\nPrepared by: RiskVoid\nVersion: 1.0\n' > "$ENGDIR/report/meta.txt"
 printf 'RiskVoid reviewed the **demo application** source code.\n\nTwo critical injection flaws allow full compromise:\n\n- SQL injection\n- OS command injection\n\nFix both before the next release.\n' > "$ENGDIR/report/executive-summary.md"
 out="$(call $FIND generate_report "{\"engagement\": \"$ENG\"}")"
 check "report is final" "$out" '"status": "final"'
+check "report revision R-001" "$out" '"id": "R-001"'
+check "the revision is ready (nothing blocks delivery)" "$out" '"state": "ready"'
+check "revision files frozen with their hashes" "$(ls "$ENGDIR"/report/revisions/R-001/ 2>/dev/null)" 'inputs.json'
 check "PDF and register written" "$out" '\.pdf".*|\.xlsx"'
 DOCX="$(ls "$ENGDIR"/report/*.docx 2>/dev/null | head -1)"
 xml="$(unzip -p "$DOCX" word/document.xml 2>/dev/null)"
