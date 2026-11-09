@@ -49,7 +49,7 @@ DEFAULT_RULES = {"tiers": ["passive", "active"], "max_rate": 100, "network": "on
                  "strict": False, "worker": "auto", "timezone": "UTC", "dates": None, "days": None,
                  "max_requests": None, "max_commands": None, "max_parallel": 2, "redirects": "in-scope",
                  "execution": "standard", "approval_hours": 24, "stop_conditions": [], "notes": [],
-                 "client_data": None}  # None: any destination the stack is configured for
+                 "client_data": None, "browser_support": []}  # client_data None: any destination
 
 
 def entries(text):
@@ -418,6 +418,13 @@ def parse_rules(text):
                 if v not in ("in-scope", "none"):
                     raise ValueError("Redirects is in-scope or none")
                 r["redirects"] = v
+            elif k.startswith("browser support"):
+                names = [d.strip().lower().rstrip(".") for d in re.split(r"[,\s]+", v) if d.strip()]
+                bad = [d for d in names if not NAME_RX.fullmatch(d)]
+                if bad or not names:
+                    raise ValueError("Browser support is a list of domain names (fonts, CDNs) the browser may load "
+                                     "page assets from")
+                r["browser_support"] = names
             elif k == "execution":
                 if v not in ("standard", "controlled"):
                     raise ValueError("Execution is standard or controlled")

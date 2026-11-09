@@ -8,7 +8,7 @@ const esc = (v) => String(v ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "
 const enc = encodeURIComponent;
 const SEV = ["critical", "high", "medium", "low", "info"];
 const STATUSES = ["candidate", "confirmed", "false-positive", "duplicate", "fixed", "accepted-risk"];
-const TABS = { overview: "Overview", live: "Live", scope: "Scope & rules", findings: "Findings", tasks: "Worker tasks", report: "Report", audit: "Audit log", models: "Model log" };
+const TABS = { overview: "Overview", live: "Live", scope: "Scope & rules", findings: "Findings", tasks: "Worker tasks", testing: "Testing", report: "Report", audit: "Audit log", models: "Model log" };
 
 const state = { overview: null, current: null, detail: null, tab: "overview", seenApprovals: null, findingFilter: "all", openFinding: null, preview: null, evidence: null, view: "engagements" };
 
@@ -275,7 +275,7 @@ function renderDetail() {
       await act(btn, () => api(`/api/eng/${enc(d.engagement)}/delete`, { force: !ov.closed }), "Deleted.");
       state.current = null; location.hash = "engagements"; $("#detail").innerHTML = `<div class="rv-empty">Pick an engagement, or create one.</div>`; refresh(); show("engagements");
     }));
-  ({ overview: paneOverview, live: paneLive, scope: paneScope, findings: paneFindings, tasks: paneTasks, report: paneReport, audit: paneAudit, models: paneModels })[state.tab]();
+  ({ overview: paneOverview, live: paneLive, scope: paneScope, findings: paneFindings, tasks: paneTasks, testing: paneTesting, report: paneReport, audit: paneAudit, models: paneModels })[state.tab]();
 }
 
 function confirmBox(title, text, label, fn) {
@@ -549,6 +549,123 @@ function paneReport() {
       ${draft ? `<p class="rv-banner-sub">Not ready for the client. Fix these, then generate again:</p><ul>${r.issues.map((x) => `<li>${esc(x)}</li>`).join("")}</ul>` : `<p class="rv-banner-sub">Ready to deliver.</p>`}</div></div>`;
     await openEngagement(d.engagement, true); $("#gen-out").innerHTML = keep;
   });
+}
+
+// ---------------------------------------------------------------- authenticated testing (RW-008 to RW-011)
+const STATE_CLASS = { valid: "c-low", expired: "c-high", challenge: "c-medium", denied: "c-medium", error: "c-high", revoked: "", unchecked: "" };
+const VERDICT_CLASS = { pass: "c-low", FAIL: "c-critical", "unexpected-deny": "c-medium", blocked: "c-medium" };
+const IDENTITY_TEMPLATE = `{
+  "kind": "form",
+  "role": "member",
+  "tenant": "acme",
+  "login_url": "https://app.example.com/login",
+  "username": "tester@acme.test",
+  "secret": "ACME_TESTER_PASS",
+  "check": {"url": "https://app.example.com/dashboard", "marker": "text only this account sees"},
+  "fixtures": [{"kind": "invoice", "id": 1, "marker": "text only that record contains"}],
+  "tiers": ["active"],
+  "effects": ["read"]
+}`;
+
+async function paneTesting() {
+  const d = state.detail, e = enc(d.engagement);
+  $("#pane").innerHTML = `<p class="hint">Test identities, request captures and authorization matrices. Secrets stay on this machine: the agent
+    sees identity names, roles, tenants and sanitized captures, never a password, token or cookie.</p><div id="testing-out" class="rv-empty">Loading…</div>`;
+  let r;
+  try { r = await api(`/api/eng/${e}/testing`); } catch (err) { $("#testing-out").textContent = err.message; return; }
+  const ids = r.identities || [], caps = r.captures || [], mats = r.matrices || [];
+  const idOpts = `<option value="">no identity</option>` + ids.map((i) => `<option>${esc(i.name)}</option>`).join("");
+  $("#testing-out").outerHTML = `<div id="testing-out" class="rv-stack">
+    <div class="rv-card"><div class="rv-card-head"><h3>Identities</h3></div><div class="rv-card-body">
+      ${ids.length ? `<ul class="rv-rows">${ids.map((i) => `<li><b>${esc(i.name)}</b> ${tag(i.status.state || "unchecked", STATE_CLASS[i.status.state || "unchecked"])}
+        <span class="rv-dim">${esc(i.kind)} · role ${esc(i.role || "-")} · tenant ${esc(i.tenant || "-")} · ${esc(i.effects.join("/"))} · ${esc(i.hosts.join(", "))}</span>
+        ${i.fixtures.length ? `<span class="rv-dim">owns ${i.fixtures.map((f) => esc(`${f.kind} ${f.id}`)).join(", ")}</span>` : ""}
+        ${i.status.reason ? `<span class="rv-dim">${esc(i.status.reason)}</span>` : ""}
+        <button class="rv-btn ghost sm" data-idop="check" data-name="${esc(i.name)}">Check session</button>
+        ${i.status.state !== "revoked" ? `<button class="rv-btn ghost sm danger-quiet" data-idop="revoke" data-name="${esc(i.name)}">Revoke</button>` : ""}
+        <button class="rv-btn ghost sm danger-quiet" data-idop="rm" data-name="${esc(i.name)}">Remove</button></li>`).join("")}</ul>`
+        : `<p class="hint">None yet. An identity is a test account: how it logs in (it names a stored credential), the hosts its session may go to, what it may be used for, and the fixture records it owns.</p>`}
+      <details><summary>Add or replace an identity</summary>
+        <div class="rv-form-row"><input id="id-name" class="rv-input" placeholder="name (e.g. acme-member)" maxlength="32" spellcheck="false" aria-label="Identity name"></div>
+        <textarea id="id-spec" class="rv-input" rows="12" spellcheck="false" aria-label="Identity spec (JSON)">${esc(IDENTITY_TEMPLATE)}</textarea>
+        <div class="rv-actions start"><button id="id-save" class="rv-btn sm">Save identity</button></div>
+      </details>
+    </div></div>
+    <div class="rv-card"><div class="rv-card-head"><h3>Captures</h3></div><div class="rv-card-body">
+      ${caps.length ? `<ul class="rv-rows">${caps.map((c) => `<li><b>${esc(c.name || c.id)}</b> <span class="rv-dim">${esc(c.source)} · ${c.entries} request(s) · ${c.out_of_scope} out of scope · ${Object.values(c.redactions || {}).reduce((a, b) => a + b, 0)} value(s) redacted · ${fmtTime(c.imported_at)}</span>
+        <button class="rv-btn ghost sm" data-capopen="${esc(c.id)}">Open</button> <button class="rv-btn ghost sm danger-quiet" data-caprm="${esc(c.id)}">Delete</button></li>`).join("")}</ul>`
+        : `<p class="hint">Import a HAR file (browser developer tools, ZAP, mitmproxy) or a Burp Suite XML export. The original is kept encrypted for you; the agent sees a sanitized copy.</p>`}
+      <div class="rv-form-row"><input id="cap-file" type="file" accept=".har,.json,.xml" aria-label="Capture file"><button id="cap-import" class="rv-btn sm">Import</button></div>
+      <div id="cap-view"></div>
+    </div></div>
+    <div class="rv-card"><div class="rv-card-head"><h3>Authorization matrices</h3></div><div class="rv-card-body">
+      ${mats.length ? mats.map((m) => { const res = (r.results || {})[m.name]; return `<div class="rv-matrix">
+        <p><b>${esc(m.name)}</b> ${tag(m.state, m.state === "approved" ? "c-low" : "c-medium")} <span class="rv-dim">${m.operations} operation(s) x ${m.identities.length} identit${m.identities.length === 1 ? "y" : "ies"}${m.purpose ? " · " + esc(m.purpose) : ""}</span>
+        <button class="rv-btn ghost sm" data-mxshow="${esc(m.name)}">Review</button>
+        ${m.state === "approved" ? `<button class="rv-btn sm" data-mxrun="${esc(m.name)}">Run</button>` : ""}</p>
+        <div id="mx-${esc(m.name)}"></div>
+        ${res ? `<p class="rv-dim">Last run ${fmtTime(res.at)}: ${Object.entries(res.summary).map(([k, v]) => `${esc(k)} ${v}`).join(", ")} · <code>${esc(res.file)}</code></p>
+          <table class="rv-table"><thead><tr><th>Operation</th><th>Identity</th><th>Expected</th><th>Outcome</th><th>Verdict</th><th>Why</th></tr></thead><tbody>
+          ${res.cells.map((c) => `<tr><td>${esc(c.operation)}</td><td>${esc(c.identity)}</td><td>${esc(c.expected)}</td><td>${esc(c.outcome)}</td><td>${tag(c.verdict, VERDICT_CLASS[c.verdict] || "")}</td><td class="rv-dim">${esc(c.reason)}</td></tr>`).join("")}</tbody></table>` : ""}
+      </div>`; }).join("") : `<p class="hint">The agent proposes a matrix (operations, identities, expected allow or deny). Review it here and approve exactly that version; it can't run before.</p>`}
+    </div></div></div>`;
+
+  $$("[data-idop]").forEach((b) => b.addEventListener("click", async (ev) => {
+    const op = b.dataset.idop;
+    if (op === "rm" && !confirm(`Remove identity ${b.dataset.name}?`)) return;
+    const x = await act(ev.currentTarget, () => api(`/api/eng/${e}/identity`, { name: b.dataset.name, op }), op === "check" ? null : "Done.");
+    if (x && op === "check") toast(`${b.dataset.name}: ${x.state}${x.reason ? " (" + x.reason + ")" : ""}`, x.state !== "valid");
+    if (x) paneTesting();
+  }));
+  $("#id-save").addEventListener("click", async (ev) => {
+    let spec;
+    try { spec = JSON.parse($("#id-spec").value); } catch { return toast("The spec isn't valid JSON.", true); }
+    const x = await act(ev.currentTarget, () => api(`/api/eng/${e}/identity`, { name: $("#id-name").value.trim(), op: "set", spec }), "Identity saved. Check its session next.");
+    if (x) paneTesting();
+  });
+  $("#cap-import").addEventListener("click", async (ev) => {
+    const f = $("#cap-file").files[0];
+    if (!f) return toast("Choose a file first.", true);
+    const buf = new Uint8Array(await f.arrayBuffer());
+    let bin = ""; for (let i = 0; i < buf.length; i += 0x8000) bin += String.fromCharCode.apply(null, buf.subarray(i, i + 0x8000));
+    const x = await act(ev.currentTarget, () => api(`/api/eng/${e}/capture`, { op: "import", name: f.name, data: btoa(bin) }), "Imported and sanitized.");
+    if (x) paneTesting();
+  });
+  $$("[data-caprm]").forEach((b) => b.addEventListener("click", async (ev) => {
+    if (!confirm("Delete this capture (the sanitized copy and the encrypted original)?")) return;
+    if (await act(ev.currentTarget, () => api(`/api/eng/${e}/capture`, { op: "rm", id: b.dataset.caprm }), "Deleted.")) paneTesting();
+  }));
+  $$("[data-capopen]").forEach((b) => b.addEventListener("click", async () => {
+    const c = await api(`/api/eng/${e}/capture?id=${enc(b.dataset.capopen)}`);
+    $("#cap-view").innerHTML = `<table class="rv-table"><thead><tr><th>#</th><th>Request</th><th>Status</th><th></th></tr></thead><tbody>
+      ${c.entries.map((q) => `<tr><td>${q.n}</td><td><code>${esc(q.method)} ${esc(q.url)}</code>${q.in_scope ? "" : ` <span class="rv-dim">(${esc(q.scope_note || "out of scope")})</span>`}</td><td>${esc(q.response.status ?? "")}</td>
+        <td>${q.in_scope ? `<select class="rv-input sm" data-replayas="${q.n}" aria-label="Identity for the replay">${idOpts}</select> <button class="rv-btn ghost sm" data-replay="${q.n}">Replay</button>` : ""}</td></tr>`).join("")}</tbody></table><div id="replay-out"></div>`;
+    $$("[data-replay]").forEach((rb) => rb.addEventListener("click", async (ev) => {
+      const n = Number(rb.dataset.replay), identity = $(`[data-replayas="${n}"]`).value;
+      const send = (approval_id) => api(`/api/eng/${e}/capture`, { op: "replay", id: c.id, entry: n, identity, approval_id });
+      let x = await act(ev.currentTarget, () => send(""));
+      if (x && x.approval && confirm(`This request can change state (approval ${x.approval}). Approve it and send it now as ${identity || "no identity"}?`)) {
+        await act(null, () => api(`/api/approvals/${enc(d.engagement)}/${enc(x.approval)}/approve`, {}));
+        x = await act(ev.currentTarget, () => send(x.approval));
+      }
+      if (x) $("#replay-out").innerHTML = `<pre class="rv-pre">${esc(x.text)}${x.comparison && x.comparison.diff ? "\n\n" + esc(x.comparison.diff) : ""}</pre>`;
+    }));
+  }));
+  $$("[data-mxshow]").forEach((b) => b.addEventListener("click", async () => {
+    const m = await api(`/api/eng/${e}/matrix?name=${enc(b.dataset.mxshow)}`);
+    $(`#mx-${b.dataset.mxshow}`).innerHTML = `<p class="rv-dim">digest ${esc(m.digest)} · proposed by ${esc(m.proposed_by)} ${fmtTime(m.proposed_at)}${m.allow_writes ? ` · <b>changes state</b>: at most ${m.max_writes} write(s), cleanup ${m.cleanup.length} request(s)` : " · read-only"}</p>
+      <table class="rv-table"><thead><tr><th>Operation</th><th>Request</th>${m.identities.map((i) => `<th>${esc(i)}</th>`).join("")}</tr></thead><tbody>
+      ${m.operations.map((o) => `<tr><td>${esc(o.id)}${o.effect === "write" ? " <b>(write)</b>" : ""}</td><td><code>${esc(o.method || "GET")} ${esc(o.url)}</code>${o.marker ? `<br><span class="rv-dim">marker ${esc(o.marker)}</span>` : ""}</td>${m.identities.map((i) => `<td>${esc(m.expect[o.id][i])}</td>`).join("")}</tr>`).join("")}</tbody></table>
+      <div class="rv-actions start"><button class="rv-btn sm" data-mxapprove="${esc(m.name)}" data-digest="${esc(m.digest)}">Approve this version</button></div>`;
+    $(`[data-mxapprove="${m.name}"]`).addEventListener("click", async (ev) => {
+      const x = await act(ev.currentTarget, () => api(`/api/eng/${e}/authz`, { name: m.name, op: "approve", digest: ev.currentTarget.dataset.digest }), "Approved.");
+      if (x) paneTesting();
+    });
+  }));
+  $$("[data-mxrun]").forEach((b) => b.addEventListener("click", async (ev) => {
+    const x = await act(ev.currentTarget, () => api(`/api/eng/${e}/authz`, { name: b.dataset.mxrun, op: "run" }), "Matrix run finished.");
+    if (x) paneTesting();
+  }));
 }
 
 async function paneTasks() {

@@ -21,16 +21,25 @@
   rvctl.py conversations [eng] [--json]  OpenHands conversations bound to engagements
   rvctl.py bind <eng> <conversation-id> [title]   bind a conversation (its model calls follow the engagement)
   rvctl.py unbind <eng> <conversation-id>
-  rvctl.py cred <eng> list [--json] | set <NAME> (value on stdin) | rm <NAME>
+  rvctl.py cred <eng> list [--json] | set <NAME> [--expires DATE] (value on stdin) | rm <NAME>
   rvctl.py approval <eng> <id>       one approval's status (JSON)
   rvctl.py cancel <eng> <task-id>    kill the commands of a worker task
   rvctl.py routes                    the routing table the model gateway uses (JSON; rewritten too)
+  rvctl.py vault rotate              replace the vault key and re-encrypt every credential and session
+  rvctl.py identity <eng> list [--json] | set <name> (JSON spec on stdin) | check <name> | revoke <name> | rm <name>
+  rvctl.py capture <eng> list | import [--name N] (HAR/Burp XML on stdin) | show <id> | raw <id> | replay <id> | rm <id>
+  rvctl.py authz <eng> list | show <name> | approve <name> [--digest D] | run <name>
 
 Global option: --actor <console|cli>:<name> names who acts; it is recorded on every audit entry (default cli:host).
 Exit codes: 0 ok, 1 error, 2 sync not confirmed, 3 conflict (the record changed since it was read).
 """
 import json, os, sys
-import core
+
+VENV = "/opt/venv/bin/python3"  # kali-mcp's own Python (the vault needs its cryptography package)
+if os.path.exists(VENV) and os.path.realpath(sys.prefix) != "/opt/venv":
+    os.execv(VENV, [VENV, os.path.abspath(__file__), *sys.argv[1:]])
+
+import core  # noqa: E402
 
 
 def _opt(a, name):
@@ -200,10 +209,69 @@ def main(a):
                 print(f"{r['name']:<24} ${r['env']:<30} {r['ref']:<30} set {r['set_at']} by {r['set_by']}")
             print(f"{len(rows)} credential(s)"); return 0
         if sub == "set":
-            core.cred_set(eng, rest[2], sys.stdin.read()); print(f"{rest[2].upper()} stored for {eng}"); return 0
+            exp = _opt(rest, "--expires")
+            core.cred_set(eng, rest[2], sys.stdin.read(), exp); print(f"{rest[2].upper()} stored for {eng}"); return 0
         if sub == "rm":
             core.cred_remove(eng, rest[2]); print(f"{rest[2].upper()} removed from {eng}"); return 0
         raise ValueError("usage: cred <eng> list | set <NAME> | rm <NAME>")
+    if cmd == "vault":
+        if rest[:1] == ["rotate"]:
+            print(f"vault key replaced; {core.vault_rotate()} entries re-encrypted"); return 0
+        raise ValueError("usage: vault rotate")
+    if cmd == "identity":
+        import identities
+        eng, sub = rest[0], (rest[1] if len(rest) > 1 else "list")
+        if sub == "list":
+            rows = identities.identity_list(eng)
+            if "--json" in rest:
+                print(json.dumps(rows)); return 0
+            for r in rows:
+                st = r["status"]
+                print(f"{r['name']:<16} {r['kind']:<7} role {r.get('role') or '-':<10} tenant {r.get('tenant') or '-':<10} "
+                      f"{st.get('state', 'unchecked'):<10} {st.get('reason') or ''}")
+            print(f"{len(rows)} identit{'y' if len(rows) == 1 else 'ies'}"); return 0
+        if sub == "set":  # spec JSON on stdin
+            print(json.dumps(identities.identity_set(eng, rest[2], json.load(sys.stdin)))); return 0
+        if sub == "check":
+            r = identities.check(eng, rest[2]); print(json.dumps(r)); return 0 if r["state"] == "valid" else 4
+        if sub == "revoke":
+            identities.revoke(eng, rest[2], " ".join(rest[3:])); print(f"{rest[2]} revoked"); return 0
+        if sub == "rm":
+            identities.identity_remove(eng, rest[2]); print(f"{rest[2]} removed"); return 0
+        raise ValueError("usage: identity <eng> list | set <name> (JSON on stdin) | check <name> | revoke <name> | rm <name>")
+    if cmd == "capture":
+        import captures
+        eng, sub = rest[0], (rest[1] if len(rest) > 1 else "list")
+        if sub == "list":
+            print(json.dumps(captures.listing(eng), indent=1)); return 0
+        if sub == "import":  # file on stdin
+            name = _opt(rest, "--name") or ""
+            print(json.dumps(captures.import_capture(eng, sys.stdin.buffer.read(), name))); return 0
+        if sub == "show":
+            print(json.dumps(captures.load(eng, rest[2]), indent=1)); return 0
+        if sub == "raw":
+            sys.stdout.buffer.write(captures.raw(eng, rest[2])); return 0
+        if sub == "replay":  # {"entry", "identity", "changes", "markers", "approval_id"} on stdin
+            q = json.load(sys.stdin)
+            r = captures.replay(eng, rest[2], q["entry"], q.get("identity"), q.get("changes"), q.get("approval_id"),
+                                None, None, tuple(q.get("markers") or ()))
+            print(json.dumps({k: v for k, v in r.items() if k != "text"} | {"text": r["text"]})); return 0
+        if sub == "rm":
+            captures.delete(eng, rest[2]); print(f"{rest[2]} deleted"); return 0
+        raise ValueError("usage: capture <eng> list | import [--name N] (file on stdin) | show <id> | raw <id> | rm <id>")
+    if cmd == "authz":
+        import authz
+        eng, sub = rest[0], (rest[1] if len(rest) > 1 else "list")
+        if sub == "list":
+            print(json.dumps(authz.listing(eng), indent=1)); return 0
+        if sub == "show":
+            print(json.dumps(authz.proposal(eng, rest[2]), indent=1)); return 0
+        if sub == "approve":
+            r = authz.approve(eng, rest[2], _opt(rest, "--digest"))
+            print(f"matrix {rest[2]} approved (digest {r['digest']}, policy revision {r['policy_revision']})"); return 0
+        if sub == "run":
+            r = authz.run(eng, rest[2]); print(r["text"]); return 0
+        raise ValueError("usage: authz <eng> list | show <name> | approve <name> [--digest D] | run <name>")
     if cmd == "approval":
         print(json.dumps(core.approval_status(rest[0], rest[1]))); return 0
     if cmd == "cancel":

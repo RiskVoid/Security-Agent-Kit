@@ -19,6 +19,7 @@ RVKIT_BUILD=1 ./rvkit lab up   # rebuild the LLM lab image after changing evals/
 | DVWA | `http://10.250.0.11` | classic web vulnerabilities | login `admin` / `password`, security level low |
 | VAmPI | `http://10.250.0.13:5000` | REST API (OWASP API Top 10) | OpenAPI spec at `/openapi.json` |
 | DVGA | `http://10.250.0.14:5013/graphql` | GraphQL API | amd64 image: emulated on Apple Silicon, so slower |
+| Ledgerly (Laravel) | `http://10.250.0.16:8000` | multi-tenant SaaS: authorization, tenant isolation, mass assignment, Laravel specifics | [below](#ledgerly-laravel-lab); the fixed build is at `http://10.250.0.17:8000` |
 | RiskVoid LLM lab | `http://10.250.0.15:8000` | AI assistant with tools, plus an MCP server (OWASP LLM Top 10) | chat API `POST /api/chat`, page summariser `POST /api/summarize`, MCP at `/mcp` |
 
 DVWA's database runs alongside it at `10.250.0.12`.
@@ -39,6 +40,26 @@ How the lab is isolated:
 The lab is part of the stack, so start the kit first (`./rvkit up`). `./rvkit quickstart` does everything for you:
 starts the stack and the lab, creates the engagement `lab-juice` and prints a ready-made prompt. Walkthrough:
 [first-engagement.md](first-engagement.md).
+
+### Ledgerly (Laravel lab)
+
+A small invoicing application in Laravel 12 (PHP 8.4, SQLite) with two organizations, for authenticated and
+authorization testing. Two builds run side by side: the vulnerable one at `10.250.0.16:8000` and a fixed one at
+`10.250.0.17:8000`, so a retest can show a fix. The database is seeded again each time the container starts
+(`./rvkit lab reset`). `GET /version` (and the `X-Build-Id` header) gives the build's source digest.
+
+| Account | Organization | Role | Password | API token |
+|---|---|---|---|---|
+| `alice@acme.test` | Acme | admin | `alice-lab-pass` | `rvlab-alice-7f3a9c41d2` |
+| `bob@acme.test` | Acme | member | `bob-lab-pass` | `rvlab-bob-2b8e41a6f0` |
+| `carol@globex.test` | Globex | admin | `carol-lab-pass` | `rvlab-carol-c04d17e9b3` |
+
+Web login at `/login` (form with a CSRF token); API at `/api/*` with `Authorization: Bearer <token>`. Records
+carry marker text (`ACME-CONFIDENTIAL-1001`, `GLOBEX-CONFIDENTIAL-2001`, `ACME-PAY-5001`, ...) for proving
+cross-tenant reads. The seeded flaws (lab only, never real code): invoices and documents readable across
+tenants, a profile update that accepts any field, a search with raw SQL, unescaped invoice notes and debug mode.
+Store the passwords and tokens with `./rvkit cred` and define identities: see
+[authenticated-testing.md](authenticated-testing.md).
 
 ### Practice engagements
 

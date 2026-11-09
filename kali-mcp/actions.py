@@ -81,31 +81,113 @@ def _clean_headers(headers):
     return out
 
 
-def http_action(method, url, headers, body):
-    """What an approval of a request is bound to (the body by its digest)."""
-    return {"kind": "http", "method": method, "url": url,
-            "headers": {k.lower(): v for k, v in sorted(headers.items())},
-            "body": hashlib.sha256(body).hexdigest()}
+def http_action(method, url, headers, body, identity=None):
+    """What an approval of a request is bound to (the body by its digest; the identity by name, never its secret)."""
+    a = {"kind": "http", "method": method, "url": url,
+         "headers": {k.lower(): v for k, v in sorted(headers.items())},
+         "body": hashlib.sha256(body).hexdigest()}
+    if identity:
+        a["identity"] = identity
+    return a
 
 
-def _evidence_path(eng, method, host):
+def _evidence_path(eng, method, host, kind="http"):
     ts = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%dT%H%M%S")
-    rel = os.path.join("evidence", "http", f"{ts}-{method.lower()}-{re.sub(r'[^a-z0-9.-]', '_', host)[:60]}-"
+    rel = os.path.join("evidence", kind, f"{ts}-{method.lower()}-{re.sub(r'[^a-z0-9.-]', '_', host)[:60]}-"
                        f"{os.urandom(3).hex()}.txt")
     os.makedirs(os.path.join(core.WORK, eng, os.path.dirname(rel)), exist_ok=True)
     return rel
 
 
+class Refused(ValueError):
+    """The policy refused a request (the message says why)."""
+
+
+def exchange(eng, method, url, headers, data=b"", timeout_s=30, purpose="request"):
+    """One HTTP exchange, no redirects, under the engagement's policy: halt, testing time, checked URL, the address
+    that was checked (pinned), the request budget and max rate. Returns {"status", "reason", "headers", "body",
+    "ip", "seconds"} with the raw (unscrubbed) response, for kali-mcp's own use (identity login and checks);
+    raises Refused. It doesn't ask for approval: callers decide that."""
+    i = core.info(eng)
+    rules = i["rules"]
+    if i["halted"]:
+        raise Refused("engagement is halted")
+    late = rvpolicy.time_refusal(rules)
+    if late:
+        raise Refused(late)
+    pol = core.policy_of(eng)
+    why = rvpolicy.check_url(pol, url)
+    if why:
+        raise Refused(why)
+    if not core.take_budget(eng, "requests", rules.get("max_requests")):
+        raise Refused(f"the request budget is used up (Max requests: {rules['max_requests']})")
+    u = urllib.parse.urlsplit(url)
+    host, port = u.hostname.lower().rstrip("."), u.port or (443 if u.scheme == "https" else 80)
+    ip, why = _resolve(pol, host, _blocked())
+    if why:
+        raise Refused(why)
+    core.rate_wait(eng, rules["max_rate"])
+    conn = (_PinnedTLS if u.scheme == "https" else _Pinned)(host, port, ip, min(int(timeout_s or 30), 120))
+    path = (u.path or "/") + (f"?{u.query}" if u.query else "")
+    t0 = time.time()
+    try:
+        conn.request(method, path, body=data or None, headers={"User-Agent": "rvkit", **headers})
+        r = conn.getresponse()
+        raw = r.read(MAX_BODY_OUT + 1)
+        out = {"status": r.status, "reason": r.reason, "headers": r.getheaders(), "body": raw[:MAX_BODY_OUT],
+               "truncated": len(raw) > MAX_BODY_OUT, "ip": ip, "seconds": round(time.time() - t0, 2)}
+    except (OSError, http.client.HTTPException) as e:
+        core._audit({"engagement": eng, "action": purpose, "method": method, "url": core.scrub(eng, url),
+                     "error": core.scrub(eng, f"{type(e).__name__}: {e}")})
+        raise Refused(f"{type(e).__name__}: {e}")
+    finally:
+        conn.close()
+    core._audit({"engagement": eng, "action": purpose, "method": method, "url": core.scrub(eng, url), "ip": ip,
+                 "status": out["status"]})
+    return out
+
+
+def _mask_cookies(headers):
+    """Set-Cookie values are session material: keep the cookie names and attributes, drop the values."""
+    out = []
+    for k, v in headers:
+        if k.lower() == "set-cookie":
+            v = re.sub(r"^(\s*[^=;\s]+)=[^;]*", r"\1=[redacted]", v)
+        out.append((k, v))
+    return out
+
+
 def http_request(eng, method, url, headers=None, body="", approval_id=None, max_tier=None, task=None,
-                 timeout_s=30, body_base64=False):
+                 timeout_s=30, body_base64=False, identity=None):
+    """The kali tool: one request, its result as text for the model."""
+    try:
+        data = base64.b64decode(body) if body_base64 else (body or "").encode()
+    except (ValueError, TypeError) as e:
+        data = None
+        err = str(e)
+    if data is None:
+        core._audit({"engagement": eng, "action": "http", "method": method, "url": url, "refused": err})
+        return f"REFUSED: {err}"
+    return send(eng, method, url, headers, data, approval_id, max_tier, task, timeout_s, identity)["text"]
+
+
+def send(eng, method, url, headers=None, data=b"", approval_id=None, max_tier=None, task=None, timeout_s=30,
+         identity=None, authorized_by=None, evidence_kind="http"):
+    """The execution broker for HTTP: policy, tier, approval, credentials, identity session, redirects, budget,
+    rate, evidence and audit. Returns {"text"} plus, when the request was sent, "hops", "notes", "evidence",
+    "status" and "body" (scrubbed); "refused" or "approval" when it wasn't.
+
+    authorized_by: kali-mcp's own callers (an approved authorization matrix) pass the decision that covers a
+    state-changing request instead of a per-request approval; it is recorded in the audit entry."""
     i = core.info(eng)
     rules = i["rules"]
     method = (method or "GET").upper()
-    entry = {"engagement": eng, "action": "http", "method": method, "url": url, **({"task": task} if task else {})}
+    entry = {"engagement": eng, "action": "http", "method": method, "url": url, **({"task": task} if task else {}),
+             **({"identity": identity} if identity else {})}
 
     def refuse(msg, **extra):
         core._audit({**entry, "refused": msg, **extra})
-        return f"REFUSED: {msg}"
+        return {"refused": msg, "text": f"REFUSED: {msg}"}
 
     if method not in METHODS:
         return refuse(f"method must be one of {', '.join(METHODS)}")
@@ -115,6 +197,7 @@ def http_request(eng, method, url, headers=None, body="", approval_id=None, max_
     if late:
         return refuse(late + " (RULES.md)")
     tier = "active" if method in SAFE_METHODS else "intrusive"
+    effect = "read" if method in SAFE_METHODS else "write"
     entry["tier"] = tier
     if tier not in rules["tiers"]:
         return refuse(f"{method} is tier '{tier}', RULES.md allows only {rules['tiers']}")
@@ -122,8 +205,7 @@ def http_request(eng, method, url, headers=None, body="", approval_id=None, max_
         return refuse(f"{method} is tier '{tier}' and this task may only use '{max_tier}'")
     try:
         hdrs = _clean_headers(headers)
-        data = base64.b64decode(body) if body_base64 else (body or "").encode()
-    except (ValueError, TypeError) as e:
+    except ValueError as e:
         return refuse(str(e))
     if len(data) > MAX_BODY_IN:
         return refuse(f"request body over {MAX_BODY_IN} bytes")
@@ -131,34 +213,51 @@ def http_request(eng, method, url, headers=None, body="", approval_id=None, max_
     why = rvpolicy.check_url(pol, url)
     if why:
         return refuse(why)
+    if identity:
+        import identities
+        try:
+            identities.usable(eng, identity, url, tier, effect)
+        except ValueError as e:
+            return refuse(str(e))
     if tier == "intrusive":
-        action = http_action(method, url, hdrs, data)
-        if not approval_id:
-            shown = f"HTTP {method} {url}" + (f" ({len(data)} byte body)" if data else "")
+        action = http_action(method, url, hdrs, data, identity)
+        if authorized_by:
+            entry["authorized_by"] = authorized_by
+        elif not approval_id:
+            shown = f"HTTP {method} {url}" + (f" as {identity}" if identity else "") + \
+                (f" ({len(data)} byte body)" if data else "")
             a = core.request_approval(eng, action, tier, shown, task)
-            return (f"APPROVAL REQUIRED ({method} can change state). Approval id: {a['id']}. Ask the user to "
-                    f"review and run on the host:  ./rvkit approve {eng} {a['id']}   Then call http_request again "
-                    f"with the same method, URL, headers and body and approval_id='{a['id']}'.")
-        err = core.consume_approval(eng, approval_id, action, rules)
-        if err:
-            return refuse(err, approval=approval_id)
-        entry["approval"] = approval_id
+            return {"approval": a["id"],
+                    "text": f"APPROVAL REQUIRED ({method} can change state). Approval id: {a['id']}. Ask the user to "
+                            f"review and run on the host:  ./rvkit approve {eng} {a['id']}   Then call http_request "
+                            f"again with the same method, URL, headers, body and identity and approval_id='{a['id']}'."}
+        else:
+            err = core.consume_approval(eng, approval_id, action, rules)
+            if err:
+                return refuse(err, approval=approval_id)
+            entry["approval"] = approval_id
 
-    # credential references ({{cred:NAME}}) are filled in only now: the approval, the audit entry and the evidence
-    # file keep the reference, the target gets the value
+    # credential references ({{cred:NAME}}) and the identity's session are added only now: the approval, the audit
+    # entry and the evidence file keep the reference or the identity's name, the target gets the value
     used = core.cred_used(eng, url + json.dumps(hdrs) + data.decode("utf-8", "replace"))
     try:
         send_url = core.cred_expand(eng, url)
         send_hdrs = {k: core.cred_expand(eng, v) for k, v in hdrs.items()}
         send_data = core.cred_expand(eng, data.decode("utf-8", "surrogateescape")).encode("utf-8", "surrogateescape") \
             if used else data
+        if identity:
+            auth = identities.auth_headers(eng, identity, send_url)
+            if "Cookie" in auth and "Cookie" in send_hdrs:
+                auth["Cookie"] = send_hdrs["Cookie"] + "; " + auth["Cookie"]
+            send_hdrs = {**{k: v for k, v in send_hdrs.items() if k.lower() not in {a.lower() for a in auth}}, **auth}
     except ValueError as e:
-        return refuse(str(e))
+        return refuse(core.scrub(eng, str(e)))
     if used:
         entry["credentials"] = used
         why = rvpolicy.check_url(pol, send_url)
         if why:
             return refuse(why)
+    secret_hdrs = send_hdrs != hdrs
     blocked, hops, notes = _blocked(), [], []
     cur, cur_method, cur_data = send_url, method, send_data
     for hop in range(6):
@@ -182,10 +281,12 @@ def http_request(eng, method, url, headers=None, body="", approval_id=None, max_
             conn.request(cur_method, path, body=cur_data or None, headers=send_hdrs)
             r = conn.getresponse()
             raw = r.read(MAX_BODY_OUT + 1)
+            rh = r.getheaders()
             hop_rec = {"url": core.scrub(eng, cur), "method": cur_method, "ip": ip, "status": r.status,
-                       "reason": r.reason, "headers": [(k, core.scrub(eng, v)) for k, v in r.getheaders()],
+                       "reason": r.reason, "headers": [(k, core.scrub(eng, v)) for k, v in
+                                                       (_mask_cookies(rh) if secret_hdrs or identity else rh)],
                        "body": core.scrub(eng, raw[:MAX_BODY_OUT]), "truncated": len(raw) > MAX_BODY_OUT,
-                       "seconds": round(time.time() - t0, 2)}
+                       "seconds": round(time.time() - t0, 2), "_raw_headers": rh}
             if u.scheme == "https" and conn.sock:
                 der = conn.sock.getpeercert(binary_form=True)
                 hop_rec["tls"] = {"version": conn.sock.version(), "cert_sha256": hashlib.sha256(der).hexdigest()
@@ -197,12 +298,13 @@ def http_request(eng, method, url, headers=None, body="", approval_id=None, max_
         finally:
             conn.close()
         hops.append(hop_rec)
-        loc = dict((k.lower(), v) for k, v in r.getheaders()).get("location")
+        loc = dict((k.lower(), v) for k, v in rh).get("location")
         if hop_rec["status"] not in (301, 302, 303, 307, 308) or not loc:
             break
         nxt = urllib.parse.urljoin(cur, loc)
-        if send_hdrs != hdrs and urllib.parse.urlsplit(nxt).netloc != urllib.parse.urlsplit(cur).netloc:
-            send_hdrs = hdrs  # credentials are not sent on to another host
+        if secret_hdrs and urllib.parse.urlsplit(nxt).netloc != urllib.parse.urlsplit(cur).netloc:
+            send_hdrs, secret_hdrs = hdrs, False  # credentials and sessions are not sent on to another host
+            notes.append(f"credentials and the identity session were not sent on to {urllib.parse.urlsplit(nxt).netloc}")
         if rules.get("redirects") == "none" or cur_method not in ("GET", "HEAD"):
             notes.append(f"redirect to {nxt} not followed (" + ("Redirects: none" if rules.get("redirects") == "none"
                          else f"{cur_method} is not repeated automatically") + ")")
@@ -216,15 +318,22 @@ def http_request(eng, method, url, headers=None, body="", approval_id=None, max_
             break
         cur = nxt
 
+    last = hops[-1] if hops else None
+    if identity and last and "error" not in last and \
+            identities.looks_expired(eng, identity, last["status"], last["_raw_headers"], last["body"]):
+        notes.append(f"the response looks like a login page or a login redirect: the session of {identity} may have "
+                     f"ended (check_identity tells; a test result is not reliable until it says valid)")
     notes = [core.scrub(eng, n) for n in notes]
-    rel = _evidence_path(eng, method, urllib.parse.urlsplit(url).hostname or "host")
+    rel = _evidence_path(eng, method, urllib.parse.urlsplit(url).hostname or "host", evidence_kind)
     full = os.path.join(core.WORK, eng, rel)
     with open(full, "wb") as f:
         f.write(f"# rvkit http_request {datetime.datetime.now(datetime.timezone.utc).isoformat(timespec='seconds')} "
-                f"tier={tier}\n".encode())
+                f"tier={tier}".encode() + (f" identity={identity}".encode() if identity else b"") + b"\n")
         f.write(f"> {method} {url}\n".encode())
         for k, v in hdrs.items():
             f.write(f"> {k}: {v}\n".encode())
+        if identity:
+            f.write(f"> [session of identity {identity} added by kali-mcp]\n".encode())
         if data:
             f.write(b">\n" + data + b"\n")
         for h in hops:
@@ -245,8 +354,7 @@ def http_request(eng, method, url, headers=None, body="", approval_id=None, max_
     core._audit({**entry, "headers": redacted, "body_sha256": hashlib.sha256(data).hexdigest() if data else None,
                  "hops": [{k: h.get(k) for k in ("url", "method", "ip", "status", "error", "seconds")} for h in hops],
                  "notes": notes, "outputs": {rel: digest}})
-    last = hops[-1] if hops else None
-    out = [f"{method} {url}"]
+    out = [f"{method} {url}" + (f"  (as {identity})" if identity else "")]
     for h in hops:
         out.append(f"  {h['method']} {h['url']} -> " + (h["error"] if "error" in h else f"{h['status']} {h['reason']}"))
     out += [f"  {n}" for n in notes]
@@ -258,7 +366,137 @@ def http_request(eng, method, url, headers=None, body="", approval_id=None, max_
         out.append(text[:SHOWN] + (f"\n... {len(text) - SHOWN} more characters in the evidence file"
                                    if len(text) > SHOWN else ""))
     out.append(f"[request and response saved as verified evidence: /work/{eng}/{rel}]")
-    return core.scrub(eng, "\n".join(out))
+    for h in hops:
+        h.pop("_raw_headers", None)
+    return {"text": core.scrub(eng, "\n".join(out)), "hops": hops, "notes": notes, "evidence": rel,
+            "status": last.get("status") if last else None, "body": last.get("body", b"") if last else b"",
+            "headers": last.get("headers", []) if last else [], "url": last.get("url") if last else url,
+            "error": last.get("error") if last else "not sent: " + "; ".join(notes)}
+
+
+# ---------------------------------------------------------------- browser (RW-010)
+READ_STEPS = {"goto", "wait", "wait_for", "text"}
+WRITE_STEPS = {"click", "fill", "press"}
+BROWSER = "/opt/browser/bin/python"
+
+
+def browse(eng, url, steps=None, identity=None, approval_id=None, max_tier=None, task=None, timeout_s=180,
+           mask=None, max_requests=300):
+    """Open url in a headless browser in the engagement's sandbox, optionally as an identity, and run steps.
+    Navigation and reading are tier active; clicking, filling or pressing keys can submit forms, so a run with
+    any of them is intrusive (an approval bound to the URL, the steps and the identity). The URL policy is
+    enforced on every request the page makes; a read-only run also aborts every request that can change state."""
+    i = core.info(eng)
+    rules = i["rules"]
+    steps = list(steps or [])
+    entry = {"engagement": eng, "action": "browser", "url": url, **({"task": task} if task else {}),
+             **({"identity": identity} if identity else {})}
+
+    def refuse(msg):
+        core._audit({**entry, "refused": msg})
+        return f"REFUSED: {msg}"
+
+    if not os.path.exists(BROWSER):
+        return refuse("the browser runtime isn't installed in this kali-mcp image (rebuild it: ./rvkit update)")
+    if i["halted"]:
+        return refuse("engagement is halted (./rvkit resume <engagement> on the host)")
+    late = rvpolicy.time_refusal(rules)
+    if late:
+        return refuse(late + " (RULES.md)")
+    if len(steps) > 30:
+        return refuse("at most 30 steps")
+    for st in steps:
+        if not isinstance(st, dict) or len(set(st) & (READ_STEPS | WRITE_STEPS)) != 1 or \
+                set(st) - READ_STEPS - WRITE_STEPS - {"value", "key"}:
+            return refuse(f"bad step {json.dumps(st)[:120]}: one of {sorted(READ_STEPS | WRITE_STEPS)} per step")
+        if "goto" in st:
+            why = rvpolicy.check_url(core.policy_of(eng), st["goto"])
+            if why:
+                return refuse(f"step goto {st['goto']}: {why}")
+    writes = any(set(st) & WRITE_STEPS for st in steps)
+    tier, effect = ("intrusive", "write") if writes else ("active", "read")
+    entry["tier"] = tier
+    if tier not in rules["tiers"]:
+        return refuse(f"this browser run is tier '{tier}', RULES.md allows only {rules['tiers']}")
+    if core._tier_over(tier, max_tier):
+        return refuse(f"this browser run is tier '{tier}' and this task may only use '{max_tier}'")
+    pol = core.policy_of(eng)
+    why = rvpolicy.check_url(pol, url)
+    if why:
+        return refuse(why)
+    sess, hosts = {}, []
+    if identity:
+        import identities
+        try:
+            d = identities.usable(eng, identity, url, tier, effect)
+            hosts = d["spec"]["hosts"]
+        except ValueError as e:
+            return refuse(str(e))
+    if writes:
+        action = {"kind": "browser", "url": url, "steps": steps, "identity": identity or None}
+        if not approval_id:
+            shown = f"browser {url}" + (f" as {identity}" if identity else "") + " then " + \
+                ", ".join(next(iter(set(s) & (READ_STEPS | WRITE_STEPS))) + " " + str(next(iter(
+                    v for k, v in s.items() if k in READ_STEPS | WRITE_STEPS)))[:60] for s in steps)
+            a = core.request_approval(eng, action, tier, shown[:500], task)
+            return (f"APPROVAL REQUIRED (the steps click, fill or press keys, which can change state). Approval id: "
+                    f"{a['id']}. Ask the user to review and run on the host:  ./rvkit approve {eng} {a['id']}   "
+                    f"Then call browse again with the same URL, steps and identity and approval_id='{a['id']}'.")
+        err = core.consume_approval(eng, approval_id, action, rules)
+        if err:
+            return refuse(err)
+        entry["approval"] = approval_id
+    if core.usage(eng).get("requests", 0) >= (rules.get("max_requests") or 10 ** 12):
+        return refuse(f"the request budget is used up (Max requests: {rules['max_requests']})")
+    fills = {}
+    try:
+        for st in steps:
+            for m in core.CRED_REF.finditer(str(st.get("value", ""))):
+                fills[m.group(0)] = core.cred_value(eng, m.group(1))
+        if identity:
+            sess = identities._session(identities._get(eng, identity)) or identities.login(eng, identity)
+    except ValueError as e:
+        return refuse(core.scrub(eng, str(e)))
+    scrub_map = {v: r for v, r in core.secret_values(eng).items()}
+    bid = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%dT%H%M%S") + "-" + os.urandom(3).hex()
+    rel = os.path.join("evidence", "browser", bid)
+    out = os.path.join(core.WORK, eng, rel)
+    os.makedirs(out, exist_ok=True)
+    job = {"url": url, "steps": steps, "policy": pol, "out": f"/work/{eng}/{rel}", "writes": writes,
+           "identity_hosts": hosts, "support": rules.get("browser_support") or [], "mask": mask or [],
+           "max_requests": min(int(max_requests or 300), 2000)}
+    jobdir = os.path.join(core.WORK, eng, ".browser")
+    os.makedirs(jobdir, exist_ok=True)
+    job_path = os.path.join(jobdir, f"{bid}.json")
+    core._write_json(job_path, job)
+    os.chmod(job_path, 0o644)
+    try:
+        uid = i["uid"]
+        os.chown(out, uid, uid)
+    except (OSError, KeyError):
+        pass
+    command = f"{BROWSER} /opt/kali-mcp/browser_runner.py /work/{eng}/.browser/{bid}.json"
+    entry["command"] = command
+    env = {"RV_BROWSER_SESSION": json.dumps({"headers": sess.get("headers") or {}, "cookies": sess.get("cookies") or {},
+                                             "fills": fills, "scrub": scrub_map})}
+    if core._busy(eng) >= rules["max_parallel"]:
+        return refuse(f"{core._busy(eng)} network command(s) already running for {eng} (Max parallel: "
+                      f"{rules['max_parallel']}); wait for one to finish")
+    with core._PAR_LOCK:
+        core._RESERVED[eng] = core._RESERVED.get(eng, 0) + 1
+    res = core._execute(eng, i, entry, command, tier, timeout_s, True, approval_id, task=task, reserved=True,
+                        extra_env=env)
+    try:
+        summ = json.load(open(os.path.join(out, "summary.json")))
+        for _ in range(int(summ.get("sent") or 0)):
+            core.take_budget(eng, "requests", rules.get("max_requests"))
+    except (OSError, ValueError):
+        pass
+    try:
+        os.remove(job_path)
+    except OSError:
+        pass
+    return res + f"\n[browser evidence: /work/{eng}/{rel}/ (requests.jsonl, page.html, screenshot.png, summary.json)]"
 
 
 # ---------------------------------------------------------------- source analysis, no network

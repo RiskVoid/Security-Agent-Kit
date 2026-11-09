@@ -38,7 +38,7 @@ mount -t tmpfs tmpfs /run
 cd "/work/$RV_ENG"
 # credentials of this engagement (./rvkit cred), for commands that use $RV_CRED_<NAME>
 creds=()
-while IFS= read -r v; do [ -n "$v" ] && creds+=("$v=${!v}"); done < <(compgen -e | grep '^RV_CRED_' || true)
+while IFS= read -r v; do [ -n "$v" ] && creds+=("$v=${!v}"); done < <(compgen -e | grep -E '^(RV_CRED_|RV_BROWSER_SESSION$)' || true)
 exec setpriv --reuid="$RV_UID" --regid="$RV_UID" --clear-groups \
   --inh-caps=-all,+net_raw --ambient-caps=-all,+net_raw --bounding-set=-all,+net_raw --no-new-privs \
   env -i HOME="$RV_HOME" USER="rv-$RV_UID" LANG=C.UTF-8 TERM=dumb \

@@ -83,7 +83,8 @@ def engagement_activity(engagement: str) -> str:
 
 @mcp.tool()
 async def http_request(engagement: str, method: str, url: str, headers: dict | None = None, body: str = "",
-                 approval_id: str = "", max_tier: str = "", task: str = "", body_base64: bool = False) -> str:
+                 approval_id: str = "", max_tier: str = "", task: str = "", body_base64: bool = False,
+                 identity: str = "") -> str:
     """Send one HTTP request to an in-scope URL and get the response (status, headers, body). Prefer this over
     curl in run for single requests: it is the only way to reach hosts whose scope is limited to URL paths, it
     follows redirects only within scope, and the request and response are saved as verified evidence.
@@ -91,10 +92,12 @@ async def http_request(engagement: str, method: str, url: str, headers: dict | N
     return an approval id first; after the user approves, call again with the identical method, URL, headers and
     body plus approval_id. max_tier: the tier your task is limited to, if any. body_base64: body is base64.
     Credentials stored on the host (list_credentials): write {{cred:NAME}} in the URL, a header or the body; the
-    value is filled in when the request is sent and replaced by the reference in the output and evidence."""
+    value is filled in when the request is sent and replaced by the reference in the output and evidence.
+    identity: send it as one of the engagement's test identities (list_identities); kali-mcp adds the session
+    (you never see it). Approvals name the identity, so the same request as another identity needs its own."""
     try:
         return await _thread(actions.http_request, engagement, method, url, headers or {}, body, approval_id or None,
-                             max_tier or None, task or None, body_base64=body_base64)
+                             max_tier or None, task or None, body_base64=body_base64, identity=identity or None)
     except ValueError as e:
         return f"REFUSED: {e}"
 
@@ -181,6 +184,129 @@ def cancel_task(engagement: str, task: str) -> str:
     """Kill the commands a worker task is running now (worker-mcp calls this when a task is cancelled)."""
     try:
         return f"killed {core.cancel_task(engagement, task)} command(s) of task {task}"
+    except ValueError as e:
+        return f"REFUSED: {e}"
+
+
+@mcp.tool()
+def list_identities(engagement: str) -> str:
+    """The engagement's test identities (RW-008): name, role, tenant, hosts, allowed tiers and effects, the fixture
+    records each owns (with marker text only that record contains) and session status. Secrets are never shown.
+    Identities are defined by the researcher on the host (./rvkit identity); ask for one if a test needs it."""
+    import identities
+    try:
+        rows = identities.identity_list(engagement)
+        return json.dumps(rows, indent=1) if rows else f"no identities defined for {engagement}"
+    except ValueError as e:
+        return f"REFUSED: {e}"
+
+
+@mcp.tool()
+async def check_identity(engagement: str, identity: str) -> str:
+    """The valid-session control: is the identity's session working? valid, expired (login page or redirect),
+    challenge (CAPTCHA, WAF or rate limit), denied (authenticated but not allowed to see the check URL) or error.
+    Logs in again once when the session expired. A test whose identity isn't valid is blocked, not a pass."""
+    import identities
+    try:
+        return json.dumps(await _thread(identities.check, engagement, identity))
+    except ValueError as e:
+        return f"REFUSED: {e}"
+
+
+@mcp.tool()
+def list_captures(engagement: str, capture: str = "") -> str:
+    """Request captures the researcher imported (HAR or Burp XML), sanitized: cookies, tokens and secret fields
+    are [redacted]. Without capture: the list. With a capture id: its requests (method, URL, in scope or not,
+    response status and an excerpt)."""
+    import captures
+    try:
+        if not capture:
+            rows = captures.listing(engagement)
+            return json.dumps(rows, indent=1) if rows else f"no captures imported for {engagement}"
+        doc = captures.load(engagement, capture)
+        return json.dumps({**captures.summary(doc), "requests": doc["entries"]}, indent=1)[:60000]
+    except ValueError as e:
+        return f"REFUSED: {e}"
+
+
+@mcp.tool()
+async def replay_request(engagement: str, capture: str, entry: int, identity: str = "", changes: dict | None = None,
+                         markers: list[str] | None = None, approval_id: str = "", max_tier: str = "",
+                         task: str = "") -> str:
+    """Send a captured request again (RW-009) and compare the response with the captured one. identity: whose
+    session to use (the capture's own cookies and tokens are never replayed). changes: {"method", "url", "query":
+    {...}, "headers": {...}, "remove_headers": [...], "body"}; use {{cred:NAME}} for stored credentials. The URL is
+    checked against the current scope; a request that can change state needs an approval like http_request.
+    markers: text to look for in both responses (fixture markers of list_identities)."""
+    import captures
+    try:
+        r = await _thread(captures.replay, engagement, capture, entry, identity or None, changes or None,
+                          approval_id or None, max_tier or None, task or None, tuple(markers or ()))
+        return r["text"]
+    except ValueError as e:
+        return f"REFUSED: {e}"
+
+
+@mcp.tool()
+async def browse(engagement: str, url: str, steps: list[dict] | None = None, identity: str = "",
+                 mask: list[str] | None = None, approval_id: str = "", max_tier: str = "", task: str = "",
+                 timeout_s: int = 180) -> str:
+    """Open an in-scope page in a headless browser in the engagement's sandbox, optionally signed in as an
+    identity, and run steps: {"goto": url}, {"wait_for": selector}, {"wait": ms}, {"text": selector} (read text),
+    {"click": selector}, {"fill": selector, "value": text or {{cred:NAME}}}, {"press": selector, "key": "Enter"}.
+    Every request the page makes (navigation, redirects, assets, script requests, WebSockets) is checked against
+    the scope; out-of-scope ones are blocked and listed. Navigation and reading are tier active and the run is
+    read-only (requests that can change state are aborted); click, fill and press make it intrusive (approval).
+    Evidence: requests.jsonl, page.html (inputs masked), screenshot.png (passwords and mask selectors masked)."""
+    try:
+        return await _thread(actions.browse, engagement, url, steps or [], identity or None, approval_id or None,
+                             max_tier or None, task or None, timeout_s, mask or [])
+    except ValueError as e:
+        return f"REFUSED: {e}"
+
+
+@mcp.tool()
+def propose_authz_matrix(engagement: str, name: str, operations: list[dict], identities: list[str],
+                         expect: dict, purpose: str = "", allow_writes: bool = False, max_writes: int = 0,
+                         cleanup: list[dict] | None = None, no_cleanup_reason: str = "") -> str:
+    """Propose an authorization test matrix (RW-011) for the researcher to approve. operations: [{"id", "method",
+    "url", "body"?, "headers"?, "marker": text only the owner's record contains, "effect": "read"|"write"}].
+    identities: identity names, plus "anonymous". expect: {operation id: {identity: "allow"|"deny"}}: the intended
+    permissions (from the client's documentation or the researcher), not guesses from responses. Operations that
+    change state (effect write; GET is not assumed harmless) need allow_writes, max_writes and cleanup operations.
+    The matrix runs only after the researcher approves exactly this version (./rvkit authz <eng> approve <name>)."""
+    import authz
+    try:
+        m = authz.propose(engagement, name, {"operations": operations, "identities": identities, "expect": expect,
+                                             "purpose": purpose, "allow_writes": allow_writes, "max_writes": max_writes,
+                                             "cleanup": cleanup or [], "no_cleanup_reason": no_cleanup_reason})
+        return (f"proposed matrix {name} (digest {m['digest']}): {len(m['operations'])} operations x "
+                f"{len(m['identities'])} identities. Ask the researcher to review and approve it on the host: "
+                f"./rvkit authz {engagement} approve {name}   Then call run_authz_matrix.")
+    except ValueError as e:
+        return f"REFUSED: {e}"
+
+
+@mcp.tool()
+async def run_authz_matrix(engagement: str, name: str, task: str = "") -> str:
+    """Run an approved authorization matrix: checks every identity first (blocked cells when a session isn't
+    valid), sends each operation as each identity, compares the data returned (fixture markers, similarity to the
+    owner's response), and reports pass, FAIL (allowed where deny was expected), unexpected-deny or blocked per
+    cell, with evidence. A FAIL is a candidate: verify it before recording a finding."""
+    import authz
+    try:
+        return (await _thread(authz.run, engagement, name, task or None))["text"]
+    except ValueError as e:
+        return f"REFUSED: {e}"
+
+
+@mcp.tool()
+def list_authz_matrices(engagement: str) -> str:
+    """Proposed authorization matrices and whether each is approved (or changed since approval)."""
+    import authz
+    try:
+        rows = authz.listing(engagement)
+        return json.dumps(rows, indent=1) if rows else f"no authorization matrices proposed for {engagement}"
     except ValueError as e:
         return f"REFUSED: {e}"
 

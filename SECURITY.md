@@ -93,7 +93,11 @@ is weaker than described here.
   OpenRouter, Anthropic, OpenAI) may receive calls about an engagement; the model gateway refuses the others and
   drops fallbacks that aren't allowed. Content the agent reads can't change which engagement a call is about.
 - **Credentials by reference.** The agent uses stored credentials as `$RV_CRED_<NAME>` or `{{cred:NAME}}` without
-  seeing them; values are kept in the control volume and replaced by the reference in output and evidence.
+  seeing them; values are encrypted in the control volume and replaced by the reference in output and evidence.
+- **Identities, captures and the browser.** Test-account sessions are encrypted like credentials and added to
+  requests only for the identity's hosts, tiers and effects, after the approval (which names the identity).
+  Imported captures are sanitized before the agent sees them; originals stay encrypted and host-only. The
+  browser runs in the engagement's sandbox and every request it makes is checked against the scope.
 
 ---
 

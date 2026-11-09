@@ -1,5 +1,6 @@
 """Fast checks that need no Docker, no model and no network: tier classification (tiers.yaml), rate caps, scope and rules
-parsing, the scope pre-check, the findings database, the web-fetch guard and the console's request checks.
+parsing, the scope pre-check, the findings database, the web-fetch guard, the console's request checks, the
+credential vault, identity specs, capture sanitizing and authorization-matrix validation.
 They run on every pull request in about a second. The full stack is tested by the Integration workflow.
 Run: python3 evals/unit_test.py
 """
@@ -709,6 +710,120 @@ class Credentials(unittest.TestCase):
         self.assertIsNone(r["engagements"]["e2"]["client_data"])
         core.unbind_conversation("e1", "0123abcd-0000-4000-8000-00000000beef")
         self.assertEqual(json.load(open(os.path.join(core.ROUTES, "routes.json")))["conversations"], {})
+
+
+class AuthenticatedTesting(Credentials):
+    """RW-008 to RW-011: the vault, identity specs, capture sanitizing and comparison, the Browser support rule and
+    authorization-matrix validation. Needs the cryptography package (kali-mcp's venv; pip install cryptography)."""
+    def test_vault(self):
+        import json
+        core.cred_set("e1", "TOKEN", "vault-secret-value", expires="2099-01-01")
+        raw = open(os.path.join(core.ctl_dir("e1"), "credentials.vault.json")).read()
+        self.assertNotIn("vault-secret-value", raw)
+        self.assertEqual(oct(os.stat(os.path.join(core.CONTROL, "vault.key")).st_mode & 0o777), "0o600")
+        self.assertFalse(core.cred_list("e1")[0]["expired"])
+        with self.assertRaises(ValueError):
+            core.cred_set("e1", "OLD", "value-value", expires="2001-01-01")
+        old_key = open(os.path.join(core.CONTROL, "vault.key"), "rb").read()
+        self.assertGreaterEqual(core.vault_rotate(), 1)
+        self.assertNotEqual(open(os.path.join(core.CONTROL, "vault.key"), "rb").read(), old_key)
+        self.assertEqual(core.cred_value("e1", "TOKEN"), "vault-secret-value")
+        # an RW-006 plain-text file is encrypted on first use and removed
+        json.dump({"LEGACY": {"value": "legacy-plain-value"}}, open(os.path.join(core.ctl_dir("e2"), "credentials.json"), "w"))
+        self.assertEqual(core.cred_value("e2", "LEGACY"), "legacy-plain-value")
+        self.assertFalse(os.path.exists(os.path.join(core.ctl_dir("e2"), "credentials.json")))
+        self.assertNotIn("legacy-plain-value", open(os.path.join(core.ctl_dir("e2"), "credentials.vault.json")).read())
+
+    def test_identity_spec(self):
+        import identities
+        core.cred_set("e1", "PASS", "pass-value-1")
+        ok = {"kind": "form", "login_url": "https://example.com/login", "username": "u@example.com", "secret": "PASS",
+              "check": {"url": "https://example.com/me", "marker": "u@example.com"}, "role": "member"}
+        identities.identity_set("e1", "member", ok)
+        pub = identities.identity_list("e1")[0]
+        self.assertEqual((pub["name"], pub["hosts"], pub["effects"], pub["status"]["state"]),
+                         ("member", ["example.com"], ["read"], "unchecked"))
+        self.assertNotIn("pass-value-1", str(pub))
+        for bad, why in ((dict(ok, kind="magic"), "kind"), (dict(ok, secret="NOPE"), "NOPE"),
+                         (dict(ok, login_url="https://evil.test/login"), "scope"), (dict(ok, extra=1), "unknown"),
+                         (dict(ok, effects=["delete"]), "effects"), (dict(ok, expires="2001-01-01"), "past")):
+            with self.subTest(why=why), self.assertRaises(ValueError):
+                identities.identity_set("e1", "x", bad)
+        with self.assertRaises(ValueError):
+            identities.identity_set("e1", "Bad Name", ok)
+        identities.usable("e1", "member", "https://example.com/a", "active", "read")
+        for args, why in ((("https://example.com/a", "active", "write"), "read actions only"),
+                          (("https://other.example.org/a", "active", "read"), "only for"),
+                          (("https://example.com/a", "intrusive", "read"), "tiers")):
+            with self.subTest(why=why), self.assertRaisesRegex(ValueError, why):
+                identities.usable("e1", "member", *args)
+        identities.revoke("e1", "member", "test")
+        with self.assertRaisesRegex(ValueError, "revoked"):
+            identities.usable("e1", "member", "https://example.com/a", "active", "read")
+
+    def test_capture_sanitizer(self):
+        import captures, json
+        c = {}
+        self.assertEqual(captures.sanitize_url("https://a.test/x?api_key=abc123&page=2", c),
+                         "https://a.test/x?api_key=[redacted]&page=2")
+        h = dict(captures.sanitize_headers([["Cookie", "sid=1; theme=dark"], ["Authorization", "Bearer abc"],
+                                            ["Accept", "application/json"], ["X-Trace", "eyJhbGciOiJI.eyJzdWIiOiIx.sig"]], c))
+        self.assertEqual(h["Cookie"], "sid=[redacted]; theme=[redacted]")
+        self.assertEqual((h["Authorization"], h["Accept"], h["X-Trace"]), ("[redacted]", "application/json", "[redacted]"))
+        body = json.loads(captures.sanitize_text('{"user": "bob", "password": "hunter22", "nested": {"access_token": "t"},'
+                                                 ' "note": "key AKIAABCDEFGHIJKLMNOP"}', "application/json", c))
+        self.assertEqual((body["user"], body["password"], body["nested"]["access_token"], body["note"]),
+                         ("bob", "[redacted]", "[redacted]", "key [redacted]"))
+        self.assertEqual(captures.sanitize_text("user=bob&password=hunter22", "application/x-www-form-urlencoded", c),
+                         "user=bob&password=[redacted]")
+        self.assertGreaterEqual(sum(c.values()), 7)
+        har = {"log": {"entries": [{"startedDateTime": "t", "request": {"method": "GET", "url": "https://example.com/a",
+               "headers": []}, "response": {"status": 200, "headers": [], "content": {"text": "ok"}}}]}}
+        self.assertEqual(len(captures.parse(json.dumps(har).encode())[1]), 1)
+
+    def test_compare(self):
+        import captures
+        r = captures.compare(200, '{"a": 1}', 200, '{"a": 1, "secret": {"b": 2}} MARK', markers=("MARK", "NONE"))
+        self.assertTrue(r["same_status"])
+        self.assertEqual(r["markers"], {"MARK": [False, True], "NONE": [False, False]})
+        r = captures.compare(200, '{"a": 1}', 403, '{"a": 1, "b": {"c": 2}}')
+        self.assertEqual((r["same_status"], r["json_fields_added"], r["json_fields_removed"]), (False, ["b", "b.c"], []))
+        self.assertLess(r["similarity"], 1)
+
+    def test_browser_support_rule(self):
+        r, err = policy.parse_rules("- Browser support: fonts.gstatic.com, cdn.example.net")
+        self.assertEqual((err, r["browser_support"]), ([], ["fonts.gstatic.com", "cdn.example.net"]))
+        self.assertTrue(policy.parse_rules("- Browser support: not a domain!")[1])
+        self.assertEqual(policy.parse_rules("")[0]["browser_support"], [])
+
+    def test_authz_validate(self):
+        import authz, identities
+        core.cred_set("e1", "TOK", "token-value-1")
+        spec = {"kind": "bearer", "secret": "TOK", "check": {"url": "https://example.com/me"}}
+        identities.identity_set("e1", "a", spec)
+        identities.identity_set("e1", "b", spec)
+        ops = [{"id": "inv-1", "url": "https://example.com/inv/1", "marker": "M"}]
+        m = authz.validate("e1", "t", {"operations": ops, "identities": ["a", "b", "anonymous"],
+                                       "expect": {"inv-1": {"a": "allow", "b": "deny", "anonymous": "deny"}}})
+        self.assertEqual((m["operations"][0]["effect"], m["allow_writes"], m["max_writes"]), ("read", False, 0))
+        d1 = authz._digest(m)
+        m["expect"]["inv-1"]["b"] = "allow"
+        self.assertNotEqual(authz._digest(m), d1)
+        bad = [({"operations": [], "identities": ["a"], "expect": {}}, "operations"),
+               ({"operations": [{"id": "x", "url": "https://evil.test/"}], "identities": ["a"], "expect": {"x": {"a": "allow"}}}, "scope"),
+               ({"operations": ops, "identities": ["zed"], "expect": {"inv-1": {"zed": "allow"}}}, "identity"),
+               ({"operations": ops, "identities": ["a"], "expect": {"inv-1": {"a": "maybe"}}}, "expect"),
+               ({"operations": [{"id": "w", "method": "PATCH", "url": "https://example.com/p"}], "identities": ["a"],
+                 "expect": {"w": {"a": "allow"}}}, "writes need allow_writes"),
+               ({"operations": [{"id": "w", "method": "PATCH", "url": "https://example.com/p"}], "identities": ["a"],
+                 "expect": {"w": {"a": "allow"}}, "allow_writes": True}, "writes need cleanup")]
+        for matrix, why in bad:
+            with self.subTest(why=why), self.assertRaises(ValueError):
+                authz.validate("e1", "t", matrix)
+        w = authz.validate("e1", "w", {"operations": [{"id": "w", "method": "PATCH", "url": "https://example.com/p"}],
+                                       "identities": ["a", "b"], "expect": {"w": {"a": "allow", "b": "deny"}},
+                                       "allow_writes": True, "no_cleanup_reason": "idempotent"})
+        self.assertEqual((w["operations"][0]["effect"], w["max_writes"]), ("write", 2))
 
 if __name__ == "__main__":
     unittest.main(verbosity=1)

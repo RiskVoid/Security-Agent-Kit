@@ -167,7 +167,7 @@ lab_vampi_init() { # VAmPI starts with an empty database: /createdb fills it wit
   done
   warn "VAmPI database setup didn't complete: check ./rvkit logs lab-vampi"
 }
-LAB="lab-juice-shop lab-dvwa lab-dvwa-db lab-vampi lab-dvga lab-llm"
+LAB="lab-juice-shop lab-dvwa lab-dvwa-db lab-vampi lab-dvga lab-llm lab-laravel lab-laravel-fixed"
 
 # Who acts, for the audit log: cli:<login> here; the console sets RVKIT_ACTOR=console:<login> when it calls rvkit.
 actor() { local a="${RVKIT_ACTOR:-cli:$(id -un 2>/dev/null | tr -cd 'A-Za-z0-9._@-' | cut -c1-64)}"
@@ -576,7 +576,7 @@ cmd_worker() {
 }
 
 # ---------------------------------------------------------------- install / completion
-COMMANDS="setup up down update console status doctor logs connect worker planner budget test key openhands new engagement eng quickstart watch scope show policy finding approvals approve deny halt resume conversation cred task audit report close delete lab bench install completion help"
+COMMANDS="setup up down update console status doctor logs connect worker planner budget test key openhands new engagement eng quickstart watch scope show policy finding approvals approve deny halt resume conversation cred identity capture authz vault task audit report close delete lab bench install completion help"
 ENG_SUB="list new show scope approvals approve deny halt resume audit report close delete"
 cmd_install() {
   local dir="${1:-$HOME/.local/bin}"
@@ -598,7 +598,7 @@ _rvkit() {
   case "\$prev" in
     eng) COMPREPLY=( \$(compgen -W "$ENG_SUB" -- "\$cur") ) ;;
     worker) COMPREPLY=( \$(compgen -W "show colab local api openrouter fallback" -- "\$cur") ) ;;
-    lab) COMPREPLY=( \$(compgen -W "up down status" -- "\$cur") ) ;;
+    lab) COMPREPLY=( \$(compgen -W "up down status reset" -- "\$cur") ) ;;
     show|policy|scope|approvals|approve|deny|halt|resume|conversation|cred|audit|report|close|delete)
       engs="\$(ls "\$(grep -E '^ENGAGEMENTS_DIR=' "$KIT/.env" 2>/dev/null | cut -d= -f2- | sed "s|^~|\$HOME|")" 2>/dev/null | grep -v '^_')"
       COMPREPLY=( \$(compgen -W "\$engs" -- "\$cur") ) ;;
@@ -688,6 +688,10 @@ ${B}Engagements${N}  (also as: rvkit eng <command>)
   halt|resume <eng>             stop commands, worker tasks and model calls, block new ones / allow again
   conversation <eng> [new [msg]|list|bind <id>|unbind <id>]   OpenHands conversations bound to the engagement
   cred <eng> [list|set <NAME>|rm <NAME>]   credentials for the agent to use by reference (values never shown)
+  identity <eng> [list|set <name> <spec.json>|check|revoke|rm]   test accounts for authenticated testing
+  capture <eng> [list|import <file>|show|raw|rm]   HAR / Burp captures (sanitized for the agent; raw kept encrypted)
+  authz <eng> [list|show|approve|run <name>]   review and approve authorization matrices the agent proposes
+  vault rotate                  replace the vault key (credentials and sessions are re-encrypted)
   task cancel|resume <task-id>  stop a worker task / continue an interrupted one
   audit [eng] [n]               last n audit-log entries
   finding <eng> <F-id> k=v...   change a finding: status=, severity=, notes=, title=, duplicate_of= (audited)
@@ -821,12 +825,56 @@ for k, b in p.items(): print("%s: spent $%.4f in the current 24 h period" % (k, 
     eng="$1"; shift
     case "${1:-list}" in
       list) kctl cred "$eng" list ;;
-      set)  [ $# -ge 2 ] || die "usage: ./rvkit cred <engagement> set <NAME>   (the value is asked for, hidden)"
+      set)  [ $# -ge 2 ] || die "usage: ./rvkit cred <engagement> set <NAME> [--expires YYYY-MM-DD]   (the value is asked for, hidden)"
             v="$(ask_secret "Value for $2")"; [ -n "$v" ] || die "no value given"
-            printf '%s' "$v" | kctl cred "$eng" set "$2" ;;
+            printf '%s' "$v" | kctl cred "$eng" set "${@:2}" ;;
       rm)   [ $# -ge 2 ] || die "usage: ./rvkit cred <engagement> rm <NAME>"; kctl cred "$eng" rm "$2" ;;
       *) die "usage: ./rvkit cred <engagement> [list | set <NAME> | rm <NAME>]" ;;
     esac ;;
+  identity)
+    need_env; [ $# -ge 1 ] || die "usage: ./rvkit identity <engagement> [list | set <name> <spec.json> | check <name> | revoke <name> | rm <name>]"
+    eng="$1"; shift
+    case "${1:-list}" in
+      list)   kctl identity "$eng" list ;;
+      set)    [ $# -ge 3 ] && [ -f "$3" ] || die "usage: ./rvkit identity <engagement> set <name> <spec.json>   (see docs/authenticated-testing.md)"
+              kctl identity "$eng" set "$2" < "$3" >/dev/null && ok "identity $2 saved; check it: ./rvkit identity $eng check $2" ;;
+      check|revoke|rm) [ $# -ge 2 ] || die "usage: ./rvkit identity <engagement> $1 <name>"; kctl identity "$eng" "$@" ;;
+      *) die "usage: ./rvkit identity <engagement> [list | set <name> <spec.json> | check <name> | revoke <name> | rm <name>]" ;;
+    esac ;;
+  capture)
+    need_env; [ $# -ge 1 ] || die "usage: ./rvkit capture <engagement> [list | import <file.har|file.xml> [name] | show <id> | raw <id> | rm <id>]"
+    eng="$1"; shift
+    case "${1:-list}" in
+      list)   kctl capture "$eng" list ;;
+      import) [ $# -ge 2 ] && [ -f "$2" ] || die "usage: ./rvkit capture <engagement> import <file.har|burp.xml> [name]"
+              kctl capture "$eng" import --name "${3:-$(basename "$2")}" < "$2" ;;
+      show|raw|rm) [ $# -ge 2 ] || die "usage: ./rvkit capture <engagement> $1 <id>"; kctl capture "$eng" "$1" "$2" ;;
+      *) die "usage: ./rvkit capture <engagement> [list | import <file> [name] | show <id> | raw <id> | rm <id>]" ;;
+    esac ;;
+  authz)
+    need_env; [ $# -ge 1 ] || die "usage: ./rvkit authz <engagement> [list | show <name> | approve <name> | run <name>]"
+    eng="$1"; shift
+    case "${1:-list}" in
+      list) kctl authz "$eng" list ;;
+      show|run) [ $# -ge 2 ] || die "usage: ./rvkit authz <engagement> $1 <name>"; kctl authz "$eng" "$1" "$2" ;;
+      approve)
+        [ $# -ge 2 ] || die "usage: ./rvkit authz <engagement> approve <name>"
+        m="$(kctl authz "$eng" show "$2")" || exit 1
+        printf '%s\n' "$m" | python3 -c 'import json,sys
+m=json.load(sys.stdin)
+print(f"Matrix {m[\"name\"]} (digest {m[\"digest\"]}): {m.get(\"purpose\") or \"no purpose given\"}")
+for o in m["operations"]:
+    print(f"  {o[\"id\"]:<18} {o.get(\"method\",\"GET\"):<6} {o[\"url\"]}  effect {o[\"effect\"]}" + (f"  marker {o[\"marker\"]!r}" if o.get("marker") else ""))
+    print("      expect " + ", ".join(f"{i}: {m[\"expect\"][o[\"id\"]][i]}" for i in m["identities"]))
+if m.get("allow_writes"): print(f"  writes allowed: at most {m[\"max_writes\"]}; cleanup: {len(m[\"cleanup\"])} request(s)")'
+        d="$(printf '%s' "$m" | python3 -c 'import json,sys; print(json.load(sys.stdin)["digest"])')"
+        yesno "Approve this matrix?" "$([ -n "${RVKIT_YES:-}" ] && echo y || echo n)" || die "not approved"
+        kctl authz "$eng" approve "$2" --digest "$d" ;;
+      *) die "usage: ./rvkit authz <engagement> [list | show <name> | approve <name> | run <name>]" ;;
+    esac ;;
+  vault)
+    need_env; [ "${1:-}" = rotate ] || die "usage: ./rvkit vault rotate   (new vault key; every credential and session re-encrypted)"
+    kctl vault rotate ;;
   task)
     need_env; [ $# -ge 2 ] || die "usage: ./rvkit task cancel|resume <task-id>"
     case "$1" in cancel|resume) ;; *) die "usage: ./rvkit task cancel|resume <task-id>" ;; esac
@@ -849,11 +897,14 @@ for k, b in p.items(): print("%s: spent $%.4f in the current 24 h period" % (k, 
         echo "   VAmPI       http://10.250.0.13:5000   REST API (OWASP API Top 10), spec at /openapi.json"
         echo "   DVGA        http://10.250.0.14:5013/graphql   GraphQL API"
         echo "   LLM lab     http://10.250.0.15:8000   AI support assistant (chat /api/chat, MCP /mcp)"
+        echo "   Ledgerly    http://10.250.0.16:8000   Laravel multi-tenant app (alice@acme.test / alice-lab-pass); fixed build at 10.250.0.17:8000"
         echo "   Try: ./rvkit quickstart, or ./rvkit engagement lab-juice 10.250.0.10" ;;
       down)   docker compose --profile lab stop $LAB >/dev/null 2>&1; docker compose --profile lab rm -f $LAB >/dev/null 2>&1
               ok "Lab stopped and removed (it resets to a clean state on the next 'lab up')" ;;
       status) docker compose --profile lab ps $LAB --format 'table {{.Service}}\t{{.State}}\t{{.Status}}' ;;
-      *) die "usage: ./rvkit lab up|down|status" ;;
+      reset)  # Ledgerly recreates its database on start: a restart is a clean reset of its fixtures
+              docker compose --profile lab restart lab-laravel lab-laravel-fixed >/dev/null && ok "Ledgerly reset to its seeded fixtures" ;;
+      *) die "usage: ./rvkit lab up|down|status|reset" ;;
     esac ;;
   bench)
     need_env; [ $# -ge 1 ] || die "usage: ./rvkit bench <name|all> [--agent riskvoid-planner|riskvoid-local]   (list: ls evals/benchmarks)"

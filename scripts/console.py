@@ -269,6 +269,7 @@ def task_control(eng, tid, action):
 
 
 CRED_RX = re.compile(r"^[A-Za-z][A-Za-z0-9_]{0,31}$")
+IDENT_RX = re.compile(r"^[a-z][a-z0-9_-]{0,31}$")
 
 
 def worker_tasks(eng):
@@ -437,6 +438,30 @@ def api_get(path, q):
                 "approvals": [a for a in json.loads(ctl("approvals", eng, "--json") or "[]")],
                 "credentials": json.loads(ctl("cred", eng, "list", "--json") or "[]"),
                 "models": rv_routes.models(E), "conversations": conv_list(eng)}
+    if what == "testing":  # identities, captures and authorization matrices (RW-008 to RW-011)
+        results = {}
+        adir = eng_path(eng, "evidence", "authz")
+        for fn in sorted(os.listdir(adir)) if os.path.isdir(adir) else []:
+            if fn.endswith(".json"):
+                try:
+                    r = json.load(open(os.path.join(adir, fn)))
+                    results[r["matrix"]] = {"at": r["at"], "summary": r["summary"], "cells": r["cells"],
+                                            "file": f"evidence/authz/{fn}", "digest": r["digest"]}
+                except (OSError, ValueError, KeyError):
+                    continue
+        return {"identities": json.loads(ctl("identity", eng, "list", "--json") or "[]"),
+                "captures": json.loads(ctl("capture", eng, "list") or "[]"),
+                "matrices": json.loads(ctl("authz", eng, "list") or "[]"), "results": results}
+    if what == "capture":
+        cid = q.get("id", [""])[0]
+        if not re.fullmatch(r"[a-z0-9-]{4,40}", cid):
+            raise Fail("bad capture id")
+        return json.loads(ctl("capture", eng, "show", cid))
+    if what == "matrix":
+        name = q.get("name", [""])[0]
+        if not re.fullmatch(r"[a-z0-9][a-z0-9_-]{0,47}", name):
+            raise Fail("bad matrix name")
+        return json.loads(ctl("authz", eng, "show", name))
     if what == "audit":
         raw = q.get("n", ["300"])[0]
         if not raw.isdigit():
@@ -563,6 +588,60 @@ def api_post(path, body):
             if not 4 <= len(value) <= 8192:
                 raise Fail("Value: 4 to 8192 characters.")
             return {"output": ctl("cred", eng, "set", name, stdin=value)}
+        if action == "identity":
+            name, op = field(body, "name", str, ""), field(body, "op", str, "")
+            if not IDENT_RX.match(name):
+                raise Fail("Name: lower-case letters, digits, - and _ (start with a letter, up to 32).")
+            if op == "set":
+                spec = body.get("spec")
+                if not isinstance(spec, dict):
+                    raise Fail("spec: a JSON object")
+                return json.loads(ctl("identity", eng, "set", name, stdin=json.dumps(spec)))
+            if op == "check":
+                return json.loads(ctl("identity", eng, "check", name, ok=(0, 4), timeout=180))
+            if op in ("revoke", "rm"):
+                return {"output": ctl("identity", eng, op, name, *(["console"] if op == "revoke" else []))}
+            raise Fail("op: set, check, revoke or rm")
+        if action == "capture":
+            op = field(body, "op", str, "")
+            if op == "import":
+                import base64
+                try:
+                    data = base64.b64decode(field(body, "data", str, ""), validate=True)
+                except ValueError:
+                    raise Fail("data: the file, base64-encoded")
+                if not data:
+                    raise Fail("the capture is empty")
+                name = field(body, "name", str, "")[:100]
+                return json.loads(ctl("capture", eng, "import", "--name", name or "capture",
+                                      stdin=data.decode("utf-8", "replace"), timeout=300))
+            cid = field(body, "id", str, "")
+            if not re.fullmatch(r"[a-z0-9-]{4,40}", cid):
+                raise Fail("bad capture id")
+            if op == "rm":
+                return {"output": ctl("capture", eng, "rm", cid)}
+            if op == "replay":
+                entry = body.get("entry")
+                if not isinstance(entry, int) or entry < 1:
+                    raise Fail("entry: the request number")
+                req = {"entry": entry, "identity": field(body, "identity", str, "") or None,
+                       "changes": body.get("changes") if isinstance(body.get("changes"), dict) else None,
+                       "markers": [m for m in body.get("markers") or [] if isinstance(m, str)][:10],
+                       "approval_id": field(body, "approval_id", str, "") or None}
+                return json.loads(ctl("capture", eng, "replay", cid, stdin=json.dumps(req), timeout=300))
+            raise Fail("op: import, replay or rm")
+        if action == "authz":
+            name, op = field(body, "name", str, ""), field(body, "op", str, "")
+            if not re.fullmatch(r"[a-z0-9][a-z0-9_-]{0,47}", name):
+                raise Fail("bad matrix name")
+            if op == "approve":  # the digest the researcher reviewed: a matrix changed since then isn't approved
+                dg = field(body, "digest", str, "")
+                if not re.fullmatch(r"[0-9a-f]{32}", dg):
+                    raise Fail("digest: the one shown with the matrix")
+                return {"output": ctl("authz", eng, "approve", name, "--digest", dg)}
+            if op == "run":
+                return {"output": ctl("authz", eng, "run", name, timeout=900)}
+            raise Fail("op: approve or run")
         if action == "task":
             act_ = field(body, "action", str, "")
             if act_ not in ("cancel", "resume"):
@@ -687,7 +766,8 @@ class H(BaseHTTPRequestHandler):
         except ValueError:
             return self._send(400, {"error": "bad Content-Length"})
         if n > 2_000_000:
-            return self._send(413, {"error": "too large"})
+            return self._send(413, {"error": "too large (the console takes up to about 1.4 MB; import bigger "
+                                             "captures with ./rvkit capture <engagement> import <file>)"})
         try:
             body = json.loads(self.rfile.read(n) or b"{}")
         except ValueError:

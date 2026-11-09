@@ -232,6 +232,7 @@ and add `*.` entries where you meant subdomains.
 | `Approval expiry:` | `1h` to `168h` | `24h` |
 | `Strict tiers:` | `on` or `off` | `off` |
 | `Worker model:` | `private` or `auto` | `auto` |
+| `Browser support:` | domain names the browser tool may load page assets from (fonts, CDNs) although they aren't in scope; GET page assets only ([authenticated-testing.md](authenticated-testing.md#the-browser)) | none |
 | `Client data:` | `any`, or where model calls about this engagement may go: any of `local`, `colab`, `api`, `openrouter`, `anthropic`, `openai` ([below](#where-client-data-may-go)) | `any` |
 | `Stop condition:` | free text, one per line: shown to the agent with the rules, kept in each policy revision | none |
 | `Note:` | free text kept with the rules | none |
@@ -500,12 +501,15 @@ Give the agent a password, token or API key without putting it in a chat or a fi
 
 ```sh
 ./rvkit cred acme-2026-11 set APP_PASS      # asks for the value (hidden); it is never printed
+./rvkit cred acme-2026-11 set API_KEY --expires 2026-11-30   # refused after that day
 ./rvkit cred acme-2026-11 list              # names and when they were set, no values
 ./rvkit cred acme-2026-11 rm APP_PASS
 ```
 
 The console's Overview has the same in its **Credentials** card. Values are stored in the engagement's control
-folder (`/control/eng/<eng>/credentials.json`, root only, mode 0600), never in the engagement folder.
+folder, encrypted with the vault key (`/control/eng/<eng>/credentials.vault.json` and `/control/vault.key`, root
+only, mode 0600), never in the engagement folder. `./rvkit vault rotate` replaces the key and re-encrypts every
+credential and identity session. An expired credential is refused rather than sent.
 
 The agent sees only the names (kali tool `list_credentials`) and uses a credential by reference:
 
@@ -516,6 +520,10 @@ The agent sees only the names (kali tool `list_credentials`) and uses a credenti
 Wherever a value would show up (command output, evidence files, saved requests and responses, the audit log), it
 is replaced by its reference. The audit log records which credentials a command used. Report exports aren't
 scrubbed: don't paste a value into a finding by hand.
+
+For logged-in testing, define **identities** (test accounts built on these credentials), import request
+**captures** and let the agent propose **authorization matrices**: see
+[authenticated-testing.md](authenticated-testing.md).
 
 ---
 

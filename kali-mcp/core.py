@@ -201,7 +201,8 @@ def info(eng):
     return {"engagement": eng, "uid": uid, "revision": revision(eng), "policy_version": policy_version(eng),
             "scope": rvpolicy.legacy_scope(pol), "policy": {k: pol[k] for k in POLICY_KEYS},
             "rules": rules, "halted": os.path.exists(os.path.join(ctl_dir(eng), "HALT")), "usage": usage(eng),
-            "infra_domains": infra_domains() if rules["network"] == "online" else []}
+            "infra_domains": (infra_domains() + rules.get("browser_support", []))
+            if rules["network"] == "online" else []}
 
 
 def infra_domains():
@@ -753,26 +754,102 @@ def publish_routes():
         pass
 
 
-# ---------------------------------------------------------------- credential references (RW-006)
-# Values live in the control volume only. Commands use $RV_CRED_<NAME> (set in the sandbox), requests use
-# {{cred:NAME}} in the URL, headers or body. Values are replaced by the reference in what is returned to the model,
-# in kali-mcp's own evidence files and in the audit log. RW-008 adds encryption, identities and expiry.
+# ---------------------------------------------------------------- credential vault (RW-006, RW-008)
+# Values live in the control volume only, encrypted with the vault key (/control/vault.key, root only; host
+# controlled: `./rvkit vault rotate` replaces it). Commands use $RV_CRED_<NAME> (set in the sandbox), requests use
+# {{cred:NAME}} in the URL, headers or body, and identities (identities.py) name the credentials they log in with.
+# Values are replaced by the reference in what is returned to the model, in kali-mcp's own evidence files and in
+# the audit log. A credential can expire: an expired one is refused rather than sent.
 CRED_NAME = re.compile(r"^[A-Z][A-Z0-9_]{0,31}$")
 CRED_REF = re.compile(r"\{\{cred:([A-Za-z][A-Za-z0-9_]{0,31})\}\}")
+_VAULT_LOCK = threading.RLock()
+
+
+def _vault_key_file():
+    return os.path.join(CONTROL, "vault.key")
+
+
+def _fernet():
+    from cryptography.fernet import Fernet  # in kali-mcp's venv; imported here so other users of core don't need it
+    path = _vault_key_file()
+    with _VAULT_LOCK:
+        if not os.path.exists(path):
+            fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            with os.fdopen(fd, "wb") as f:
+                f.write(Fernet.generate_key())
+        return Fernet(open(path, "rb").read().strip())
+
+
+def seal(value):
+    """Encrypt a string with the vault key (str token)."""
+    return _fernet().encrypt(value.encode()).decode()
+
+
+def unseal(token):
+    from cryptography.fernet import InvalidToken
+    try:
+        return _fernet().decrypt(token.encode()).decode()
+    except InvalidToken:
+        raise ValueError("a vault entry can't be decrypted with the current vault key")
 
 
 def _cred_file(eng):
-    return os.path.join(ctl_dir(eng), "credentials.json")
+    return os.path.join(ctl_dir(eng), "credentials.vault.json")
 
 
-def _creds(eng):
+def _now_iso():
+    return datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds")
+
+
+def _expired(stamp):
+    if not stamp:
+        return False
+    try:
+        when = datetime.datetime.fromisoformat(stamp if "T" in stamp else stamp + "T23:59:59+00:00")
+    except ValueError:
+        return True
+    if when.tzinfo is None:
+        when = when.replace(tzinfo=datetime.timezone.utc)
+    return when < datetime.datetime.now(datetime.timezone.utc)
+
+
+def _migrate_plain(eng):
+    """credentials.json from RW-006 (plain text in the control volume) -> the encrypted vault file."""
+    old = os.path.join(ctl_dir(eng), "credentials.json")
+    if not os.path.exists(old):
+        return
+    try:
+        plain = json.load(open(old))
+    except (OSError, ValueError):
+        plain = {}
+    sealed = _sealed(eng)
+    for n, v in plain.items():
+        sealed.setdefault(n, {"token": seal(v["value"]), "set_by": v.get("set_by"), "set_at": v.get("set_at")})
+    _write_json(_cred_file(eng), sealed)
+    os.chmod(_cred_file(eng), 0o600)
+    os.remove(old)
+    _audit({"engagement": eng, "event": "credentials-encrypted", "names": sorted(plain)})
+
+
+def _sealed(eng):
     try:
         return json.load(open(_cred_file(eng)))
     except (OSError, ValueError):
         return {}
 
 
-def cred_set(eng, name, value):
+def _creds(eng):
+    """{NAME: {"value", "set_by", "set_at", "expires"}} decrypted (never returned to the model)."""
+    with _VAULT_LOCK:
+        if os.path.exists(os.path.join(ctl_dir(eng), "credentials.json")):
+            _migrate_plain(eng)
+        out = {}
+        for n, v in _sealed(eng).items():
+            out[n] = {**{k: v.get(k) for k in ("set_by", "set_at", "expires")}, "value": unseal(v["token"])}
+        return out
+
+
+def cred_set(eng, name, value, expires=None):
     require(eng)
     name = (name or "").upper()
     if not CRED_NAME.match(name):
@@ -780,31 +857,47 @@ def cred_set(eng, name, value):
     value = (value or "").rstrip("\r\n")
     if len(value) < 4 or len(value) > 8192:
         raise ValueError("the value must be 4 to 8192 characters")
-    c = _creds(eng)
-    c[name] = {"value": value, "set_by": ACTOR,
-               "set_at": datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds")}
-    _write_json(_cred_file(eng), c)
-    os.chmod(_cred_file(eng), 0o600)
-    _audit({"engagement": eng, "event": "credential-set", "name": name})
+    if expires and _expired(expires):
+        raise ValueError(f"expiry {expires} is in the past (or not YYYY-MM-DD / ISO time)")
+    with _VAULT_LOCK:
+        _creds(eng)  # migrates a plain-text file first
+        c = _sealed(eng)
+        c[name] = {"token": seal(value), "set_by": ACTOR, "set_at": _now_iso(), "expires": expires or None}
+        _write_json(_cred_file(eng), c)
+        os.chmod(_cred_file(eng), 0o600)
+    _audit({"engagement": eng, "event": "credential-set", "name": name, **({"expires": expires} if expires else {})})
 
 
 def cred_remove(eng, name):
     require(eng)
-    c = _creds(eng)
-    if c.pop((name or "").upper(), None) is None:
-        raise ValueError(f"no credential {name} in {eng}")
-    _write_json(_cred_file(eng), c)
+    with _VAULT_LOCK:
+        _creds(eng)
+        c = _sealed(eng)
+        if c.pop((name or "").upper(), None) is None:
+            raise ValueError(f"no credential {name} in {eng}")
+        _write_json(_cred_file(eng), c)
     _audit({"engagement": eng, "event": "credential-removed", "name": name.upper()})
 
 
 def cred_list(eng):
     require(eng)
-    return [{"name": k, "set_by": v.get("set_by"), "set_at": v.get("set_at"), "env": f"RV_CRED_{k}",
-             "ref": "{{cred:%s}}" % k} for k, v in sorted(_creds(eng).items())]
+    return [{"name": k, "set_by": v.get("set_by"), "set_at": v.get("set_at"), "expires": v.get("expires"),
+             "expired": _expired(v.get("expires")), "env": f"RV_CRED_{k}", "ref": "{{cred:%s}}" % k}
+            for k, v in sorted(_creds(eng).items())]
+
+
+def cred_value(eng, name):
+    """One credential's value, for the identity broker. Unknown or expired names raise ValueError."""
+    c = _creds(eng).get((name or "").upper())
+    if not c:
+        raise ValueError(f"no credential {name} in {eng} (set it on the host: ./rvkit cred {eng} set {name})")
+    if _expired(c.get("expires")):
+        raise ValueError(f"credential {name.upper()} expired on {c['expires']} (renew it: ./rvkit cred {eng} set {name})")
+    return c["value"]
 
 
 def cred_env(eng):
-    return {f"RV_CRED_{k}": v["value"] for k, v in _creds(eng).items()}
+    return {f"RV_CRED_{k}": v["value"] for k, v in _creds(eng).items() if not _expired(v.get("expires"))}
 
 
 def cred_used(eng, text):
@@ -816,29 +909,86 @@ def cred_used(eng, text):
 
 
 def cred_expand(eng, text):
-    """{{cred:NAME}} -> the value. Unknown names raise ValueError (nothing is sent)."""
-    c = _creds(eng)
+    """{{cred:NAME}} -> the value. Unknown or expired names raise ValueError (nothing is sent)."""
+    return CRED_REF.sub(lambda m: cred_value(eng, m.group(1)), text or "")
 
-    def one(m):
-        n = m.group(1).upper()
-        if n not in c:
-            raise ValueError(f"no credential {n} in {eng} (set it on the host: ./rvkit cred {eng} set {n})")
-        return c[n]["value"]
-    return CRED_REF.sub(one, text or "")
+
+_EXTRA_SECRETS = {}  # eng -> {value: reference}: identity sessions registered by identities.py
+
+
+def register_secret(eng, value, ref):
+    """Have scrub() replace a value that isn't a stored credential (an identity's session cookie or token)."""
+    if value and len(value) >= 4:
+        _EXTRA_SECRETS.setdefault(eng, {})[value] = ref
+
+
+def secret_values(eng):
+    """{value: reference} for everything scrub() replaces."""
+    out = {v["value"]: "{{cred:%s}}" % n for n, v in _creds(eng).items()}
+    out.update(_EXTRA_SECRETS.get(eng, {}))
+    try:
+        import identities
+        out.update(identities.session_secrets(eng))
+    except Exception:
+        pass
+    return out
 
 
 def scrub(eng, data):
-    """Replace credential values with their reference (str or bytes)."""
-    c = _creds(eng)
-    if not c or not data:
+    """Replace credential and session values with their reference (str or bytes)."""
+    if not data:
         return data
-    for n, v in sorted(c.items(), key=lambda kv: -len(kv[1]["value"])):
-        val = v["value"]
+    vals = secret_values(eng)
+    for val, ref in sorted(vals.items(), key=lambda kv: -len(kv[0])):
         if isinstance(data, bytes):
-            data = data.replace(val.encode(), ("{{cred:%s}}" % n).encode())
+            data = data.replace(val.encode(), ref.encode())
         else:
-            data = data.replace(val, "{{cred:%s}}" % n)
+            data = data.replace(val, ref)
     return data
+
+
+def vault_rotate():
+    """Re-encrypt every engagement's vault entries with a new key. Returns how many entries were re-encrypted."""
+    from cryptography.fernet import Fernet
+    with _VAULT_LOCK:
+        old = _fernet()
+        new_key = Fernet.generate_key()
+        new = Fernet(new_key)
+        files, n = [], 0
+        for eng in engagements():
+            for fn in ("credentials.vault.json", "identities.json"):
+                path = os.path.join(ctl_dir(eng), fn)
+                if not os.path.exists(path):
+                    continue
+                data = json.load(open(path))
+                n += _reseal(data, old, new)
+                files.append((path, data))
+        for path, data in files:
+            _write_json(path, data)
+            os.chmod(path, 0o600)
+        tmp = _vault_key_file() + ".new"
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "wb") as f:
+            f.write(new_key)
+        os.replace(tmp, _vault_key_file())
+    _audit({"event": "vault-rotated", "entries": n})
+    return n
+
+
+def _reseal(node, old, new):
+    """Re-encrypt every "token"/"sealed" string in a JSON tree."""
+    n = 0
+    if isinstance(node, dict):
+        for k, v in list(node.items()):
+            if k in ("token", "sealed") and isinstance(v, str):
+                node[k] = new.encrypt(old.decrypt(v.encode())).decode()
+                n += 1
+            else:
+                n += _reseal(v, old, new)
+    elif isinstance(node, list):
+        for v in node:
+            n += _reseal(v, old, new)
+    return n
 
 
 # a host never starts inside a path, a word or a dotted name: "10.0.0.1/login.php" yields only the IP
@@ -1082,12 +1232,13 @@ def _busy(eng):
         _RESERVED.get(eng, 0)
 
 
-def _execute(eng, i, entry, final, tier, timeout_s, network, approval_id, note="", task=None, reserved=False):
+def _execute(eng, i, entry, final, tier, timeout_s, network, approval_id, note="", task=None, reserved=False,
+             extra_env=None):
     """Run a checked command in the sandbox, save its output as verified evidence and audit it."""
     uid = i["uid"]
     env = {"RV_ENG": eng, "RV_UID": str(uid), "RV_HOME": f"/work/{eng}/.home",
            "RV_SRC": "\n".join(i["scope"]["paths"]), "RV_CMD": final, "PATH": os.environ.get("PATH", ""),
-           **(cred_env(eng) if network else {})}
+           **(cred_env(eng) if network else {}), **(extra_env or {})}
     root = os.path.join(WORK, eng)
     before = _snapshot(root)
     t0 = time.time()

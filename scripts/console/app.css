@@ -386,3 +386,5 @@ fieldset.rv-field legend { padding: 0; margin-bottom: 8px; }
 .rv-rows li a { overflow-wrap: anywhere; }
 .rv-form-row { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
 .rv-form-row .rv-input { flex: 1 1 140px; width: auto; }
+.rv-matrix { padding: 8px 0; border-top: 1px solid var(--rv-border); } .rv-matrix:first-child { border-top: 0; }
+.rv-matrix .rv-table, #cap-view .rv-table { display: block; overflow-x: auto; max-width: 100%; }
