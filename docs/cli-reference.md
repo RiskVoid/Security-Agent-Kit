@@ -390,6 +390,24 @@ Credentials the agent uses by reference (`$RV_CRED_<NAME>`, `{{cred:NAME}}`) wit
 letters, digits and `_`, starting with a letter. `set <NAME> --expires 2026-12-01` refuses the credential after
 that date. Values are encrypted with the vault key. See [engagements.md](engagements.md#credentials).
 
+### appmap
+
+```sh
+./rvkit appmap <engagement> </src/path> [--build-url URL] [--routes evidence/php/routes-<time>.json]
+```
+
+The Laravel application map, from the source (no code runs). See [laravel.md](laravel.md).
+
+### php
+
+```sh
+./rvkit php <engagement> lint </src/path>      # parse check with PHP's parser; nothing runs
+./rvkit php <engagement> routes </src/path>    # boot the app on a copy, export its routes (asks first)
+```
+
+The optional PHP profile: an isolated container with no network, built on first use. See
+[laravel.md](laravel.md#php-profile-optional).
+
 ### vault
 
 ```sh

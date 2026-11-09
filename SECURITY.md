@@ -94,6 +94,8 @@ is weaker than described here.
   drops fallbacks that aren't allowed. Content the agent reads can't change which engagement a call is about.
 - **Credentials by reference.** The agent uses stored credentials as `$RV_CRED_<NAME>` or `{{cred:NAME}}` without
   seeing them; values are encrypted in the control volume and replaced by the reference in output and evidence.
+- **Client code doesn't run by default.** The Laravel map reads source only. The optional PHP profile boots an
+  application only when the researcher confirms, on a copy, with no network and a generated environment.
 - **Identities, captures and the browser.** Test-account sessions are encrypted like credentials and added to
   requests only for the identity's hosts, tiers and effects, after the approval (which names the identity).
   Imported captures are sanitized before the agent sees them; originals stay encrypted and host-only. The

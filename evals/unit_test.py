@@ -825,5 +825,76 @@ class AuthenticatedTesting(Credentials):
                                        "allow_writes": True, "no_cleanup_reason": "idempotent"})
         self.assertEqual((w["operations"][0]["effect"], w["max_writes"]), ("write", 2))
 
+
+class LaravelMap(unittest.TestCase):
+    """RW-012: the static Laravel map on the lab's source (vulnerable and fixed) and on synthetic route files."""
+    LAB = os.path.join(KIT, "evals", "targets", "rv-laravel-lab")
+
+    def test_lab(self):
+        import laravel_map as lm
+        m = lm.analyze(os.path.join(self.LAB, "src"))
+        routes = {(r["methods"][0], r["uri"]): r for r in m["routes"]}
+        r = routes[("GET", "/api/invoices/{invoice}")]
+        self.assertEqual((r["controller"], r["action"], r["authenticated"]), ("InvoiceApiController", "show", True))
+        self.assertIn("auth:api", r["middleware"])
+        self.assertEqual(routes[("GET", "/exports/{export}/download")]["route_can"], ["can:download,export"])
+        kinds = {(x["kind"], x.get("route")) for x in m["leads"]}
+        self.assertIn(("object-authorization", "GET /api/invoices/{invoice}"), kinds)
+        self.assertIn(("mass-assignment", "PATCH /api/profile"), kinds)
+        self.assertNotIn(("object-authorization", "GET /api/payments/{payment}"), kinds)
+        self.assertIn("is_platform_admin", m["models"]["User"]["sensitive_assignable"])
+        self.assertTrue(m["models"]["Payment"]["tenant_scoped"])
+        self.assertEqual(m["framework"]["laravel"].split(".")[0], "12")
+        with tempfile.TemporaryDirectory() as d:  # the fixed overlay: no leads
+            import shutil
+            shutil.copytree(os.path.join(self.LAB, "src"), d, dirs_exist_ok=True)
+            shutil.copytree(os.path.join(self.LAB, "fixed"), d, dirs_exist_ok=True)
+            f = lm.analyze(d)
+            self.assertEqual(f["leads"], [])
+            self.assertNotEqual(f["build"]["source_digest"], m["build"]["source_digest"])
+
+    def test_digest_matches_sha256sum(self):  # the lab's Dockerfile computes BUILD with find | sort | sha256sum
+        import hashlib, laravel_map as lm
+        root = os.path.join(self.LAB, "src")
+        files = []
+        for part in lm.DIGEST_PARTS:
+            p = os.path.join(root, part)
+            if os.path.isfile(p):
+                files.append(part)
+            for dp, _, fns in os.walk(p) if os.path.isdir(p) else []:
+                files += [os.path.relpath(os.path.join(dp, f), root) for f in fns if f != ".gitignore"]
+        lines = "".join(f"{hashlib.sha256(open(os.path.join(root, f), 'rb').read()).hexdigest()}  {f}\n"
+                        for f in sorted(files, key=str.encode))
+        self.assertEqual(lm.source_digest(root), hashlib.sha256(lines.encode()).hexdigest())
+
+    def test_routes(self):
+        import laravel_map as lm
+        with tempfile.TemporaryDirectory() as d:
+            os.makedirs(os.path.join(d, "routes"))
+            open(os.path.join(d, "routes", "web.php"), "w").write("""<?php
+use App\\Http\\Controllers\\PostController;
+// Route::get('/commented', [PostController::class, 'x']);
+Route::prefix('admin')->middleware(['auth', 'can:admin'])->name('admin.')->group(function () {
+    Route::resource('posts', PostController::class)->only(['index', 'show']);
+    Route::controller(PostController::class)->group(function () {
+        Route::post('/posts/{post}/publish', 'publish')->withoutMiddleware('can:admin');
+    });
+});
+Route::group(['middleware' => 'throttle:5', 'prefix' => 'v1'], function () {
+    Route::match(['get', 'post'], '/ping', fn () => 'ok');
+});
+""")
+            routes, how = lm.parse_routes(d)
+            got = {(tuple(r["methods"]), r["uri"], r["action"], tuple(r["middleware"])) for r in routes}
+            self.assertEqual(got, {
+                (("GET",), "/admin/posts", "index", ("web", "auth", "can:admin")),
+                (("GET",), "/admin/posts/{post}", "show", ("web", "auth", "can:admin")),
+                (("POST",), "/admin/posts/{post}/publish", "publish", ("web", "auth")),
+                (("GET", "POST"), "/v1/ping", "closure", ("web", "throttle:5"))})
+            self.assertIn("default", how)
+            cmp = lm.compare_routes(routes, [{"method": "GET|HEAD", "uri": "admin/posts"},
+                                             {"method": "GET|HEAD", "uri": "up"}])
+            self.assertEqual((cmp["matched"], cmp["runtime_only"]), (1, ["GET /up"]))
+
 if __name__ == "__main__":
     unittest.main(verbosity=1)

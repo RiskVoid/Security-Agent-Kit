@@ -61,6 +61,12 @@ tenants, a profile update that accepts any field, a search with raw SQL, unescap
 Store the passwords and tokens with `./rvkit cred` and define identities: see
 [authenticated-testing.md](authenticated-testing.md).
 
+Its source is in `evals/targets/rv-laravel-lab/src` (the fixes in `fixed/`). To practise the source-assisted
+engagement, copy it into your projects folder as client code (`bash evals/ci_prepare.sh` does, as
+`rv-laravel-lab` and `rv-laravel-lab-fixed`) and put `/src/rv-laravel-lab` and the lab address in scope:
+[laravel.md](laravel.md). Mail the app sends is written to its log (`storage/logs/laravel.log` in the
+container), never sent.
+
 ### Practice engagements
 
 Create one engagement per target. `./rvkit engagement` gives the default rules (tiers passive and active, max rate

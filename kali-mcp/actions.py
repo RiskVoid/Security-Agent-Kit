@@ -584,3 +584,73 @@ def analyze_source(eng, tool, path, rulesets=None, task=None, timeout_s=1800):
     head = (f"{tool}: {count} result(s) in /work/{eng}/{out} (no network was available to the tool)\n"
             if count is not None else f"{tool}: no report was written; see the output below\n")
     return head + res
+
+
+# ---------------------------------------------------------------- application map (RW-012)
+def _deployed_build(eng, url, max_tier, task):
+    """The deployed build identity from a version endpoint: the X-Build-Id header or a JSON "build" field."""
+    r = send(eng, "GET", url, {"Accept": "application/json"}, b"", None, max_tier, task, evidence_kind="appmap")
+    if "status" not in r or r.get("status") is None:
+        return None, r.get("refused") or r["text"].splitlines()[-1][:200], None
+    hdr = {k.lower(): v for k, v in (r.get("headers") or [])}
+    build = hdr.get("x-build-id")
+    how = "X-Build-Id header"
+    if not build:
+        try:
+            d = json.loads(r["body"] or b"{}")
+            build = d.get("build") or d.get("commit") or d.get("version")
+            how = "JSON build field"
+        except ValueError:
+            pass
+    if not build:
+        return None, f"HTTP {r['status']} without an X-Build-Id header or a JSON build field", r.get("evidence")
+    return str(build).strip()[:128], how, r.get("evidence")
+
+
+def appmap(eng, path, build_url=None, routes_file=None, max_tier=None, task=None):
+    """Map a Laravel application's source (no code runs) and compare its build identity with the deployment.
+    Writes evidence/appmap/laravel-<time>.json (audited, so evidence_provenance verifies it)."""
+    import laravel_map
+    i = core.info(eng)
+    entry = {"engagement": eng, "uid": i["uid"], "action": "appmap", "framework": "laravel", "path": path,
+             **({"task": task} if task else {})}
+    try:
+        p = _source_path(eng, i, path)
+    except ValueError as e:
+        core._audit({**entry, "refused": str(e)})
+        return f"REFUSED: {e}"
+    if not (os.path.isfile(os.path.join(p, "artisan")) or os.path.isfile(os.path.join(p, "bootstrap", "app.php"))):
+        return f"REFUSED: {path} doesn't look like a Laravel application (no artisan or bootstrap/app.php)"
+    m = laravel_map.analyze(p)
+    m["source_path"] = p
+    if routes_file:
+        rf = os.path.normpath(routes_file if routes_file.startswith("/") else os.path.join(core.WORK, eng, routes_file))
+        if not rf.startswith(os.path.join(core.WORK, eng) + "/") or not os.path.isfile(rf):
+            return f"REFUSED: the route export must be a file in /work/{eng}"
+        try:
+            export = json.load(open(rf))
+        except ValueError:
+            return "REFUSED: the route export isn't JSON (php artisan route:list --json)"
+        m["route_comparison"] = {**laravel_map.compare_routes(m["routes"], export),
+                                 "export": os.path.relpath(rf, os.path.join(core.WORK, eng))}
+    if build_url:
+        build, how, ev = _deployed_build(eng, build_url, max_tier, task)
+        if build:
+            m["build"].update(deployed=build, deployed_from=f"{build_url} ({how})", deployed_evidence=ev,
+                              match=build == m["build"]["source_digest"])
+        else:
+            m["build"].update(deployed=None, deployed_error=how, match=None)
+    else:
+        m["build"]["deployed_error"] = "no build URL given (a version endpoint or header of the deployment)"
+    ts = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%dT%H%M%S")
+    rel = os.path.join("evidence", "appmap", f"laravel-{ts}-{os.urandom(2).hex()}.json")
+    full = os.path.join(core.WORK, eng, rel)
+    os.makedirs(os.path.dirname(full), exist_ok=True)
+    with open(full, "w") as f:
+        json.dump(m, f, indent=1)
+    if os.geteuid() == 0:  # the engagement's user owns its files, like the sandbox's own output
+        os.chown(full, i["uid"], i["uid"])
+    core._audit({**entry, "command": f"appmap laravel {p}", "tier": "passive", "network": "none",
+                 "leads": len(m["leads"]), "source_digest": m["build"]["source_digest"],
+                 "build_match": m["build"].get("match"), "outputs": {rel: core.sha256_file(full)}})
+    return core.scrub(eng, laravel_map.summary(m) + f"\n\n[map saved as verified evidence: /work/{eng}/{rel}]")

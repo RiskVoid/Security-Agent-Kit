@@ -29,6 +29,9 @@
   rvctl.py identity <eng> list [--json] | set <name> (JSON spec on stdin) | check <name> | revoke <name> | rm <name>
   rvctl.py capture <eng> list | import [--name N] (HAR/Burp XML on stdin) | show <id> | raw <id> | replay <id> | rm <id>
   rvctl.py authz <eng> list | show <name> | approve <name> [--digest D] | run <name>
+  rvctl.py appmap <eng> <path> [--build-url U] [--routes F]   Laravel application map (no code runs)
+  rvctl.py php <eng> check <path>    the host path of an in-scope /src path, for the PHP profile (RW-013)
+  rvctl.py php <eng> record <kind> <rel>... [--approved]   audit the PHP profile's outputs (evidence provenance)
 
 Global option: --actor <console|cli>:<name> names who acts; it is recorded on every audit entry (default cli:host).
 Exit codes: 0 ok, 1 error, 2 sync not confirmed, 3 conflict (the record changed since it was read).
@@ -272,6 +275,43 @@ def main(a):
         if sub == "run":
             r = authz.run(eng, rest[2]); print(r["text"]); return 0
         raise ValueError("usage: authz <eng> list | show <name> | approve <name> [--digest D] | run <name>")
+    if cmd == "appmap":
+        import actions
+        build, routes = _opt(rest, "--build-url"), _opt(rest, "--routes")
+        out = actions.appmap(rest[0], rest[1], build, routes)
+        print(out); return 1 if out.startswith("REFUSED") else 0
+    if cmd == "php":  # the optional PHP profile runs on the host (docker); kali-mcp checks scope and audits it
+        import actions
+        eng, sub = rest[0], rest[1]
+        if sub == "check":
+            i = core.info(eng)
+            if i["halted"]:
+                raise ValueError(f"{eng} is halted")
+            p = actions._source_path(eng, i, rest[2])
+            if not p.startswith("/src/"):
+                raise ValueError("the PHP profile runs on client code under /src")
+            out = os.path.join(core.WORK, eng, "evidence", "php")
+            os.makedirs(out, exist_ok=True)
+            os.chown(out, i["uid"], i["uid"])  # the profile runs as the engagement's user
+            print(json.dumps({"path": p, "relative": p[len("/src/"):], "uid": i["uid"]})); return 0
+        if sub == "record":
+            approved = "--approved" in rest
+            kind, rels = rest[2], [r for r in rest[3:] if r != "--approved"]
+            if kind not in ("lint", "routes"):
+                raise ValueError("kind: lint or routes")
+            outs = {}
+            for rel in rels:
+                full = os.path.normpath(os.path.join(core.WORK, eng, rel))
+                if not full.startswith(os.path.join(core.WORK, eng, "evidence", "php") + "/") or \
+                        not os.path.isfile(full):
+                    raise ValueError(f"{rel}: not a PHP profile output of {eng}")
+                outs[rel] = core.sha256_file(full)
+            core._audit({"engagement": eng, "action": "php-profile", "kind": kind, "tier": "passive",
+                         "network": "none", "command": f"rv-php {kind} (isolated PHP profile, no network)",
+                         "executes_client_code": kind == "routes",
+                         **({"approved_by": core.ACTOR} if approved else {}), "outputs": outs})
+            print(f"recorded {len(outs)} output(s)"); return 0
+        raise ValueError("usage: php <eng> check <path> | record <lint|routes> <rel>... [--approved]")
     if cmd == "approval":
         print(json.dumps(core.approval_status(rest[0], rest[1]))); return 0
     if cmd == "cancel":

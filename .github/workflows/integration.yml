@@ -93,6 +93,8 @@ jobs:
         run: RVKIT_NO_PULL=1 ./rvkit lab up && bash evals/lab_test.sh
       - name: Authenticated testing (identities, captures, browser, authorization matrix) against the Laravel lab
         run: bash evals/authn_test.sh
+      - name: Laravel reference engagement (app map, build identity, PHP profile) against the Laravel lab
+        run: bash evals/laravel_test.sh
       - name: Logs on failure
         if: failure()
         run: docker compose logs --tail 150
