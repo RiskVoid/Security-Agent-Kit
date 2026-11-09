@@ -19,6 +19,12 @@
    "any": [
     "sql injection",
     "sqli"
+   ],
+   "asset": "/rest/user/login\\b",
+   "requires": [
+    "evidence",
+    "verification",
+    "reproduction"
    ]
   },
   {
@@ -30,6 +36,12 @@
    "any": [
     "xss",
     "cross-site scripting"
+   ],
+   "asset": "search|track-?(result|order)|/api/(feedbacks|users|products)\\b|/reviews\\b|/profile\\b",
+   "requires": [
+    "evidence",
+    "verification",
+    "reproduction"
    ]
   },
   {
@@ -46,6 +58,10 @@
     "directory listing",
     "confidential document",
     "backup file"
+   ],
+   "asset": "/ftp\\b",
+   "requires": [
+    "evidence"
    ]
   },
   {
@@ -58,6 +74,10 @@
    "any": [
     "/metrics",
     "prometheus"
+   ],
+   "asset": "/metrics\\b",
+   "requires": [
+    "evidence"
    ]
   },
   {
@@ -70,6 +90,9 @@
    "any": [
     "cors",
     "access-control-allow-origin"
+   ],
+   "requires": [
+    "evidence"
    ]
   },
   {
@@ -84,9 +107,10 @@
     "security header",
     "content-security-policy",
     "\\bcsp\\b",
-    "strict-transport",
-    "x-frame-options",
-    "clickjacking"
+    "strict-transport"
+   ],
+   "requires": [
+    "evidence"
    ]
   },
   {
@@ -104,6 +128,12 @@
     "basket",
     "idor",
     "access control"
+   ],
+   "asset": "administration|basket|/api/feedbacks\\b",
+   "requires": [
+    "evidence",
+    "verification",
+    "reproduction"
    ]
   }
  ]

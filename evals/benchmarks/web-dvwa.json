@@ -19,6 +19,12 @@
    "any": [
     "sql injection",
     "sqli"
+   ],
+   "asset": "/vulnerabilities/sqli(_blind)?\\b",
+   "requires": [
+    "evidence",
+    "verification",
+    "reproduction"
    ]
   },
   {
@@ -31,6 +37,12 @@
    "any": [
     "command injection",
     "/exec"
+   ],
+   "asset": "/vulnerabilities/exec\\b",
+   "requires": [
+    "evidence",
+    "verification",
+    "reproduction"
    ]
   },
   {
@@ -42,6 +54,12 @@
    "any": [
     "reflected (xss|cross)",
     "xss_r"
+   ],
+   "asset": "/vulnerabilities/xss_r\\b",
+   "requires": [
+    "evidence",
+    "verification",
+    "reproduction"
    ]
   },
   {
@@ -54,6 +72,12 @@
     "stored (xss|cross)",
     "xss_s",
     "guestbook"
+   ],
+   "asset": "/vulnerabilities/xss_s\\b",
+   "requires": [
+    "evidence",
+    "verification",
+    "reproduction"
    ]
   },
   {
@@ -68,6 +92,12 @@
     "\\blfi\\b",
     "\\brfi\\b",
     "/fi/"
+   ],
+   "asset": "/vulnerabilities/fi\\b",
+   "requires": [
+    "evidence",
+    "verification",
+    "reproduction"
    ]
   },
   {
@@ -80,6 +110,12 @@
     "file upload",
     "unrestricted upload",
     "/upload"
+   ],
+   "asset": "/vulnerabilities/upload\\b|/hackable/uploads\\b",
+   "requires": [
+    "evidence",
+    "verification",
+    "reproduction"
    ]
   },
   {
@@ -91,6 +127,12 @@
    "any": [
     "csrf",
     "cross-site request forgery"
+   ],
+   "asset": "/vulnerabilities/csrf\\b",
+   "requires": [
+    "evidence",
+    "verification",
+    "reproduction"
    ]
   },
   {
@@ -107,6 +149,11 @@
     "admin/password",
     "weak password",
     "brute"
+   ],
+   "requires": [
+    "evidence",
+    "verification",
+    "reproduction"
    ]
   }
  ]

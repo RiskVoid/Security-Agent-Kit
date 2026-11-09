@@ -1,0 +1,44 @@
+# RiskVoid Security Agent Kit
+
+> A self-hosted, open-source (Apache-2.0) AI security agent for authorised penetration testing and code review.
+> A planner model plans and writes the report; a separate worker model runs 45+ security tools in a Kali Linux
+> sandbox. A per-engagement firewall enforces the scope, intrusive commands wait for a human approval bound to the
+> exact command, every piece of evidence is hashed, and the audit log is out of the agent's reach. It produces
+> client reports (HTML, Word, PDF, Excel) and SARIF, and ships an isolated practice lab and an evidence-based
+> benchmark harness. Runs on macOS and Linux with Docker; no GPU needed.
+
+Key facts:
+- Repository: https://github.com/RiskVoid/Security-Agent-Kit
+- Project page: https://riskvoid.com/security-agent-kit
+- Install: `git clone https://github.com/RiskVoid/Security-Agent-Kit.git && cd Security-Agent-Kit && ./rvkit setup`
+- Work covered: source code review (OWASP ASVS 5.0), secrets, supply chain, web applications (OWASP WSTG 4.2),
+  REST and GraphQL APIs (OWASP API Top 10), AI applications and MCP servers (OWASP LLM Top 10, MITRE ATLAS),
+  external networks (PTES), authenticated multi-tenant testing, and Laravel as a complete reference workflow.
+- Not supported as complete workflows: Active Directory, cloud accounts, Kubernetes, mobile, Windows hosts.
+
+## Docs
+
+- [Overview](https://github.com/RiskVoid/Security-Agent-Kit/blob/main/docs/overview.md): what the kit is and how the parts fit
+- [Getting started](https://github.com/RiskVoid/Security-Agent-Kit/blob/main/docs/getting-started.md): requirements and setup
+- [Your first engagement](https://github.com/RiskVoid/Security-Agent-Kit/blob/main/docs/first-engagement.md): a guided run against the practice lab
+- [Engagements and scope](https://github.com/RiskVoid/Security-Agent-Kit/blob/main/docs/engagements.md): scope, rules, tiers, approvals
+- [Architecture](https://github.com/RiskVoid/Security-Agent-Kit/blob/main/docs/architecture.md): containers, trust boundaries and data flow
+- [Models](https://github.com/RiskVoid/Security-Agent-Kit/blob/main/docs/models.md): planner and worker options, costs, where data goes
+- [Findings and reports](https://github.com/RiskVoid/Security-Agent-Kit/blob/main/docs/findings-and-reports.md): triage, revisions, approval, exports
+- [Authenticated testing](https://github.com/RiskVoid/Security-Agent-Kit/blob/main/docs/authenticated-testing.md): identities, captures, browser, authorization matrices
+- [Laravel](https://github.com/RiskVoid/Security-Agent-Kit/blob/main/docs/laravel.md): the reference source-plus-staging workflow
+- [Tools reference](https://github.com/RiskVoid/Security-Agent-Kit/blob/main/docs/tools-reference.md): every tool and its tier
+- [Commands](https://github.com/RiskVoid/Security-Agent-Kit/blob/main/docs/cli-reference.md): `./rvkit` reference
+
+## Evaluation
+
+- [Capability baselines](https://github.com/RiskVoid/Security-Agent-Kit/blob/main/docs/capability-baselines.md): what each stack is tested and measured for
+- [Lab and benchmarks](https://github.com/RiskVoid/Security-Agent-Kit/blob/main/docs/lab-and-benchmarks.md): lab targets and how runs are scored
+- [Regression matrix](https://github.com/RiskVoid/Security-Agent-Kit/blob/main/docs/regression-matrix.md): each safety control and the test that guards it
+
+## Optional
+
+- [Security policy and known limitations](https://github.com/RiskVoid/Security-Agent-Kit/blob/main/SECURITY.md)
+- [Comparison with other AI pentest agents](https://github.com/RiskVoid/Security-Agent-Kit/blob/main/docs/comparison.md)
+- [Roadmap](https://github.com/RiskVoid/Security-Agent-Kit/blob/main/ROADMAP.md)
+- [Changelog](https://github.com/RiskVoid/Security-Agent-Kit/blob/main/CHANGELOG.md)

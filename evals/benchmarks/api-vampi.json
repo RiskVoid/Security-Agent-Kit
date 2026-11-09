@@ -19,6 +19,12 @@
    "any": [
     "sql injection",
     "sqli"
+   ],
+   "asset": "/users/v1/(?!_debug\\b|register\\b|login\\b)[^/\\s?]",
+   "requires": [
+    "evidence",
+    "verification",
+    "reproduction"
    ]
   },
   {
@@ -34,6 +40,12 @@
     "idor",
     "other user's book",
     "secret of another"
+   ],
+   "asset": "/books/v1/[^/\\s?]",
+   "requires": [
+    "evidence",
+    "verification",
+    "reproduction"
    ]
   },
   {
@@ -47,6 +59,12 @@
     "admin\": true",
     "admin=true",
     "register as admin"
+   ],
+   "asset": "/users/v1/register\\b",
+   "requires": [
+    "evidence",
+    "verification",
+    "reproduction"
    ]
   },
   {
@@ -61,6 +79,12 @@
     "password change",
     "change another user's password",
     "change the password of"
+   ],
+   "asset": "/users/v1/[^/\\s?]+/password\\b",
+   "requires": [
+    "evidence",
+    "verification",
+    "reproduction"
    ]
   },
   {
@@ -76,6 +100,12 @@
     "excessive data exposure",
     "password hashes",
     "plaintext passwords"
+   ],
+   "asset": "/users/v1/_debug\\b",
+   "requires": [
+    "evidence",
+    "verification",
+    "reproduction"
    ]
   },
   {
@@ -89,6 +119,12 @@
     "enumeration",
     "user exists",
     "username enumeration"
+   ],
+   "asset": "/users/v1/login\\b",
+   "requires": [
+    "evidence",
+    "verification",
+    "reproduction"
    ]
   },
   {
@@ -104,6 +140,11 @@
     "weak secret",
     "signing key",
     "forge"
+   ],
+   "requires": [
+    "evidence",
+    "verification",
+    "reproduction"
    ]
   },
   {
@@ -117,6 +158,10 @@
     "rate limit",
     "brute force",
     "rate-limit"
+   ],
+   "asset": "/users/v1/login\\b",
+   "requires": [
+    "evidence"
    ]
   },
   {
@@ -130,6 +175,12 @@
     "redos",
     "regular expression",
     "regex"
+   ],
+   "asset": "/users/v1/[^/\\s?]+/email\\b",
+   "requires": [
+    "evidence",
+    "verification",
+    "reproduction"
    ]
   }
  ]

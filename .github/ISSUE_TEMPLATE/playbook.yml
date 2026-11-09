@@ -1,0 +1,28 @@
+name: Playbook proposal
+description: A methodology for a kind of engagement the kit doesn't cover yet.
+labels: [enhancement, playbook]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        A playbook is only claimed as supported when it has a lab target, a benchmark with clean controls and a
+        row in `docs/capability-baselines.md`. Proposals for the first steps are welcome on their own.
+  - type: input
+    id: area
+    attributes:
+      label: Area
+      placeholder: "for example: Django, Kubernetes, Active Directory"
+    validations:
+      required: true
+  - type: textarea
+    id: method
+    attributes:
+      label: Method and standard
+      description: Phases, the standard it maps to (OWASP, CIS, PTES ...), and the tools each phase uses.
+    validations:
+      required: true
+  - type: textarea
+    id: lab
+    attributes:
+      label: A target to test it against
+      description: A deliberately vulnerable app or config that can run in the isolated lab, with a fixed version as a clean control if one exists.

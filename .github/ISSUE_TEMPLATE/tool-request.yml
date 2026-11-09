@@ -1,0 +1,43 @@
+name: Tool request
+description: Add a security tool to the Kali sandbox.
+labels: [enhancement, tool]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Tools are listed with their tier in `kali-mcp/tiers.yaml`; adding one is usually a short pull request.
+        See CONTRIBUTING.md, "Adding a tool to the Kali image".
+  - type: input
+    id: tool
+    attributes:
+      label: Tool and link
+      placeholder: "name, https://github.com/..."
+    validations:
+      required: true
+  - type: textarea
+    id: why
+    attributes:
+      label: What it adds
+      description: What work it covers that the current tools don't, and which playbook would use it.
+    validations:
+      required: true
+  - type: dropdown
+    id: tier
+    attributes:
+      label: Proposed tier
+      description: passive reads only what you already have; active sends normal requests; intrusive can change or harm the target.
+      options: [passive, active, intrusive, depends on the mode]
+    validations:
+      required: true
+  - type: input
+    id: licence
+    attributes:
+      label: Licence
+      description: The kit is Apache-2.0 and publishes images; some licences prevent redistributing a tool or its rules.
+    validations:
+      required: true
+  - type: textarea
+    id: install
+    attributes:
+      label: How to install it
+      description: A pinned release with a checksum, a Kali package, or a pinned pip package.

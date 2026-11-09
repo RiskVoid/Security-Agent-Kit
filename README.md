@@ -67,11 +67,17 @@ Everything runs in Docker on your own computer. One command sets it up.
 | <img src="docs/img/icons/plug.svg" width="20" height="20" alt=""> | **APIs: REST & GraphQL** | OWASP API Top 10 | schemathesis, jwt_tool, GraphQL tools |
 | <img src="docs/img/icons/bot.svg" width="20" height="20" alt=""> | **AI apps, agents & MCP servers** | OWASP LLM Top 10, MITRE ATLAS | garak, `rv-llm` (prompt injection, MCP audit) |
 | <img src="docs/img/icons/server.svg" width="20" height="20" alt=""> | **External networks** | PTES | nmap, nuclei, testssl, DNS tools |
+| <img src="docs/img/icons/users.svg" width="20" height="20" alt=""> | **Logged-in and multi-tenant apps** | OWASP WSTG, API Top 10 | identities per role and tenant, HAR capture replay, a sandboxed browser, authorization matrices |
+| <img src="docs/img/icons/layers.svg" width="20" height="20" alt=""> | **Laravel, source plus staging** | the complete reference workflow | application map from source, build check against staging, optional PHP runtime |
 
 On top of that:
 - **Vulnerability intel:** CVE lookups from CISA KEV, EPSS, NVD and OSV.
 - **Findings database:** triage, dedupe and severity.
-- **Report:** a **web page, Word document, PDF and Excel register**, in RiskVoid branding or your own.
+- **Report:** a **web page, Word document, PDF and Excel register**, in RiskVoid branding or your own. Each
+  revision is frozen and hashed, and a person approves it before delivery. Exports as JSON, SARIF and issue text.
+- **Retests:** compare the original and the fixed build, with before and after evidence.
+
+What each stack is tested and measured for, honestly: [Capability baselines](docs/capability-baselines.md).
 
 <details>
 <summary><b>See the full list of 45+ tools</b></summary>
@@ -96,6 +102,15 @@ The full list, with the tier of each tool (passive, active or intrusive), is in
 
 > [!TIP]
 > **The minimum:** a computer with Docker and an OpenRouter key. That's enough to run everything.
+
+**Tested on**
+
+| Platform | How it's tested |
+|---|---|
+| Linux amd64, Docker Engine (Ubuntu 24.04) | A fresh machine in CI: `./rvkit setup` and all 15 integration suites, nightly and before every release |
+| macOS on Apple Silicon, OrbStack or Docker Desktop | Where the kit is developed: all suites, by hand before each change |
+| Linux arm64 | Images are built for it; the suites aren't run there yet |
+| Windows | Not supported yet (WSL2 is on the [roadmap](ROADMAP.md)) |
 
 ### Where the worker model runs
 
@@ -336,10 +351,22 @@ Known limitations and how to report a vulnerability: [SECURITY.md](SECURITY.md).
 ## Practice lab & benchmarks
 
 `./rvkit lab up` starts deliberately vulnerable targets on an **isolated network with no internet**:
-OWASP Juice Shop, DVWA, VAmPI (REST), DVGA (GraphQL) and a RiskVoid LLM lab (AI agent + MCP).
+OWASP Juice Shop, DVWA, VAmPI (REST), DVGA (GraphQL), a RiskVoid LLM lab (AI agent + MCP) and Ledgerly, a
+multi-tenant Laravel app with a fixed build to retest against.
 
-`./rvkit bench <name>` runs the agent unattended against a known target and scores it on recall, precision,
-cost and time. See [Lab and benchmarks](docs/lab-and-benchmarks.md).
+`./rvkit bench <name>` runs the agent unattended against a known target and scores it on evidence: a finding
+counts only if it names the right place and has the required proof, and confirmed findings on a clean control
+count against it. Recall, precision, cost and time come with the exact kit, prompt and model versions. See
+[Lab and benchmarks](docs/lab-and-benchmarks.md) and [Capability baselines](docs/capability-baselines.md).
+
+---
+
+## How it compares
+
+Strix, Shannon, PentAGI, PentestGPT and HexStrike AI lead with autonomy. The kit is built for work you have to
+answer for: the scope is enforced by a firewall, risky steps wait for a person, every artefact is hashed, and a
+person approves the report. They are ahead on proving exploits automatically and on one-command installs.
+Details, with sources: [How the kit compares](docs/comparison.md).
 
 ---
 
@@ -383,7 +410,8 @@ what to fix.
 
 ## Contributing, security & licence
 
-- **Contributing:** dev setup, tests and how to send changes are in [CONTRIBUTING.md](CONTRIBUTING.md).
+- **Contributing:** dev setup, tests and how to send changes are in [CONTRIBUTING.md](CONTRIBUTING.md). What's
+  next: [ROADMAP.md](ROADMAP.md). What changed: [CHANGELOG.md](CHANGELOG.md).
 - **Security:** the security model, known limitations and private vulnerability reporting are in [SECURITY.md](SECURITY.md).
 - **Licence:** [Apache-2.0](LICENSE) ([NOTICE](NOTICE)). Third-party components are listed in [THIRD_PARTY.md](THIRD_PARTY.md).
 

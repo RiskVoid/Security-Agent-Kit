@@ -16,6 +16,11 @@
    "any": [
     "sql injection",
     "sqli"
+   ],
+   "asset": "server\\.js:3[3-7]\\b|/api/products\\b",
+   "requires": [
+    "evidence",
+    "verification"
    ]
   },
   {
@@ -30,6 +35,11 @@
     "path traversal",
     "directory traversal",
     "/api/files"
+   ],
+   "asset": "server\\.js:4[5-8]\\b|/api/files\\b",
+   "requires": [
+    "evidence",
+    "verification"
    ]
   },
   {
@@ -42,6 +52,11 @@
     "ssrf",
     "server-side request",
     "/api/preview"
+   ],
+   "asset": "server\\.js:5[0-3]\\b|/api/preview\\b",
+   "requires": [
+    "evidence",
+    "verification"
    ]
   },
   {
@@ -58,6 +73,11 @@
     "insecure direct object",
     "/api/orders",
     "any user's order"
+   ],
+   "asset": "server\\.js:(39|4[0-3])\\b|/api/orders\\b",
+   "requires": [
+    "evidence",
+    "verification"
    ]
   },
   {
@@ -74,6 +94,11 @@
     "without verif",
     "unverified",
     "/api/admin"
+   ],
+   "asset": "server\\.js:5[5-9]\\b|/api/admin\\b",
+   "requires": [
+    "evidence",
+    "verification"
    ]
   },
   {
@@ -89,6 +114,10 @@
     "jwt_secret",
     "weak (jwt )?secret",
     "hard-?coded (jwt )?secret"
+   ],
+   "asset": "server\\.js:13\\b",
+   "requires": [
+    "evidence"
    ]
   },
   {
@@ -102,6 +131,11 @@
     "prototype pollution",
     "_\\.merge",
     "lodash\\.merge"
+   ],
+   "asset": "server\\.js:6[1-4]\\b|/api/settings\\b",
+   "requires": [
+    "evidence",
+    "verification"
    ]
   },
   {
@@ -115,6 +149,10 @@
    ],
    "any": [
     "md5"
+   ],
+   "asset": "db\\.js(:9\\b|$|\\s)|finduser",
+   "requires": [
+    "evidence"
    ]
   },
   {
@@ -132,6 +170,18 @@
     "outdated",
     "vulnerable (dependenc|package|component)",
     "cve-"
+   ],
+   "asset": "package(-lock)?\\.json",
+   "requires": [
+    "evidence"
+   ]
+  }
+ ],
+ "clean": [
+  {
+   "id": "parameterised-queries",
+   "any": [
+    "(sql injection|sqli)\\W+(in|at|via|on)\\W+((get|post) )?(/api/(orders|login)|db\\.js|finduser)"
    ]
   }
  ]

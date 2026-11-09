@@ -1,0 +1,35 @@
+name: Benchmark result
+description: Share a benchmark run, especially with a model pair we haven't measured.
+labels: [benchmark]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Results from `./rvkit bench` hold scores and the kit's own lab finding titles, never client data.
+        Please paste the result file from `evals/results/bench/`.
+  - type: input
+    id: benchmark
+    attributes:
+      label: Benchmark and repeats
+      placeholder: "laravel-ledgerly --repeat 3"
+    validations:
+      required: true
+  - type: input
+    id: models
+    attributes:
+      label: Agent, planner and worker
+      placeholder: "riskvoid-planner, Claude Sonnet 5.5, Qwen 3.8 27B on an RTX 4090"
+    validations:
+      required: true
+  - type: textarea
+    id: result
+    attributes:
+      label: Result JSON
+      render: json
+    validations:
+      required: true
+  - type: textarea
+    id: notes
+    attributes:
+      label: Notes
+      description: "Anything unusual: refusals, the agent stopping to ask, tool failures."
