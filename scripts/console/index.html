@@ -103,10 +103,17 @@
         </div>
       </section>
 
-      <section id="view-status" hidden>
+      <section id="view-status" class="rv-stack" hidden>
         <div class="rv-card">
           <div class="rv-card-head"><h3>./rvkit status</h3><button id="status-refresh" class="rv-btn sm">Refresh</button></div>
           <pre id="status-text" class="rv-status">Loading…</pre>
+        </div>
+        <div class="rv-card">
+          <div class="rv-card-head"><h3>What the kit is tested and measured for</h3></div>
+          <div class="rv-card-body"><p class="rv-muted">Per stack, kept apart: tools available, methods implemented, lab-verified tests and
+            measured model results. In the kit folder: <code>docs/capability-baselines.md</code>. Saved benchmark
+            runs: <code>./rvkit bench --history</code>. Which test covers which risk:
+            <code>docs/regression-matrix.md</code>.</p></div>
         </div>
       </section>
     </main>

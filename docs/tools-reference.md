@@ -31,6 +31,7 @@ the agent did, to write better task prompts, or to extend the kit.
 | `engagement_activity` | `engagement` | Summary of the audit log: time range, commands run and refused, counts per tier and per tool, evidence files, approvals, halts and scope changes. The report's methodology section uses it. |
 | `approval_status` | `engagement`, `approval_id` | Where an approval stands: `pending`, `approved`, `denied`, `used` or `stale` (the scope or rules changed), as JSON. |
 | `list_credentials` | `engagement` | The names of the credentials stored for the engagement (never the values). Use one as `$RV_CRED_<NAME>` in `run`, or `{{cred:NAME}}` in an `http_request` URL, header or body. See [engagements.md](engagements.md#credentials). |
+| `laravel_map` | `engagement`, `path`, `build_url`, `routes_file`, `max_tier`, `task` | Maps a Laravel application from its source without running it: routes with effective middleware, controllers, models (mass assignment, tenant scopes), policies, views and sinks; leads, controls and gaps; the source digest compared with the deployment's build. Evidence in `evidence/appmap/`. See [laravel.md](laravel.md). |
 | `list_identities` | `engagement` | The engagement's test identities: name, role, tenant, hosts, tiers, effects, fixtures (with markers) and session status. Never a secret. See [authenticated-testing.md](authenticated-testing.md#identities). |
 | `check_identity` | `engagement`, `identity` | The valid-session control: `valid`, `expired`, `challenge`, `denied`, `error` or `revoked`, with the reason. Logs a `form`/`json` identity in again once when its session expired. |
 | `list_captures` | `engagement`, `capture` | Imported HAR / Burp captures, sanitized. Without `capture`: the list; with an id: its requests (method, URL, in scope, status, excerpt). |
@@ -121,13 +122,27 @@ the L4 profile.
 | Tool | Parameters | What it does |
 |---|---|---|
 | `record_finding` | `engagement`, `title`, `severity`, `asset`, `description`, and optional `impact`, `reproduction`, `remediation`, `evidence` (list of paths), `cvss_vector`, `cvss_score`, `cwe`, `status` (`candidate` by default; any of the five statuses is accepted), `notes` | Stores a finding and returns it with its id (`F-001`, `F-002`, …). Severity: `critical`, `high`, `medium`, `low`, `info`. |
-| `update_finding` | `engagement`, `finding_id`, then any field to change, including `status` | Changes only the fields given. Statuses: `candidate`, `confirmed`, `false-positive` (reason in `notes`), `duplicate` (needs `duplicate_of`: the finding to keep), `fixed`, `accepted-risk`. |
+| `update_finding` | `engagement`, `finding_id`, then any field to change, including `status`, `priority` (`P1`-`P4`), `prerequisites`, `root_cause`; `reason`; `method` | Changes only the fields given. Statuses: `candidate`, `confirmed` (with `method`: how it was verified), `false-positive`, `duplicate` (needs `duplicate_of`: the finding to keep), `fixed`, `accepted-risk`. `reason` is required for `false-positive`, `accepted-risk`, a severity change and a change of a set priority; refused without it (`REFUSED: ...`). |
 | `list_findings` | `engagement`, optional `status`, `severity` | Findings, most severe first: id, title, severity, status, asset, source. |
-| `get_finding` | `engagement`, `finding_id` | One finding with every field. |
+| `get_finding` | `engagement`, `finding_id`, `history` (default false) | One finding with every field; with `history`, every revision and decision with its reason. |
+| `import_observations` | `engagement`, `path` (a file of the engagement, such as `semgrep.json` or `evidence/authz/...`), optional `tool` | Turns a Semgrep, osv-scanner, pip-audit, bandit or gitleaks JSON, an authorization-matrix run, an app map or an HTTP exchange into observations. Re-importing doesn't duplicate; parser errors and limitations are returned. |
+| `add_observation` | `engagement`, `title`, `location`, optional `detail`, `severity`, `evidence` | Records something noticed by hand. |
+| `list_observations` | `engagement`, `status` (default `new`), optional `tool` | Observations, the imports with their errors, and grouping suggestions. |
+| `triage_observations` | `engagement`, `ids`, `action` (`link` with `finding_id`, `duplicate` with `of`, `dismiss` with `reason`, `reopen`) | Decides about observations; linked ones become the finding's instances and evidence. |
+| `plan_tests` | `engagement`, `playbook` or `items` | Adds planned tests: one per checklist line of a playbook (once), or the given items with their standard references. |
+| `update_coverage` | `engagement`, `item`, `state`, and `evidence`, `finding_id` or `rationale` as the state needs; optional `build`, `policy_revision` | Records a planned test's outcome: `tested` (evidence), `failed` (finding), `blocked`, `excluded`, `not-applicable` (rationale). |
+| `get_coverage` | `engagement`, optional `state` | Planned tests, counts per state and per standard, stale and blocked items. |
+| `set_objective` | `engagement`, `text` | What the engagement must answer. |
+| `get_handover` | `engagement` | Where the investigation stands, built from the records, plus the researcher's note. |
 | `write_file` | `engagement`, `path`, `content`, `append` (default false) | Writes one of: `PLAN.md`, `NOTES.md`, `notes/<name>.md` or `.txt`, `report/executive-summary.md`, `report/methodology.md`, `report/conclusion.md`, `report/meta.txt`. Anything else, or content over 1 MB, is refused. |
 | `list_playbooks` | none | Each playbook's name, title, standard and tiers. |
 | `get_playbook` | `name` | The full text of one playbook. |
-| `generate_report` | `engagement` | Builds the `.docx`, PDF and findings register `.xlsx` in `/work/<engagement>/report/`. Returns the paths, `DRAFT` or `final`, the issues that keep it a draft, and how many findings were included and left out. Takes about a minute. |
+| `generate_report` | `engagement` | Builds a new report revision (`.html`, `.docx`, PDF and findings register `.xlsx`) in `/work/<engagement>/report/revisions/<R-id>/` and copies it to `report/`. Returns the revision, its state (`generated`, or `ready` when nothing blocks delivery), the readiness checks, `DRAFT` or `final`, and how many findings were included and left out. Approval is the researcher's, not the agent's. Takes about a minute. |
+| `report_readiness` | `engagement` | What blocks delivery now, what a person excepted and why, the warnings, and the revisions with their states. |
+| `record_retest` | `engagement`, `finding_id`, `retest_build`, `outcome` (`resolved`, `partial`, `unresolved`), `cases` (`[{name, after: [evidence], result, before, detail}]`), optional `reauthorization`, `note` | Records a retest. Resolved (every case passes) marks the finding fixed in a new revision; the others keep it confirmed. The history keeps the original. |
+| `cleanup` | `engagement`, `action` (`add` with `kind` and `what`; `update` with `item`, `state=done` and `note`; `list`) | Cleanup obligations to finish before close-out. Waiving one is the researcher's decision. |
+| `prepare_notice` | `engagement`, `finding_id` | Drafts a notice about a confirmed critical or high finding in `report/notices/`, for the researcher to review. Sends nothing. |
+| `export_findings` | `engagement`, `draft` (default false) | `findings.json`, `findings.sarif` and `issues/<id>.md` from the approved report revision (or the latest, marked DRAFT). Sends nothing. |
 
 Findings are stored per engagement in `/work/<engagement>/findings.db` (SQLite). The report includes `confirmed`,
 `fixed` and `accepted-risk` findings. More: [findings-and-reports.md](findings-and-reports.md).

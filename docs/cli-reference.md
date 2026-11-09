@@ -390,6 +390,24 @@ Credentials the agent uses by reference (`$RV_CRED_<NAME>`, `{{cred:NAME}}`) wit
 letters, digits and `_`, starting with a letter. `set <NAME> --expires 2026-12-01` refuses the credential after
 that date. Values are encrypted with the vault key. See [engagements.md](engagements.md#credentials).
 
+### appmap
+
+```sh
+./rvkit appmap <engagement> </src/path> [--build-url URL] [--routes evidence/php/routes-<time>.json]
+```
+
+The Laravel application map, from the source (no code runs). See [laravel.md](laravel.md).
+
+### php
+
+```sh
+./rvkit php <engagement> lint </src/path>      # parse check with PHP's parser; nothing runs
+./rvkit php <engagement> routes </src/path>    # boot the app on a copy, export its routes (asks first)
+```
+
+The optional PHP profile: an isolated container with no network, built on first use. See
+[laravel.md](laravel.md#php-profile-optional).
+
 ### vault
 
 ```sh
@@ -472,11 +490,30 @@ change is recorded in the audit log as yours (`cli:<login>`). Statuses: `candida
 
 ```sh
 ./rvkit report <engagement>
+./rvkit report <engagement> revisions
+./rvkit report <engagement> except <check> "<rationale>"
+./rvkit report <engagement> approve <R-id> ["<note>"]
+./rvkit report <engagement> verify <R-id>
+./rvkit report <engagement> rebuild <R-id>
+./rvkit report <engagement> export [--draft]
+./rvkit report <engagement> sent <R-id> "<to>" "<how>"
 ```
 
-Builds the report (`.docx` and `.pdf`) and the findings register (`.xlsx`) in `<engagement>/report/` and prints the
-paths, `DRAFT` or `final`, and what keeps it a draft. Takes about a minute. See
-[findings-and-reports.md](findings-and-reports.md).
+`report <engagement>` builds a new report revision (`.html`, `.docx`, `.pdf` and the findings register `.xlsx`) in
+`<engagement>/report/revisions/<R-id>/`, copies it to `<engagement>/report/`, and prints its state and the
+readiness checks that block delivery. Takes about a minute.
+
+| Sub-command | What it does |
+|---|---|
+| `revisions` | every revision with its state and who approved it |
+| `except <check> <rationale>` | records an exception for a methodology check (`coverage-plan`, `coverage-open`, `coverage-stale`, `fields:<F-id>`, `verification:<F-id>`, `retest:<F-id>`) in your name; generate again afterwards |
+| `approve <R-id> [note]` | approves the latest, ready revision for client delivery; refused if anything changed since it was generated |
+| `verify <R-id>` | re-hashes the revision's files; exits 1 if one is missing or modified |
+| `rebuild <R-id>` | renders it again from its frozen inputs and compares the HTML |
+| `export [--draft]` | `findings.json`, `findings.sarif` and `issues/<F-id>.md` from the approved revision (`--draft`: the latest) |
+| `sent <R-id> <to> <how>` | records that an approved revision was sent; sends nothing |
+
+See [findings-and-reports.md](findings-and-reports.md).
 
 ### close
 
@@ -520,11 +557,14 @@ practice and test engagements.
 ### bench
 
 ```sh
-./rvkit bench <name|all> [--agent riskvoid-planner|riskvoid-local] [--keep]
-python3 evals/run_benchmark.py --history
+./rvkit bench <name|all> [--agent riskvoid-planner|riskvoid-local] [--repeat N]
+./rvkit bench --history
+./rvkit bench --score <name> <bench-engagement>
 ```
 
 Runs the real agent unattended against a known target and scores it. Names are the files in `evals/benchmarks/`.
+`--repeat N` runs it N times and prints the spread; `--score` re-scores an existing `bench-` engagement without a
+model.
 Details: [lab-and-benchmarks.md](lab-and-benchmarks.md#benchmarks).
 
 ---

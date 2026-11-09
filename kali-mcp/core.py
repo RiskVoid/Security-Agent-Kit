@@ -28,7 +28,13 @@ MCP_PORT = 8090  # server.py listens here; engagement commands must never reach 
 ACTOR = "agent:kali-mcp"
 ACTOR_RX = re.compile(r"^(console|cli|agent|test):[A-Za-z0-9._@-]{1,64}$")
 # Events another authority reports for the audit log (rvctl record): changes made through harness/ops.py.
-RECORDABLE = {"finding-updated", "finding-recorded", "meta-updated", "summary-updated", "report-generated"}
+RECORDABLE = {"finding-updated", "finding-recorded", "meta-updated", "summary-updated", "report-generated",
+              "finding-not-reproducible", "observations-imported", "observation-added", "observations-linked",
+              "observations-dismissed", "observations-duplicate", "observations-reopened", "plan-items-added",
+              "coverage-updated", "coverage-reassessed", "objective-set", "handover-saved",
+              "report-exception", "report-exception-revoked", "report-approved", "report-rebuilt",
+              "report-transmitted", "retest-recorded", "cleanup-added", "cleanup-updated", "notice-prepared",
+              "notice-reviewed", "findings-exported"}
 
 
 class Conflict(ValueError):
@@ -1120,8 +1126,9 @@ def record(eng, event):
     actor = event.get("actor")
     if not isinstance(actor, str) or not ACTOR_RX.match(actor):
         raise ValueError("event needs an actor: <console|cli|agent>:<name>")
-    keep = {k: event[k] for k in ("event", "actor", "target", "before", "after", "fields", "files", "findings")
-            if k in event}
+    keep = {k: event[k] for k in ("event", "actor", "target", "before", "after", "fields", "files", "findings",
+                                  "reason", "method", "state", "parser", "observations", "new", "errors", "count",
+                                  "stale", "build", "policy_revision", "tool") if k in event}
     if len(json.dumps(keep, default=str)) > 4000:  # keep audit lines small: drop the details, not the event
         keep = {k: keep[k] for k in ("event", "actor", "target") if k in keep}
     entry = {"engagement": eng, **json.loads(json.dumps(keep, default=str))}

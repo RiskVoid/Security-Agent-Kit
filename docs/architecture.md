@@ -366,6 +366,7 @@ kali-mcp/
   captures.py               HAR / Burp import, sanitizing, replay and comparison
   browser_runner.py         the headless browser run inside the sandbox
   authz.py                  authorization matrices: validation, approval, run and verdicts
+  laravel_map.py            the Laravel application map (static) and the source digest
   core.py                   enforcement: tiers, rate caps, policy revisions, bound approvals, budgets, halt,
                             firewall, DNS, audit, close-out
   tiers.yaml, tierconf.py   tool tiers, subcommand rules, rate flags, strict mode; and their loader and checks
@@ -375,6 +376,7 @@ kali-mcp/
   aitools/                  rv-llm (LLM / agent / MCP testing), jwt_tool wrapper
   joern/                    rv-joern and the taint-tracking script
   Dockerfile                the Kali image with every tool, pinned
+php-runner/                 the optional PHP profile (./rvkit php): PHP and Composer, no network
 harness/
   worker.py                 worker MCP server (delegate_task) and the worker model's tool loop
   findings.py, findings_db.py   findings MCP server, SQLite store, write_file, playbooks, generate_report

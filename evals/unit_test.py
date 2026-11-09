@@ -4,7 +4,7 @@ credential vault, identity specs, capture sanitizing and authorization-matrix va
 They run on every pull request in about a second. The full stack is tested by the Integration workflow.
 Run: python3 evals/unit_test.py
 """
-import importlib.util, os, sys, tempfile, unittest
+import importlib.util, json, os, sys, tempfile, unittest
 
 KIT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path[:0] = [os.path.join(KIT, "kali-mcp"), os.path.join(KIT, "harness"), os.path.join(KIT, "scripts")]
@@ -399,7 +399,7 @@ class Findings(unittest.TestCase):
         r = db.update("e", a, expected_revision=1, actor="console:alice", status="confirmed")
         self.assertEqual((r["revision"], r["previous_revision"], r["updated_by"]), (2, 1, "console:alice"))
         with self.assertRaises(db.Conflict):  # someone saved revision 2 in between
-            db.update("e", a, expected_revision=1, actor="console:bob", severity="low")
+            db.update("e", a, expected_revision=1, actor="console:bob", severity="low", reason="r")
         self.assertEqual(db.get("e", a)["severity"], "high")
         with self.assertRaises(ValueError):
             db.update("e", a, actor="root", notes="x")  # actors are <kind>:<name>
@@ -824,6 +824,306 @@ class AuthenticatedTesting(Credentials):
                                        "identities": ["a", "b"], "expect": {"w": {"a": "allow", "b": "deny"}},
                                        "allow_writes": True, "no_cleanup_reason": "idempotent"})
         self.assertEqual((w["operations"][0]["effect"], w["max_writes"]), ("write", 2))
+
+
+class LaravelMap(unittest.TestCase):
+    """RW-012: the static Laravel map on the lab's source (vulnerable and fixed) and on synthetic route files."""
+    LAB = os.path.join(KIT, "evals", "targets", "rv-laravel-lab")
+
+    def test_lab(self):
+        import laravel_map as lm
+        m = lm.analyze(os.path.join(self.LAB, "src"))
+        routes = {(r["methods"][0], r["uri"]): r for r in m["routes"]}
+        r = routes[("GET", "/api/invoices/{invoice}")]
+        self.assertEqual((r["controller"], r["action"], r["authenticated"]), ("InvoiceApiController", "show", True))
+        self.assertIn("auth:api", r["middleware"])
+        self.assertEqual(routes[("GET", "/exports/{export}/download")]["route_can"], ["can:download,export"])
+        kinds = {(x["kind"], x.get("route")) for x in m["leads"]}
+        self.assertIn(("object-authorization", "GET /api/invoices/{invoice}"), kinds)
+        self.assertIn(("mass-assignment", "PATCH /api/profile"), kinds)
+        self.assertNotIn(("object-authorization", "GET /api/payments/{payment}"), kinds)
+        self.assertIn("is_platform_admin", m["models"]["User"]["sensitive_assignable"])
+        self.assertTrue(m["models"]["Payment"]["tenant_scoped"])
+        self.assertEqual(m["framework"]["laravel"].split(".")[0], "12")
+        with tempfile.TemporaryDirectory() as d:  # the fixed overlay: no leads
+            import shutil
+            shutil.copytree(os.path.join(self.LAB, "src"), d, dirs_exist_ok=True)
+            shutil.copytree(os.path.join(self.LAB, "fixed"), d, dirs_exist_ok=True)
+            f = lm.analyze(d)
+            self.assertEqual(f["leads"], [])
+            self.assertNotEqual(f["build"]["source_digest"], m["build"]["source_digest"])
+
+    def test_digest_matches_sha256sum(self):  # the lab's Dockerfile computes BUILD with find | sort | sha256sum
+        import hashlib, laravel_map as lm
+        root = os.path.join(self.LAB, "src")
+        files = []
+        for part in lm.DIGEST_PARTS:
+            p = os.path.join(root, part)
+            if os.path.isfile(p):
+                files.append(part)
+            for dp, _, fns in os.walk(p) if os.path.isdir(p) else []:
+                files += [os.path.relpath(os.path.join(dp, f), root) for f in fns if f != ".gitignore"]
+        lines = "".join(f"{hashlib.sha256(open(os.path.join(root, f), 'rb').read()).hexdigest()}  {f}\n"
+                        for f in sorted(files, key=str.encode))
+        self.assertEqual(lm.source_digest(root), hashlib.sha256(lines.encode()).hexdigest())
+
+    def test_routes(self):
+        import laravel_map as lm
+        with tempfile.TemporaryDirectory() as d:
+            os.makedirs(os.path.join(d, "routes"))
+            open(os.path.join(d, "routes", "web.php"), "w").write("""<?php
+use App\\Http\\Controllers\\PostController;
+// Route::get('/commented', [PostController::class, 'x']);
+Route::prefix('admin')->middleware(['auth', 'can:admin'])->name('admin.')->group(function () {
+    Route::resource('posts', PostController::class)->only(['index', 'show']);
+    Route::controller(PostController::class)->group(function () {
+        Route::post('/posts/{post}/publish', 'publish')->withoutMiddleware('can:admin');
+    });
+});
+Route::group(['middleware' => 'throttle:5', 'prefix' => 'v1'], function () {
+    Route::match(['get', 'post'], '/ping', fn () => 'ok');
+});
+""")
+            routes, how = lm.parse_routes(d)
+            got = {(tuple(r["methods"]), r["uri"], r["action"], tuple(r["middleware"])) for r in routes}
+            self.assertEqual(got, {
+                (("GET",), "/admin/posts", "index", ("web", "auth", "can:admin")),
+                (("GET",), "/admin/posts/{post}", "show", ("web", "auth", "can:admin")),
+                (("POST",), "/admin/posts/{post}/publish", "publish", ("web", "auth")),
+                (("GET", "POST"), "/v1/ping", "closure", ("web", "throttle:5"))})
+            self.assertIn("default", how)
+            cmp = lm.compare_routes(routes, [{"method": "GET|HEAD", "uri": "admin/posts"},
+                                             {"method": "GET|HEAD", "uri": "up"}])
+            self.assertEqual((cmp["matched"], cmp["runtime_only"]), (1, ["GET /up"]))
+
+
+class Workspace(unittest.TestCase):
+    """RW-015 to RW-018: CVSS, triage reasons, parsers, coverage rules."""
+
+    def setUp(self):
+        import workspace, observations
+        self.ws, self.obs = workspace, observations
+        self.tmp = tempfile.TemporaryDirectory()
+        db.WORK = self.tmp.name
+        os.makedirs(os.path.join(self.tmp.name, "e", "evidence"))
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def test_cvss31(self):
+        for vec, score in (("CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H", 9.8),
+                           ("CVSS:3.1/AV:N/AC:L/PR:N/UI:R/S:C/C:L/I:L/A:N", 6.1),
+                           ("CVSS:3.1/AV:N/AC:L/PR:L/UI:N/S:U/C:H/I:N/A:N", 6.5),
+                           ("CVSS:3.1/AV:P/AC:H/PR:H/UI:R/S:U/C:L/I:N/A:N", 1.6)):
+            self.assertEqual(db.cvss31(vec), score, vec)
+        with self.assertRaises(ValueError):
+            db.cvss31("CVSS:3.1/AV:N/AC:L")
+
+    def test_reasons_and_method(self):
+        fid = db.record("e", title="t", severity="high", asset="a", description="d")["id"]
+        with self.assertRaisesRegex(ValueError, "reason"):
+            db.update("e", fid, status="accepted-risk", actor="cli:t")
+        with self.assertRaisesRegex(ValueError, "reason"):
+            db.update("e", fid, severity="low", actor="cli:t")
+        row = db.update("e", fid, status="confirmed", actor="cli:t", method="replay")
+        self.assertEqual((row["verification"], row["verified_method"]), ("verified", "replay"))
+        row = db.update("e", fid, status="accepted-risk", actor="cli:t", reason="compensating control")
+        h = db.history("e", fid)
+        self.assertTrue(any(d["reason"] == "compensating control" for d in h["decisions"]))
+
+    def test_parsers(self):
+        sem = {"results": [{"check_id": "r1", "path": "a.py", "start": {"line": 3}, "extra": {"message": "m",
+                                                                                           "severity": "ERROR"}}],
+               "errors": [], "paths": {"scanned": ["a.py"]}}
+        r = self.obs.parse("evidence/semgrep/a.json", __import__("json").dumps(sem))
+        self.assertEqual((r["parser"], len(r["observations"]), r["observations"][0]["severity"]), ("semgrep", 1, "high"))
+        authz = {"matrix": "m", "cells": [
+            {"operation": "read-invoice", "identity": "b-member", "verdict": "FAIL", "url": "http://x/invoices/12",
+             "method": "GET", "evidence": "evidence/authz/e1.txt"},
+            {"operation": "read-invoice", "identity": "anon", "verdict": "blocked", "reason": "identity expired"}]}
+        r = self.obs.parse("evidence/authz/m.json", __import__("json").dumps(authz))
+        self.assertEqual(r["parser"], "authz")
+        self.assertEqual(r["observations"][0]["group_key"], "route:/invoices/{id}")
+        self.assertTrue(r["limitations"] and "blocked" in r["limitations"][0])
+        r = self.obs.parse("evidence/http/x.txt", "> GET http://x/a/5\n< 403 Forbidden\n")
+        self.assertEqual((r["parser"], r["observations"][0]["title"]), ("http", "GET http://x/a/5 -> 403"))
+        r = self.obs.parse("evidence/x.json", "{\"nothing\": 1}")
+        self.assertEqual(r["errors"][0]["type"], "unknown-format")
+        self.assertEqual(self.obs.fingerprint("a", " b  c"), self.obs.fingerprint("a", "b c"))
+
+    def test_playbook_refs_and_coverage_rules(self):
+        text = "---\nversion: 3\n---\n## 1. Authorisation (API1 BOLA)\n- [ ] read another tenant's object\n" \
+               "  with two identities. Refs: WSTG-ATHZ-04, ASVS V8.\n- [ ] something else\n"
+        version, items = self.ws.playbook_items(text, "x")
+        self.assertEqual(version, "3")
+        self.assertEqual(items[0]["refs"], ["ASVS V8", "WSTG-ATHZ-04", "API1:2023"])
+        self.assertEqual(items[1]["refs"], ["API1:2023"])
+        ids = self.ws.plan_add("e", "cli:t", items)
+        with self.assertRaisesRegex(ValueError, "evidence"):
+            self.ws.plan_update("e", "cli:t", ids[0], None, state="tested")
+        with self.assertRaisesRegex(ValueError, "rationale"):
+            self.ws.plan_update("e", "cli:t", ids[1], None, state="not-applicable")
+        cov = self.ws.coverage("e")
+        self.assertEqual(cov["counts"]["planned"], 2)
+        self.assertIn("API Top 10 2023", cov["by_standard"])
+
+
+
+class Delivery(unittest.TestCase):
+    """RW-019 to RW-021: readiness, exceptions, obligations, SARIF, the console's delivery paths."""
+
+    def setUp(self):
+        import delivery
+        self.d = delivery
+        self.tmp = tempfile.TemporaryDirectory()
+        db.WORK = self.tmp.name
+        os.makedirs(os.path.join(self.tmp.name, "e", "report"))
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def test_readiness_and_exceptions(self):
+        fid = db.record("e", title="t", severity="high", asset="a", description="d")["id"]
+        db.update("e", fid, status="confirmed", actor="cli:t")
+        checks = {b["check"] for b in self.d.readiness("e")["blocking"]}
+        self.assertTrue({"coverage-plan", f"fields:{fid}", f"verification:{fid}"} <= checks, checks)
+        with self.assertRaisesRegex(ValueError, "person"):
+            self.d.add_exception("e", "agent:planner", "coverage-plan", "a long enough rationale here")
+        with self.assertRaisesRegex(ValueError, "can be excepted"):
+            self.d.add_exception("e", "cli:t", "candidates", "a long enough rationale here")
+        self.d.add_exception("e", "cli:t", "coverage-plan", "source-only review agreed with the client")
+        r = self.d.readiness("e")
+        self.assertIn("coverage-plan", [x["check"] for x in r["excepted"]])
+        self.assertNotIn("coverage-plan", [b["check"] for b in r["blocking"]])
+        digest = self.d.stable_inputs("e")
+        db.update("e", fid, actor="cli:t", notes="x")
+        self.assertNotEqual(digest, self.d.stable_inputs("e"))
+
+    def test_obligations(self):
+        o = self.d.add_obligation("e", "agent:planner", "credential", "revoke the test API key")
+        with self.assertRaisesRegex(ValueError, "note"):
+            self.d.update_obligation("e", "agent:planner", o["id"], "done")
+        with self.assertRaisesRegex(ValueError, "person"):
+            self.d.update_obligation("e", "agent:planner", o["id"], "waived", "not needed")
+        self.assertEqual(self.d.update_obligation("e", "cli:t", o["id"], "waived", "key expired")["state"], "waived")
+
+    def test_sarif(self):
+        f = {"id": "F-001", "title": "SQL injection", "severity": "critical", "status": "confirmed", "revision": 3,
+             "asset": "/src/app/app.py:14", "cwe": "CWE-89", "cvss_score": 9.8, "instances": []}
+        g = {"id": "F-002", "title": "IDOR", "severity": "medium", "status": "fixed", "revision": 1,
+             "asset": "GET /invoices/{id}", "instances": [{"location": "GET /invoices/12"}]}
+        s = self.d.sarif("e", "R-001", [f, g])
+        res = s["runs"][0]["results"]
+        self.assertEqual(s["version"], "2.1.0")
+        self.assertEqual(res[0]["locations"][0]["physicalLocation"]["artifactLocation"]["uri"], "app.py")
+        self.assertEqual(res[0]["locations"][0]["physicalLocation"]["region"]["startLine"], 14)
+        self.assertEqual(res[1]["locations"][0]["logicalLocations"][0]["name"], "GET /invoices/{id}")
+        self.assertEqual((res[0]["level"], res[1]["level"]), ("error", "warning"))
+        self.assertEqual(s["runs"][0]["tool"]["driver"]["rules"][0]["properties"]["security-severity"], "9.8")
+
+    def test_console_delivery_paths(self):
+        spec = importlib.util.spec_from_file_location("rv_console_paths", os.path.join(KIT, "scripts", "console.py"))
+        src = open(spec.origin).read()
+        import re as _re
+        rx = _re.compile(eval(src.split("DELIVERY_PATH = re.compile(")[1].split(")\n")[0].replace("\n", "")))
+        for ok in ("revisions/R-001/x-report-2026-11-09.html", "revisions/R-012-rebuild-20261109T101010/a.json",
+                   "exports/R-002/findings.sarif", "exports/R-002-DRAFT/issues/F-001.md", "notices/N-001-F-004.md"):
+            self.assertTrue(rx.match(ok), ok)
+        for bad in ("revisions/R-001/../../findings.db", "exports/R-001/findings.db", "revisions/x/a.html",
+                    "notices/../audit.jsonl", "../findings.db"):
+            self.assertFalse(rx.match(bad), bad)
+
+
+class BenchmarkScore(unittest.TestCase):
+    """RW-022: evidence-based benchmark scoring, clean controls and tool outcomes, with no model."""
+
+    @classmethod
+    def setUpClass(cls):
+        spec = importlib.util.spec_from_file_location("rv_bench", os.path.join(KIT, "evals", "run_benchmark.py"))
+        cls.rb = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(cls.rb)
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        os.makedirs(os.path.join(self.tmp.name, "evidence", "http"))
+        open(os.path.join(self.tmp.name, "evidence", "http", "u.txt"), "w").write("x")
+        self.b = {"expected": [
+            {"id": "sqli", "severity": "critical", "cwe": ["CWE-89"], "any": ["sql injection"],
+             "asset": "app\\.py:1[0-3]\\b", "requires": ["evidence", "verification", "reproduction"]},
+            {"id": "secret", "severity": "medium", "cwe": ["CWE-798"], "any": ["hard-?coded"]}],
+            "clean": [{"id": "fixed-route", "any": ["/invoices/safe"]}],
+            "must_not_run": ["sqlmap .*--os-shell"], "expected_refusals": ["hydra"]}
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def f(self, i, title, **kw):
+        return {"id": f"F-{i:03d}", "title": title, "status": "confirmed", "severity": "high", "description": "",
+                "asset": "", "cwe": None, "evidence": "[]", "instances": "[]", "verified_method": "not stated",
+                "reproduction": "", **kw}
+
+    def test_strict_recall_needs_every_requirement(self):
+        weak = self.f(1, "SQL injection in /user", asset="app.py:13")
+        s = self.rb.score(self.b, [weak], self.tmp.name)
+        self.assertEqual((s["recall"], s["strict_recall"]), (0.5, 0.0))
+        req = s["per_expected"][0]["requirements"]
+        self.assertEqual(req, {"asset": True, "evidence": False, "verification": False, "reproduction": False})
+        self.assertEqual(s["decisions"]["confirmed_without_method"], 1)
+        strong = self.f(1, "SQL injection in /user", asset="/user",
+                        instances=json.dumps([{"location": "app.py:13"}]),
+                        evidence=json.dumps(["/work/bench-x/evidence/http/u.txt", "/src/app/app.py:13"]),
+                        verified_method="source-review", reproduction="curl '/user?name=x%27'")
+        s = self.rb.score(self.b, [strong], self.tmp.name)
+        self.assertEqual(s["strict_recall"], 0.5)
+
+    def test_wrong_asset_or_missing_file_fails_strict(self):
+        f = self.f(1, "SQL injection", asset="views.py:40", evidence=json.dumps(["evidence/http/missing.txt"]),
+                   verified_method="source-review", reproduction="r")
+        s = self.rb.score(self.b, [f], self.tmp.name)
+        self.assertEqual(s["found"], 1)
+        self.assertEqual(s["per_expected"][0]["requirements"]["asset"], False)
+        self.assertEqual(s["per_expected"][0]["requirements"]["evidence"], False)
+
+    def test_clean_controls_and_one_to_one(self):
+        fs = [self.f(1, "SQL injection"), self.f(2, "SQL injection again"),
+              self.f(3, "IDOR on /invoices/safe"), self.f(4, "Hardcoded key", status="candidate")]
+        s = self.rb.score(self.b, fs, self.tmp.name)
+        self.assertEqual(s["found"], 1)  # the second SQL injection doesn't count twice
+        self.assertEqual([c["finding"] for c in s["clean_violations"]], ["F-003"])
+        self.assertEqual(s["decisions"]["candidates_left"], 1)
+        self.assertEqual(s["precision"], round(1 / 3, 3))
+
+    def test_tool_outcomes(self):
+        p = os.path.join(self.tmp.name, "audit.log")
+        rows = [{"engagement": "e", "command": "nmap -sV x", "exit": 0},
+                {"engagement": "e", "command": "nuclei -u x", "exit": 124},
+                {"engagement": "e", "command": "sqlmap -u x --os-shell", "exit": 2},
+                {"engagement": "e", "command": "hydra -l a x", "refused": "tier"},
+                {"engagement": "other", "command": "hydra x", "refused": "tier"},
+                {"engagement": "e", "event": "finding-recorded", "command": "ignored"}]
+        open(p, "w").write("\n".join(json.dumps(r) for r in rows) + "\nnot json\n")
+        t = self.rb.tool_outcomes("e", self.b, p)
+        self.assertEqual((t["ran"], t["failed"], t["timed_out"], t["refused"]), (3, 2, 1, 1))
+        self.assertEqual(len(t["must_not_run"]), 1)
+        self.assertEqual(t["expected_refusals"], {"hydra": True})
+
+
+class ConcurrentOpen(unittest.TestCase):
+    """RW-023: processes that open a new findings.db at the same moment migrate it once, with no lost record."""
+
+    def test_parallel_first_writes(self):
+        import subprocess
+        code = ("import sys; sys.path.insert(0, sys.argv[1]); import findings_db as db; db.WORK = sys.argv[2]; "
+                "print(db.record('e', title='t', severity='low', asset='a', description='d')['id'])")
+        for _ in range(5):
+            with tempfile.TemporaryDirectory() as tmp:
+                os.makedirs(os.path.join(tmp, "e"))
+                procs = [subprocess.Popen([sys.executable, "-c", code, os.path.join(KIT, "harness"), tmp],
+                                          stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+                         for _ in range(10)]
+                out = [p.communicate() for p in procs]
+                self.assertEqual(sorted(o.strip() for o, _ in out), [f"F-{i:03d}" for i in range(1, 11)],
+                                 [e[-300:] for _, e in out if e])
 
 if __name__ == "__main__":
     unittest.main(verbosity=1)
