@@ -32,7 +32,7 @@ METHODS = ("runtime-reproduction", "replay", "authorization-matrix", "source-rev
 PRIORITIES = ("P1", "P2", "P3", "P4")   # remediation priority: the client's order of work, not the severity
 NEEDS_REASON = ("false-positive", "accepted-risk")
 COVERAGE = ("planned", "tested", "failed", "blocked", "excluded", "not-applicable")
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 ACTOR_RX = re.compile(r"^(console|cli|agent|test):[A-Za-z0-9._@-]{1,64}$")
 FIELDS = ("title", "severity", "cvss_vector", "cvss_score", "cwe", "asset", "description", "impact",
           "reproduction", "remediation", "evidence", "status", "source", "notes", "duplicate_of", "priority",
@@ -104,6 +104,22 @@ def _migrate(con: sqlite3.Connection) -> None:
         for r in con.execute("SELECT * FROM findings").fetchall():  # history starts with what exists now
             con.execute("INSERT OR IGNORE INTO finding_revisions VALUES (?,?,?,?,?)",
                         (r["id"], r["revision"], json.dumps(dict(r)), r["updated_by"], r["updated"]))
+    if v < 4:  # delivery: report revisions, retests, cleanup obligations, notices (RW-019 to RW-021)
+        con.executescript("""
+            CREATE TABLE IF NOT EXISTS report_revisions (id TEXT PRIMARY KEY, state TEXT NOT NULL, created TEXT,
+                actor TEXT, inputs_digest TEXT, inputs TEXT, artifacts TEXT, readiness TEXT, approved_by TEXT,
+                approved_at TEXT, approval_note TEXT, superseded_by TEXT, transmissions TEXT DEFAULT '[]');
+            CREATE TABLE IF NOT EXISTS report_exceptions (id INTEGER PRIMARY KEY AUTOINCREMENT, check_key TEXT NOT NULL,
+                rationale TEXT NOT NULL, actor TEXT, at TEXT, revoked_at TEXT);
+            CREATE TABLE IF NOT EXISTS retests (id TEXT PRIMARY KEY, finding_id TEXT NOT NULL, original_revision INTEGER,
+                original_build TEXT, retest_build TEXT NOT NULL, outcome TEXT NOT NULL, cases TEXT, reauthorization TEXT,
+                note TEXT, finding_revision INTEGER, actor TEXT, at TEXT);
+            CREATE TABLE IF NOT EXISTS obligations (id TEXT PRIMARY KEY, kind TEXT NOT NULL, what TEXT NOT NULL,
+                state TEXT NOT NULL DEFAULT 'open', note TEXT, due TEXT, actor TEXT, created TEXT, updated TEXT,
+                updated_by TEXT);
+            CREATE TABLE IF NOT EXISTS notices (id TEXT PRIMARY KEY, finding_id TEXT NOT NULL, finding_revision INTEGER,
+                state TEXT NOT NULL, path TEXT, sha256 TEXT, actor TEXT, at TEXT, reviewed_by TEXT, reviewed_at TEXT);
+        """)
     con.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
 
 
@@ -309,7 +325,7 @@ def update(engagement: str, finding_id: str, expected_revision: int | None = Non
         if not cur.rowcount:  # changed between the read and the write (another process)
             raise Conflict(f"{finding_id} changed while saving: reload and apply your change again")
         for kind, a, b in changes:
-            _decision(con, finding_id, kind, a, b, reason, method if b == "confirmed" else None, actor, before + 1)
+            _decision(con, finding_id, kind, a, b, reason, method if kind == "status" else None, actor, before + 1)
         if f.get("status") == "confirmed" and (cur_row["verification"] != "verified" or method):
             _verify(con, finding_id, method or "not stated", actor)
         elif method and not changes:  # verified again by another method (e.g. a retest)

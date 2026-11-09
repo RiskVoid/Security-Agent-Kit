@@ -440,6 +440,16 @@ def handover(eng):
                         "what": f"{len(new_obs)} observation(s) not triaged"})
     for s in cov["stale"]:
         pending.append({"kind": "retest", "ref": s["id"], "what": f"{s['id']} {s['title']}: {s['why']}"})
+    with db._db(eng) as con:  # delivery records (RW-019 to RW-021)
+        for r in con.execute("SELECT id, kind, what FROM obligations WHERE state='open' ORDER BY id"):
+            pending.append({"kind": "cleanup", "ref": r["id"], "what": f"{r['id']} ({r['kind']}): {r['what']}"})
+        for r in con.execute("SELECT id, finding_id FROM notices WHERE state='draft' ORDER BY id"):
+            pending.append({"kind": "notice-review", "ref": r["id"],
+                            "what": f"notice {r['id']} for {r['finding_id']} waits for review"})
+        rev = con.execute("SELECT id, state FROM report_revisions ORDER BY id DESC LIMIT 1").fetchone()
+        if rev and rev["state"] == "ready":
+            pending.append({"kind": "report-approval", "ref": rev["id"],
+                            "what": f"report revision {rev['id']} is ready: review and approve it for delivery"})
     parse_problems = [f"{i['id']} {i['path']}: {len(i['errors'])} parser error(s)" for i in imps if i["errors"]]
     nxt = []
     if not objective:

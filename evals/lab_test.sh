@@ -47,7 +47,7 @@ check "lab engagement still can't reach LiteLLM"     "$(code lab-juice http://li
 
 # a container on the lab network, like a target, must not reach the internet or the kit
 LABNET="$(docker network ls --format '{{.Name}}' | grep -E '_rvlab$' | head -1)"
-probe() { docker run --rm --network "$LABNET" busybox:1.37.0 sh -c "wget -q -T 4 -O /dev/null $1 && echo REACHED || echo BLOCKED" 2>&1 | tail -1; }
+probe() { docker run --rm --network "$LABNET" busybox:1.37.0 sh -c "wget -q -T 4 -O /dev/null $1 2>/dev/null && echo REACHED || echo BLOCKED" 2>&1 | tail -1; }
 check "lab network has no internet"                  "$(probe https://example.com)" 'BLOCKED'
 check "lab network can't reach the kit's services"   "$(probe http://litellm:4000/)" 'BLOCKED'
 

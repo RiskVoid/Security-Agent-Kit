@@ -241,17 +241,74 @@ def get_playbook(name: str) -> str:
 
 @mcp.tool()
 async def generate_report(engagement: str) -> str:
-    """Build the branded report (brand set by REPORT_BRAND) as a web page (.html), .docx + PDF, and findings register (.xlsx) in /work/<eng>/report/
-    (the same path in your workspace, read-only). Includes confirmed, fixed and accepted-risk findings, each
-    with its evidence SHA-256 and the audited command that produced it. Before calling it, write
-    report/executive-summary.md (and optionally methodology.md, conclusion.md); the client name is in
-    report/meta.txt. Returns paths, DRAFT/final status and the issues that keep it a draft (fix them and
-    regenerate). Run it in a background terminal if your tool call times out: it takes about a minute."""
-    import anyio, report  # heavy imports (python-docx, LibreOffice) only when needed
+    """Build a new report revision (R-001, R-002...): a web page (.html), .docx + PDF and findings register
+    (.xlsx) in /work/<eng>/report/revisions/<R-id>/, with the latest copied to /work/<eng>/report/. Its inputs
+    are frozen and its files hashed. Includes confirmed, fixed and accepted-risk findings with their evidence
+    SHA-256. Before calling it, write report/executive-summary.md (and optionally methodology.md,
+    conclusion.md); the client name is in report/meta.txt. Returns the revision, its state (generated, or ready
+    when no readiness check blocks it) and the readiness checks: fix what blocks it and regenerate. Approving it
+    for client delivery is the researcher's decision in the console, not yours. Takes about a minute."""
+    import anyio  # heavy imports (python-docx, LibreOffice) only when needed
     try:  # build() calls kali-mcp with its own event loop, so it runs in a worker thread
-        return _out(await anyio.to_thread.run_sync(report.build, engagement))
+        r = await anyio.to_thread.run_sync(lambda: ops.call("report.build", {"engagement": engagement,
+                                                                             "actor": ACTOR})[0])
+        return _out(r)
     except ValueError as e:
         return f"ERROR: {e}"
+
+
+@mcp.tool()
+def report_readiness(engagement: str) -> str:
+    """What blocks delivery now (and what a person excepted, with the rationale), plus warnings: coverage without
+    outcomes, stale results, reported findings missing fields or a verification method, fixed findings without a
+    retest, untriaged candidates, open cleanup obligations. The report revisions and their states."""
+    r = ops.call("report.revisions", {"engagement": engagement})[0]
+    return _out({"readiness": r["readiness"], "revisions": [{k: v[k] for k in ("id", "state", "created",
+                                                                             "approved_by")} for v in r["revisions"]]})
+
+
+@mcp.tool()
+def record_retest(engagement: str, finding_id: str, retest_build: str, outcome: str, cases: list[dict],
+                  reauthorization: str = "", note: str = "") -> str:
+    """Record a retest of a confirmed or fixed finding on a new build. outcome: resolved (every case passes: the
+    finding becomes fixed in a new revision; its history and original reproduction stay), partial or
+    unresolved (it stays, or goes back to, confirmed). cases: [{"name", "before": [evidence], "after":
+    [evidence of the retest, required], "result": "pass"|"fail"|"partial", "detail"}]; before defaults to the
+    finding's evidence. reauthorization: when the retest needed scope or access re-authorized, who and when."""
+    return _call("retest.record", engagement=engagement, finding_id=finding_id, retest_build=retest_build,
+                 outcome=outcome, cases=cases, reauthorization=reauthorization, note=note)
+
+
+@mcp.tool()
+def cleanup(engagement: str, action: str, kind: str = "", what: str = "", item: str = "", state: str = "",
+            note: str = "") -> str:
+    """Cleanup obligations: what has to be undone or decided before close-out. action=add with kind (fixture,
+    credential, data, access, retention, other) and what (e.g. "delete the test invoices created in tenant B");
+    action=update with item (C-001), state=done and a note on what was done (waiving is the researcher's
+    decision); action=list."""
+    if action == "add":
+        return _call("cleanup.add", engagement=engagement, kind=kind, what=what)
+    if action == "update":
+        return _call("cleanup.update", engagement=engagement, id=item, state=state, note=note)
+    if action == "list":
+        return _out(ops.call("report.revisions", {"engagement": engagement})[0]["obligations"])
+    return "REFUSED: action is add, update or list"
+
+
+@mcp.tool()
+def prepare_notice(engagement: str, finding_id: str) -> str:
+    """Draft a notice of a material finding (confirmed, critical or high) for the researcher to review before it
+    is shared with the client: report/notices/N-NNN-<id>.md, tied to the finding's current revision. Nothing is
+    sent."""
+    return _call("notice.prepare", engagement=engagement, finding_id=finding_id)
+
+
+@mcp.tool()
+def export_findings(engagement: str, draft: bool = False) -> str:
+    """Structured exports of the reported findings from the approved report revision: findings.json,
+    findings.sarif (SARIF 2.1.0) and issues/<id>.md (issue-ready text) in report/exports/<R-id>/, each naming the
+    finding revisions it contains. draft=true exports the latest revision, marked DRAFT. Nothing is sent."""
+    return _call("export.build", engagement=engagement, draft=draft)
 
 
 if __name__ == "__main__":

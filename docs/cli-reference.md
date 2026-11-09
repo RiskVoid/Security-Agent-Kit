@@ -490,11 +490,30 @@ change is recorded in the audit log as yours (`cli:<login>`). Statuses: `candida
 
 ```sh
 ./rvkit report <engagement>
+./rvkit report <engagement> revisions
+./rvkit report <engagement> except <check> "<rationale>"
+./rvkit report <engagement> approve <R-id> ["<note>"]
+./rvkit report <engagement> verify <R-id>
+./rvkit report <engagement> rebuild <R-id>
+./rvkit report <engagement> export [--draft]
+./rvkit report <engagement> sent <R-id> "<to>" "<how>"
 ```
 
-Builds the report (`.docx` and `.pdf`) and the findings register (`.xlsx`) in `<engagement>/report/` and prints the
-paths, `DRAFT` or `final`, and what keeps it a draft. Takes about a minute. See
-[findings-and-reports.md](findings-and-reports.md).
+`report <engagement>` builds a new report revision (`.html`, `.docx`, `.pdf` and the findings register `.xlsx`) in
+`<engagement>/report/revisions/<R-id>/`, copies it to `<engagement>/report/`, and prints its state and the
+readiness checks that block delivery. Takes about a minute.
+
+| Sub-command | What it does |
+|---|---|
+| `revisions` | every revision with its state and who approved it |
+| `except <check> <rationale>` | records an exception for a methodology check (`coverage-plan`, `coverage-open`, `coverage-stale`, `fields:<F-id>`, `verification:<F-id>`, `retest:<F-id>`) in your name; generate again afterwards |
+| `approve <R-id> [note]` | approves the latest, ready revision for client delivery; refused if anything changed since it was generated |
+| `verify <R-id>` | re-hashes the revision's files; exits 1 if one is missing or modified |
+| `rebuild <R-id>` | renders it again from its frozen inputs and compares the HTML |
+| `export [--draft]` | `findings.json`, `findings.sarif` and `issues/<F-id>.md` from the approved revision (`--draft`: the latest) |
+| `sent <R-id> <to> <how>` | records that an approved revision was sent; sends nothing |
+
+See [findings-and-reports.md](findings-and-reports.md).
 
 ### close
 

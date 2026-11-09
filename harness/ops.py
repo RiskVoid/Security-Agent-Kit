@@ -343,14 +343,96 @@ def summary_set(engagement, actor, text, expected_digest=None):
 # ---------------------------------------------------------------- report and evidence (report.py, this image only)
 @op("report.build")
 def report_build(engagement, actor):
-    import report
-    try:
-        r = report.build(engagement)
-    except ValueError as e:
-        raise OpError(str(e))
-    files = [os.path.basename(str(r[k])) for k in ("html", "docx", "pdf", "xlsx") if os.path.isfile(str(r.get(k)))]
-    return r, _event("report-generated", actor, "report", None, r.get("status"), files=files,
-                     findings=r.get("findings"))
+    """A new report revision: built, its inputs frozen and its files hashed (delivery.py)."""
+    import delivery
+    r = delivery.generate(engagement, actor)
+    return r, _event("report-generated", actor, r["id"], None, r["state"], files=sorted(r["artifacts"]),
+                     findings=r["report"].get("findings"))
+
+
+# ---------------------------------------------------------------- delivery (RW-019 to RW-021)
+def _dl():
+    import delivery
+    return delivery
+
+
+@op("report.revisions", mutates=False)
+def report_revisions(engagement, actor=None):
+    d = _dl()
+    return {"revisions": d.revisions(engagement), "readiness": d.readiness(engagement),
+            "exceptions": d.exceptions(engagement, active=False), "exceptable": list(d.EXCEPTABLE),
+            "retests": d.retests(engagement), "obligations": d.obligations(engagement),
+            "notices": d.notices(engagement)}, None
+
+
+@op("report.exception")
+def report_exception(engagement, actor, check=None, rationale=None, revoke=None):
+    d = _dl()
+    if revoke is not None:
+        r = d.revoke_exception(engagement, actor, revoke)
+        return r, _event("report-exception-revoked", actor, str(revoke), None, None)
+    r = d.add_exception(engagement, actor, check, rationale)
+    return r, _event("report-exception", actor, str(check), None, r["id"], reason=str(rationale)[:300])
+
+
+@op("report.approve")
+def report_approve(engagement, actor, revision, note=""):
+    r = _dl().approve(engagement, actor, revision, note)
+    return r, _event("report-approved", actor, revision, "ready", "approved", reason=str(note)[:300])
+
+
+@op("report.verify", mutates=False)
+def report_verify(engagement, actor=None, revision=None):
+    return _dl().verify(engagement, revision), None
+
+
+@op("report.rebuild")
+def report_rebuild(engagement, actor, revision):
+    r = _dl().rebuild(engagement, revision)
+    return r, _event("report-rebuilt", actor, revision, None, r["html_identical"])
+
+
+@op("report.transmitted")
+def report_transmitted(engagement, actor, revision, to, channel, note=""):
+    r = _dl().record_transmission(engagement, actor, revision, to, channel, note)
+    return r, _event("report-transmitted", actor, revision, None, str(channel)[:100])
+
+
+@op("retest.record")
+def retest_record(engagement, actor, finding_id, retest_build, outcome, cases, reauthorization="", note=""):
+    r = _dl().record_retest(engagement, actor, finding_id, retest_build, outcome, cases, reauthorization, note)
+    return r, _event("retest-recorded", actor, finding_id, None, r["finding"]["revision"], state=outcome,
+                     build=retest_build)
+
+
+@op("cleanup.add")
+def cleanup_add(engagement, actor, kind, what, due=None):
+    r = _dl().add_obligation(engagement, actor, kind, what, due)
+    return r, _event("cleanup-added", actor, r["id"], None, "open", tool=kind)
+
+
+@op("cleanup.update")
+def cleanup_update(engagement, actor, id, state, note=""):
+    r = _dl().update_obligation(engagement, actor, id, state, note)
+    return r, _event("cleanup-updated", actor, id, None, state, reason=str(note)[:300])
+
+
+@op("notice.prepare")
+def notice_prepare(engagement, actor, finding_id):
+    r = _dl().prepare_notice(engagement, actor, finding_id)
+    return r, _event("notice-prepared", actor, r["id"], None, finding_id)
+
+
+@op("notice.review")
+def notice_review(engagement, actor, id):
+    r = _dl().review_notice(engagement, actor, id)
+    return r, _event("notice-reviewed", actor, id, "draft", "reviewed")
+
+
+@op("export.build")
+def export_build(engagement, actor, revision=None, draft=False):
+    r = _dl().export(engagement, actor, revision, bool(draft))
+    return r, _event("findings-exported", actor, r["revision"], None, r["state"], files=sorted(r["files"]))
 
 
 @op("evidence.index", mutates=False)

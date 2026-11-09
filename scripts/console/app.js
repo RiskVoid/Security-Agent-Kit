@@ -601,6 +601,7 @@ function paneReport() {
         <div class="rv-actions"><button id="exec-save" class="rv-btn">Save summary</button><button id="gen-btn" class="rv-btn accent">Generate report</button></div>
       </div></div>
     <div id="gen-out"></div>
+    <div id="delivery-out" class="rv-stack"><div class="rv-empty">Loading revisions…</div></div>
     <div class="rv-card"><div class="rv-card-head"><h3>Files</h3>${html.length ? `<a class="rv-btn sm" href="/report/${enc(d.engagement)}/${enc(html[0])}" target="_blank" rel="noopener">View HTML report ↗</a>` : ""}</div>
       ${files.length ? `<div class="rv-card-body flush"><table class="rv-table"><tbody>${files.map((f) => `<tr><td><span class="mono">${esc(f)}</span></td>
         <td style="text-align:right">${f.endsWith(".html") ? `<a href="/report/${enc(d.engagement)}/${enc(f)}" target="_blank" rel="noopener">View</a> · ` : ""}<a href="/files/${enc(d.engagement)}/${enc(f)}">Download</a></td></tr>`).join("")}</tbody></table></div>`
@@ -618,12 +619,108 @@ function paneReport() {
     $("#gen-out").innerHTML = `<div class="rv-banner"><div class="rv-banner-body"><p class="rv-banner-title">Building the report</p><p class="rv-banner-sub">Checking evidence and writing the HTML, Word, PDF and Excel files. Up to a minute.</p></div></div>`;
     const r = await act(e.currentTarget, () => api(`/api/eng/${enc(d.engagement)}/report`, {}));
     if (!r) { $("#gen-out").innerHTML = ""; return; }
-    const draft = r.status === "DRAFT";
-    const keep = `<div class="rv-banner ${draft ? "warn" : ""}"><div class="rv-banner-body">
-      <p class="rv-banner-title">${draft ? tag("draft", "draft") : tag("final", "ok")} ${esc(r.findings)} finding(s) in the report</p>
-      ${draft ? `<p class="rv-banner-sub">Not ready for the client. Fix these, then generate again:</p><ul>${r.issues.map((x) => `<li>${esc(x)}</li>`).join("")}</ul>` : `<p class="rv-banner-sub">Ready to deliver.</p>`}</div></div>`;
+    const ready = r.state === "ready";
+    const keep = `<div class="rv-banner ${ready ? "" : "warn"}"><div class="rv-banner-body">
+      <p class="rv-banner-title">${esc(r.id)} ${ready ? tag("ready", "ok") : tag("draft", "draft")} ${esc(r.report.findings)} finding(s) in the report</p>
+      <p class="rv-banner-sub">${ready ? "Nothing blocks delivery. Review it, then approve it below." : "Not ready for the client: see the readiness checks below."}</p></div></div>`;
     await openEngagement(d.engagement, true); $("#gen-out").innerHTML = keep;
   });
+  loadDelivery();
+}
+
+const REV_CLASS = { approved: "ok", ready: "ok", generated: "warn", superseded: "" };
+const fileLink = (eng, p) => `<a href="/files/${enc(eng)}/${p.split("/").map(enc).join("/")}">${esc(p.split("/").pop())}</a>`;
+async function loadDelivery() {
+  const d = state.detail, e = enc(d.engagement);
+  let r;
+  try { r = await api(`/api/eng/${e}/delivery`); } catch (err) { $("#delivery-out").innerHTML = `<div class="rv-empty err">${esc(err.message)}</div>`; return; }
+  if (state.tab !== "report" || state.current !== d.engagement) return;
+  const rd = r.readiness, latest = r.revisions[0];
+  const reported = d.findings.filter((f) => ["confirmed", "fixed"].includes(f.status));
+  const material = d.findings.filter((f) => f.status === "confirmed" && ["critical", "high"].includes(f.severity));
+  $("#delivery-out").innerHTML = `
+    <div class="rv-card"><div class="rv-card-head"><h3>Readiness for delivery</h3>${rd.ready ? tag("nothing blocks", "ok") : tag(`${rd.blocking.length} blocking`, "warn")}</div><div class="rv-card-body">
+      ${rd.blocking.length ? `<ul class="rv-rows">${rd.blocking.map((b) => `<li>${tag(b.check.split(":")[0])} ${esc(b.issue)}${r.exceptable.includes(b.check.split(":")[0]) ? ` <button class="rv-btn ghost sm" data-except="${esc(b.check)}">Except…</button>` : ""}</li>`).join("")}</ul>` : `<p class="hint">Every check passes or has an exception.</p>`}
+      ${rd.excepted.length ? `<p class="rv-field-label">Excepted</p><ul class="rv-rows">${rd.excepted.map((x) => `<li>${tag(x.check)} ${esc(x.issue)}<div class="rv-dim">${esc(x.rationale)} (${esc(x.by)}, ${fmtTime(x.at)})</div></li>`).join("")}</ul>` : ""}
+      ${rd.warnings.length ? `<p class="rv-field-label">Warnings</p><ul class="rv-rows">${rd.warnings.map((w) => `<li class="rv-dim">${esc(w)}</li>`).join("")}</ul>` : ""}
+      <div id="except-form"></div>
+      ${r.exceptions.filter((x) => !x.revoked_at).length ? `<details><summary>Active exceptions</summary><ul class="rv-rows">${r.exceptions.filter((x) => !x.revoked_at).map((x) => `<li>${tag(x.check_key)} ${esc(x.rationale)} <span class="rv-dim">${esc(x.actor)}</span> <button class="rv-btn ghost sm danger-quiet" data-revoke="${x.id}">Revoke</button></li>`).join("")}</ul></details>` : ""}
+    </div></div>
+    <div class="rv-card"><div class="rv-card-head"><h3>Report revisions</h3></div>
+      ${r.revisions.length ? `<div class="rv-card-body flush"><table class="rv-table"><thead><tr><th>Revision</th><th>State</th><th>Files</th><th></th></tr></thead><tbody>${r.revisions.map((v) => `<tr>
+        <td><b>${esc(v.id)}</b><div class="rv-dim">${fmtTime(v.created)} · ${esc(v.actor || "")}</div>${v.approved_by ? `<div class="rv-dim">approved by ${esc(v.approved_by)}, ${fmtTime(v.approved_at)}${v.approval_note ? ": " + esc(v.approval_note) : ""}</div>` : ""}${v.superseded_by ? `<div class="rv-dim">superseded by ${esc(v.superseded_by)}</div>` : ""}${v.transmissions.map((t) => `<div class="rv-dim">sent to ${esc(t.to)} via ${esc(t.channel)} (${esc(t.by)}, ${fmtTime(t.at)})</div>`).join("")}</td>
+        <td>${tag(v.state, REV_CLASS[v.state])}</td>
+        <td>${Object.keys(v.artifacts).map((n) => fileLink(d.engagement, `revisions/${v.id}/${n}`)).join("<br>")}</td>
+        <td style="text-align:right;white-space:nowrap">
+          ${v.state === "ready" && v.id === latest.id ? `<button class="rv-btn sm accent" data-approve="${esc(v.id)}">Approve for delivery…</button>` : ""}
+          ${v.state === "approved" ? `<button class="rv-btn ghost sm" data-sent="${esc(v.id)}">Record sending…</button>` : ""}
+          <button class="rv-btn ghost sm" data-verify="${esc(v.id)}">Verify</button><button class="rv-btn ghost sm" data-rebuild="${esc(v.id)}">Rebuild</button></td></tr>`).join("")}</tbody></table></div>
+        <div class="rv-card-body"><div id="rev-form"></div>
+          <div class="rv-actions start"><button id="exp-btn" class="rv-btn sm">Export findings (JSON, SARIF, issues)</button><label class="rv-check"><input type="checkbox" id="exp-draft"> latest revision, as DRAFT</label></div><div id="exp-out"></div></div>`
+      : `<div class="rv-empty">No revision yet: Generate report creates R-001.</div>`}</div>
+    <div class="rv-card"><div class="rv-card-head"><h3>Retests</h3></div><div class="rv-card-body">
+      ${r.retests.length ? `<ul class="rv-rows">${r.retests.map((t) => `<li><b>${esc(t.id)}</b> ${esc(t.finding_id)} ${tag(t.outcome, { resolved: "ok", partial: "warn", unresolved: "sev-critical" }[t.outcome])} build ${esc(t.retest_build)}${t.original_build ? ` (found on ${esc(t.original_build)})` : ""} <span class="rv-dim">${t.cases.map((c) => `${esc(c.name)}: ${esc(c.result)}`).join("; ")} · ${esc(t.actor)}, ${fmtTime(t.at)}</span>${t.reauthorization ? `<div class="rv-dim">re-authorized: ${esc(t.reauthorization)}</div>` : ""}</li>`).join("")}</ul>` : `<p class="hint">No retests yet.</p>`}
+      ${reported.length ? `<details><summary>Record a retest</summary><div class="rv-form-grid">
+        <label class="rv-field"><span class="rv-field-label">Finding</span><select id="rt-f" class="rv-select">${reported.map((f) => `<option>${esc(f.id)}</option>`).join("")}</select></label>
+        <label class="rv-field"><span class="rv-field-label">Retested on build</span><input id="rt-build" class="rv-input mono" spellcheck="false"></label>
+        <label class="rv-field"><span class="rv-field-label">Outcome</span><select id="rt-out" class="rv-select"><option>resolved</option><option>partial</option><option>unresolved</option></select></label></div>
+        <label class="rv-field"><span class="rv-field-label">Cases (one per line: name | pass, fail or partial | evidence path of the retest)</span><textarea id="rt-cases" class="rv-input mono" rows="3" spellcheck="false" placeholder="other tenant reads invoice | pass | evidence/authz/run-2.json"></textarea></label>
+        <label class="rv-field"><span class="rv-field-label">Scope or access re-authorized (who, when), if it was needed</span><input id="rt-reauth" class="rv-input"></label>
+        <div class="rv-actions start"><button id="rt-save" class="rv-btn sm">Record retest</button></div></details>` : ""}
+    </div></div>
+    <div class="rv-card"><div class="rv-card-head"><h3>Cleanup and retention</h3></div><div class="rv-card-body">
+      ${r.obligations.length ? `<ul class="rv-rows">${r.obligations.map((o) => `<li><b>${esc(o.id)}</b> ${tag(o.kind)} ${tag(o.state, { done: "ok", open: "warn" }[o.state])} ${esc(o.what)}${o.note ? `<div class="rv-dim">${esc(o.note)} (${esc(o.updated_by)})</div>` : ""}
+        ${o.state === "open" ? `<button class="rv-btn ghost sm" data-ob="${esc(o.id)}" data-st="done">Done…</button><button class="rv-btn ghost sm" data-ob="${esc(o.id)}" data-st="waived">Waive…</button>` : ""}</li>`).join("")}</ul>` : `<p class="hint">Nothing recorded: test data, fixture changes, credentials to revoke and what to keep or delete at close-out.</p>`}
+      <div class="rv-form-row"><select id="ob-kind" class="rv-select" aria-label="Kind">${["fixture", "credential", "data", "access", "retention", "other"].map((k) => `<option>${k}</option>`).join("")}</select><input id="ob-what" class="rv-input" placeholder="delete the test invoices created in tenant B" aria-label="Obligation"><button id="ob-add" class="rv-btn sm">Add</button></div>
+    </div></div>
+    <div class="rv-card"><div class="rv-card-head"><h3>Material finding notices</h3></div><div class="rv-card-body">
+      ${r.notices.length ? `<ul class="rv-rows">${r.notices.map((n) => `<li><b>${esc(n.id)}</b> ${esc(n.finding_id)} rev ${esc(n.finding_revision)} ${tag(n.state, n.state === "reviewed" ? "ok" : "warn")} ${fileLink(d.engagement, n.path.replace(/^report\//, ""))}${n.reviewed_by ? ` <span class="rv-dim">reviewed by ${esc(n.reviewed_by)}</span>` : ` <button class="rv-btn ghost sm" data-review="${esc(n.id)}">Mark reviewed</button>`}</li>`).join("")}</ul>` : `<p class="hint">A notice is a draft for the client about one confirmed critical or high finding, reviewed by you before it's shared. Nothing is sent from here.</p>`}
+      ${material.length ? `<div class="rv-form-row"><select id="nt-f" class="rv-select" aria-label="Finding">${material.map((f) => `<option>${esc(f.id)}</option>`).join("")}</select><button id="nt-add" class="rv-btn sm">Prepare notice</button></div>` : ""}
+    </div></div>`;
+  const post = (body) => api(`/api/eng/${e}/delivery`, body);
+  const again = () => loadDelivery();
+  $$("[data-except]").forEach((b) => b.addEventListener("click", () => {
+    $("#except-form").innerHTML = `<div class="rv-editor"><p>Exception for <b>${esc(b.dataset.except)}</b>: recorded with your name and shown in the revision.</p>
+      <input id="ex-why" class="rv-input" placeholder="why the methodology allows this, e.g. the client excluded load testing in the kickoff on 3 Nov"><div class="rv-actions start"><button id="ex-save" class="rv-btn sm">Record exception</button></div></div>`;
+    $("#ex-save").addEventListener("click", async (ev) => { if (await act(ev.currentTarget, () => post({ op: "exception", check: b.dataset.except, rationale: $("#ex-why").value }), "Exception recorded. Generate the report again.")) again(); });
+  }));
+  $$("[data-revoke]").forEach((b) => b.addEventListener("click", async (ev) => { if (await act(ev.currentTarget, () => post({ op: "revoke", id: Number(b.dataset.revoke) }), "Revoked.")) again(); }));
+  $$("[data-approve]").forEach((b) => b.addEventListener("click", () => {
+    $("#rev-form").innerHTML = `<div class="rv-editor"><p>Approve <b>${esc(b.dataset.approve)}</b> for client delivery. Approval checks that nothing changed since it was generated and that its files match their hashes; it doesn't send anything.</p>
+      <input id="ap-note" class="rv-input" placeholder="note (optional): what you reviewed"><div class="rv-actions start"><button id="ap-save" class="rv-btn sm accent">Approve</button></div></div>`;
+    $("#ap-save").addEventListener("click", async (ev) => { if (await act(ev.currentTarget, () => post({ op: "approve", revision: b.dataset.approve, note: $("#ap-note").value }), "Approved for delivery.")) again(); });
+  }));
+  $$("[data-sent]").forEach((b) => b.addEventListener("click", () => {
+    $("#rev-form").innerHTML = `<div class="rv-editor"><p>Record that <b>${esc(b.dataset.sent)}</b> was sent. This is a record only.</p><div class="rv-form-grid">
+      <label class="rv-field"><span class="rv-field-label">To</span><input id="tx-to" class="rv-input" placeholder="client security lead"></label>
+      <label class="rv-field"><span class="rv-field-label">How</span><input id="tx-ch" class="rv-input" placeholder="client portal upload"></label></div>
+      <div class="rv-actions start"><button id="tx-save" class="rv-btn sm">Record</button></div></div>`;
+    $("#tx-save").addEventListener("click", async (ev) => { if (await act(ev.currentTarget, () => post({ op: "transmitted", revision: b.dataset.sent, to: $("#tx-to").value, channel: $("#tx-ch").value }), "Recorded.")) again(); });
+  }));
+  $$("[data-verify]").forEach((b) => b.addEventListener("click", async (ev) => {
+    const x = await act(ev.currentTarget, () => post({ op: "verify", revision: b.dataset.verify }));
+    if (x) toast(x.problems.length ? `${x.revision}: ${x.problems.join("; ")}` : `${x.revision}: all ${x.files} files match their hashes.`, !!x.problems.length);
+  }));
+  $$("[data-rebuild]").forEach((b) => b.addEventListener("click", async (ev) => {
+    const x = await act(ev.currentTarget, () => post({ op: "rebuild", revision: b.dataset.rebuild }));
+    if (x) toast(`${x.revision} rebuilt from its frozen inputs in ${x.folder}: the HTML is ${x.html_identical ? "identical" : "different"}.`, !x.html_identical);
+  }));
+  $("#exp-btn")?.addEventListener("click", async (ev) => {
+    const x = await act(ev.currentTarget, () => post({ op: "export", draft: $("#exp-draft").checked }));
+    if (x) $("#exp-out").innerHTML = `<p>${esc(x.revision)} (${esc(x.state)}): ${Object.keys(x.files).map((n) => fileLink(d.engagement, `${x.folder.replace(/^report\//, "")}/${n}`)).join(" · ")}</p>`;
+  });
+  $("#rt-save")?.addEventListener("click", async (ev) => {
+    const cases = $("#rt-cases").value.split("\n").map((l) => l.split("|").map((s) => s.trim())).filter((c) => c[0]).map(([name, result, after]) => ({ name, result, after: after ? [after] : [] }));
+    if (await act(ev.currentTarget, () => post({ op: "retest", finding_id: $("#rt-f").value, build: $("#rt-build").value.trim(), outcome: $("#rt-out").value, cases, reauthorization: $("#rt-reauth").value }), "Retest recorded.")) { await openEngagement(d.engagement, true); }
+  });
+  $("#ob-add").addEventListener("click", async (ev) => { if (await act(ev.currentTarget, () => post({ op: "cleanup_add", kind: $("#ob-kind").value, what: $("#ob-what").value }), "Added.")) again(); });
+  $$("[data-ob]").forEach((b) => b.addEventListener("click", async (ev) => {
+    const note = prompt(b.dataset.st === "done" ? "What was done?" : "Why is it waived?");
+    if (note === null) return;
+    if (await act(ev.currentTarget, () => post({ op: "cleanup_update", id: b.dataset.ob, state: b.dataset.st, note }), "Updated.")) again();
+  }));
+  $("#nt-add")?.addEventListener("click", async (ev) => { if (await act(ev.currentTarget, () => post({ op: "notice_prepare", finding_id: $("#nt-f").value }), "Notice drafted.")) again(); });
+  $$("[data-review]").forEach((b) => b.addEventListener("click", async (ev) => { if (await act(ev.currentTarget, () => post({ op: "notice_review", id: b.dataset.review }), "Marked reviewed.")) again(); }));
 }
 
 // ---------------------------------------------------------------- authenticated testing (RW-008 to RW-011)
@@ -850,8 +947,25 @@ async function paneInvestigation() {
 
 async function paneTasks() {
   const d = state.detail;
-  $("#pane").innerHTML = `<p class="hint">Tasks the planner handed to the worker model, newest first. Full output of every step is in
+  const m = d.models || {}, allowed = d.info.rules.client_data;
+  $("#pane").innerHTML = `<div id="tasks-sum" class="rv-card"><div class="rv-card-body"><span class="rv-dim">Loading the investigation…</span></div></div>
+    <p class="hint">Tasks the planner handed to the worker model, newest first. Full output of every step is in
     <code>evidence/tasks/&lt;task&gt;/</code>.</p><div id="tasks-out" class="rv-empty">Loading…</div>`;
+  (async () => {  // where the investigation stands (RW-018), above the tasks
+    try {
+      const [inv, lv] = await Promise.all([api(`/api/eng/${enc(d.engagement)}/investigation`), api(`/api/eng/${enc(d.engagement)}/live`).catch(() => ({}))]);
+      if (state.tab !== "tasks" || state.current !== d.engagement) return;
+      const h = inv.handover, sp = lv.spend, w = m.worker || {}, fb = m.worker_fallback || {};
+      $("#tasks-sum").innerHTML = `<div class="rv-card-body"><dl class="rv-kv">
+        <dt>Objective</dt><dd>${h.objective ? esc(h.objective) : `<span class="rv-dim">not set (Investigation tab)</span>`}</dd>
+        <dt>Next</dt><dd>${esc(h.next[0] || "nothing pending")}</dd>
+        <dt>Decisions</dt><dd>${h.pending.length ? `${h.pending.length} pending: ${h.pending.slice(0, 3).map((x) => esc(x.what)).join("; ")}${h.pending.length > 3 ? " …" : ""}` : "none pending"}</dd>
+        <dt>Coverage</dt><dd>${h.coverage.total ? `${h.coverage.counts.planned} of ${h.coverage.total} planned test(s) not run${h.coverage.blocked.length ? `, ${h.coverage.blocked.length} blocked` : ""}${h.coverage.stale.length ? `, ${h.coverage.stale.length} stale` : ""}` : "no plan yet"}</dd>
+        <dt>Worker model</dt><dd>${destTag(w.destination, allowed)} <span class="rv-dim">${esc(w.model || "")}</span>${fb.on ? ` <span class="rv-dim">fallback: ${esc(DEST[fb.destination] || fb.destination)}</span>` : ""}</dd>
+        <dt>Spend today</dt><dd>${sp ? `$${sp.spend.toFixed(2)}${sp.budget ? ` of $${sp.budget.toFixed(2)} daily budget` : ""}` : `<span class="rv-dim">unknown</span>`}</dd>
+      </dl></div>`;
+    } catch (err) { $("#tasks-sum").innerHTML = `<div class="rv-card-body err">${esc(err.message)}</div>`; }
+  })();
   const load = async () => {
     if (state.tab !== "tasks" || state.current !== d.engagement) return;
     try {

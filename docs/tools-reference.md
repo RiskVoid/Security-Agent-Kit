@@ -137,7 +137,12 @@ the L4 profile.
 | `write_file` | `engagement`, `path`, `content`, `append` (default false) | Writes one of: `PLAN.md`, `NOTES.md`, `notes/<name>.md` or `.txt`, `report/executive-summary.md`, `report/methodology.md`, `report/conclusion.md`, `report/meta.txt`. Anything else, or content over 1 MB, is refused. |
 | `list_playbooks` | none | Each playbook's name, title, standard and tiers. |
 | `get_playbook` | `name` | The full text of one playbook. |
-| `generate_report` | `engagement` | Builds the `.docx`, PDF and findings register `.xlsx` in `/work/<engagement>/report/`. Returns the paths, `DRAFT` or `final`, the issues that keep it a draft, and how many findings were included and left out. Takes about a minute. |
+| `generate_report` | `engagement` | Builds a new report revision (`.html`, `.docx`, PDF and findings register `.xlsx`) in `/work/<engagement>/report/revisions/<R-id>/` and copies it to `report/`. Returns the revision, its state (`generated`, or `ready` when nothing blocks delivery), the readiness checks, `DRAFT` or `final`, and how many findings were included and left out. Approval is the researcher's, not the agent's. Takes about a minute. |
+| `report_readiness` | `engagement` | What blocks delivery now, what a person excepted and why, the warnings, and the revisions with their states. |
+| `record_retest` | `engagement`, `finding_id`, `retest_build`, `outcome` (`resolved`, `partial`, `unresolved`), `cases` (`[{name, after: [evidence], result, before, detail}]`), optional `reauthorization`, `note` | Records a retest. Resolved (every case passes) marks the finding fixed in a new revision; the others keep it confirmed. The history keeps the original. |
+| `cleanup` | `engagement`, `action` (`add` with `kind` and `what`; `update` with `item`, `state=done` and `note`; `list`) | Cleanup obligations to finish before close-out. Waiving one is the researcher's decision. |
+| `prepare_notice` | `engagement`, `finding_id` | Drafts a notice about a confirmed critical or high finding in `report/notices/`, for the researcher to review. Sends nothing. |
+| `export_findings` | `engagement`, `draft` (default false) | `findings.json`, `findings.sarif` and `issues/<id>.md` from the approved report revision (or the latest, marked DRAFT). Sends nothing. |
 
 Findings are stored per engagement in `/work/<engagement>/findings.db` (SQLite). The report includes `confirmed`,
 `fixed` and `accepted-risk` findings. More: [findings-and-reports.md](findings-and-reports.md).

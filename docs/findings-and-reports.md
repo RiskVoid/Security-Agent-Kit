@@ -222,7 +222,8 @@ Only `confirmed`, `fixed` and `accepted-risk` findings are included.
 
 ### DRAFT or final
 
-The report is marked DRAFT (on the cover, in the file name and in the tool result) while any of these is true:
+The report is marked DRAFT (on the cover, in the file name and in the tool result) while any readiness check
+blocks delivery. These are facts about the record, to be fixed:
 
 - `report/executive-summary.md` is missing or empty;
 - there are untriaged `candidate` findings;
@@ -230,7 +231,83 @@ The report is marked DRAFT (on the cover, in the file name and in the tool resul
 - a reported finding has no evidence;
 - an evidence file is missing, was modified after it was produced, or is outside the engagement folder.
 
+These are methodology checks. A person (console or CLI, not the agent) may record an exception for one, with the
+rationale, and the exception is listed in the revision:
+
+| Check | Blocks when |
+|---|---|
+| `coverage-plan` | there is no coverage plan |
+| `coverage-open` | planned tests have no outcome |
+| `coverage-stale` | outcomes were recorded on another build or policy revision |
+| `fields:<F-id>` | a reported finding has no asset, description, impact, reproduction or remediation |
+| `verification:<F-id>` | a confirmed finding has no verification method |
+| `retest:<F-id>` | a finding is marked fixed without a resolved retest record |
+
+Warnings don't block: untriaged observations, open cleanup obligations, and finding text that looks like it holds
+a secret (the report redacts it; remove it from the finding).
+
 The result lists each issue. Fix them (or ask the agent to) and generate again.
+
+### Revisions, approval and sending
+
+Each generation is a new **report revision** (`R-001`, `R-002`, ...) in `report/revisions/<R-id>/`: the files, the
+inputs they were built from (`inputs.json`: the finding revisions, report texts, details, coverage and the
+activity summary) and the SHA-256 of every file. Earlier revisions, of the same day or not, are kept as they were;
+the latest is also copied to `report/` as before.
+
+| State | Meaning |
+|---|---|
+| `generated` | built, but a readiness check blocks delivery |
+| `ready` | nothing blocks delivery: every check passes or has an exception |
+| `approved` | a person approved it for client delivery |
+| `superseded` | a later revision was approved |
+
+**Approve** (console, or `./rvkit report <eng> approve R-003`) is a person's decision; the agent can't approve. It
+is refused unless the revision is the latest, is `ready`, its files still match their hashes, and the findings,
+coverage, exceptions and report texts are unchanged since it was generated. If anything changed, generate again
+and approve the new revision. Approval sends nothing: when you send the report, **Record sending** (or
+`./rvkit report <eng> sent R-003 "<to>" "<how>"`) adds that to the revision.
+
+**Verify** re-hashes a revision's files. **Rebuild** renders the report again from the revision's frozen
+`inputs.json` into `report/revisions/<R-id>-rebuild-<time>/` and compares the HTML byte for byte (the `.docx`,
+`.pdf` and `.xlsx` embed creation times, so they differ in metadata only).
+
+### Retests
+
+A retest links a confirmed or fixed finding to the build it was retested on and its regression cases, each with
+its result (`pass`, `fail`, `partial`), the evidence of the retest (required) and the earlier evidence (the
+finding's, unless given). Its outcome:
+
+- `resolved` (every case passes): the finding becomes `fixed` in a new revision, with the method `retest`;
+- `partial` or `unresolved`: it stays, or goes back to, `confirmed`.
+
+The original reproduction and every earlier revision stay in the finding's history. The record keeps the build
+the finding was found on (from its coverage item), and when the retest needed scope or access re-authorized, who
+did that and when. The agent records retests with `record_retest`; the console's **Report** tab lists them.
+
+### Cleanup and retention
+
+Cleanup obligations are what has to be undone or decided before close-out: test data and fixture changes,
+credentials to revoke, access to remove, what to keep or delete (`fixture`, `credential`, `data`, `access`,
+`retention`, `other`). Each stays open until it's recorded done (with what was done) or waived (a person's
+decision, with the reason). Open ones are pending decisions in the handover and a warning in the readiness checks.
+
+### Notices and exports
+
+A **notice** is a draft about one confirmed critical or high finding, for you to review before it's shared:
+`report/notices/N-001-F-004.md`, tied to the finding's revision. **Mark reviewed** is refused if the finding or
+the file changed since it was prepared. Nothing is sent from the kit.
+
+**Export** builds, from the approved revision's frozen findings (or the latest revision, marked DRAFT, when you
+ask for that), in `report/exports/<R-id>/`:
+
+| File | Content |
+|---|---|
+| `findings.json` | the reported findings (schema `rvkit-findings/1`), each with its revision, and the report revision and approval |
+| `findings.sarif` | SARIF 2.1.0: one rule and one result per finding, with a source location for `file:line` assets and instances, otherwise the asset as a logical location; `security-severity` from the CVSS score |
+| `issues/<F-id>.md` | issue-ready text per finding |
+
+Ticket systems and client portals aren't connected: upload the files yourself.
 
 ### Generating
 
@@ -240,8 +317,8 @@ The agent calls `generate_report` at the end of a run. You can run it yourself a
 ./rvkit report acme-2026-11
 ```
 
-It takes about a minute (the PDF is made with LibreOffice) and prints the paths, the status and the issues. Files
-in `/work/<engagement>/report/`:
+It takes about a minute (the PDF is made with LibreOffice) and prints the revision, its state and the readiness
+checks. Files in `/work/<engagement>/report/revisions/<R-id>/`, the latest also in `/work/<engagement>/report/`:
 
 | File | Content |
 |---|---|
@@ -250,7 +327,8 @@ in `/work/<engagement>/report/`:
 | `<eng>-report-<date>.pdf` | PDF of the same |
 | `<eng>-findings-<date>.xlsx` | findings register |
 
-Generating again on the same day replaces that day's files, DRAFT or not. Reports from earlier days are kept.
+Generating again on the same day replaces that day's files in `report/`; every revision keeps its own copy in
+`report/revisions/`.
 
 The `.html` report is a single file with its fonts and logo embedded: it loads nothing from the internet, so you
 can email it, archive it or open it offline. It has no scripts. Print it from a browser for a PDF with one page

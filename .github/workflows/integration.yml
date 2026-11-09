@@ -81,6 +81,8 @@ jobs:
         run: python3 evals/console_contract_test.py
       - name: Investigation workspace (findings triage, observations, coverage, handover)
         run: python3 evals/workspace_test.py
+      - name: Delivery (report revisions, approval, retests, cleanup, notices, exports)
+        run: python3 evals/delivery_test.py
       - name: Model stub through LiteLLM (no GPU, no provider)
         run: bash evals/model_stub_test.sh
       - name: Tool smoke test

@@ -968,5 +968,71 @@ class Workspace(unittest.TestCase):
         self.assertIn("API Top 10 2023", cov["by_standard"])
 
 
+
+class Delivery(unittest.TestCase):
+    """RW-019 to RW-021: readiness, exceptions, obligations, SARIF, the console's delivery paths."""
+
+    def setUp(self):
+        import delivery
+        self.d = delivery
+        self.tmp = tempfile.TemporaryDirectory()
+        db.WORK = self.tmp.name
+        os.makedirs(os.path.join(self.tmp.name, "e", "report"))
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def test_readiness_and_exceptions(self):
+        fid = db.record("e", title="t", severity="high", asset="a", description="d")["id"]
+        db.update("e", fid, status="confirmed", actor="cli:t")
+        checks = {b["check"] for b in self.d.readiness("e")["blocking"]}
+        self.assertTrue({"coverage-plan", f"fields:{fid}", f"verification:{fid}"} <= checks, checks)
+        with self.assertRaisesRegex(ValueError, "person"):
+            self.d.add_exception("e", "agent:planner", "coverage-plan", "a long enough rationale here")
+        with self.assertRaisesRegex(ValueError, "can be excepted"):
+            self.d.add_exception("e", "cli:t", "candidates", "a long enough rationale here")
+        self.d.add_exception("e", "cli:t", "coverage-plan", "source-only review agreed with the client")
+        r = self.d.readiness("e")
+        self.assertIn("coverage-plan", [x["check"] for x in r["excepted"]])
+        self.assertNotIn("coverage-plan", [b["check"] for b in r["blocking"]])
+        digest = self.d.stable_inputs("e")
+        db.update("e", fid, actor="cli:t", notes="x")
+        self.assertNotEqual(digest, self.d.stable_inputs("e"))
+
+    def test_obligations(self):
+        o = self.d.add_obligation("e", "agent:planner", "credential", "revoke the test API key")
+        with self.assertRaisesRegex(ValueError, "note"):
+            self.d.update_obligation("e", "agent:planner", o["id"], "done")
+        with self.assertRaisesRegex(ValueError, "person"):
+            self.d.update_obligation("e", "agent:planner", o["id"], "waived", "not needed")
+        self.assertEqual(self.d.update_obligation("e", "cli:t", o["id"], "waived", "key expired")["state"], "waived")
+
+    def test_sarif(self):
+        f = {"id": "F-001", "title": "SQL injection", "severity": "critical", "status": "confirmed", "revision": 3,
+             "asset": "/src/app/app.py:14", "cwe": "CWE-89", "cvss_score": 9.8, "instances": []}
+        g = {"id": "F-002", "title": "IDOR", "severity": "medium", "status": "fixed", "revision": 1,
+             "asset": "GET /invoices/{id}", "instances": [{"location": "GET /invoices/12"}]}
+        s = self.d.sarif("e", "R-001", [f, g])
+        res = s["runs"][0]["results"]
+        self.assertEqual(s["version"], "2.1.0")
+        self.assertEqual(res[0]["locations"][0]["physicalLocation"]["artifactLocation"]["uri"], "app.py")
+        self.assertEqual(res[0]["locations"][0]["physicalLocation"]["region"]["startLine"], 14)
+        self.assertEqual(res[1]["locations"][0]["logicalLocations"][0]["name"], "GET /invoices/{id}")
+        self.assertEqual((res[0]["level"], res[1]["level"]), ("error", "warning"))
+        self.assertEqual(s["runs"][0]["tool"]["driver"]["rules"][0]["properties"]["security-severity"], "9.8")
+
+    def test_console_delivery_paths(self):
+        spec = importlib.util.spec_from_file_location("rv_console_paths", os.path.join(KIT, "scripts", "console.py"))
+        src = open(spec.origin).read()
+        import re as _re
+        rx = _re.compile(eval(src.split("DELIVERY_PATH = re.compile(")[1].split(")\n")[0].replace("\n", "")))
+        for ok in ("revisions/R-001/x-report-2026-11-09.html", "revisions/R-012-rebuild-20261109T101010/a.json",
+                   "exports/R-002/findings.sarif", "exports/R-002-DRAFT/issues/F-001.md", "notices/N-001-F-004.md"):
+            self.assertTrue(rx.match(ok), ok)
+        for bad in ("revisions/R-001/../../findings.db", "exports/R-001/findings.db", "revisions/x/a.html",
+                    "notices/../audit.jsonl", "../findings.db"):
+            self.assertFalse(rx.match(bad), bad)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=1)

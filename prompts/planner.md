@@ -84,8 +84,12 @@ like a senior penetration tester and code auditor, and you keep a clear record o
 6. **Report.** When testing is done: triage every candidate, write `report/executive-summary.md` (3–5 paragraphs
    for a non-technical reader: what was assessed, overall posture, the top risks in business terms, priorities)
    and optionally `report/methodology.md` / `report/conclusion.md` with `write_file`, then call
-   `generate_report`. It returns DRAFT with a list of issues until everything is in order: fix them and
-   regenerate. The client name is in `report/meta.txt` (`./rvkit new` asks for it; if it's missing, ask the user
+   `generate_report`. It creates a report revision and returns DRAFT with the readiness checks that block
+   delivery (coverage without outcomes, findings missing fields or a verification method, fixed findings
+   without a retest): fix them and regenerate. Exceptions and the approval for client delivery are the user's
+   decisions in the console; tell them when a revision is ready. Record retests with `record_retest` (each
+   case with the retest's evidence), anything to undo before close-out with `cleanup`, and offer
+   `prepare_notice` for confirmed critical or high findings. The client name is in `report/meta.txt` (`./rvkit new` asks for it; if it's missing, ask the user
    and write it with `write_file`). Tell the user that `./rvkit close <engagement>`
    archives and seals the engagement when they're done.
 

@@ -33,6 +33,10 @@ STATIC = {"/app.js": (HERE, "app.js", "text/javascript"), "/app.css": (HERE, "ap
           "/assets/fonts/jetbrains-mono-latin.woff2": (ASSETS, "fonts/jetbrains-mono-latin.woff2", "font/woff2")}
 REPORT_EXT = (".html", ".docx", ".pdf", ".xlsx")
 REPORT_NAME = re.compile(r"^[A-Za-z0-9._-]+\.(html|docx|pdf|xlsx)$")
+# report revisions, exports and notices (RW-019 to RW-021): report/<sub>/<R-id or name>/<file>
+DELIVERY_PATH = re.compile(r"^(revisions/R-\d{3,}(?:-rebuild-\d{8}T\d{6})?/[A-Za-z0-9._-]+\.(?:html|docx|pdf|xlsx|json)"
+                           r"|exports/R-\d{3,}(?:-DRAFT)?/(?:issues/)?[A-Za-z0-9._-]+\.(?:json|sarif|md)"
+                           r"|notices/N-\d{3,}-F-\d{3,}\.md)$")
 # the HTML report is shown as a document: no scripts, nothing loaded from anywhere (fonts and logo are embedded)
 REPORT_CSP = "default-src 'none'; style-src 'unsafe-inline'; img-src data:; font-src data:; sandbox"
 NAME_RX = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
@@ -484,6 +488,8 @@ def api_get(path, q):
         return live(eng)
     if what == "evidence":
         return ops("evidence.index", eng)
+    if what == "delivery":  # report revisions, readiness, retests, cleanup, notices (RW-019 to RW-021)
+        return ops("report.revisions", eng)
     if what == "investigation":  # objective, handover, coverage, observations (RW-015 to RW-018)
         return ops("investigation.get", eng)
     if what == "history":
@@ -718,6 +724,43 @@ def api_post(path, body):
                 return ops("coverage.reassess", eng, build=field(body, "build", str, "") or None,
                            policy_revision=field(body, "policy_revision", str, "") or None)
             raise Fail("op: add, playbook, update or reassess")
+        if action == "delivery":
+            op = field(body, "op", str, "")
+            rev = field(body, "revision", str, "")
+            if rev and not re.fullmatch(r"R-\d{3,}", rev):
+                raise Fail("revision: R-001...")
+            if op == "exception":
+                return ops("report.exception", eng, check=field(body, "check", str, ""),
+                           rationale=field(body, "rationale", str, ""))
+            if op == "revoke":
+                return ops("report.exception", eng, revoke=field(body, "id", int, 0))
+            if op == "approve":
+                return ops("report.approve", eng, revision=rev, note=field(body, "note", str, ""))
+            if op == "verify":
+                return ops("report.verify", eng, revision=rev)
+            if op == "rebuild":
+                return ops("report.rebuild", eng, timeout=900, revision=rev)
+            if op == "transmitted":
+                return ops("report.transmitted", eng, revision=rev, to=field(body, "to", str, ""),
+                           channel=field(body, "channel", str, ""), note=field(body, "note", str, ""))
+            if op == "export":
+                return ops("export.build", eng, revision=rev or None, draft=field(body, "draft", bool, False))
+            if op == "cleanup_add":
+                return ops("cleanup.add", eng, kind=field(body, "kind", str, ""), what=field(body, "what", str, ""))
+            if op == "cleanup_update":
+                return ops("cleanup.update", eng, id=field(body, "id", str, ""), state=field(body, "state", str, ""),
+                           note=field(body, "note", str, ""))
+            if op == "notice_prepare":
+                return ops("notice.prepare", eng, finding_id=field(body, "finding_id", str, ""))
+            if op == "notice_review":
+                return ops("notice.review", eng, id=field(body, "id", str, ""))
+            if op == "retest":
+                return ops("retest.record", eng, finding_id=field(body, "finding_id", str, ""),
+                           retest_build=field(body, "build", str, ""), outcome=field(body, "outcome", str, ""),
+                           cases=field(body, "cases", list, []), reauthorization=field(body, "reauthorization", str, ""),
+                           note=field(body, "note", str, ""))
+            raise Fail("op: exception, revoke, approve, verify, rebuild, transmitted, export, cleanup_add, "
+                       "cleanup_update, notice_prepare, notice_review or retest")
         if action == "objective":
             return ops("workspace.objective", eng, text=field(body, "text", str, ""), expected_digest=digest_field(body))
         if action == "handover":
@@ -781,12 +824,14 @@ class H(BaseHTTPRequestHandler):
             base, rel, ctype = STATIC[u.path]
             with open(os.path.join(base, rel), "rb") as f:
                 return self._send(200, f.read(), ctype)
-        m = re.match(r"^/(files|report)/([^/]+)/([^/]+)$", u.path)
+        m = re.match(r"^/(files|report)/([^/]+)/(.+)$", u.path)
         if m:
             kind, eng, name = m.group(1), m.group(2), urllib.parse.unquote(m.group(3))
-            if not NAME_RX.match(eng) or not REPORT_NAME.match(name) or (kind == "report" and not name.endswith(".html")):
+            if not NAME_RX.match(eng) or not (REPORT_NAME.match(name) or DELIVERY_PATH.match(name)) \
+                    or (kind == "report" and not name.endswith(".html")):
                 return self._send(404, {"error": "not found"})
-            p = eng_path(eng, "report", name)
+            p = eng_path(eng, "report", *name.split("/"))
+            name = name.split("/")[-1]
             if not os.path.isfile(p):
                 return self._send(404, {"error": "not found"})
             with open(p, "rb") as f:

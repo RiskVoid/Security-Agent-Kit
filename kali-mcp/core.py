@@ -31,7 +31,10 @@ ACTOR_RX = re.compile(r"^(console|cli|agent|test):[A-Za-z0-9._@-]{1,64}$")
 RECORDABLE = {"finding-updated", "finding-recorded", "meta-updated", "summary-updated", "report-generated",
               "finding-not-reproducible", "observations-imported", "observation-added", "observations-linked",
               "observations-dismissed", "observations-duplicate", "observations-reopened", "plan-items-added",
-              "coverage-updated", "coverage-reassessed", "objective-set", "handover-saved"}
+              "coverage-updated", "coverage-reassessed", "objective-set", "handover-saved",
+              "report-exception", "report-exception-revoked", "report-approved", "report-rebuilt",
+              "report-transmitted", "retest-recorded", "cleanup-added", "cleanup-updated", "notice-prepared",
+              "notice-reviewed", "findings-exported"}
 
 
 class Conflict(ValueError):
