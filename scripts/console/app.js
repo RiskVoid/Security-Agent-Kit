@@ -8,9 +8,14 @@ const esc = (v) => String(v ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "
 const enc = encodeURIComponent;
 const SEV = ["critical", "high", "medium", "low", "info"];
 const STATUSES = ["candidate", "confirmed", "false-positive", "duplicate", "fixed", "accepted-risk"];
-const TABS = { overview: "Overview", live: "Live", scope: "Scope & rules", findings: "Findings", tasks: "Worker tasks", testing: "Testing", report: "Report", audit: "Audit log", models: "Model log" };
+const METHODS = ["runtime-reproduction", "replay", "authorization-matrix", "source-review", "tool-output", "retest", "client-confirmation"];
+const PRIORITIES = ["P1", "P2", "P3", "P4"];
+const COVERAGE = ["planned", "tested", "failed", "blocked", "excluded", "not-applicable"];
+const COV_CLASS = { tested: "ok", failed: "sev-critical", blocked: "warn", planned: "", excluded: "", "not-applicable": "" };
+const PLAYBOOKS = ["web-app", "api-security", "laravel", "code-review", "secrets-review", "supply-chain", "ai-llm", "external-network"];
+const TABS = { overview: "Overview", live: "Live", scope: "Scope & rules", investigation: "Investigation", findings: "Findings", tasks: "Worker tasks", testing: "Testing", report: "Report", audit: "Audit log", models: "Model log" };
 
-const state = { overview: null, current: null, detail: null, tab: "overview", seenApprovals: null, findingFilter: "all", openFinding: null, preview: null, evidence: null, view: "engagements" };
+const state = { overview: null, current: null, detail: null, tab: "overview", seenApprovals: null, seenNotices: null, obsFilter: "new", findingFilter: "all", openFinding: null, preview: null, evidence: null, view: "engagements" };
 
 async function api(path, body) {
   const opt = body === undefined ? {} : { method: "POST", headers: { "Content-Type": "application/json", "X-RV-Console": "1" }, body: JSON.stringify(body) };
@@ -150,6 +155,12 @@ function applyOverview(o) {
       if (fresh.length) notify(fresh);
     }
     state.seenApprovals = ids;
+    const notices = new Set(o.engagements.flatMap((e) => (e.notices || []).map((n) => e.engagement + "|" + n)));
+    if (state.seenNotices) {
+      const fresh = [...notices].filter((n) => !state.seenNotices.has(n));
+      if (fresh.length) notifyNotices(fresh);
+    }
+    state.seenNotices = notices;
     const b = $("#appr-badge"); b.textContent = o.approvals.length; b.hidden = !o.approvals.length;
     document.title = (o.approvals.length ? `(${o.approvals.length}) ` : "") + "RiskVoid Console";
   }
@@ -158,6 +169,16 @@ function applyOverview(o) {
 function notify(fresh) {
   if (!("Notification" in window) || Notification.permission !== "granted") return;
   for (const a of fresh.slice(0, 3)) new Notification("RiskVoid: approval needed", { body: `${a.engagement}: ${a.command.slice(0, 100)}` });
+}
+
+const TASK_WORDS = { done: "worker task finished", error: "worker task failed", interrupted: "worker task interrupted", blocked: "worker task blocked", awaiting_approval: "worker task waits for an approval" };
+function notifyNotices(fresh) {
+  if (!("Notification" in window) || Notification.permission !== "granted") return;
+  for (const n of fresh.slice(0, 3)) {
+    const [eng, kind, id, st, sev] = n.split(/[|:]/);
+    const body = kind === "finding" ? `${eng}: ${id} is ${st} (${sev})` : `${eng}: ${TASK_WORDS[st] || st} (${id})`;
+    new Notification(kind === "finding" ? "RiskVoid: material finding" : "RiskVoid: worker task", { body });
+  }
 }
 
 function renderList() {
@@ -275,7 +296,7 @@ function renderDetail() {
       await act(btn, () => api(`/api/eng/${enc(d.engagement)}/delete`, { force: !ov.closed }), "Deleted.");
       state.current = null; location.hash = "engagements"; $("#detail").innerHTML = `<div class="rv-empty">Pick an engagement, or create one.</div>`; refresh(); show("engagements");
     }));
-  ({ overview: paneOverview, live: paneLive, scope: paneScope, findings: paneFindings, tasks: paneTasks, testing: paneTesting, report: paneReport, audit: paneAudit, models: paneModels })[state.tab]();
+  ({ overview: paneOverview, live: paneLive, scope: paneScope, investigation: paneInvestigation, findings: paneFindings, tasks: paneTasks, testing: paneTesting, report: paneReport, audit: paneAudit, models: paneModels })[state.tab]();
 }
 
 function confirmBox(title, text, label, fn) {
@@ -458,6 +479,7 @@ function paneFindings() {
         <span class="ind c-${esc(f.severity)}"></span>
         <span style="min-width:0"><div class="title">${esc(f.title)}</div>
           <div class="meta">${esc(f.id)}<span class="slash">/</span>${esc(f.asset || "no asset")}${f.cwe ? `<span class="slash">/</span>${esc(f.cwe)}` : ""}</div></span>
+        ${f.priority ? tag(f.priority) : ""}${f.verification === "verified" ? tag("verified", "ok") : f.verification === "not-reproducible" ? tag("not reproducible", "warn") : ""}
         ${sevTag(f.severity)}
         ${tag(f.status + (f.duplicate_of ? " of " + f.duplicate_of : ""), { confirmed: "sev-critical", fixed: "ok", candidate: "warn" }[f.status] || "")}
       </button>${state.openFinding === f.id ? editor(f, ev) : ""}`).join("") || `<div class="rv-empty">No findings${filt === "all" ? " yet" : " with this status"}.</div>`}</div>`;
@@ -469,15 +491,45 @@ function paneFindings() {
   $$("[data-fid]").forEach((b) => b.addEventListener("click", () => { state.openFinding = state.openFinding === b.dataset.fid ? null : b.dataset.fid; paneFindings(); }));
   const save = $("#fe-save");
   if (save) {
-    $("#fe-status").addEventListener("change", () => { $("#fe-dup-wrap").hidden = $("#fe-status").value !== "duplicate"; });
+    const cur = d.findings.find((x) => x.id === state.openFinding) || {};
+    const sync = () => {
+      const st = $("#fe-status").value;
+      $("#fe-dup-wrap").hidden = st !== "duplicate";
+      $("#fe-method-wrap").hidden = st !== "confirmed" || cur.status === "confirmed";
+      const needs = ["false-positive", "accepted-risk"].includes(st) && st !== cur.status || $("#fe-sev").value !== cur.severity
+        || cur.priority && $("#fe-prio").value !== cur.priority;
+      $("#fe-reason-label").textContent = needs ? "Reason (required for this change)" : "Reason (optional)";
+    };
+    ["#fe-status", "#fe-sev", "#fe-prio"].forEach((s) => $(s).addEventListener("change", sync));
+    sync();
     save.addEventListener("click", async () => {
-      const cur = d.findings.find((x) => x.id === state.openFinding) || {};
       const body = { id: state.openFinding, status: $("#fe-status").value, severity: $("#fe-sev").value, notes: $("#fe-notes").value };
       if (Number.isInteger(cur.revision)) body.revision = cur.revision;
       if (body.status === "duplicate") body.duplicate_of = $("#fe-dup").value.trim();
+      if ($("#fe-prio").value && $("#fe-prio").value !== (cur.priority || "")) body.priority = $("#fe-prio").value;
+      const vec = $("#fe-cvss").value.trim();
+      if (vec && vec !== (cur.cvss_vector || "")) body.cvss_vector = vec;
+      const pre = $("#fe-prereq").value.trim();
+      if (pre !== (cur.prerequisites || "")) body.prerequisites = pre;
+      if (body.status === "confirmed" && cur.status !== "confirmed" && $("#fe-method").value) body.method = $("#fe-method").value;
+      if ($("#fe-reason").value.trim()) body.reason = $("#fe-reason").value.trim();
       const r = await act(save, () => api(`/api/eng/${enc(d.engagement)}/finding`, body), "Saved.");
       if (r) { await openEngagement(d.engagement, true); refresh(); }
     });
+    $("#fe-nr")?.addEventListener("click", async (ev) => {
+      const reason = $("#fe-reason").value.trim();
+      if (!reason) { toast("Give the reason first: what you tried and what happened.", true); $("#fe-reason").focus(); return; }
+      const r = await act(ev.currentTarget, () => api(`/api/eng/${enc(d.engagement)}/finding`, { id: state.openFinding, not_reproducible: true, reason }), "Recorded as not reproducible.");
+      if (r) { await openEngagement(d.engagement, true); refresh(); }
+    });
+    $("#fe-hist").addEventListener("click", async (ev) => {
+      const h = await act(ev.currentTarget, () => api(`/api/eng/${enc(d.engagement)}/history?id=${enc(state.openFinding)}`));
+      if (h) $("#fe-history").innerHTML = historyHtml(h);
+    });
+    $$("[data-preview]").forEach((b) => b.addEventListener("click", async (ev) => {
+      const pv = await act(ev.currentTarget, () => api(`/api/eng/${enc(d.engagement)}/preview?path=${enc(b.dataset.preview)}`));
+      if (pv) $("#fe-preview").innerHTML = previewBox(pv);
+    }));
   }
 }
 function evidenceBadge(st) {
@@ -487,6 +539,17 @@ function evidenceBadge(st) {
   if (st.startsWith("not produced")) return tag("not audited", "warn");
   return tag(st, "fail");
 }
+function historyHtml(h) {
+  const dec = h.decisions.map((x) => `<li>${fmtTime(x.at)} <b>${esc(x.kind)}</b> ${x.from_value || x.to_value ? `${esc(x.from_value || "-")} &rarr; ${esc(x.to_value || "-")}` : ""}
+    ${x.method ? tag(x.method) : ""} <span class="rv-dim">${esc(x.actor || "")}</span>${x.reason ? `<div class="rv-dim">${esc(x.reason)}</div>` : ""}</li>`).join("");
+  const revs = h.revisions.map((r) => `<li>rev ${r.revision} · ${fmtTime(r.at)} <span class="rv-dim">${esc(r.actor || "")}</span> ${tag(r.snapshot.status)} ${sevTag(r.snapshot.severity)}</li>`).join("");
+  return `<div class="rv-history"><p class="rv-field-label">Decisions</p><ul class="rv-rows">${dec || "<li class='rv-dim'>none</li>"}</ul>
+    <p class="rv-field-label">Revisions</p><ul class="rv-rows">${revs}</ul></div>`;
+}
+function previewBox(pv) {
+  return `<div class="rv-preview-box"><div class="rv-meta"><span class="mono">${esc(pv.path)}</span><span>${pv.size} bytes</span><span class="mono">sha256 ${esc(pv.sha256.slice(0, 16))}...</span>${pv.truncated ? "<span>first 256 KB</span>" : ""}<span>secrets redacted in this view</span></div>
+    ${pv.binary ? `<p class="rv-dim">Binary file: not shown.</p>` : `<pre class="rv-pre">${esc(pv.text)}</pre>`}</div>`;
+}
 function editor(f, ev) {
   const items = ev?.items?.[f.id] || (f.evidence || []).map((p) => ({ path: p }));
   const opt = (list, cur) => list.map((s) => `<option ${s === cur ? "selected" : ""}>${s}</option>`).join("");
@@ -494,18 +557,30 @@ function editor(f, ev) {
     <div class="rv-form-grid">
       <label class="rv-field"><span class="rv-field-label">Status</span><select id="fe-status" class="rv-select">${opt(STATUSES, f.status)}</select></label>
       <label class="rv-field"><span class="rv-field-label">Severity</span><select id="fe-sev" class="rv-select">${opt(SEV, f.severity)}</select></label>
+      <label class="rv-field"><span class="rv-field-label">Priority</span><select id="fe-prio" class="rv-select"><option value="">not set</option>${opt(PRIORITIES, f.priority)}</select></label>
+      <label id="fe-method-wrap" class="rv-field" hidden><span class="rv-field-label">Verified by</span><select id="fe-method" class="rv-select"><option value="">not stated</option>${opt(METHODS, "")}</select></label>
       <label id="fe-dup-wrap" class="rv-field" ${f.status === "duplicate" ? "" : "hidden"}><span class="rv-field-label">Duplicate of</span><input id="fe-dup" class="rv-input" value="${esc(f.duplicate_of || "")}" placeholder="F-001"></label>
     </div>
+    <label class="rv-field"><span id="fe-reason-label" class="rv-field-label">Reason (optional)</span><input id="fe-reason" class="rv-input" maxlength="2000" placeholder="why: kept with the decision in the finding's history"></label>
     <label class="rv-field"><span class="rv-field-label">Notes</span><textarea id="fe-notes" class="rv-input" rows="3">${esc(f.notes)}</textarea></label>
+    <div class="rv-form-grid">
+      <label class="rv-field"><span class="rv-field-label">CVSS 3.1 vector (the score is computed)</span><input id="fe-cvss" class="rv-input mono" value="${esc(f.cvss_vector || "")}" placeholder="CVSS:3.1/AV:N/AC:L/PR:L/UI:N/S:U/C:H/I:N/A:N" spellcheck="false"></label>
+      <label class="rv-field"><span class="rv-field-label">Prerequisites</span><input id="fe-prereq" class="rv-input" value="${esc(f.prerequisites || "")}" placeholder="an account in another tenant"></label>
+    </div>
     <dl class="rv-kv">
-      <dt>CWE / CVSS</dt><dd>${esc(f.cwe || "n/a")} · ${esc(f.cvss_score ?? "n/a")} <span class="mono rv-dim">${esc(f.cvss_vector || "")}</span></dd>
+      <dt>Verification</dt><dd>${tag(f.verification || "unverified", { verified: "ok", "not-reproducible": "warn" }[f.verification] || "")}
+        ${f.verified_by ? `<span class="rv-dim">by ${esc(f.verified_by)}${f.verified_method ? ", " + esc(f.verified_method) : ""}, ${fmtTime(f.verified_at)}</span>` : ""}</dd>
+      <dt>CWE / CVSS</dt><dd>${esc(f.cwe || "n/a")} · ${esc(f.cvss_score ?? "n/a")}${f.cvss_rating ? ` (${esc(f.cvss_rating)})` : ""} <span class="mono rv-dim">${esc(f.cvss_vector || "")}</span></dd>
+      ${(f.instances || []).length ? `<dt>Instances</dt><dd><ul class="rv-evidence">${f.instances.map((i) => `<li><span class="rv-code-chip">${esc(i.location || i)}</span>${i.observation ? `<span class="rv-dim">${esc(i.observation)}</span>` : ""}</li>`).join("")}</ul></dd>` : ""}
       <dt>Description</dt><dd><p class="rv-prose">${esc(f.description)}</p></dd>
       ${f.reproduction ? `<dt>Reproduction</dt><dd><pre class="rv-pre">${esc(f.reproduction)}</pre></dd>` : ""}
       ${f.remediation ? `<dt>Remediation</dt><dd><p class="rv-prose">${esc(f.remediation)}</p></dd>` : ""}
-      <dt>Evidence</dt><dd>${items.length ? `<ul class="rv-evidence">${items.map((i) => `<li><span class="rv-code-chip">${esc(i.path)}</span>${i.note ? `<span class="rv-dim">${esc(i.note)}</span>` : ""}${evidenceBadge(i.status)}</li>`).join("")}</ul>` : `<span class="rv-dim">none</span>`}</dd>
-      <dt>Source</dt><dd>${esc(f.source)} · updated ${fmtTime(f.updated)}</dd>
+      <dt>Evidence</dt><dd>${items.length ? `<ul class="rv-evidence">${items.map((i) => `<li><span class="rv-code-chip">${esc(i.path)}</span>${i.note ? `<span class="rv-dim">${esc(i.note)}</span>` : ""}${evidenceBadge(i.status)}${!String(i.path).startsWith("/src/") ? ` <button class="rv-btn ghost sm" data-preview="${esc(i.path)}">View</button>` : ""}</li>`).join("")}</ul>` : `<span class="rv-dim">none</span>`}
+        <div id="fe-preview"></div></dd>
+      <dt>Source</dt><dd>${esc(f.source)} · updated ${fmtTime(f.updated)} · revision ${esc(f.revision)}</dd>
     </dl>
-    <div class="rv-actions"><button id="fe-save" class="rv-btn accent">Save</button></div></div>`;
+    <div id="fe-history"></div>
+    <div class="rv-actions"><button id="fe-hist" class="rv-btn ghost sm">History</button>${f.status === "confirmed" || f.status === "candidate" ? `<button id="fe-nr" class="rv-btn ghost sm danger-quiet" title="Record that a retest couldn't reproduce it (needs the reason)">Not reproducible</button>` : ""}<button id="fe-save" class="rv-btn accent">Save</button></div></div>`;
 }
 
 function paneReport() {
@@ -665,6 +740,111 @@ async function paneTesting() {
   $$("[data-mxrun]").forEach((b) => b.addEventListener("click", async (ev) => {
     const x = await act(ev.currentTarget, () => api(`/api/eng/${e}/authz`, { name: b.dataset.mxrun, op: "run" }), "Matrix run finished.");
     if (x) paneTesting();
+  }));
+}
+
+async function paneInvestigation() {
+  const d = state.detail, e = enc(d.engagement);
+  $("#pane").innerHTML = `<p class="hint">What the engagement must answer, how far testing got and what still needs a decision. Built from the findings, observations and planned tests; the note at the end is yours.</p><div id="inv-out" class="rv-empty">Loading…</div>`;
+  let r;
+  try { r = await api(`/api/eng/${e}/investigation`); } catch (err) { $("#inv-out").textContent = err.message; return; }
+  if (state.tab !== "investigation" || state.current !== d.engagement) return;
+  const h = r.handover, cov = r.coverage, f = state.obsFilter;
+  const obs = r.observations.filter((o) => f === "all" || o.status === f);
+  const nObs = (s) => r.observations.filter((o) => s === "all" || o.status === s).length;
+  const reload = () => paneInvestigation();
+  $("#inv-out").outerHTML = `<div id="inv-out" class="rv-stack">
+    <div class="rv-card"><div class="rv-card-head"><h3>Objective</h3></div><div class="rv-card-body">
+      <textarea id="inv-obj" class="rv-input" rows="2" maxlength="4000" placeholder="What this engagement must answer, e.g. can a member of one tenant read or change another tenant's invoices?">${esc(r.objective)}</textarea>
+      <div class="rv-actions start"><button id="inv-obj-save" class="rv-btn sm">Save objective</button></div>
+    </div></div>
+    <div class="rv-card"><div class="rv-card-head"><h3>Where it stands</h3></div><div class="rv-card-body">
+      <div class="rv-meta"><span>findings: ${Object.entries(h.findings).filter(([, v]) => v).map(([k, v]) => `${v} ${esc(k)}`).join(", ") || "none"}</span>
+        <span>observations: ${Object.entries(h.observations).filter(([, v]) => v).map(([k, v]) => `${v} ${esc(k)}`).join(", ") || "none"}</span>
+        <span>${h.imports} import(s)</span></div>
+      ${h.material.length ? `<p class="rv-field-label">Material findings</p><ul class="rv-rows">${h.material.map((m) => `<li>${sevTag(m.severity)} ${tag(m.status)} <b>${esc(m.id)}</b> ${esc(m.title)}</li>`).join("")}</ul>` : ""}
+      ${h.pending.length ? `<p class="rv-field-label">Pending decisions</p><ul class="rv-rows">${h.pending.slice(0, 30).map((p) => `<li>${tag(p.kind)} ${esc(p.what)}</li>`).join("")}</ul>` : ""}
+      ${h.parse_problems.length ? `<p class="rv-field-label">Import problems</p><ul class="rv-rows">${h.parse_problems.map((p) => `<li class="err">${esc(p)}</li>`).join("")}</ul>` : ""}
+      <p class="rv-field-label">Next</p><ul class="rv-rows">${h.next.map((n) => `<li>${esc(n)}</li>`).join("") || "<li class='rv-dim'>nothing pending</li>"}</ul>
+    </div></div>
+    <div class="rv-card"><div class="rv-card-head"><h3>Coverage</h3></div><div class="rv-card-body">
+      <div class="rv-meta">${cov.total ? COVERAGE.map((s) => `<span>${cov.counts[s]} ${esc(s)}</span>`).join("") : "<span>No plan yet.</span>"}${cov.stale.length ? `<span class="err">${cov.stale.length} stale</span>` : ""}</div>
+      <p class="hint">${esc(cov.note)}</p>
+      <div class="rv-form-row"><select id="inv-pb" class="rv-select" aria-label="Playbook">${PLAYBOOKS.map((p) => `<option>${p}</option>`).join("")}</select><button id="inv-pb-add" class="rv-btn sm">Add its checklist to the plan</button>
+        <input id="inv-build" class="rv-input" placeholder="build or source digest now deployed" aria-label="Current build" spellcheck="false"><button id="inv-reassess" class="rv-btn ghost sm" title="Mark tests that ran on another build or policy revision as stale">Reassess</button></div>
+      ${r.plan.length ? `<table class="rv-table rv-plan"><thead><tr><th>Test</th><th>References</th><th>Outcome</th><th></th></tr></thead><tbody>${r.plan.map((i) => `<tr>
+        <td><b>${esc(i.id)}</b> ${esc(i.title)}${i.area ? `<div class="rv-dim">${esc(i.area)}</div>` : ""}</td>
+        <td>${(i.refs || []).map((x) => `<span class="rv-code-chip">${esc(x)}</span>`).join(" ")}</td>
+        <td>${tag(i.state, COV_CLASS[i.state])}${i.stale ? " " + tag("stale", "warn") : ""}${i.finding_id ? ` <b>${esc(i.finding_id)}</b>` : ""}${i.rationale ? `<div class="rv-dim">${esc(i.rationale)}</div>` : ""}${i.stale_reason ? `<div class="rv-dim">${esc(i.stale_reason)}</div>` : ""}</td>
+        <td><button class="rv-btn ghost sm" data-plan="${esc(i.id)}">Record</button></td></tr>`).join("")}</tbody></table>
+        <div id="plan-form"></div>` : ""}
+    </div></div>
+    <div class="rv-card"><div class="rv-card-head"><h3>Observations</h3></div><div class="rv-card-body">
+      <p class="hint">What tools reported, before anyone decided it's a finding. Link the ones that share a root cause to one finding, dismiss the rest with the reason.</p>
+      <div class="rv-form-row"><input id="obs-path" class="rv-input mono" placeholder="semgrep.json or evidence/authz/....json" aria-label="Tool output to import" spellcheck="false"><button id="obs-import" class="rv-btn sm">Import tool output</button></div>
+      ${r.imports.length ? `<details><summary>${r.imports.length} import(s)</summary><ul class="rv-rows">${r.imports.map((i) => `<li><b>${esc(i.id)}</b> <span class="mono">${esc(i.path)}</span> <span class="rv-dim">${esc(i.parser || "no parser")} v${esc(i.parser_version)} · ${i.observations} observation(s), ${i.new} new · ${fmtTime(i.at)}</span>
+        ${i.errors.map((x) => `<div class="err">${esc(x.type)}: ${esc(x.message)}${x.path ? ` (${esc(x.path)})` : ""}</div>`).join("")}${i.limitations.map((x) => `<div class="rv-dim">${esc(x)}</div>`).join("")}</li>`).join("")}</ul></details>` : ""}
+      ${r.groups.length ? `<p class="rv-field-label">May share a root cause</p><ul class="rv-rows">${r.groups.map((g) => `<li><span class="mono">${esc(g.group_key)}</span> <span class="rv-dim">${esc(g.suggestion)}</span> <button class="rv-btn ghost sm" data-group="${esc(g.observations.join(","))}">Select</button></li>`).join("")}</ul>` : ""}
+      <div class="rv-sev-filters">${["new", "linked", "duplicate", "dismissed", "all"].map((s) => `<button class="rv-sev-filter ${s === f ? "active" : ""}" data-obsf="${s}">${s} <span class="count">${nObs(s)}</span></button>`).join("")}</div>
+      ${obs.length ? `<table class="rv-table rv-obs"><thead><tr><th><input type="checkbox" id="obs-all" aria-label="Select all"></th><th>Observation</th><th>Where</th><th>Status</th></tr></thead><tbody>${obs.map((o) => `<tr>
+        <td><input type="checkbox" class="obs-cb" value="${esc(o.id)}" aria-label="Select ${esc(o.id)}"></td>
+        <td><b>${esc(o.id)}</b> ${sevTag(o.severity || "info")} ${esc(o.title)}<div class="rv-dim">${esc(o.tool)}${o.rule_id ? " · " + esc(o.rule_id) : ""}${o.seen > 1 ? ` · seen ${o.seen} times` : ""}</div></td>
+        <td class="mono">${esc(o.location)}</td>
+        <td>${tag(o.status)}${o.finding_id ? ` <b>${esc(o.finding_id)}</b>` : ""}${o.duplicate_of ? ` of ${esc(o.duplicate_of)}` : ""}${o.reason ? `<div class="rv-dim">${esc(o.reason)}</div>` : ""}</td></tr>`).join("")}</tbody></table>
+        <div class="rv-form-row"><input id="obs-fid" class="rv-input" placeholder="F-001" aria-label="Finding to link to" style="max-width:110px"><button id="obs-link" class="rv-btn sm">Link to finding</button>
+          <input id="obs-reason" class="rv-input" placeholder="reason it's not an issue" aria-label="Dismiss reason"><button id="obs-dismiss" class="rv-btn ghost sm">Dismiss</button><button id="obs-reopen" class="rv-btn ghost sm">Reopen</button></div>`
+        : `<div class="rv-empty">No observations${f === "all" ? " yet" : " with this status"}.</div>`}
+    </div></div>
+    <div class="rv-card"><div class="rv-card-head"><h3>Handover note</h3></div><div class="rv-card-body">
+      <textarea id="inv-note" class="rv-input" rows="5" placeholder="What the next person (or the agent, when it resumes) should know that the records don't say.">${esc(h.note)}</textarea>
+      ${h.note_updated ? `<p class="rv-dim">saved ${fmtTime(h.note_updated.at)} by ${esc(h.note_updated.by)}</p>` : ""}
+      <div class="rv-actions start"><button id="inv-note-save" class="rv-btn sm">Save note</button></div>
+      <details><summary>Handover as text (what the agent reads)</summary><pre class="rv-pre">${esc(h.markdown)}</pre></details>
+    </div></div></div>`;
+  const post = (what, body) => api(`/api/eng/${e}/${what}`, body);
+  const sel = () => $$(".obs-cb").filter((c) => c.checked).map((c) => c.value);
+  $("#inv-obj-save").addEventListener("click", async (ev) => { if (await act(ev.currentTarget, () => post("objective", { text: $("#inv-obj").value, digest: r.objective_digest }), "Objective saved.")) reload(); });
+  $("#inv-note-save").addEventListener("click", async (ev) => { if (await act(ev.currentTarget, () => post("handover", { text: $("#inv-note").value, digest: h.note_digest }), "Note saved.")) reload(); });
+  $("#inv-pb-add").addEventListener("click", async (ev) => {
+    const x = await act(ev.currentTarget, () => post("plan", { op: "playbook", playbook: $("#inv-pb").value }));
+    if (x) { toast(`${x.ids.length} test(s) added from ${x.playbook} (version ${x.version}).`); reload(); }
+  });
+  $("#inv-reassess").addEventListener("click", async (ev) => {
+    const x = await act(ev.currentTarget, () => post("plan", { op: "reassess", build: $("#inv-build").value.trim() }));
+    if (x) { toast(`${x.stale} test(s) now stale.`); reload(); }
+  });
+  $$("[data-obsf]").forEach((b) => b.addEventListener("click", () => { state.obsFilter = b.dataset.obsf; reload(); }));
+  $$("[data-group]").forEach((b) => b.addEventListener("click", () => { const ids = b.dataset.group.split(","); $$(".obs-cb").forEach((c) => { c.checked = ids.includes(c.value); }); }));
+  $("#obs-all")?.addEventListener("change", (ev) => $$(".obs-cb").forEach((c) => { c.checked = ev.target.checked; }));
+  $("#obs-import").addEventListener("click", async (ev) => {
+    const x = await act(ev.currentTarget, () => post("observation", { op: "import", path: $("#obs-path").value.trim() }));
+    if (x) { toast(`${x.observations} observation(s), ${x.new} new${x.errors.length ? `, ${x.errors.length} parser error(s)` : ""}.`, !!x.errors.length); reload(); }
+  });
+  const triage = async (btn, body, msg) => {
+    const ids = sel();
+    if (!ids.length) { toast("Select observations first.", true); return; }
+    if (await act(btn, () => post("observation", { ...body, ids }), msg)) reload();
+  };
+  $("#obs-link")?.addEventListener("click", (ev) => triage(ev.currentTarget, { op: "link", finding_id: $("#obs-fid").value.trim() }, "Linked."));
+  $("#obs-dismiss")?.addEventListener("click", (ev) => triage(ev.currentTarget, { op: "dismiss", reason: $("#obs-reason").value.trim() }, "Dismissed."));
+  $("#obs-reopen")?.addEventListener("click", (ev) => triage(ev.currentTarget, { op: "reopen" }, "Reopened."));
+  $$("[data-plan]").forEach((b) => b.addEventListener("click", () => {
+    const i = r.plan.find((x) => x.id === b.dataset.plan);
+    $("#plan-form").innerHTML = `<div class="rv-editor"><p><b>${esc(i.id)}</b> ${esc(i.title)}</p>${i.hypothesis ? `<p class="rv-dim">${esc(i.hypothesis)}</p>` : ""}
+      <div class="rv-form-grid">
+        <label class="rv-field"><span class="rv-field-label">Outcome</span><select id="pf-state" class="rv-select">${COVERAGE.map((s) => `<option ${s === i.state ? "selected" : ""}>${s}</option>`).join("")}</select></label>
+        <label class="rv-field"><span class="rv-field-label">Finding (when failed)</span><input id="pf-fid" class="rv-input" value="${esc(i.finding_id || "")}" placeholder="F-001"></label>
+        <label class="rv-field"><span class="rv-field-label">Build it ran on</span><input id="pf-build" class="rv-input mono" value="${esc(i.build || "")}" spellcheck="false"></label>
+      </div>
+      <label class="rv-field"><span class="rv-field-label">Evidence (when tested; one path per line)</span><textarea id="pf-ev" class="rv-input mono" rows="2" spellcheck="false">${esc((i.evidence || []).join("\n"))}</textarea></label>
+      <label class="rv-field"><span class="rv-field-label">Rationale (blocked, excluded, not applicable: why, and what would unblock it)</span><input id="pf-why" class="rv-input" value="${esc(i.rationale || "")}"></label>
+      <div class="rv-actions start"><button id="pf-save" class="rv-btn sm accent">Save outcome</button></div></div>`;
+    $("#pf-save").addEventListener("click", async (ev) => {
+      const fields = { state: $("#pf-state").value, rationale: $("#pf-why").value.trim() || null, finding_id: $("#pf-fid").value.trim() || null,
+        evidence: $("#pf-ev").value.split("\n").map((s) => s.trim()).filter(Boolean), build: $("#pf-build").value.trim() || null };
+      Object.keys(fields).forEach((k) => fields[k] === null && delete fields[k]);
+      if (await act(ev.currentTarget, () => post("plan", { op: "update", id: i.id, fields, revision: i.revision }), "Outcome recorded.")) reload();
+    });
   }));
 }
 

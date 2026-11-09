@@ -388,3 +388,10 @@ fieldset.rv-field legend { padding: 0; margin-bottom: 8px; }
 .rv-form-row .rv-input { flex: 1 1 140px; width: auto; }
 .rv-matrix { padding: 8px 0; border-top: 1px solid var(--rv-border); } .rv-matrix:first-child { border-top: 0; }
 .rv-matrix .rv-table, #cap-view .rv-table { display: block; overflow-x: auto; max-width: 100%; }
+
+/* investigation (RW-015 to RW-018) */
+.rv-plan, .rv-obs { display: block; overflow-x: auto; max-width: 100%; margin-top: 10px; }
+.rv-obs td.mono { font-size: 12px; overflow-wrap: anywhere; max-width: 320px; }
+.rv-history { margin-top: 12px; border-top: 1px solid var(--rv-border); padding-top: 10px; }
+.rv-preview-box { margin-top: 8px; }
+.rv-preview-box .rv-pre { max-height: 360px; overflow: auto; }

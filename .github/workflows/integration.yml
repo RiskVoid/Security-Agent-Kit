@@ -79,6 +79,8 @@ jobs:
         run: bash evals/console_test.sh
       - name: Console contract (validation, conflicts, audit attribution, live stream, isolation)
         run: python3 evals/console_contract_test.py
+      - name: Investigation workspace (findings triage, observations, coverage, handover)
+        run: python3 evals/workspace_test.py
       - name: Model stub through LiteLLM (no GPU, no provider)
         run: bash evals/model_stub_test.sh
       - name: Tool smoke test

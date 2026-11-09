@@ -171,6 +171,10 @@ def findings(eng):
             r["evidence"] = json.loads(r.get("evidence") or "[]")
         except ValueError:
             r["evidence"] = [r.get("evidence")]
+        try:
+            r["instances"] = json.loads(r.get("instances") or "[]")
+        except ValueError:
+            r["instances"] = []
     return rows
 
 
@@ -335,6 +339,11 @@ def overview():
             for f in os.listdir(os.path.join(ENG_DIR, "_archive")))
         e["closed"] = bool(closed and e["halted"])
         e["model_problems"] = len(model_events.recent(86400, problems_only=True, engagement=e["engagement"]))
+        # what the page notifies about once: material findings, and worker tasks that ended or need a decision
+        e["notices"] = [f"finding:{r['id']}:{r['status']}:{r['severity']}" for r in rows
+                        if r["severity"] in ("critical", "high") and r["status"] in ("candidate", "confirmed")]
+        e["notices"] += [f"task:{t['id']}:{t['status']}" for t in worker_tasks(e["engagement"])[:20]
+                         if t["status"] in ("done", "error", "interrupted", "blocked", "awaiting_approval")]
     return {"engagements": engs, "approvals": json.loads(ctl("approvals", "--json") or "[]"),
             "models": rv_routes.models(E),
             "ui_url": f"http://localhost:{E.get('GATEWAY_PORT') or 8000}/", "version": VERSION,
@@ -475,6 +484,18 @@ def api_get(path, q):
         return live(eng)
     if what == "evidence":
         return ops("evidence.index", eng)
+    if what == "investigation":  # objective, handover, coverage, observations (RW-015 to RW-018)
+        return ops("investigation.get", eng)
+    if what == "history":
+        fid = q.get("id", [""])[0]
+        if not FID_RX.match(fid):
+            raise Fail("invalid finding id")
+        return ops("finding.history", eng, id=fid)
+    if what == "preview":
+        p = q.get("path", [""])[0]
+        if not p or len(p) > 500:
+            raise Fail("path: a file of the engagement")
+        return ops("evidence.preview", eng, path=p)
     raise Fail("not found", 404)
 
 
@@ -660,9 +681,47 @@ def api_post(path, body):
             fid = body.get("id", "")
             if not isinstance(fid, str) or not FID_RX.match(fid):
                 raise Fail("invalid finding id")
-            fields = {k: body[k] for k in ("status", "severity", "notes", "duplicate_of", "title") if k in body}
+            if body.get("not_reproducible"):
+                return {"finding": ops("finding.not_reproducible", eng, id=fid,
+                                       reason=field(body, "reason", str, ""))}
+            fields = {k: body[k] for k in ("status", "severity", "notes", "duplicate_of", "title", "priority",
+                                           "prerequisites", "root_cause", "cvss_vector") if k in body}
             return {"finding": ops("finding.update", eng, id=fid, fields=fields,
-                                   expected_revision=field(body, "revision", int, None))}
+                                   expected_revision=field(body, "revision", int, None),
+                                   reason=field(body, "reason", str, None) or None,
+                                   method=field(body, "method", str, None) or None)}
+        if action == "observation":
+            op, ids = field(body, "op", str, ""), field(body, "ids", list, [])
+            if op == "import":
+                return ops("observation.import", eng, timeout=300, path=field(body, "path", str, ""),
+                           tool=field(body, "tool", str, "") or None)
+            if op == "link":
+                return {"finding": ops("observation.link", eng, ids=ids, finding_id=field(body, "finding_id", str, ""))}
+            if op == "dismiss":
+                return ops("observation.dismiss", eng, ids=ids, reason=field(body, "reason", str, ""))
+            if op == "duplicate":
+                return ops("observation.duplicate", eng, ids=ids, of=field(body, "of", str, ""))
+            if op == "reopen":
+                return ops("observation.reopen", eng, ids=ids)
+            raise Fail("op: import, link, dismiss, duplicate or reopen")
+        if action == "plan":
+            op = field(body, "op", str, "")
+            if op == "add":
+                return ops("plan.add", eng, items=field(body, "items", list, []))
+            if op == "playbook":
+                return ops("plan.from_playbook", eng, playbook=field(body, "playbook", str, ""))
+            if op == "update":
+                f = field(body, "fields", dict, {})
+                return ops("plan.update", eng, id=field(body, "id", str, ""), fields=f,
+                           expected_revision=field(body, "revision", int, None))
+            if op == "reassess":
+                return ops("coverage.reassess", eng, build=field(body, "build", str, "") or None,
+                           policy_revision=field(body, "policy_revision", str, "") or None)
+            raise Fail("op: add, playbook, update or reassess")
+        if action == "objective":
+            return ops("workspace.objective", eng, text=field(body, "text", str, ""), expected_digest=digest_field(body))
+        if action == "handover":
+            return ops("handover.save", eng, text=field(body, "text", str, ""), expected_digest=digest_field(body))
     m = re.match(r"^/api/approvals/([^/]+)/([a-f0-9]{6,32})/(approve|deny)$", path)
     if m:
         eng, aid, action = m.groups()

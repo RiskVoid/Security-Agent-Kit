@@ -16,15 +16,20 @@ order: `F-001`, `F-002`, …
 |---|---|
 | `title` | short name of the issue |
 | `severity` | `critical`, `high`, `medium`, `low` or `info` |
-| `cvss_vector`, `cvss_score` | CVSS 4.0 vector and score (optional) |
+| `cvss_vector`, `cvss_score` | a CVSS 3.1 vector, whose base score is computed (a different score given with it is refused), or a CVSS 4.0 vector with the score from the FIRST calculator (optional) |
 | `cwe` | for example `CWE-89` |
 | `asset` | what is affected: host, URL, API operation, `file:line` |
 | `description`, `impact`, `reproduction`, `remediation` | short markdown; it goes into the report as written |
 | `evidence` | list of evidence paths, each optionally followed by a space and a note |
 | `status` | see below |
 | `source` | `planner`, or `worker:<task_id>` for candidates the worker recorded |
-| `notes` | internal notes, such as why something is a false positive. Not printed in the report |
-| `created`, `updated` | UTC timestamps |
+| `notes` | internal notes. Not printed in the report |
+| `priority` | remediation order, `P1` to `P4`, set separately from the technical severity |
+| `prerequisites` | what a reproduction needs: an account, a role, a tenant, data |
+| `instances` | the affected locations: observations linked to the finding (file:line, route, package) |
+| `root_cause` | the shared cause, when several instances have one |
+| `verification`, `verified_by`, `verified_method`, `verified_at` | `unverified`, `verified` or `not-reproducible`; who verified it, how (`runtime-reproduction`, `replay`, `authorization-matrix`, `source-review`, `tool-output`, `retest`, `client-confirmation`, or `not stated`) and when |
+| `revision`, `created`, `updated` | revision number (each change adds one) and UTC timestamps |
 
 ### Statuses
 
@@ -32,7 +37,7 @@ order: `F-001`, `F-002`, …
 |---|---|---|
 | `candidate` | found but not verified (scanner output, worker lead) | no; untriaged candidates keep the report DRAFT |
 | `confirmed` | verified by reproducing it, reading the code path or checking the version | yes, as **Open** |
-| `false-positive` | checked and doesn't hold; the reason is in `notes` | no; counted in the activity summary |
+| `false-positive` | checked and doesn't hold; the reason is kept with the decision | no; counted in the activity summary |
 | `duplicate` | the same issue as another finding, named in `duplicate_of` (its evidence is merged into that one) | no; counted in the activity summary |
 | `fixed` | fixed by the client and retested | yes, as **Resolved** |
 | `accepted-risk` | the client accepts the risk | yes, as **Accepted risk** |
@@ -42,13 +47,80 @@ order: `F-001`, `F-002`, …
 - **The worker** records `candidate` findings only (title, severity, asset, description, evidence, CWE), with the
   evidence from its task.
 - **The planner** sees them with `list_findings` and `get_finding`, verifies each one and sets the status with
-  `update_finding` (`confirmed`, `false-positive` with the reason in `notes`, or `duplicate` with `duplicate_of`
-  set to the finding it keeps). It records issues it finds itself
+  `update_finding` (`confirmed` with the verification `method`, `false-positive` with the `reason`, or `duplicate`
+  with `duplicate_of` set to the finding it keeps). It records issues it finds itself
   with `record_finding`, and fills in CVSS, impact, reproduction and remediation.
 - **After client feedback**, the planner sets `fixed` or `accepted-risk`.
 
 You can ask the agent to change any finding ("lower F-004 to medium: it needs an admin session", "mark F-007 as
-accepted risk"). There's no `./rvkit` command for findings.
+accepted risk"), or change it in the console's **Findings** tab. There's no `./rvkit` command for findings.
+
+### Decisions, reasons and history
+
+Every change keeps the finding's earlier revision, and every decision is recorded with who made it and why:
+
+- `false-positive` and `accepted-risk` need a reason, so does a severity change and a change to a priority that
+  was already set. The change is refused without one.
+- Confirming a finding records the verification method; without one it says `not stated`, and the handover lists
+  it as a pending decision.
+- **Not reproducible** (console, or the `finding.not_reproducible` operation) records that a retest couldn't
+  reproduce a finding, with the reason; the status stays as it was until someone decides.
+- `get_finding` with `history=true` (or **History** in the console) shows every revision and decision.
+
+## Investigation workspace
+
+What an engagement must answer, how far testing got and what still needs a decision, kept in the same
+`findings.db` so it survives restarts, model switches and a change of researcher.
+
+### Observations
+
+An observation is what a tool reported, before anyone decides whether it's a finding. `import_observations` (or
+**Import tool output** in the console's **Investigation** tab) reads a tool's output from the engagement folder
+(`semgrep.json`, `evidence/authz/...`; not the findings database, the audit log, the report or hidden files):
+
+| Parser | File |
+|---|---|
+| `semgrep` | Semgrep JSON (`--json`) |
+| `osv-scanner`, `pip-audit` | their JSON output |
+| `bandit`, `gitleaks` | their JSON reports |
+| `authz` | an authorization-matrix run (`evidence/authz/`): `FAIL` and unexpected-deny cells; blocked cells are limitations |
+| `laravel_map` | an application map (`evidence/appmap/`): its leads; its gaps are limitations |
+| `http` | an HTTP exchange the sandbox wrote (`evidence/http/`, replays) |
+
+Each observation has a fingerprint (tool, rule, location, the normalized snippet), so importing the same output
+again counts it as seen again instead of adding it twice. Parser errors and what the tool says it skipped are kept
+with the import and shown; a file no parser recognizes is an import with an error, not a silent nothing.
+
+Grouping is a person's (or the planner's) decision. The workspace suggests groups (same rule in the same file, the
+same package, the same route template) but never merges them: you **link** the observations that share a root
+cause to one finding (they become its instances and their evidence is added), mark one a **duplicate** of
+another, or **dismiss** it with the reason.
+
+### Coverage
+
+The plan is a list of tests. `plan_tests` with a playbook name (or **Add its checklist to the plan**) adds one item
+per checklist line of that playbook, with the playbook's version and the standard references it names (ASVS,
+WSTG, OWASP API Top 10 2023, OWASP LLM Top 10 2025). Each item ends in one of:
+
+| Outcome | Needs |
+|---|---|
+| `tested` | the evidence it produced |
+| `failed` | the finding it produced |
+| `blocked` | the reason, and what would unblock it |
+| `excluded`, `not-applicable` | the rationale |
+
+An outcome records the build (source digest or deployed build) and the policy revision it ran on. **Reassess**
+with a new build or policy revision marks earlier outcomes recorded against another one as stale, for a retest.
+Coverage is reported per state and per standard. OWASP Top 10 lists are risk categories, not checklists: coverage
+is measured against the planned tests and the requirements they reference, not "Top 10 covered".
+
+### Objective and handover
+
+The objective is what the engagement must answer (`set_objective`, or the console). The handover is built from the
+records each time it's read: the objective, finding counts, material findings (critical and high, candidate or
+confirmed), observations to triage, coverage, blocked and stale tests, import problems, pending decisions and the
+next useful actions, plus a free-text note you edit. The planner reads it with `get_handover` when it resumes an
+engagement; the console shows it in the **Investigation** tab.
 
 ---
 

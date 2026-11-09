@@ -399,7 +399,7 @@ class Findings(unittest.TestCase):
         r = db.update("e", a, expected_revision=1, actor="console:alice", status="confirmed")
         self.assertEqual((r["revision"], r["previous_revision"], r["updated_by"]), (2, 1, "console:alice"))
         with self.assertRaises(db.Conflict):  # someone saved revision 2 in between
-            db.update("e", a, expected_revision=1, actor="console:bob", severity="low")
+            db.update("e", a, expected_revision=1, actor="console:bob", severity="low", reason="r")
         self.assertEqual(db.get("e", a)["severity"], "high")
         with self.assertRaises(ValueError):
             db.update("e", a, actor="root", notes="x")  # actors are <kind>:<name>
@@ -895,6 +895,78 @@ Route::group(['middleware' => 'throttle:5', 'prefix' => 'v1'], function () {
             cmp = lm.compare_routes(routes, [{"method": "GET|HEAD", "uri": "admin/posts"},
                                              {"method": "GET|HEAD", "uri": "up"}])
             self.assertEqual((cmp["matched"], cmp["runtime_only"]), (1, ["GET /up"]))
+
+
+class Workspace(unittest.TestCase):
+    """RW-015 to RW-018: CVSS, triage reasons, parsers, coverage rules."""
+
+    def setUp(self):
+        import workspace, observations
+        self.ws, self.obs = workspace, observations
+        self.tmp = tempfile.TemporaryDirectory()
+        db.WORK = self.tmp.name
+        os.makedirs(os.path.join(self.tmp.name, "e", "evidence"))
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def test_cvss31(self):
+        for vec, score in (("CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H", 9.8),
+                           ("CVSS:3.1/AV:N/AC:L/PR:N/UI:R/S:C/C:L/I:L/A:N", 6.1),
+                           ("CVSS:3.1/AV:N/AC:L/PR:L/UI:N/S:U/C:H/I:N/A:N", 6.5),
+                           ("CVSS:3.1/AV:P/AC:H/PR:H/UI:R/S:U/C:L/I:N/A:N", 1.6)):
+            self.assertEqual(db.cvss31(vec), score, vec)
+        with self.assertRaises(ValueError):
+            db.cvss31("CVSS:3.1/AV:N/AC:L")
+
+    def test_reasons_and_method(self):
+        fid = db.record("e", title="t", severity="high", asset="a", description="d")["id"]
+        with self.assertRaisesRegex(ValueError, "reason"):
+            db.update("e", fid, status="accepted-risk", actor="cli:t")
+        with self.assertRaisesRegex(ValueError, "reason"):
+            db.update("e", fid, severity="low", actor="cli:t")
+        row = db.update("e", fid, status="confirmed", actor="cli:t", method="replay")
+        self.assertEqual((row["verification"], row["verified_method"]), ("verified", "replay"))
+        row = db.update("e", fid, status="accepted-risk", actor="cli:t", reason="compensating control")
+        h = db.history("e", fid)
+        self.assertTrue(any(d["reason"] == "compensating control" for d in h["decisions"]))
+
+    def test_parsers(self):
+        sem = {"results": [{"check_id": "r1", "path": "a.py", "start": {"line": 3}, "extra": {"message": "m",
+                                                                                           "severity": "ERROR"}}],
+               "errors": [], "paths": {"scanned": ["a.py"]}}
+        r = self.obs.parse("evidence/semgrep/a.json", __import__("json").dumps(sem))
+        self.assertEqual((r["parser"], len(r["observations"]), r["observations"][0]["severity"]), ("semgrep", 1, "high"))
+        authz = {"matrix": "m", "cells": [
+            {"operation": "read-invoice", "identity": "b-member", "verdict": "FAIL", "url": "http://x/invoices/12",
+             "method": "GET", "evidence": "evidence/authz/e1.txt"},
+            {"operation": "read-invoice", "identity": "anon", "verdict": "blocked", "reason": "identity expired"}]}
+        r = self.obs.parse("evidence/authz/m.json", __import__("json").dumps(authz))
+        self.assertEqual(r["parser"], "authz")
+        self.assertEqual(r["observations"][0]["group_key"], "route:/invoices/{id}")
+        self.assertTrue(r["limitations"] and "blocked" in r["limitations"][0])
+        r = self.obs.parse("evidence/http/x.txt", "> GET http://x/a/5\n< 403 Forbidden\n")
+        self.assertEqual((r["parser"], r["observations"][0]["title"]), ("http", "GET http://x/a/5 -> 403"))
+        r = self.obs.parse("evidence/x.json", "{\"nothing\": 1}")
+        self.assertEqual(r["errors"][0]["type"], "unknown-format")
+        self.assertEqual(self.obs.fingerprint("a", " b  c"), self.obs.fingerprint("a", "b c"))
+
+    def test_playbook_refs_and_coverage_rules(self):
+        text = "---\nversion: 3\n---\n## 1. Authorisation (API1 BOLA)\n- [ ] read another tenant's object\n" \
+               "  with two identities. Refs: WSTG-ATHZ-04, ASVS V8.\n- [ ] something else\n"
+        version, items = self.ws.playbook_items(text, "x")
+        self.assertEqual(version, "3")
+        self.assertEqual(items[0]["refs"], ["ASVS V8", "WSTG-ATHZ-04", "API1:2023"])
+        self.assertEqual(items[1]["refs"], ["API1:2023"])
+        ids = self.ws.plan_add("e", "cli:t", items)
+        with self.assertRaisesRegex(ValueError, "evidence"):
+            self.ws.plan_update("e", "cli:t", ids[0], None, state="tested")
+        with self.assertRaisesRegex(ValueError, "rationale"):
+            self.ws.plan_update("e", "cli:t", ids[1], None, state="not-applicable")
+        cov = self.ws.coverage("e")
+        self.assertEqual(cov["counts"]["planned"], 2)
+        self.assertIn("API Top 10 2023", cov["by_standard"])
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=1)

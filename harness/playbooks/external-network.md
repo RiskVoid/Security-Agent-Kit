@@ -1,4 +1,5 @@
 ---
+version: 1
 title: External network assessment
 standard: PTES (intelligence gathering, vulnerability analysis); CIS-style service hardening
 tiers: passive, active; intrusive steps need approval

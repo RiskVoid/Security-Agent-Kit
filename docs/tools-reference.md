@@ -122,9 +122,18 @@ the L4 profile.
 | Tool | Parameters | What it does |
 |---|---|---|
 | `record_finding` | `engagement`, `title`, `severity`, `asset`, `description`, and optional `impact`, `reproduction`, `remediation`, `evidence` (list of paths), `cvss_vector`, `cvss_score`, `cwe`, `status` (`candidate` by default; any of the five statuses is accepted), `notes` | Stores a finding and returns it with its id (`F-001`, `F-002`, …). Severity: `critical`, `high`, `medium`, `low`, `info`. |
-| `update_finding` | `engagement`, `finding_id`, then any field to change, including `status` | Changes only the fields given. Statuses: `candidate`, `confirmed`, `false-positive` (reason in `notes`), `duplicate` (needs `duplicate_of`: the finding to keep), `fixed`, `accepted-risk`. |
+| `update_finding` | `engagement`, `finding_id`, then any field to change, including `status`, `priority` (`P1`-`P4`), `prerequisites`, `root_cause`; `reason`; `method` | Changes only the fields given. Statuses: `candidate`, `confirmed` (with `method`: how it was verified), `false-positive`, `duplicate` (needs `duplicate_of`: the finding to keep), `fixed`, `accepted-risk`. `reason` is required for `false-positive`, `accepted-risk`, a severity change and a change of a set priority; refused without it (`REFUSED: ...`). |
 | `list_findings` | `engagement`, optional `status`, `severity` | Findings, most severe first: id, title, severity, status, asset, source. |
-| `get_finding` | `engagement`, `finding_id` | One finding with every field. |
+| `get_finding` | `engagement`, `finding_id`, `history` (default false) | One finding with every field; with `history`, every revision and decision with its reason. |
+| `import_observations` | `engagement`, `path` (a file of the engagement, such as `semgrep.json` or `evidence/authz/...`), optional `tool` | Turns a Semgrep, osv-scanner, pip-audit, bandit or gitleaks JSON, an authorization-matrix run, an app map or an HTTP exchange into observations. Re-importing doesn't duplicate; parser errors and limitations are returned. |
+| `add_observation` | `engagement`, `title`, `location`, optional `detail`, `severity`, `evidence` | Records something noticed by hand. |
+| `list_observations` | `engagement`, `status` (default `new`), optional `tool` | Observations, the imports with their errors, and grouping suggestions. |
+| `triage_observations` | `engagement`, `ids`, `action` (`link` with `finding_id`, `duplicate` with `of`, `dismiss` with `reason`, `reopen`) | Decides about observations; linked ones become the finding's instances and evidence. |
+| `plan_tests` | `engagement`, `playbook` or `items` | Adds planned tests: one per checklist line of a playbook (once), or the given items with their standard references. |
+| `update_coverage` | `engagement`, `item`, `state`, and `evidence`, `finding_id` or `rationale` as the state needs; optional `build`, `policy_revision` | Records a planned test's outcome: `tested` (evidence), `failed` (finding), `blocked`, `excluded`, `not-applicable` (rationale). |
+| `get_coverage` | `engagement`, optional `state` | Planned tests, counts per state and per standard, stale and blocked items. |
+| `set_objective` | `engagement`, `text` | What the engagement must answer. |
+| `get_handover` | `engagement` | Where the investigation stands, built from the records, plus the researcher's note. |
 | `write_file` | `engagement`, `path`, `content`, `append` (default false) | Writes one of: `PLAN.md`, `NOTES.md`, `notes/<name>.md` or `.txt`, `report/executive-summary.md`, `report/methodology.md`, `report/conclusion.md`, `report/meta.txt`. Anything else, or content over 1 MB, is refused. |
 | `list_playbooks` | none | Each playbook's name, title, standard and tiers. |
 | `get_playbook` | `name` | The full text of one playbook. |

@@ -1,4 +1,5 @@
 ---
+version: 1
 title: Secrets review
 standard: OWASP ASVS V13.3 (secret management), CWE-798
 tiers: passive

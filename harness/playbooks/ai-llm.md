@@ -1,4 +1,5 @@
 ---
+version: 1
 title: AI application, agent and MCP security test
 standard: OWASP Top 10 for LLM Applications 2025, OWASP Agentic AI threats, MITRE ATLAS
 tiers: passive, active; adversarial prompts and tool calls are intrusive (approval)

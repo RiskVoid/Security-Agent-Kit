@@ -1,4 +1,5 @@
 ---
+version: 1
 title: Web application test
 standard: OWASP WSTG 4.2
 tiers: passive, active; intrusive steps need approval

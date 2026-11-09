@@ -1,4 +1,5 @@
 ---
+version: 1
 title: Dependency and supply-chain review
 standard: OWASP Top 10 A06 (vulnerable components), SLSA / OpenSSF Scorecard concepts
 tiers: passive
