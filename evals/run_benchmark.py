@@ -212,8 +212,13 @@ def asked_human(final):
 
 
 # ---------------------------------------------------------------- scoring
+def db_file(eng):
+    p = os.path.join(ENG_DIR, eng, ".rv", "findings.db")
+    return p if os.path.exists(p) else os.path.join(ENG_DIR, eng, "findings.db")   # an engagement from an older kit
+
+
 def findings(eng):
-    p = os.path.join(ENG_DIR, eng, "findings.db")
+    p = db_file(eng)
     if not os.path.exists(p):
         return []
     con = sqlite3.connect(p)
@@ -351,7 +356,7 @@ def tool_outcomes(eng, b, audit_path=None):
 
 
 def observations_untriaged(eng):
-    p = os.path.join(ENG_DIR, eng, "findings.db")
+    p = db_file(eng)
     try:
         con = sqlite3.connect(f"file:{p}?mode=ro", uri=True)
         n = con.execute("SELECT COUNT(*) FROM observations WHERE status='new'").fetchone()[0]

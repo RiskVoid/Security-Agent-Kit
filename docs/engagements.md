@@ -104,11 +104,11 @@ The agent and tools see it as `/work/<engagement>/`.
     ├── RULES.md                  tiers, rate, network, window, worker
     ├── PLAN.md                   the agent's plan and playbook checklists
     ├── NOTES.md, notes/          the agent's working notes
-    ├── findings.db               findings database (SQLite)
+    ├── .rv/findings.db           findings database (SQLite); read-only to kali commands
     ├── *.json, *.txt, evidence/  tool output written by kali commands (hashed in the audit log)
     ├── evidence/tasks/<task_id>/ worker tasks: step-NN-<tool>.txt per tool call, transcript.jsonl
     ├── out-<timestamp>.txt       full output of a command whose output was too long to return (>30,000 chars)
-    ├── .home/                    tool home folder and caches (not evidence)
+    ├── .home/.cache/             tool caches (not evidence); each command gets a fresh, empty home folder
     ├── report/
     │   ├── meta.txt              Client, Prepared by, Version, Classification
     │   ├── executive-summary.md  written by the agent (required for a final report)
@@ -132,7 +132,9 @@ Who writes what:
   (except tool caches: `.home/`, Joern's `workspace/`, and any `node_modules/` or `.git/` folder).
 - **The agent** writes `PLAN.md`, `NOTES.md`, `notes/*` and the `report/*.md` / `meta.txt` files through the
   findings server's `write_file` tool. Its own workspace sees `/work` read-only, so it can't edit evidence.
-- **The findings server** writes `findings.db` and the report files.
+- **The findings server** writes `.rv/findings.db` and the report files. Kali commands see `.rv/` read-only, so
+  agent code can't edit findings, approvals or exceptions behind the findings server's checks. Earlier versions
+  kept the database at the top of the folder; it moves into `.rv/` the first time the engagement is used.
 
 See [findings-and-reports.md](findings-and-reports.md) for findings, evidence and the report.
 
@@ -513,7 +515,9 @@ credential and identity session. An expired credential is refused rather than se
 
 The agent sees only the names (kali tool `list_credentials`) and uses a credential by reference:
 
-- in a command: `$RV_CRED_APP_PASS`. The sandbox gets the variable only when the command has network.
+- in a command: `$RV_CRED_APP_PASS`. The sandbox gets the variable only when the command has network and names
+  it in the command itself (not only in a script the command runs). Agent code in that command can read the value,
+  so use credentials of test accounts, not real users' passwords.
 - in the request tool: `{{cred:APP_PASS}}` in the URL, a header or the body. The approval covers the reference,
   not the value, and the value is not sent on to another host after a redirect.
 

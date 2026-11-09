@@ -144,7 +144,7 @@ the L4 profile.
 | `prepare_notice` | `engagement`, `finding_id` | Drafts a notice about a confirmed critical or high finding in `report/notices/`, for the researcher to review. Sends nothing. |
 | `export_findings` | `engagement`, `draft` (default false) | `findings.json`, `findings.sarif` and `issues/<id>.md` from the approved report revision (or the latest, marked DRAFT). Sends nothing. |
 
-Findings are stored per engagement in `/work/<engagement>/findings.db` (SQLite). The report includes `confirmed`,
+Findings are stored per engagement in `/work/<engagement>/.rv/findings.db` (SQLite). The report includes `confirmed`,
 `fixed` and `accepted-risk` findings. More: [findings-and-reports.md](findings-and-reports.md).
 
 ## `intel`: vulnerability intelligence

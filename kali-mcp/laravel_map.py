@@ -20,7 +20,7 @@ source location, and each derived relationship says how it was derived and how c
 A runtime route export (`php artisan route:list --json` from the client, or the PHP profile, RW-013) can be
 compared with the static routes: routes only one side has are listed.
 """
-import hashlib, json, os, re
+import hashlib, json, os, re, threading
 
 VERSION = 1
 SKIP_DIRS = {"vendor", "node_modules", ".git", "storage", "cache", ".idea", ".vscode"}
@@ -94,7 +94,28 @@ def _short(name):
     return (name or "").rstrip("\\").split("\\")[-1]
 
 
+_SCOPE = threading.local()  # the real path of the tree being mapped: nothing outside it is read
+
+
+def _inside(path):
+    """False when path's real path leaves the tree being mapped (a link to another client's code or /control:
+    kali-mcp reads as root, and the agent can make links in /work and in route paths)."""
+    root = getattr(_SCOPE, "root", None)
+    p = os.path.realpath(path)
+    return not root or p == root or p.startswith(root.rstrip("/") + "/")
+
+
+def _walk(top):
+    """os.walk that doesn't follow links and leaves out files whose real path leaves the tree being mapped."""
+    if not _inside(top):
+        return
+    for dp, dirs, fns in os.walk(top, followlinks=False):
+        yield dp, dirs, [f for f in fns if _inside(os.path.join(dp, f))]
+
+
 def _read(path):
+    if not _inside(path):
+        return ""
     try:
         with open(path, encoding="utf-8", errors="replace") as f:
             return f.read()
@@ -109,13 +130,15 @@ def source_digest(root):
     files = []
     for part in DIGEST_PARTS:
         p = os.path.join(root, part)
+        if os.path.islink(p) or not _inside(p):  # find -type f doesn't list links either
+            continue
         if os.path.isfile(p):
             files.append(part)
         elif os.path.isdir(p):
-            for dp, dirs, fns in os.walk(p):
+            for dp, dirs, fns in _walk(p):
                 dirs.sort()
                 for fn in fns:
-                    if fn != ".gitignore":
+                    if fn != ".gitignore" and not os.path.islink(os.path.join(dp, fn)):
                         files.append(os.path.relpath(os.path.join(dp, fn), root))
     if not files:
         return None
@@ -163,7 +186,7 @@ def index_classes(root):
     """{short name: [class info]} for PHP classes under app/ (and database/ for completeness)."""
     idx, n = {}, 0
     for base in ("app",):
-        for dp, dirs, fns in os.walk(os.path.join(root, base)):
+        for dp, dirs, fns in _walk(os.path.join(root, base)):
             dirs[:] = sorted(d for d in dirs if d not in SKIP_DIRS)
             for fn in sorted(fns):
                 if not fn.endswith(".php"):
@@ -220,7 +243,7 @@ def tables(root):
     """{table: {"columns": [...], "file", "line"}} from Schema::create / Schema::table in migrations."""
     out = {}
     mdir = os.path.join(root, "database", "migrations")
-    for fn in sorted(os.listdir(mdir)) if os.path.isdir(mdir) else []:
+    for fn in sorted(os.listdir(mdir)) if os.path.isdir(mdir) and _inside(mdir) else []:
         if not fn.endswith(".php"):
             continue
         src = strip_comments(_read(os.path.join(mdir, fn)))
@@ -485,8 +508,16 @@ def _sinks_in(text, base_src, offset, rel):
 
 
 def analyze(root):
-    """The map, as a dict (no network, no execution)."""
+    """The map, as a dict (no network, no execution). Nothing whose real path leaves root is read."""
     root = os.path.normpath(root)
+    _SCOPE.root = os.path.realpath(root)
+    try:
+        return _analyze(root)
+    finally:
+        _SCOPE.root = None
+
+
+def _analyze(root):
     idx = index_classes(root)
     fw = framework(root)
     tbl = tables(root)
@@ -626,7 +657,7 @@ def analyze(root):
                     sinks.append(x); seen.add((x["file"], x["line"], x["kind"]))
     views = []
     vdir = os.path.join(root, "resources", "views")
-    for dp, dirs, fns in os.walk(vdir):
+    for dp, dirs, fns in _walk(vdir):
         dirs.sort()
         for fn in sorted(fns):
             if not fn.endswith(".blade.php"):

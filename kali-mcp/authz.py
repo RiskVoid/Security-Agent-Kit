@@ -16,8 +16,9 @@ Outcomes compare actual data, not the status alone:
   verdict   pass (as expected), FAIL (allowed where deny was expected: a finding to verify), unexpected-deny,
             blocked
 
-Operations marked "effect": "write" (any method; GET is not assumed harmless) run only when the approved matrix
-says allow_writes, at most max_writes requests, followed by the cleanup operations it lists.
+The effect follows the method: anything but GET, HEAD or OPTIONS is a write whatever the agent declares (a GET
+may also be declared a write: it is not assumed harmless). Writes run only when the approved matrix says
+allow_writes, at most max_writes requests counting the cleanup requests, followed by the cleanup it lists.
 """
 import hashlib, json, os, re
 
@@ -26,12 +27,37 @@ import policy as rvpolicy
 
 NAME_RX = re.compile(r"^[a-z0-9][a-z0-9_-]{0,47}$")
 ANON = "anonymous"
+SAFE = ("GET", "HEAD", "OPTIONS")
+METHODS = SAFE + ("POST", "PUT", "PATCH", "DELETE")
+OP_KEYS = {"id", "method", "url", "headers", "body", "marker", "effect"}   # all of it is shown at review
+CLEANUP_KEYS = {"method", "url", "headers", "body", "identity"}
 
 
 def _dir(eng, approved=False):
     d = os.path.join(core.ctl_dir(eng), "authz") if approved else os.path.join(core.WORK, eng, "authz")
-    os.makedirs(d, exist_ok=True)
-    return d
+    if approved:
+        os.makedirs(d, exist_ok=True)
+        return d
+    import actions  # the sandbox can write /work: the folder must not lead elsewhere through a link
+    return actions.work_dir(eng, "authz")
+
+
+def _writes(op, default="GET"):
+    """A request changes state when its method isn't safe or it was declared a write (approved records made before
+    the effect was derived from the method are judged by the method too)."""
+    return str(op.get("method") or default).upper() not in SAFE or op.get("effect") == "write"
+
+
+def _request_fields(where, r, keys):
+    extra = set(r) - keys
+    if extra:
+        raise ValueError(f"{where}: unknown fields {', '.join(sorted(map(str, extra)))} "
+                         f"(allowed: {', '.join(sorted(keys))})")
+    h = r.get("headers") or {}
+    if not isinstance(h, dict) or not all(isinstance(k, str) and isinstance(v, str) for k, v in h.items()):
+        raise ValueError(f"{where}: headers are an object of strings")
+    if not isinstance(r.get("body"), (type(None), str, dict, list)):
+        raise ValueError(f"{where}: body is text or JSON")
 
 
 def _digest(m):
@@ -50,18 +76,22 @@ def validate(eng, name, matrix):
     pol = core.policy_of(eng)
     ids = set()
     for op in ops:
-        if not NAME_RX.match(str(op.get("id", ""))) or op["id"] in ids:
+        if not isinstance(op, dict) or not NAME_RX.match(str(op.get("id", ""))) or op["id"] in ids:
             raise ValueError("each operation needs a unique id (lower-case letters, digits, - and _)")
         ids.add(op["id"])
-        if str(op.get("method", "GET")).upper() not in ("GET", "HEAD", "OPTIONS", "POST", "PUT", "PATCH", "DELETE"):
+        _request_fields(f"operation {op['id']}", op, OP_KEYS)
+        method = str(op.get("method", "GET")).upper()
+        if method not in METHODS:
             raise ValueError(f"operation {op['id']}: bad method")
         why = rvpolicy.check_url(pol, op.get("url", ""))
         if why:
             raise ValueError(f"operation {op['id']}: {why}")
-        effect = op.get("effect") or ("read" if str(op.get("method", "GET")).upper() in ("GET", "HEAD", "OPTIONS")
-                                      else "write")
+        # the method decides: a DELETE declared "read" would skip allow_writes, max_writes and the cleanup
+        effect = op.get("effect") or ("read" if method in SAFE else "write")
         if effect not in ("read", "write"):
             raise ValueError(f"operation {op['id']}: effect is read or write")
+        if effect == "read" and method not in SAFE:
+            raise ValueError(f"operation {op['id']}: {method} can change state, so its effect is write, not read")
         op["effect"] = effect
     who = matrix.get("identities") or []
     for n in who:
@@ -73,20 +103,33 @@ def validate(eng, name, matrix):
             e = (expect.get(op["id"]) or {}).get(n)
             if e not in ("allow", "deny"):
                 raise ValueError(f"expect[{op['id']}][{n}] must be allow or deny")
-    writes = [op for op in ops if op["effect"] == "write"]
-    if writes and not matrix.get("allow_writes"):
-        raise ValueError("operations that change state need allow_writes: true, max_writes and cleanup")
-    if writes and not matrix.get("cleanup") and not matrix.get("no_cleanup_reason"):
-        raise ValueError("operations that change state need cleanup operations (or no_cleanup_reason)")
-    for c in matrix.get("cleanup") or []:
+    expect = {op["id"]: {n: expect[op["id"]][n] for n in who} for op in ops}  # only what runs is approved
+    cleanup = matrix.get("cleanup") or []
+    for c in cleanup:
+        if not isinstance(c, dict):
+            raise ValueError("each cleanup request is an object (method, url, headers, body, identity)")
+        _request_fields(f"cleanup {c.get('url')}", c, CLEANUP_KEYS)
+        if str(c.get("method", "POST")).upper() not in METHODS:
+            raise ValueError(f"cleanup {c.get('url')}: bad method")
         why = rvpolicy.check_url(pol, c.get("url", ""))
         if why:
             raise ValueError(f"cleanup {c.get('url')}: {why}")
         if c.get("identity") and c["identity"] not in known:
             raise ValueError(f"cleanup identity {c['identity']} is not defined")
+    writes = [op for op in ops if op["effect"] == "write"]
+    cleanup_writes = sum(1 for c in cleanup if _writes(c, "POST"))
+    if (writes or cleanup_writes) and not matrix.get("allow_writes"):
+        raise ValueError("operations that change state (and cleanup requests) need allow_writes: true, max_writes "
+                         "and cleanup")
+    if writes and not cleanup and not matrix.get("no_cleanup_reason"):
+        raise ValueError("operations that change state need cleanup operations (or no_cleanup_reason)")
+    # cleanup requests are writes too: max_writes covers them, and they are kept out of the operations' share
+    max_writes = int(matrix.get("max_writes") or (len(writes) * len(who) + cleanup_writes if writes else 0))
+    if writes and max_writes < cleanup_writes + 1:
+        raise ValueError(f"max_writes {max_writes} must cover the {cleanup_writes} cleanup request(s) and at least "
+                         "one operation")
     return {"operations": ops, "identities": who, "expect": expect, "allow_writes": bool(matrix.get("allow_writes")),
-            "max_writes": int(matrix.get("max_writes") or (len(writes) * len(who) if writes else 0)),
-            "cleanup": matrix.get("cleanup") or [], "no_cleanup_reason": matrix.get("no_cleanup_reason"),
+            "max_writes": max_writes, "cleanup": cleanup, "no_cleanup_reason": matrix.get("no_cleanup_reason"),
             "purpose": str(matrix.get("purpose") or "")[:500]}
 
 
@@ -98,7 +141,7 @@ def propose(eng, name, matrix):
     core._write_json(os.path.join(_dir(eng), f"{name}.json"), m)
     core._audit({"engagement": eng, "event": "authz-proposed", "matrix": name, "digest": m["digest"],
                  "operations": len(m["operations"]), "identities": m["identities"],
-                 "writes": sum(1 for o in m["operations"] if o["effect"] == "write")})
+                 "writes": sum(1 for o in m["operations"] if _writes(o))})
     return m
 
 
@@ -109,6 +152,53 @@ def proposal(eng, name):
         return json.load(open(os.path.join(_dir(eng), f"{name}.json")))
     except OSError:
         raise ValueError(f"no matrix {name} proposed in {eng}")
+
+
+def review(eng, name):
+    """The proposal as the researcher reviews it: validated (effects derived from the methods) and with the digest
+    an approval of it will have. Everything the digest covers is in it."""
+    m = proposal(eng, name)
+    v = validate(eng, name, m)
+    return {**v, "name": name, "digest": _digest(v), "proposed_by": m.get("proposed_by"),
+            "proposed_at": m.get("proposed_at")}
+
+
+def _show(v):
+    """Agent-written text for a terminal: one line, control characters escaped."""
+    return json.dumps(v)[1:-1] if isinstance(v, str) else json.dumps(v, sort_keys=True)
+
+
+def review_text(m):
+    """Every field the digest covers, as text for the terminal (./rvkit authz <eng> approve). The last line is the
+    digest, which no agent-written value can produce (values are one line each, indented)."""
+    lines = [f"Matrix {m['name']}: {_show(m.get('purpose') or 'no purpose given')}",
+             f"  identities: {', '.join(m['identities'])}"]
+    for o in m["operations"]:
+        lines.append(f"  {o['id']:<18} {_show(o.get('method', 'GET')):<7} {_show(o['url'])}  effect {o['effect']}"
+                     + (f"  marker {_show(o['marker'])}" if o.get("marker") else ""))
+        for k, v in (o.get("headers") or {}).items():
+            lines.append(f"      header {_show(k)}: {_show(v)}")
+        if o.get("body") not in (None, ""):
+            lines.append(f"      body {_show(o['body'])}")
+        lines.append("      expect " + ", ".join(f"{i}: {m['expect'][o['id']][i]}" for i in m["identities"]))
+    if m.get("allow_writes"):
+        lines.append(f"  CHANGES STATE: at most {m['max_writes']} write(s), cleanup included")
+    else:
+        lines.append("  read-only")
+    if m["cleanup"]:
+        lines.append(f"  cleanup ({len(m['cleanup'])} request(s), run after the writes):")
+    elif m.get("no_cleanup_reason"):
+        lines.append(f"  no cleanup: {_show(m['no_cleanup_reason'])}")
+    for c in m["cleanup"]:
+        lines.append(f"    {_show(c.get('method', 'POST')):<7} {_show(c['url'])}  as "
+                     f"{_show(c.get('identity') or 'no identity')}")
+        for k, v in (c.get("headers") or {}).items():
+            lines.append(f"      header {_show(k)}: {_show(v)}")
+        if c.get("body") not in (None, ""):
+            lines.append(f"      body {_show(c['body'])}")
+    lines.append("Header values are as proposed: {{cred:NAME}} references are filled in only when sent.")
+    lines.append(f"digest {m['digest']}")
+    return "\n".join(lines)
 
 
 def approve(eng, name, digest=None):
@@ -199,6 +289,7 @@ def run(eng, name, task=None):
     for n in m["identities"]:
         session[n] = {"state": "valid", "reason": "no session"} if n == ANON else identities.check(eng, n)
     cells, writes = [], 0
+    op_writes = m["max_writes"] - sum(1 for c in m["cleanup"] if _writes(c, "POST"))  # the cleanup's share is kept
     for op in m["operations"]:
         owner = next((n for n in m["identities"] if m["expect"][op["id"]][n] == "allow" and
                       session[n]["state"] == "valid" and n != ANON), None)
@@ -213,8 +304,8 @@ def run(eng, name, task=None):
                             verdict="blocked")
                 cells.append(cell)
                 continue
-            if op["effect"] == "write":
-                if writes >= m["max_writes"]:
+            if _writes(op):
+                if writes >= op_writes:
                     cell.update(outcome="blocked", reason="max_writes reached", verdict="blocked")
                     cells.append(cell)
                     continue
@@ -248,6 +339,7 @@ def run(eng, name, task=None):
            "summary": {v: sum(1 for c in cells if c["verdict"] == v) for v in ("pass", "FAIL", "unexpected-deny",
                                                                            "blocked")}}
     rel = os.path.join("evidence", "authz", f"{name}-{core._now_iso().replace(':', '')}.json")
+    actions.work_dir(eng, "evidence", "authz")
     core._write_json(os.path.join(core.WORK, eng, rel), res)
     core._audit({"engagement": eng, "event": "authz-run", "matrix": name, "digest": m["digest"],
                  "summary": res["summary"], "outputs": {rel: core.sha256_file(os.path.join(core.WORK, eng, rel))}})

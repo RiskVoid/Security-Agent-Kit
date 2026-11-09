@@ -42,9 +42,8 @@ def _ctl(eng):
 
 
 def _mirror(eng):
-    d = os.path.join(core.WORK, eng, "captures")
-    os.makedirs(d, exist_ok=True)
-    return d
+    import actions  # the sandbox can write /work: the sanitized copy must not be written through a link
+    return actions.work_dir(eng, "captures")
 
 
 # ---------------------------------------------------------------- sanitizing

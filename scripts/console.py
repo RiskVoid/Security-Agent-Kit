@@ -159,7 +159,9 @@ def read(path, limit=1_000_000):
 
 
 def findings(eng):
-    p = eng_path(eng, "findings.db")
+    p = eng_path(eng, ".rv/findings.db")   # an older kit's location until a service moves it
+    if not os.path.exists(p):
+        p = eng_path(eng, "findings.db")
     if not os.path.exists(p):
         return []
     con = sqlite3.connect(f"file:{urllib.parse.quote(p)}?mode=ro", uri=True)

@@ -178,16 +178,24 @@ def _session(d):
 
 
 def session_secrets(eng):
-    """{value: "{{session:<identity>}}"} for scrub()."""
+    """{value: "{{session:<identity>}}"} for scrub(): stored sessions, and the values the static kinds derive from
+    their credential, which are never stored as a session. Basic auth sends base64(user:secret), not the
+    credential itself: a page that reflects request headers would otherwise hand the agent a decodable password."""
     out = {}
     for n, d in _load(eng).items():
-        sess = _session(d) or {}
-        for v in list((sess.get("cookies") or {}).values()) + list((sess.get("headers") or {}).values()):
-            v = str(v)
-            if len(v) >= 6:
-                out[v] = "{{session:%s}}" % n
-                if " " in v:  # "Bearer <token>": the token alone too
-                    out.setdefault(v.split(" ", 1)[1], "{{session:%s}}" % n)
+        sessions, secret = [_session(d) or {}], None
+        if d["spec"]["kind"] not in ("form", "json"):
+            try:
+                secret = core.cred_value(eng, d["spec"]["secret"])
+                sessions.append(_static(d["spec"], secret) or {})
+            except (ValueError, KeyError):  # the credential was removed or expired: nothing can be sent
+                pass
+        for sess in sessions:
+            for v in list((sess.get("cookies") or {}).values()) + list((sess.get("headers") or {}).values()):
+                v = str(v)
+                for x in (v, v.split(" ", 1)[1]) if " " in v else (v,):  # "Basic <base64>": the value alone too
+                    if len(x) >= 6 and x != secret:  # the credential itself stays {{cred:NAME}}
+                        out.setdefault(x, "{{session:%s}}" % n)
     return out
 
 

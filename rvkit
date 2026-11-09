@@ -887,15 +887,11 @@ for k, b in p.items(): print("%s: spent $%.4f in the current 24 h period" % (k, 
       show|run) [ $# -ge 2 ] || die "usage: ./rvkit authz <engagement> $1 <name>"; kctl authz "$eng" "$1" "$2" ;;
       approve)
         [ $# -ge 2 ] || die "usage: ./rvkit authz <engagement> approve <name>"
-        m="$(kctl authz "$eng" show "$2")" || exit 1
-        printf '%s\n' "$m" | python3 -c 'import json,sys
-m=json.load(sys.stdin)
-print(f"Matrix {m[\"name\"]} (digest {m[\"digest\"]}): {m.get(\"purpose\") or \"no purpose given\"}")
-for o in m["operations"]:
-    print(f"  {o[\"id\"]:<18} {o.get(\"method\",\"GET\"):<6} {o[\"url\"]}  effect {o[\"effect\"]}" + (f"  marker {o[\"marker\"]!r}" if o.get("marker") else ""))
-    print("      expect " + ", ".join(f"{i}: {m[\"expect\"][o[\"id\"]][i]}" for i in m["identities"]))
-if m.get("allow_writes"): print(f"  writes allowed: at most {m[\"max_writes\"]}; cleanup: {len(m[\"cleanup\"])} request(s)")'
-        d="$(printf '%s' "$m" | python3 -c 'import json,sys; print(json.load(sys.stdin)["digest"])')"
+        # one call: the text shown and the digest approved come from the same read of the proposal
+        m="$(kctl authz "$eng" review "$2")" || exit 1
+        printf '%s\n' "$m"
+        d="$(printf '%s\n' "$m" | sed -n 's/^digest \([0-9a-f]\{32\}\)$/\1/p' | tail -n 1)"
+        [ -n "$d" ] || die "could not read the matrix digest"
         yesno "Approve this matrix?" "$([ -n "${RVKIT_YES:-}" ] && echo y || echo n)" || die "not approved"
         kctl authz "$eng" approve "$2" --digest "$d" ;;
       *) die "usage: ./rvkit authz <engagement> [list | show <name> | approve <name> | run <name>]" ;;

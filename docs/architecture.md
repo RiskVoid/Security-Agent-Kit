@@ -127,7 +127,7 @@ What happens between "Engagement `acme`: review `/src/acme`…" and a finished r
       **dnsmasq**, and (online engagements) package and vulnerability-database sites on TCP 80/443;
    8. after the command, every file it created or changed in the engagement folder is **SHA-256 hashed** and
       written to the audit log with the command, tier, exit code and duration.
-5. **Candidates.** The worker records candidate findings in the engagement's `findings.db` with
+5. **Candidates.** The worker records candidate findings in the engagement's `.rv/findings.db` with
    `record_candidate`, writes each step's full output to `/work/<engagement>/evidence/tasks/<task_id>/`, and
    calls `finish`.
 6. **Summary back.** `delegate_task` returns a short structured result: commands run, candidate ids, the
@@ -230,8 +230,8 @@ cancelled task's commands by the task id in their running markers.
 ### Credentials
 
 Credential values live in `/control/eng/<eng>/credentials.vault.json`, encrypted with the vault key
-(`/control/vault.key`, root only; `./rvkit vault rotate` replaces it). `run` adds `RV_CRED_<NAME>` variables
-to the sandbox only for commands with network; the request tool expands `{{cred:NAME}}` after the approval digest
+(`/control/vault.key`, root only; `./rvkit vault rotate` replaces it). `run` adds an `RV_CRED_<NAME>` variable
+to the sandbox only for a command with network that names it; the request tool expands `{{cred:NAME}}` after the approval digest
 is computed (so approvals cover the reference) and doesn't forward credentials across hosts on a redirect. Output,
 evidence, saved requests and the audit log have each value replaced by its reference.
 

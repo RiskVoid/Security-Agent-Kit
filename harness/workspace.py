@@ -42,6 +42,12 @@ def _rel(eng, path):
         raise ValueError(f"{path}: not a tool output of this engagement (a file under /work/{eng}/, not the "
                          "findings database, the audit log, the report or a hidden file)")
     full = os.path.join(base, rel)
+    # the agent can make links in its folder: what the link leads to must pass the same checks
+    real = os.path.relpath(os.path.realpath(full), os.path.realpath(base))
+    rparts = real.split(os.sep)
+    if real.startswith("..") or any(p.startswith(".") for p in rparts) or rparts[0] in DENIED \
+            or rparts[0].startswith(("findings.db", "audit")):
+        raise ValueError(f"{path}: leads outside the engagement's tool outputs (a link to {real})")
     if not os.path.isfile(full):
         raise ValueError(f"{rel}: no such file")
     return rel, full
