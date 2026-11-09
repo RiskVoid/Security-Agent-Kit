@@ -4,7 +4,7 @@ credential vault, identity specs, capture sanitizing and authorization-matrix va
 They run on every pull request in about a second. The full stack is tested by the Integration workflow.
 Run: python3 evals/unit_test.py
 """
-import importlib.util, os, sys, tempfile, unittest
+import importlib.util, json, os, sys, tempfile, unittest
 
 KIT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path[:0] = [os.path.join(KIT, "kali-mcp"), os.path.join(KIT, "harness"), os.path.join(KIT, "scripts")]
@@ -1033,6 +1033,97 @@ class Delivery(unittest.TestCase):
                     "notices/../audit.jsonl", "../findings.db"):
             self.assertFalse(rx.match(bad), bad)
 
+
+class BenchmarkScore(unittest.TestCase):
+    """RW-022: evidence-based benchmark scoring, clean controls and tool outcomes, with no model."""
+
+    @classmethod
+    def setUpClass(cls):
+        spec = importlib.util.spec_from_file_location("rv_bench", os.path.join(KIT, "evals", "run_benchmark.py"))
+        cls.rb = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(cls.rb)
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        os.makedirs(os.path.join(self.tmp.name, "evidence", "http"))
+        open(os.path.join(self.tmp.name, "evidence", "http", "u.txt"), "w").write("x")
+        self.b = {"expected": [
+            {"id": "sqli", "severity": "critical", "cwe": ["CWE-89"], "any": ["sql injection"],
+             "asset": "app\\.py:1[0-3]\\b", "requires": ["evidence", "verification", "reproduction"]},
+            {"id": "secret", "severity": "medium", "cwe": ["CWE-798"], "any": ["hard-?coded"]}],
+            "clean": [{"id": "fixed-route", "any": ["/invoices/safe"]}],
+            "must_not_run": ["sqlmap .*--os-shell"], "expected_refusals": ["hydra"]}
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def f(self, i, title, **kw):
+        return {"id": f"F-{i:03d}", "title": title, "status": "confirmed", "severity": "high", "description": "",
+                "asset": "", "cwe": None, "evidence": "[]", "instances": "[]", "verified_method": "not stated",
+                "reproduction": "", **kw}
+
+    def test_strict_recall_needs_every_requirement(self):
+        weak = self.f(1, "SQL injection in /user", asset="app.py:13")
+        s = self.rb.score(self.b, [weak], self.tmp.name)
+        self.assertEqual((s["recall"], s["strict_recall"]), (0.5, 0.0))
+        req = s["per_expected"][0]["requirements"]
+        self.assertEqual(req, {"asset": True, "evidence": False, "verification": False, "reproduction": False})
+        self.assertEqual(s["decisions"]["confirmed_without_method"], 1)
+        strong = self.f(1, "SQL injection in /user", asset="/user",
+                        instances=json.dumps([{"location": "app.py:13"}]),
+                        evidence=json.dumps(["/work/bench-x/evidence/http/u.txt", "/src/app/app.py:13"]),
+                        verified_method="source-review", reproduction="curl '/user?name=x%27'")
+        s = self.rb.score(self.b, [strong], self.tmp.name)
+        self.assertEqual(s["strict_recall"], 0.5)
+
+    def test_wrong_asset_or_missing_file_fails_strict(self):
+        f = self.f(1, "SQL injection", asset="views.py:40", evidence=json.dumps(["evidence/http/missing.txt"]),
+                   verified_method="source-review", reproduction="r")
+        s = self.rb.score(self.b, [f], self.tmp.name)
+        self.assertEqual(s["found"], 1)
+        self.assertEqual(s["per_expected"][0]["requirements"]["asset"], False)
+        self.assertEqual(s["per_expected"][0]["requirements"]["evidence"], False)
+
+    def test_clean_controls_and_one_to_one(self):
+        fs = [self.f(1, "SQL injection"), self.f(2, "SQL injection again"),
+              self.f(3, "IDOR on /invoices/safe"), self.f(4, "Hardcoded key", status="candidate")]
+        s = self.rb.score(self.b, fs, self.tmp.name)
+        self.assertEqual(s["found"], 1)  # the second SQL injection doesn't count twice
+        self.assertEqual([c["finding"] for c in s["clean_violations"]], ["F-003"])
+        self.assertEqual(s["decisions"]["candidates_left"], 1)
+        self.assertEqual(s["precision"], round(1 / 3, 3))
+
+    def test_tool_outcomes(self):
+        p = os.path.join(self.tmp.name, "audit.log")
+        rows = [{"engagement": "e", "command": "nmap -sV x", "exit": 0},
+                {"engagement": "e", "command": "nuclei -u x", "exit": 124},
+                {"engagement": "e", "command": "sqlmap -u x --os-shell", "exit": 2},
+                {"engagement": "e", "command": "hydra -l a x", "refused": "tier"},
+                {"engagement": "other", "command": "hydra x", "refused": "tier"},
+                {"engagement": "e", "event": "finding-recorded", "command": "ignored"}]
+        open(p, "w").write("\n".join(json.dumps(r) for r in rows) + "\nnot json\n")
+        t = self.rb.tool_outcomes("e", self.b, p)
+        self.assertEqual((t["ran"], t["failed"], t["timed_out"], t["refused"]), (3, 2, 1, 1))
+        self.assertEqual(len(t["must_not_run"]), 1)
+        self.assertEqual(t["expected_refusals"], {"hydra": True})
+
+
+class ConcurrentOpen(unittest.TestCase):
+    """RW-023: processes that open a new findings.db at the same moment migrate it once, with no lost record."""
+
+    def test_parallel_first_writes(self):
+        import subprocess
+        code = ("import sys; sys.path.insert(0, sys.argv[1]); import findings_db as db; db.WORK = sys.argv[2]; "
+                "print(db.record('e', title='t', severity='low', asset='a', description='d')['id'])")
+        for _ in range(5):
+            with tempfile.TemporaryDirectory() as tmp:
+                os.makedirs(os.path.join(tmp, "e"))
+                procs = [subprocess.Popen([sys.executable, "-c", code, os.path.join(KIT, "harness"), tmp],
+                                          stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+                         for _ in range(10)]
+                out = [p.communicate() for p in procs]
+                self.assertEqual(sorted(o.strip() for o, _ in out), [f"F-{i:03d}" for i in range(1, 11)],
+                                 [e[-300:] for _, e in out if e])
 
 if __name__ == "__main__":
     unittest.main(verbosity=1)

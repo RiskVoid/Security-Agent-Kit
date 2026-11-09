@@ -83,6 +83,8 @@ jobs:
         run: python3 evals/workspace_test.py
       - name: Delivery (report revisions, approval, retests, cleanup, notices, exports)
         run: python3 evals/delivery_test.py
+      - name: Regressions (concurrent writers, isolation, hostile tool output, export leakage, revision integrity)
+        run: python3 evals/regression_test.py
       - name: Model stub through LiteLLM (no GPU, no provider)
         run: bash evals/model_stub_test.sh
       - name: Tool smoke test

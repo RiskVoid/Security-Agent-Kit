@@ -16,6 +16,10 @@
    "any": [
     "sql injection",
     "sqli"
+   ],
+   "asset": "app\\.py:1[0-3]\\b|/user",
+   "requires": [
+    "evidence"
    ]
   },
   {
@@ -29,6 +33,10 @@
     "command injection",
     "shell=true",
     "os command"
+   ],
+   "asset": "app\\.py:1[6-9]\\b|/ping",
+   "requires": [
+    "evidence"
    ]
   },
   {
@@ -40,6 +48,10 @@
    "any": [
     "yaml",
     "deserial"
+   ],
+   "asset": "app\\.py:2[2-4]\\b|/config",
+   "requires": [
+    "evidence"
    ]
   },
   {
@@ -68,7 +80,8 @@
     "secret_key",
     "hard-?coded",
     "secret key"
-   ]
+   ],
+   "asset": "app\\.py:6\\b"
   },
   {
    "id": "vulnerable-dependencies",

@@ -59,6 +59,13 @@ def _migrate(con: sqlite3.Connection) -> None:
         raise ValueError(f"findings.db has schema version {v}; this kit knows up to {SCHEMA_VERSION}: update the kit")
     if v == SCHEMA_VERSION:
         return
+    # several processes can open a new or older database at once: take the write lock, then look again, and keep
+    # every change in this one transaction (executescript would commit and release the lock part way through)
+    con.execute("BEGIN IMMEDIATE")
+    v = con.execute("PRAGMA user_version").fetchone()[0]
+    if v == SCHEMA_VERSION:
+        return
+    script = lambda sql: [con.execute(s) for s in sql.split(";") if s.strip()]  # noqa: E731
     cols = lambda: {r[1] for r in con.execute("PRAGMA table_info(findings)")}  # noqa: E731
     if v < 1:
         con.execute("""CREATE TABLE IF NOT EXISTS findings (
@@ -79,7 +86,7 @@ def _migrate(con: sqlite3.Connection) -> None:
                           ("prerequisites", "TEXT"), ("instances", "TEXT DEFAULT '[]'"), ("root_cause", "TEXT")):
             if col not in cols():
                 con.execute(f"ALTER TABLE findings ADD COLUMN {col} {decl}")
-        con.executescript("""
+        script("""
             CREATE TABLE IF NOT EXISTS finding_revisions (finding_id TEXT NOT NULL, revision INTEGER NOT NULL,
                 snapshot TEXT NOT NULL, actor TEXT, at TEXT, PRIMARY KEY (finding_id, revision));
             CREATE TABLE IF NOT EXISTS decisions (id INTEGER PRIMARY KEY AUTOINCREMENT, finding_id TEXT NOT NULL,
@@ -105,7 +112,7 @@ def _migrate(con: sqlite3.Connection) -> None:
             con.execute("INSERT OR IGNORE INTO finding_revisions VALUES (?,?,?,?,?)",
                         (r["id"], r["revision"], json.dumps(dict(r)), r["updated_by"], r["updated"]))
     if v < 4:  # delivery: report revisions, retests, cleanup obligations, notices (RW-019 to RW-021)
-        con.executescript("""
+        script("""
             CREATE TABLE IF NOT EXISTS report_revisions (id TEXT PRIMARY KEY, state TEXT NOT NULL, created TEXT,
                 actor TEXT, inputs_digest TEXT, inputs TEXT, artifacts TEXT, readiness TEXT, approved_by TEXT,
                 approved_at TEXT, approval_note TEXT, superseded_by TEXT, transmissions TEXT DEFAULT '[]');

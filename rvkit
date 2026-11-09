@@ -276,6 +276,7 @@ EOF
   echo
   ok "Done. Open ${B}$UI_URL${N} and talk to the ${B}riskvoid-planner${N} agent."
   echo "   First try, no client data: ./rvkit quickstart     Check everything: ./rvkit doctor"
+  echo "   What each stack is tested and measured for: docs/capability-baselines.md"
 }
 
 # ---------------------------------------------------------------- doctor
@@ -727,7 +728,8 @@ ${B}Engagements${N}  (also as: rvkit eng <command>)
 
 ${B}Practice and tests${N}
   lab up|down|status            vulnerable practice targets on an isolated network
-  bench <name|all>              run a benchmark (evals/benchmarks/)
+  bench <name|all> [--repeat N] run a benchmark (evals/benchmarks/); --history, --score
+                                what is tested and measured per stack: docs/capability-baselines.md
 
 ${B}Shell${N}
   install [dir]                 put rvkit on your PATH (default ~/.local/bin)
@@ -965,7 +967,7 @@ if m.get("allow_writes"): print(f"  writes allowed: at most {m[\"max_writes\"]};
       *) die "usage: ./rvkit lab up|down|status|reset" ;;
     esac ;;
   bench)
-    need_env; [ $# -ge 1 ] || die "usage: ./rvkit bench <name|all> [--agent riskvoid-planner|riskvoid-local]   (list: ls evals/benchmarks)"
+    need_env; [ $# -ge 1 ] || die "usage: ./rvkit bench <name|all> [--agent riskvoid-planner|riskvoid-local] [--repeat N] | --history | --score <name> <bench-engagement>   (list: ls evals/benchmarks)"
     python3 evals/run_benchmark.py "$@" ;;
   finding)    need_env; cmd_finding "$@" ;;
   report)     need_env; cmd_report "$@" ;;

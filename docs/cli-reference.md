@@ -557,11 +557,14 @@ practice and test engagements.
 ### bench
 
 ```sh
-./rvkit bench <name|all> [--agent riskvoid-planner|riskvoid-local] [--keep]
-python3 evals/run_benchmark.py --history
+./rvkit bench <name|all> [--agent riskvoid-planner|riskvoid-local] [--repeat N]
+./rvkit bench --history
+./rvkit bench --score <name> <bench-engagement>
 ```
 
 Runs the real agent unattended against a known target and scores it. Names are the files in `evals/benchmarks/`.
+`--repeat N` runs it N times and prints the spread; `--score` re-scores an existing `bench-` engagement without a
+model.
 Details: [lab-and-benchmarks.md](lab-and-benchmarks.md#benchmarks).
 
 ---
