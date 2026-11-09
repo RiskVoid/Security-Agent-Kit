@@ -387,7 +387,47 @@ A bound conversation's model calls follow the engagement's `Client data:` rule a
 ```
 
 Credentials the agent uses by reference (`$RV_CRED_<NAME>`, `{{cred:NAME}}`) without seeing them. Names are
-letters, digits and `_`, starting with a letter. See [engagements.md](engagements.md#credentials).
+letters, digits and `_`, starting with a letter. `set <NAME> --expires 2026-12-01` refuses the credential after
+that date. Values are encrypted with the vault key. See [engagements.md](engagements.md#credentials).
+
+### vault
+
+```sh
+./rvkit vault rotate     # new vault key; every credential and identity session is re-encrypted
+```
+
+### identity
+
+```sh
+./rvkit identity <engagement> list
+./rvkit identity <engagement> set <name> <spec.json>
+./rvkit identity <engagement> check <name>     # the valid-session control (exit 4 when not valid)
+./rvkit identity <engagement> revoke <name>
+./rvkit identity <engagement> rm <name>
+```
+
+Test accounts for authenticated testing. The spec format: [authenticated-testing.md](authenticated-testing.md#the-spec).
+
+### capture
+
+```sh
+./rvkit capture <engagement> list
+./rvkit capture <engagement> import <file.har|burp.xml> [name]
+./rvkit capture <engagement> show <id>         # the sanitized copy the agent sees
+./rvkit capture <engagement> raw <id>          # the original (encrypted at rest, host only)
+./rvkit capture <engagement> rm <id>
+```
+
+### authz
+
+```sh
+./rvkit authz <engagement> list
+./rvkit authz <engagement> show <name>
+./rvkit authz <engagement> approve <name>      # prints the matrix and asks; binds the approval to its digest
+./rvkit authz <engagement> run <name>
+```
+
+Authorization matrices the agent proposes. See [authenticated-testing.md](authenticated-testing.md#authorization-matrices).
 
 ### task
 

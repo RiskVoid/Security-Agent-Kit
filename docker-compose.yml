@@ -206,6 +206,20 @@ services:
     networks: {rvlab: {ipv4_address: 10.250.0.15}}    # http://10.250.0.15:8000  MCP: /mcp
     restart: "no"
 
+  lab-laravel:   # Ledgerly, the Laravel reference lab: multi-tenant, seeded flaws (evals/targets/rv-laravel-lab)
+    build: ./evals/targets/rv-laravel-lab
+    image: riskvoid-lab-laravel:local
+    profiles: ["lab"]
+    networks: {rvlab: {ipv4_address: 10.250.0.16}}    # http://10.250.0.16:8000 (alice@acme.test / alice-lab-pass)
+    restart: "no"
+
+  lab-laravel-fixed:   # the same app built with the fixes (for retests and protected controls)
+    build: {context: ./evals/targets/rv-laravel-lab, args: {FIXED: "1"}}
+    image: riskvoid-lab-laravel-fixed:local
+    profiles: ["lab"]
+    networks: {rvlab: {ipv4_address: 10.250.0.17}}    # http://10.250.0.17:8000
+    restart: "no"
+
   lab-dvwa:
     image: ghcr.io/digininja/dvwa@sha256:8029450682bd70e2e8cd1ffe8e46dd1885ff2a913296091cebfa8ba0a7d36498
     profiles: ["lab"]

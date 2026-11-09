@@ -94,7 +94,12 @@ RUN git clone -q --depth 1 --branch "${NUCLEI_TEMPLATES_TAG}" https://github.com
 # acl: on Linux hosts the engagement folders belong to the host user; each engagement's sandbox user gets
 # read-write ACLs on its own folder (kept apart from the big apt layer above so adding it doesn't rebuild that)
 RUN apt-get update && apt-get install -y --no-install-recommends acl && rm -rf /var/lib/apt/lists/*
-COPY core.py policy.py actions.py tierconf.py tiers.yaml server.py rvctl.py infra_domains.txt rv-sandbox.sh /opt/kali-mcp/
+# Browser automation for the scope-aware browser tool (RW-010): Playwright drives the system Chromium; no
+# browser download. Its own venv, pinned.
+ARG PLAYWRIGHT_VERSION=1.55.0
+RUN python3 -m venv /opt/browser && /opt/browser/bin/pip install --no-cache-dir "playwright==${PLAYWRIGHT_VERSION}" \
+    && chmod -R a+rX /opt/browser
+COPY *.py tiers.yaml infra_domains.txt rv-sandbox.sh /opt/kali-mcp/
 COPY joern/ /opt/kali-mcp/joern/
 COPY aitools/rv-llm /usr/local/bin/rv-llm
 COPY aitools/jwt_tool_wrap.py /opt/jwt_tool/jwt_tool_wrap.py

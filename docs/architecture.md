@@ -229,10 +229,23 @@ cancelled task's commands by the task id in their running markers.
 
 ### Credentials
 
-Credential values live in `/control/eng/<eng>/credentials.json` (root only). `run` adds `RV_CRED_<NAME>` variables
+Credential values live in `/control/eng/<eng>/credentials.vault.json`, encrypted with the vault key
+(`/control/vault.key`, root only; `./rvkit vault rotate` replaces it). `run` adds `RV_CRED_<NAME>` variables
 to the sandbox only for commands with network; the request tool expands `{{cred:NAME}}` after the approval digest
 is computed (so approvals cover the reference) and doesn't forward credentials across hosts on a redirect. Output,
 evidence, saved requests and the audit log have each value replaced by its reference.
+
+### Authenticated testing
+
+Identities (`identities.py`) name a credential and say how to log in, where the session may go and what it may be
+used for; sessions obtained by logging in are sealed in `identities.json` in the control volume. Every request
+with an identity goes through the execution broker (`actions.send`): policy and tier, then whether the identity
+may be used for that host, tier and effect, then the approval (which names the identity), then the credential
+expansion and the session. Captures (`captures.py`) are sanitized on import; the original is encrypted in the
+control volume. The browser (`browser_runner.py`, Playwright with the system Chromium) runs inside the
+engagement's sandbox and checks each request it makes against the policy. Authorization matrices (`authz.py`)
+are proposed into the engagement folder and approved into the control folder, bound to their digest and the
+policy revision. See [authenticated-testing.md](authenticated-testing.md).
 
 `SCOPE.md` and `RULES.md` in the engagement folder are what you edit. They take effect only when you run
 `./rvkit scope <engagement> --yes`, which copies them into `/control` and rebuilds the firewall. So an agent that
@@ -348,7 +361,11 @@ kali-mcp/
   server.py                 MCP tools: list_engagements, engagement_info, all_scopes, run, http_request, analyze_source, …
   policy.py                 SCOPE.md/RULES.md -> effective policy: hosts, wildcards, ports, exclusions, URL limits,
                             time rules, budgets, errors and what is not enforced (pure, unit-tested)
-  actions.py                typed actions: http_request (sent by kali-mcp) and analyze_source (no network)
+  actions.py                typed actions: the request broker (http_request, replays), the browser, analyze_source
+  identities.py             test identities, sessions and the valid-session control
+  captures.py               HAR / Burp import, sanitizing, replay and comparison
+  browser_runner.py         the headless browser run inside the sandbox
+  authz.py                  authorization matrices: validation, approval, run and verdicts
   core.py                   enforcement: tiers, rate caps, policy revisions, bound approvals, budgets, halt,
                             firewall, DNS, audit, close-out
   tiers.yaml, tierconf.py   tool tiers, subcommand rules, rate flags, strict mode; and their loader and checks

@@ -34,5 +34,7 @@ jobs:
           v="$(cat VERSION)"
           n="$(grep -c "RVKIT_VERSION:-$v}" docker-compose.yml)"
           [ "$n" -ge 6 ] || { echo "docker-compose.yml image tags don't default to $v (VERSION)"; exit 1; }
-      - name: Unit tests (tiers, rate caps, scope, rules, findings, web-fetch guard, console)
-        run: python3 evals/unit_test.py
+      - name: Unit tests (tiers, rate caps, scope, rules, findings, web-fetch guard, console, vault, captures, authz)
+        run: |   # the vault tests need cryptography (kali-mcp's venv has it)
+          python3 -c 'import cryptography' 2>/dev/null || python3 -m pip install --quiet --user --break-system-packages cryptography
+          python3 evals/unit_test.py

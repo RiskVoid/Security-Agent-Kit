@@ -87,11 +87,18 @@ TOOLS = [
     {"type": "function", "function": {"name": "http_request", "description":
         "Send one HTTP request to an in-scope URL; returns status, headers and body, saved as evidence. Use it "
         "for single requests (the only way to reach hosts limited to URL paths). GET/HEAD/OPTIONS only unless "
-        "your tier is intrusive; other methods need the user's approval.",
+        "your tier is intrusive; other methods need the user's approval. identity: send it as one of the "
+        "engagement's test accounts (check_identity first); the session is added for you and never shown.",
         "parameters": {"type": "object", "properties": {
             "method": {"type": "string", "enum": ["GET", "HEAD", "OPTIONS", "POST", "PUT", "PATCH", "DELETE"]},
-            "url": {"type": "string"}, "headers": {"type": "object"}, "body": {"type": "string"}},
+            "url": {"type": "string"}, "headers": {"type": "object"}, "body": {"type": "string"},
+            "identity": {"type": "string"}},
             "required": ["method", "url"]}}},
+    {"type": "function", "function": {"name": "check_identity", "description":
+        "Is a test identity's session working? valid, expired, challenge (CAPTCHA/WAF), denied or error. Results "
+        "obtained with an identity that isn't valid are blocked, not evidence that something is protected.",
+        "parameters": {"type": "object", "properties": {"identity": {"type": "string"}},
+                       "required": ["identity"]}}},
     {"type": "function", "function": {"name": "analyze_source", "description":
         "Run semgrep (offline rules), gitleaks, trufflehog or bandit on in-scope code with no network. "
         "path: a /src path. rulesets (semgrep only): rule folders like php, python, javascript.",
@@ -180,10 +187,15 @@ def kali_run(task, command, timeout_s=600, approval_id=""):
                                "max_tier": task["tier"], "task": task["id"], "approval_id": approval_id or ""}, t))
 
 
-def http_request(task, method, url, headers=None, body="", approval_id=""):
+def http_request(task, method, url, headers=None, body="", approval_id="", identity=""):
     return _arun(_kali("http_request", {"engagement": task["engagement"], "method": method, "url": url,
                                         "headers": headers or {}, "body": body or "", "max_tier": task["tier"],
-                                        "task": task["id"], "approval_id": approval_id or ""}, 300))
+                                        "task": task["id"], "approval_id": approval_id or "",
+                                        "identity": identity or ""}, 300))
+
+
+def check_identity(task, identity):
+    return _arun(_kali("check_identity", {"engagement": task["engagement"], "identity": identity}, 120))
 
 
 def analyze_source(task, tool, path, rulesets=None):
@@ -230,7 +242,7 @@ def record_candidate(task, title, severity, asset, description, evidence, cwe=""
     return f"recorded {f['id']} (candidate)"
 
 
-IMPL = {"kali_run": kali_run, "http_request": http_request, "analyze_source": analyze_source, "vuln_intel": vuln_intel, "web_search": web_search, "fetch_url": fetch_url, "read_file": read_file,
+IMPL = {"kali_run": kali_run, "http_request": http_request, "check_identity": check_identity, "analyze_source": analyze_source, "vuln_intel": vuln_intel, "web_search": web_search, "fetch_url": fetch_url, "read_file": read_file,
         "record_candidate": record_candidate}
 
 
