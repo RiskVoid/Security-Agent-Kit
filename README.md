@@ -48,8 +48,8 @@ then plans the work, runs the tools, checks what it finds and hands you a brande
 </p>
 <p align="center"><sub>A full run on the Laravel lab, about 30 minutes sped up to under a minute: plan, checks, approvals in
 the console, confirmed findings, report approval. Out of it came these reports:
-<a href="docs/samples/riskvoid/ledgerly-report.pdf">PDF</a> and <a href="docs/samples/riskvoid/ledgerly-report.html">HTML</a>
-(RiskVoid brand), <a href="docs/samples/plain/ledgerly-report.pdf">PDF</a> (plain brand).</sub></p>
+<a href="docs/samples/riskvoid/ledgerly-report.pdf">PDF</a> (RiskVoid brand),
+<a href="docs/samples/plain/ledgerly-report.pdf">PDF</a> (plain brand).</sub></p>
 
 It's built so you can **trust it on client work**:
 

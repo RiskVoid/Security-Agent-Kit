@@ -15,7 +15,7 @@ Only confirmed, fixed and accepted-risk findings are reported. Evidence is check
 (evidence_provenance): every file gets its SHA-256 and the command that produced it. The report is marked DRAFT
 while anything blocks delivery (missing summary, open candidates, missing/modified evidence).
 """
-import asyncio, datetime, json, os, re, subprocess, sys
+import asyncio, datetime, json, os, re, shutil, subprocess, sys, tempfile
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent / "brand"))
@@ -28,6 +28,7 @@ from mcp import ClientSession  # noqa: E402
 from mcp.client.streamable_http import streamablehttp_client  # noqa: E402
 import findings_db as db  # noqa: E402
 import report_html  # noqa: E402
+import workspace  # noqa: E402
 from redact import redact  # noqa: E402
 
 KALI_MCP = os.environ.get("KALI_MCP_URL", "http://kali-mcp:8090/mcp")
@@ -210,10 +211,37 @@ def collect(eng):
     allf = db.list_(eng)
     reported = [redact(f) for f in allf if f["status"] in REPORTED]
     ev, issues = evidence_index(eng, reported)
+    # the test plan, so the report can say what was not tested and why (and a rebuild says the same)
+    keep = ("id", "title", "area", "refs", "state", "stale", "stale_reason", "rationale", "finding_id")
+    plan = [redact({k: i.get(k) for k in keep}) for i in workspace.plan_list(eng)]
     return {"engagement": eng, "date": datetime.date.today().isoformat(), "info": info, "activity": act,
+            "coverage": {"items": plan},
             "meta": meta(eng, brand.prepared_by),
             "texts": {n: read_opt(rdir / n) for n in ("executive-summary.md", "methodology.md", "conclusion.md")},
             "findings": allf, "evidence": ev, "evidence_issues": issues, "readiness_issues": []}
+
+
+def print_pdf(html_path, pdf_path):
+    """The PDF is the HTML report printed page by page (its print styles: cover, then sections), so both look the same.
+    Headless Chromium with name resolution blocked: the page is self-contained (fonts and logo are inlined), has no
+    script of its own and every piece of agent-written text in it is escaped. Scripts can't be switched off: headless
+    printing needs them and writes no file without. --no-sandbox because the container runs it as root; the container
+    is the boundary. Returns "" when the PDF was written, else why not."""
+    exe = shutil.which("chromium") or shutil.which("chromium-browser")
+    if not exe:
+        return "no chromium in this image"
+    pdf_path = Path(pdf_path)
+    pdf_path.unlink(missing_ok=True)
+    with tempfile.TemporaryDirectory() as profile:
+        try:
+            r = subprocess.run([exe, "--headless", "--no-sandbox", "--disable-gpu", "--disable-dev-shm-usage",
+                                f"--user-data-dir={profile}", "--host-resolver-rules=MAP * ~NOTFOUND",
+                                "--no-pdf-header-footer",
+                                f"--print-to-pdf={pdf_path}", Path(html_path).resolve().as_uri()],
+                               capture_output=True, text=True, timeout=180, env={**os.environ, "HOME": profile})
+        except (OSError, subprocess.TimeoutExpired) as e:
+            return f"chromium: {e}"
+    return "" if pdf_path.exists() and pdf_path.stat().st_size else f"chromium: {r.stderr[-300:]}"
 
 
 def build(eng, inp=None, out_dir=None):
@@ -309,18 +337,34 @@ def build(eng, inp=None, out_dir=None):
            "(scanning, crawling, fingerprinting) and intrusive (exploitation, brute force). Intrusive commands "
            "require explicit, single-use approval. Automated tool output was triaged by a consultant: only "
            "findings confirmed against the evidence are reported.")
-    d.body(f"{act['commands_run']} commands were run "
-           f"({', '.join(f'{v} {k}' for k, v in act['by_tier'].items() if v) or 'none'}); "
-           f"{act['commands_refused']} were refused by the policy engine; "
-           f"{act['approvals']['approved']} intrusive actions were approved and {act['approvals']['denied']} denied.")
-    if act["tools"]:
-        d.table(["Tool", "Runs"], rows=[[k, str(v)] for k, v in list(act["tools"].items())[:15]],
-                col_weights=[3, 1])
+    d.body(report_html.commands_line(act))
+    extra = report_html.activity_line(act)
+    if extra:
+        d.body(extra)
+    rows = report_html.tool_rows(act)
+    if rows:
+        d.table(["Tool", "Used for", "Runs"], rows=[[k, why or "—", str(v)] for k, why, v in rows],
+                col_weights=[2, 4, 1])
     d.h2("Severity rating")
     d.body("Severity reflects the impact and likelihood of exploitation in this environment. For known "
            "vulnerabilities in third-party components, the CVSS base score is adjusted using CISA's Known "
            "Exploited Vulnerabilities catalogue (exploitation observed in the wild) and the FIRST EPSS "
            "probability of exploitation.")
+
+    # coverage and limitations (left out for inputs frozen before the plan was part of them)
+    cv = report_html.coverage_view(inp.get("coverage"))
+    if cv:
+        d.h1("Coverage and limitations")
+        d.body(cv["summary"])
+        if cv["areas"]:
+            d.table(report_html.COVERAGE_AREAS_HEAD, rows=[[str(x) for x in r] for r in cv["areas"]],
+                    col_weights=[3, 1, 1, 1.2, 1, 1, 1])
+        if cv["gaps"]:
+            d.h2("Not tested, and why")
+            d.body(report_html.COVERAGE_GAPS_INTRO)
+            d.table(report_html.COVERAGE_GAPS_HEAD, rows=[list(r) for r in cv["gaps"]], col_weights=[1.2, 3, 1.3, 3])
+            if cv["more"]:
+                d.body(f"And {cv['more']} more, listed in the engagement's test plan.")
 
     # 4. findings
     d.h1("Findings")
@@ -402,6 +446,7 @@ def build(eng, inp=None, out_dir=None):
         "version": m.get("version", "1.0"), "description": description, "cover": cover_pairs[:6],
         "exec_md": redact(exec_md), "meth_md": redact(meth_md), "concl_md": redact(concl_md),
         "findings": findings, "evidence": ev, "activity": act, "info": info, "period": period,
+        "coverage": inp.get("coverage"),
         "status_label": STATUS_LABEL, "fmt_ts": fmt_ts, "n_fp": len(fps), "n_dup": len(dups)})
 
     cols = [("ID", 9), ("Severity", 12), ("Finding", 46), ("Asset", 28), ("CWE", 14), ("CVSS", 8),
@@ -421,10 +466,13 @@ def build(eng, inp=None, out_dir=None):
     wb.save(str(xlsx))
 
     pdf = rdir / f"{stem}.pdf"
-    r = subprocess.run(["soffice", "--headless", "--convert-to", "pdf", "--outdir", str(rdir), str(docx)],
-                       capture_output=True, text=True, timeout=300,
-                       env={**os.environ, "HOME": "/tmp"})
-    return {"html": html, "docx": str(docx), "pdf": str(pdf) if pdf.exists() else f"PDF conversion failed: {r.stderr[-300:]}",
+    err = print_pdf(html, pdf)
+    if err:  # no browser in this image, or it failed: fall back to converting the Word file
+        r = subprocess.run(["soffice", "--headless", "--convert-to", "pdf", "--outdir", str(rdir), str(docx)],
+                           capture_output=True, text=True, timeout=300,
+                           env={**os.environ, "HOME": "/tmp"})
+        err = "" if pdf.exists() else f"{err}; {r.stderr[-300:]}"
+    return {"html": html, "docx": str(docx), "pdf": str(pdf) if pdf.exists() else f"PDF conversion failed: {err}",
             "xlsx": str(xlsx), "status": "DRAFT" if draft else "final", "issues": issues,
             "findings": len(findings), "excluded": {"candidate": len(cands), "false-positive": len(fps), "duplicate": len(dups)}}
 

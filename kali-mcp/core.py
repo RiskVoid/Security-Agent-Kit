@@ -1134,6 +1134,16 @@ def provenance(eng, paths):
     return res
 
 
+# First words of a simple command that are not tools: shell syntax and builtins, file and text plumbing, and the first
+# word of an inline script. The report's tool table (harness/report_html.py) filters the same way, for older audit data.
+NOT_TOOLS = frozenset("""for do done if then else elif fi while until case esac in function select time export set unset
+    read local return exit break continue source eval exec trap wait sleep printf find xargs cut tr uniq cp mv rm chmod
+    chown touch date basename dirname env pwd which type command test true false tee cat echo head tail ls cd mkdir grep
+    egrep fgrep rg jq yq wc sort sed awk import from print def class try except with nl compgen seq tac rev column
+    paste diff file stat du df id whoami uname hostname ps kill sha256sum md5sum base64 xxd od strings tar gzip gunzip
+    zip unzip ln realpath readlink less more [ [[ { }""".split())
+
+
 def activity(eng):
     """Summary of the authoritative audit log for one engagement (for reports)."""
     require(eng)
@@ -1144,14 +1154,20 @@ def activity(eng):
     tools = {}
     for r in ran:
         for prog, _ in _segments(r["command"]):
-            if prog and prog not in ("echo", "cat", "head", "tail", "ls", "cd", "mkdir", "grep", "jq", "wc", "sort",
-                                     "sed", "awk", "tee", "true", "test", "["):
+            # programs only: the first word of a simple command is often shell syntax (for, do, done) or plumbing
+            if prog and prog not in NOT_TOOLS and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._+-]*", prog):
                 tools[prog] = tools.get(prog, 0) + 1
     ev = lambda e: sum(1 for r in rows if r.get("event") == e)
+    # requests sent through the request tool are audited as actions, not commands: count them too
+    http = [r for r in rows if r.get("action") == "http"]
+    sent = [r for r in http if "refused" not in r]
     return {"first": rows[0]["ts"] if rows else None, "last": rows[-1]["ts"] if rows else None,
             "commands_run": len(ran), "commands_refused": len(cmds) - len(ran),
             "by_tier": {t: sum(1 for r in ran if r.get("tier") == t) for t in TIERS},
             "tools": dict(sorted(tools.items(), key=lambda kv: -kv[1])),
+            "requests": {"sent": len(sent), "refused": len(http) - len(sent),
+                         "by_tier": {t: sum(1 for r in sent if r.get("tier") == t) for t in TIERS}},
+            "matrix_runs": ev("authz-run"),
             "evidence_files": sum(len(r.get("outputs", {})) for r in ran),
             "approvals": {"requested": ev("approval-requested"), "approved": ev("approval-approved"),
                           "denied": ev("approval-denied")},

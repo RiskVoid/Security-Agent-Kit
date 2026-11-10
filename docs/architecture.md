@@ -60,7 +60,7 @@ GPU, a local server or any OpenAI-compatible endpoint).
 | `web-mcp` | kit image `-harness` | `web_search` and `fetch` for the planner; fetch refuses engagement targets and non-public addresses | `default`, `rvagent` | none |
 | `kali-mcp` | kit image `-kali` | Kali toolbox as MCP; per-engagement scope firewall, sandbox, tiers, approvals, audit log | `default`, `rvagent`, `rvlab` (10.250.0.2) | `/work` (read-write), `/src` (read-only), `kali-control`, `semgrep-rules` |
 | `worker-mcp` | kit image `-harness` | `delegate_task`: runs a tool-calling loop on the worker model; search and fetch go through `web-mcp` | `rvagent` only (no internet) | `/work` (read-write), `/src` (read-only) |
-| `findings-mcp` | kit image `-report` | Findings database, playbooks, `write_file`, branded report (python-docx, LibreOffice) | `default`, `rvagent` | `/work` (read-write), your brand folder at `/brand-custom` (read-only) |
+| `findings-mcp` | kit image `-report` | Findings database, playbooks, `write_file`, branded report (python-docx, Chromium for the PDF, LibreOffice as its fallback) | `default`, `rvagent` | `/work` (read-write), your brand folder at `/brand-custom` (read-only) |
 | `intel-mcp` | kit image `-harness` | OSV, NVD, EPSS and CISA KEV lookups, cached | `default`, `rvagent` | `intel-cache` |
 | `lab-*` (profile `lab`) | Juice Shop, DVWA + MariaDB, VAmPI, DVGA, `riskvoid-lab-llm` | Deliberately vulnerable practice targets | `rvlab` only | none |
 
@@ -139,7 +139,7 @@ What happens between "Engagement `acme`: review `/src/acme`…" and a finished r
    `write_file`, then calls `generate_report`.
 9. **Report.** `findings-mcp` asks `kali-mcp` for `engagement_info`, `engagement_activity` (the methodology
    numbers) and `evidence_provenance` (each evidence file's current hash and the audited command that produced
-   exactly that content). It builds the `.docx`, converts it to PDF with LibreOffice and writes the findings
+   exactly that content). It builds the `.html` and the `.docx`, prints the HTML to PDF with headless Chromium (LibreOffice converts the `.docx` if that fails) and writes the findings
    register `.xlsx`. Anything that blocks delivery keeps the report a DRAFT.
 
 Every model call in steps 1, 3 and 4 passes the model gateway's policy check first ([below](#model-gateway-and-data-routes)).
