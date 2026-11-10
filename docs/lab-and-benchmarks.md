@@ -221,7 +221,7 @@ A benchmark is a JSON file in `evals/benchmarks/`. Its file name is the benchmar
 | `tiers` | yes | the engagement's allowed tiers, e.g. `"passive, active, intrusive"` |
 | `max_rate` | no | max requests per second (default 50) |
 | `max_minutes` | yes | time limit; also told to the agent |
-| `max_budget_usd` | no | OpenHands budget for the conversation (default 5) |
+| `max_budget_usd` | no | spend cap for the run in USD (default 5): the harness pauses the conversation when the OpenRouter usage of your key since the start passes it |
 | `task` | yes | the task given to the agent. `{src}` is the code path (`/src/rv-bench/<target>`), `{url}` the URL. Write literal braces as `{{` and `}}` |
 | `expected` | yes | the known issues: `id`, `severity` (`critical`, `high`, `medium`, `low` or `info`), `cwe` (list of CWE ids), `any` (list of regular expressions, matched against the lower-cased finding text), and optionally `asset` and `requires` (see [How runs are scored](#how-runs-are-scored)) |
 | `clean` | no | controls the agent must not report: `id`, and `any` (text patterns) or `asset` (a pattern on the finding's asset) |

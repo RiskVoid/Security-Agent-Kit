@@ -61,6 +61,10 @@ def classify(group, exc=None, status=None, text=""):
     low = f"{name} {raw}".lower()
     who = model_name(group)
     worker = group in WORKER
+    # A provider's safety refusal can come as HTTP 403 (OpenRouter's cyber-policy filter), so recognise its markers
+    # before the status codes: otherwise it reads as a rejected API key and the fallback never runs.
+    if re.search(r"error_type'?\"?\s*:\s*'?\"?refusal|cyber_policy|flagged for possible", low):
+        return "refusal", f"{who} refused this request (its provider's safety filter)."
     if "budget" in low and ("exceed" in low or "crossed" in low or "over" in low):
         return "budget", ("The daily model budget is used up (OPENROUTER_DAILY_BUDGET). Raise it with ./rvkit budget <usd>, "
                           "or wait for the next UTC day.")
@@ -243,18 +247,26 @@ class RvEvents(CustomLogger):
     async def async_post_call_streaming_iterator_hook(self, user_api_key_dict, response, request_data):
         group, eng = request_data.get("model"), engagement_of(request_data)
         held, sent, finish = [], False, None
-        async for chunk in response:
-            if sent:
-                yield chunk
-                continue
-            finish = finish_of(chunk) or finish
-            if has_payload(chunk):
-                for h in held:
-                    yield h
-                held, sent = [], True
-                yield chunk
-            else:
-                held.append(chunk)
+        try:
+            async for chunk in response:
+                if sent:
+                    yield chunk
+                    continue
+                finish = finish_of(chunk) or finish
+                if has_payload(chunk):
+                    for h in held:
+                        yield h
+                    held, sent = [], True
+                    yield chunk
+                else:
+                    held.append(chunk)
+        except Exception as e:  # noqa: BLE001
+            # Some providers refuse with an error inside the stream instead of finish_reason content_filter (for
+            # example OpenRouter's "flagged for possible cybersecurity risk", provider_code cyber_policy). Before the
+            # first answer chunk that is still a refusal we can answer from the fallback; other errors pass through.
+            if sent or classify(group, e)[0] != "refusal":
+                raise
+            finish = "content_filter"
         if sent:
             return
         kind = "refusal" if finish == "content_filter" else "empty"

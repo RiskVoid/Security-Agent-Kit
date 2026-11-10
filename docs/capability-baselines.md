@@ -9,7 +9,7 @@ What the kit can do for each kind of target, as four separate claims that are ea
 | **Lab-verified** | a test in `evals/` runs the method against a seeded lab target, with protected controls, and passes in CI | a model running the method unattended finds the same issues |
 | **Measured model result** | a saved benchmark run of the real agent, scored as in [lab-and-benchmarks.md](lab-and-benchmarks.md#how-runs-are-scored) | the same result on other code, other models, or another run |
 
-Last checked 2026-11-09. Re-check after changing the Kali image, a playbook or a
+Last checked 2026-11-10. Re-check after changing the Kali image, a playbook or a
 benchmark: `./rvkit bench --history` for measured results, the tests in
 [regression-matrix.md](regression-matrix.md) for the lab-verified methods.
 
@@ -17,24 +17,68 @@ benchmark: `./rvkit bench --history` for measured results, the tests in
 
 ## Measured model results
 
-One saved run exists. Nothing larger has been measured, and no paid benchmark run was made for this page.
+First baselines, measured on 2026-11-10: **one run of each benchmark, capped in spend**. Model output varies
+between runs, so treat each row as one sample, not an average. Scoring is strict, as described in
+[lab-and-benchmarks.md](lab-and-benchmarks.md#how-runs-are-scored):
+- **found** counts expected issues reported as confirmed findings
+- **with evidence** counts only those that also name the right asset and have every required piece of evidence
+- **precision** is confirmed findings that match an expected issue, out of all confirmed findings; unmatched ones
+  may still be real issues the benchmark doesn't list
+- **clean** counts reports against a protected control (a fixed build or a safe pattern); 0 is the goal
 
-| Date | Benchmark | Agent | Planner / worker | Result | Cost |
-|---|---|---|---|---|---|
-| 2026-11-07 | `smoke` (one file, 2 seeded issues) | `riskvoid-local` | Claude Sonnet 5.5 via OpenRouter / Qwen 3.7 Flash via OpenRouter | finished; 2 of 2 found, precision 1.0 (keyword and CWE scoring; the evidence-based strict score didn't exist yet) | $0.04 |
+Agent `riskvoid-planner`. Planner GPT-6.1 (`openai/gpt-6.1-sol`) with DeepSeek V4 Pro as its fallback; worker
+DeepSeek V4.1 Flash (`deepseek/deepseek-v4.1-flash`), all through OpenRouter. Cost is the OpenRouter usage of the
+key during the run (planner, fallback and worker together).
 
-`riskvoid-local` names the agent profile, not where the model ran: that run's worker was a hosted endpoint, so it
-shows neither local hardware nor a private data path. A two-issue fixture checks that the loop works; it says
-nothing about coverage.
+| Benchmark | Found | With evidence | Precision | Clean | Minutes | Cost | Planner calls refused, answered by the fallback |
+|---|---|---|---|---|---|---|---|
+| `code-flask` (Flask service) | 6 of 6 | 6 of 6 | 0.67 | 0 | 15 | $1.16 | 0 |
+| `code-node` (Express API) | 9 of 9 | 6 of 9 | 0.50 | 0 | 16 | $1.48 | 0 |
+| `laravel-ledgerly` (source plus staging, unattended) | 1 of 6 | 1 of 6 | 1.00 | 0 | 19 | $1.10 | 0 |
+| `ai-llm-lab` (LLM app and MCP server) | 8 of 10 | 6 of 10 | 1.00 | 0 | 31 | $1.10 | 28 |
+| `web-dvwa` | 8 of 8 | 8 of 8 | 0.40 | 0 | 62 | $3.13 | 77 |
+| `web-juice-shop` | 3 of 7 | 2 of 7 | 0.25 | 0 | 30 | $1.85 | 15 |
+| `api-graphql-dvga` | 3 of 9 | 3 of 9 | 0.75 | 0 | 36 | $1.01 | 28 |
+| `api-vampi` (second run; the first stopped at once on a refused planner call, before the fix) | 3 of 9 | 2 of 9 | 1.00 | 0 | 10 | $0.52 | 4 |
+| `smoke` (2-issue loop check) | 2 of 2 | 2 of 2 | 1.00 | 0 | 4 | $0.28 | 0 |
 
-The benchmarks defined but not yet run with the current scoring: `code-flask`, `code-node`, `laravel-ledgerly`,
-`web-juice-shop`, `web-dvwa`, `api-vampi`, `api-graphql-dvga`, `ai-llm-lab`. To measure one, run it several
-times, since model output varies:
+What the numbers say:
+- **Source review is the strongest part.** On the two code targets the agent found every seeded issue. Its extra
+  findings (dependency advisories, a possible XSS, unhandled async errors) need review rather than counting as
+  wrong.
+- **Black-box web and API testing is uneven.** DVWA was complete; Juice Shop, DVGA and VAmPI found a third to a
+  half, and fewer with full evidence.
+- **The unattended Laravel run is weak.** It ran without the intrusive tier and found one of six, and the scope
+  pre-check refused two of its logins because it read the email address as a target (fixed after the run). The attended
+  [release acceptance run](#release-acceptance-run) on the same lab, with a person approving the authorization
+  matrix and the intrusive checks, confirmed three with evidence.
+- **The default planner refuses some offensive work.** OpenAI's cyber-policy filter refused planner calls in
+  every black-box lab run, and DeepSeek V4 Pro answered them, so those rows measure the two planners together.
+  Before 2026-11-10 such a refusal stopped the conversation instead; see the CHANGELOG.
+- **Two runs went over their cap.** The cap wasn't enforced until the `laravel-ledgerly` run: OpenHands' own
+  per-conversation budget can't price the gateway's model alias. The harness now pauses a run at its cap.
 
-```sh
-./rvkit lab up                                  # lab benchmarks only
-./rvkit bench laravel-ledgerly --repeat 3
-```
+Every run's data is kept: the engagement folder (findings database, evidence, report revisions with their frozen
+inputs) and the whole conversation, in `evals/results/bench/<name>-<UTC>/`. Reports can be rebuilt from it.
+
+### Release acceptance run
+
+On 2026-11-10 the kit ran its release acceptance scenario on the Ledgerly lab, with the same models and a person
+in the console. The scenario covers one engagement end to end: map and plan, source and baseline checks, an
+approved authorization matrix, an approved intrusive check, a service restart, triage against the fixed build,
+coverage, report approval, and retests. It was recorded; the
+[README](../README.md) shows a cut, and the reports it produced are in [samples](samples/).
+
+| Measure | Result |
+|---|---|
+| Confirmed with evidence | 3 of 6 seeded issues: cross-tenant invoices, mass assignment, search SQL injection; cross-tenant documents were grouped into the invoice finding |
+| False confirmations on clean controls | 0 (the fixed build was tested and each finding says whether it is affected) |
+| Approvals | 1 authorization matrix (12 requests, 5 identities) and 7 intrusive actions, each approved once in the console |
+| Resume after approval without a chat message | yes, 21 seconds after the first approval |
+| Recovery after a service restart | partial: findings, evidence and decisions were intact, but OpenHands did not reconnect to the restarted tool server until it was restarted itself ([troubleshooting](troubleshooting.md)) |
+| Report | 4 revisions; R-003 approved for delivery; a later revision left it unchanged |
+| Defects found and fixed during the run | 3: report provenance for HTTP evidence, the planner fallback on in-stream refusals, a browser download ending the run (see the CHANGELOG) |
+| Time and cost | about 30 minutes, $1.44 |
 
 ---
 
@@ -47,7 +91,7 @@ times, since model output varies:
 | Executable available | Semgrep (PHP rules, offline), Gitleaks, TruffleHog, OSV-Scanner (`composer.lock`), Syft/Grype, the HTTP and browser tools. **No PHP or Composer in the Kali container**; the optional PHP profile is a separate pinned container (PHP 8.4, Composer 2.8) started only by `./rvkit php`. Joern can't analyse PHP without a PHP binary, so the kit makes no PHP data-flow claims |
 | Method implemented | `laravel` playbook (version 1); application map from source (routes, middleware, policies, tenant scopes, mass-assignable columns, raw SQL and unescaped Blade sinks) with build identity; identities, captures, the sandboxed browser and authorization matrices; reports with readiness, approval and retests |
 | Lab-verified | `laravel_test.sh` (31 checks): the map flags every seeded flaw in Ledgerly as a lead and none on the fixed build. `authn_test.sh` (36 checks): sign-in with CSRF, the seeded cross-tenant read FAILs, the fixed build and the protected payment route pass, no pass or fail without a valid session. Semgrep alone **misses** the raw SQL, the unescaped Blade output, the mass assignment and the cross-tenant reads ([laravel.md](laravel.md#pattern-and-data-flow-tools-on-php)) |
-| Measured model result | none yet: `laravel-ledgerly` is defined (6 issues with asset and evidence requirements, the fixed build as a clean control) |
+| Measured model result | `laravel-ledgerly`, unattended: 1 of 6 with evidence. Attended acceptance run: 3 of 6, no clean-control violations ([above](#release-acceptance-run)) |
 
 The operator workflow, end to end:
 
@@ -74,7 +118,7 @@ Details: [laravel.md](laravel.md), [authenticated-testing.md](authenticated-test
 | Executable available | Semgrep (Python and Flask rules, offline), Bandit, Joern, pip-audit, OSV-Scanner, Gitleaks, TruffleHog, Syft/Grype |
 | Method implemented | `code-review`, `secrets-review` and `supply-chain` playbooks; observation parsers for Semgrep and Bandit output |
 | Lab-verified | `tools_smoke.sh`: the Flask Semgrep rules find the injection sinks in `rv-demo-app`; `phase5_e2e.sh` (40 checks): Bandit, Semgrep, Joern and pip-audit outputs hashed as evidence, findings confirmed by source review, a final report with every evidence file verified. No fixed build of the Flask target, so no clean control |
-| Measured model result | none yet: `code-flask` is defined (6 issues; the injection and deserialisation items require the exact file and line, and evidence) |
+| Measured model result | `code-flask`: 6 of 6 with evidence, precision 0.67 ([above](#measured-model-results)) |
 
 ### JavaScript and TypeScript (Express)
 
@@ -83,7 +127,7 @@ Details: [laravel.md](laravel.md), [authenticated-testing.md](authenticated-test
 | Executable available | Semgrep, Joern, OSV-Scanner (`package-lock.json`), Gitleaks, TruffleHog, Syft/Grype, the HTTP and API tools. **No Node or npm in the Kali container**: the kit reads the code and lockfile but doesn't install or run the project |
 | Method implemented | `code-review`, `api-security`, `secrets-review` and `supply-chain` playbooks |
 | Lab-verified | no Express-specific test: the generic source tools are covered by `tools_smoke.sh` on other targets |
-| Measured model result | none yet: `code-node` is defined (`rv-node-api`, 9 issues, keyword and CWE matching only) |
+| Measured model result | `code-node`: 9 of 9 found, 6 with evidence, precision 0.50 ([above](#measured-model-results)) |
 
 ### Web applications and APIs (black box)
 
@@ -92,7 +136,7 @@ Details: [laravel.md](laravel.md), [authenticated-testing.md](authenticated-test
 | Executable available | Nmap, Naabu, dnsx, Subfinder, Katana, httpx-toolkit, Nuclei, Nikto, FFUF, Feroxbuster, sqlmap, Dalfox, ZAP, testssl, sslscan, Schemathesis, jwt_tool, graphw00f, Chromium |
 | Method implemented | `web-app`, `api-security` and `external-network` playbooks; the request tool (scope-checked, saved as verified evidence); approvals for intrusive commands |
 | Lab-verified | `lab_test.sh` (18 checks): only the engagement with a lab target in scope reaches it; `policy_test.sh` (42 checks) and `phase3_policy_test.sh` (51 checks): scope, firewall, tiers, rate caps, approvals, halt. These verify the controls, not detection |
-| Measured model result | none yet: `web-juice-shop`, `web-dvwa`, `api-vampi`, `api-graphql-dvga` are defined |
+| Measured model result | `web-dvwa` 8 of 8, `web-juice-shop` 2 of 7, `api-graphql-dvga` 3 of 9, `api-vampi` 2 of 9, with evidence ([above](#measured-model-results)) |
 
 ### AI applications and MCP servers
 
@@ -101,7 +145,7 @@ Details: [laravel.md](laravel.md), [authenticated-testing.md](authenticated-test
 | Executable available | `rv-llm`, garak |
 | Method implemented | `ai-llm` playbook |
 | Lab-verified | `tools_smoke.sh` starts both tools; no test runs the method against the LLM lab |
-| Measured model result | none yet: `ai-llm-lab` is defined (10 issues); its lab assistant is deterministic, so differences between runs come from the agent |
+| Measured model result | `ai-llm-lab`: 8 of 10 found, 6 with evidence, precision 1.0 ([above](#measured-model-results)); its lab assistant is deterministic, so differences between runs come from the agent |
 
 ### Not supported as complete workflows
 

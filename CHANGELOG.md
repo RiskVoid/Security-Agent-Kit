@@ -6,6 +6,24 @@ settings or the findings database; `./rvkit update` migrates existing installs a
 
 ## [Unreleased]
 
+### Fixed (found by the release acceptance run)
+- Report generation failed with `'command'` when a finding cited evidence from an HTTP request or an
+  authorization matrix run. Provenance now names the request or the matrix.
+- When the planner's provider refused a request with an error inside the stream (OpenRouter's cyber-policy filter)
+  the conversation stopped with an error instead of answering from the planner fallback. Such a refusal now falls
+  back like a `content_filter` one.
+- The scope pre-check read an email address in a command (`email=alice@acme.test`, also URL-encoded) as a
+  target and refused in-scope logins. A URL's user part and user@host tools still name a target.
+- In the sandboxed browser, a step that opened a file download ended the whole run and lost the steps after it.
+  The download is still refused, but its response status is recorded and the run continues.
+
+### Benchmarks
+- `./rvkit bench --budget USD` caps the spend of each run below the benchmark's own cap. The harness now enforces
+  every run's cap itself from the key's OpenRouter usage: OpenHands' per-conversation budget never fired, because
+  it can't price the gateway's model alias.
+- Each run keeps its data in `evals/results/bench/<name>-<UTC>/`: the engagement folder (findings database,
+  evidence, report revisions with their frozen inputs) and the whole conversation, so reports can be rebuilt later.
+
 ## [0.1.0]
 
 First public release.

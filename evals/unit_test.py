@@ -260,6 +260,16 @@ class Scope(unittest.TestCase):
         self.assertEqual(core.precheck("curl https://shop.example.com/api/x", info, pol), ["shop.example.com"])
         self.assertEqual(core.precheck("grep evil.test notes.txt", info, pol), [])  # not a network tool
         self.assertEqual(core.precheck("curl http://10.0.0.1/login.php", info, pol), [])
+        # an email address in form data or a body is data, not a target (found by the release acceptance run)
+        for cmd in ("curl -X POST http://10.0.0.1/login -d 'email=alice%40acme.test&password=x'",
+                    "curl -X POST http://10.0.0.1/login --data-urlencode 'email=alice@acme.test'",
+                    "curl http://10.0.0.1/api -d '{\"email\":\"bob.smith+qa@globex.test\"}'"):
+            self.assertEqual(core.precheck(cmd, info, pol), [], cmd)
+        # ...but a URL's user part and user@host tools still name a target
+        self.assertEqual(core.precheck("curl http://admin:pw@evil.test/", info, pol), ["evil.test"])
+        self.assertEqual(core.precheck("curl http://admin@evil.test/", info, pol), ["evil.test"])
+        self.assertEqual(core.precheck("impacket-psexec admin@evil.test", info, pol), ["evil.test"])
+        self.assertEqual(core.precheck("hydra -l admin@evil.test -P p.txt evil.test ssh", info, pol), ["evil.test"])
 
     def test_names(self):
         self.assertTrue(core._name_ok("acme-2026.11_a"))
@@ -294,6 +304,26 @@ class Approvals(unittest.TestCase):
         core.ACTOR = "console:tester"
         core.decide("e1", a["id"], True)
         return a["id"]
+
+    def test_provenance_of_http_and_matrix_evidence(self):
+        """Evidence from an HTTP request or a matrix run has no command line in the audit; provenance names the
+        request or the matrix instead of failing (found by the release acceptance run)."""
+        import json
+        os.makedirs(os.path.join(core.WORK, "e1", "evidence"))
+        for name in ("http.txt", "matrix.json"):
+            open(os.path.join(core.WORK, "e1", "evidence", name), "w").write(name)
+        with open(core.AUDIT, "a") as f:
+            for e in ({"ts": "t1", "engagement": "e1", "action": "http", "method": "GET", "url": "http://h/a",
+                       "identity": "bob", "outputs": {"evidence/http.txt": core.sha256_file(
+                           os.path.join(core.WORK, "e1", "evidence", "http.txt"))}},
+                      {"ts": "t2", "engagement": "e1", "event": "authz-run", "matrix": "m1", "outputs": {
+                          "evidence/matrix.json": core.sha256_file(
+                              os.path.join(core.WORK, "e1", "evidence", "matrix.json"))}}):
+                f.write(json.dumps(e) + "\n")
+        res = core.provenance("e1", ["evidence/http.txt", "evidence/matrix.json"])
+        self.assertEqual([r["status"] for r in res], ["verified", "verified"])
+        self.assertEqual(res[0]["produced_by"], "http GET http://h/a as bob")
+        self.assertEqual(res[1]["produced_by"], "authz run m1")
 
     def test_bound_to_action_and_used_once(self):
         act = {"kind": "http", "method": "POST", "url": "https://example.com/", "headers": {}, "body": "x"}
@@ -545,6 +575,36 @@ class ModelEvents(unittest.TestCase):
             ev = me.read(path=log)[0]
             self.assertEqual((ev["kind"], ev["problem"]), ("context", False))
             self.assertIn("81K tokens, the window is 64K", ev["message"])
+
+    def test_refusal_raised_inside_the_stream(self):
+        """OpenRouter can refuse with an error inside the stream (cyber_policy) instead of finish_reason
+        content_filter. Before the first answer chunk that must still count as a refusal (fallback or a [RiskVoid]
+        reason), not end the conversation with an error. Other errors pass through. Found by the acceptance run."""
+        import asyncio
+        class Refused(Exception):
+            status_code = 403  # OpenRouter sends this refusal as a 403: it must not read as a rejected key
+        msg = ("OpenrouterException - Message: This content was flagged for possible cybersecurity risk. "
+               "Metadata: {'error_type': 'refusal', 'provider_code': 'cyber_policy'}")
+        self.assertEqual(self.rv.classify("planner", Refused(msg))[0], "refusal")
+
+        async def stream(err):
+            yield {"choices": [{"delta": {"role": "assistant"}}]}
+            raise err
+
+        async def run(err):
+            hook = self.rv.RvEvents().async_post_call_streaming_iterator_hook(
+                None, stream(err), {"model": "planner", "disable_fallbacks": True, "messages": []})
+            return [c async for c in hook]
+
+        saved = self.rv.notice_chunks  # the real one builds litellm chunk objects; litellm isn't installed here
+        self.rv.notice_chunks = lambda group, text: [{"notice": text}]
+        self.addCleanup(setattr, self.rv, "notice_chunks", saved)
+        with tempfile.TemporaryDirectory() as d:
+            self.rv.EVENTS = os.path.join(d, "e.jsonl")
+            out = asyncio.run(run(Refused(msg)))
+            self.assertTrue(any("[RiskVoid]" in json.dumps(c, default=str) for c in out))
+            with self.assertRaises(RuntimeError):
+                asyncio.run(run(RuntimeError("upstream connection reset")))
 
     def test_engagement_of(self):
         e = self.rv.engagement_of

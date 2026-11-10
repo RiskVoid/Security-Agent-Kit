@@ -1011,6 +1011,28 @@ FILE_EXT = re.compile(r"\.(txt|json|jsonl|md|py|js|ts|yml|yaml|xml|html|log|csv|
                       r"gz|zip|tar|pem|key|crt|db|sqlite|nmap|gnmap|xsl)$", re.I)
 
 
+# Tools that name their target as user@host: there a name after "@" is the target, never an email address.
+USER_AT_HOST = {"ssh", "scp", "sftp", "rsync", "sshpass", "evil-winrm", "nxc", "netexec", "crackmapexec", "hydra",
+                "medusa", "ncrack"}
+EMAIL = re.compile(r"[A-Za-z0-9._+-]+(?:@|%40)(?:[A-Za-z0-9-]+\.)+[A-Za-z]{2,}", re.I)
+WORD_END = re.compile(r"[\s'\"=&?,;:{}\[\]()<>]")
+
+
+def _email_domain(seg, start, prog):
+    """True when the name starting at seg[start] is part of an email address (alice@acme.test, or URL-encoded
+    alice%40acme.test in form data) rather than a target. A URL's user part (http://user@host) and user@host tools
+    still name a target."""
+    if prog in USER_AT_HOST or prog.startswith("impacket-"):
+        return False
+    a = start
+    while a > 0 and not WORD_END.match(seg[a - 1]):
+        a -= 1
+    b = start
+    while b < len(seg) and not WORD_END.match(seg[b]):
+        b += 1
+    return EMAIL.fullmatch(seg[a:b].rstrip(".")) is not None
+
+
 def precheck(command, info_, pol=None):
     """Early, readable refusal for obvious out-of-scope targets in network-tool commands. The firewall is the
     real enforcement; this only looks at segments that run network tools (no false positives on grep/python).
@@ -1020,8 +1042,10 @@ def precheck(command, info_, pol=None):
     for prog, seg in _segments(command):
         if prog not in ACTIVE and prog not in INTRUSIVE:
             continue
-        for tok in set(HOST_RE.findall(seg)):
-            t = tok.lower()
+        for m in HOST_RE.finditer(seg):
+            t = m.group(1).lower()
+            if _email_domain(seg, m.start(1), prog):
+                continue
             if FILE_EXT.search(t) or any(t == d or t.endswith("." + d) for d in infra):
                 continue
             if re.fullmatch(r"[\d./]+", t):
@@ -1071,6 +1095,17 @@ def _outputs(root, before):
     return out
 
 
+def _produced_by(e):
+    """What produced an audited output: a command line, or for HTTP requests and matrix runs (which audit no
+    command line) the request or the matrix."""
+    if e.get("command"):
+        return e["command"]
+    if e.get("event") == "authz-run":
+        return f"authz run {e.get('matrix') or e.get('name') or ''}".strip()
+    return " ".join(str(x) for x in (e.get("action"), e.get("method"), e.get("url"),
+                                     f"as {e['identity']}" if e.get("identity") else None) if x)
+
+
 def provenance(eng, paths):
     """For each evidence path: current SHA-256 and the audited command that produced exactly this content."""
     require(eng)
@@ -1089,7 +1124,7 @@ def provenance(eng, paths):
         item["sha256"] = sha256_file(full)
         hit = next((e for e in reversed(entries) if e["outputs"].get(rel) == item["sha256"]), None)
         if hit:
-            item.update(status="verified", produced_by=hit["command"], at=hit["ts"], tier=hit.get("tier"),
+            item.update(status="verified", produced_by=_produced_by(hit), at=hit["ts"], tier=hit.get("tier"),
                         exit=hit.get("exit"))
         elif any(rel in e["outputs"] for e in entries):
             item["status"] = "MODIFIED after it was produced (hash differs from the audited output)"

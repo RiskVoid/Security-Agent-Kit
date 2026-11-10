@@ -115,8 +115,16 @@ def main(job_path):
             rec = {"step": {k: (v if k != "value" else "[value]") for k, v in st.items()}}
             try:
                 if "goto" in st:
-                    resp = page.goto(st["goto"], wait_until="domcontentloaded")
-                    rec["status"] = resp.status if resp else None
+                    try:
+                        resp = page.goto(st["goto"], wait_until="domcontentloaded")
+                        rec["status"] = resp.status if resp else None
+                    except Exception as e:
+                        # A URL that answers with a file: the download itself is refused (on_download cancels it),
+                        # but the response status is the result an authorization check needs (200 or 403), so
+                        # record it and go on with the next step instead of ending the run.
+                        if "Download is starting" not in str(e):
+                            raise
+                        rec["status"], rec["download_refused"] = statuses.get(st["goto"]), True
                 elif "click" in st:
                     page.click(st["click"])
                     page.wait_for_load_state("domcontentloaded")
