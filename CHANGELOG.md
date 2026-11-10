@@ -12,6 +12,8 @@ settings or the findings database; `./rvkit update` migrates existing installs a
 - When the planner's provider refused a request with an error inside the stream (OpenRouter's cyber-policy filter)
   the conversation stopped with an error instead of answering from the planner fallback. Such a refusal now falls
   back like a `content_filter` one.
+- The scope pre-check read an email address in a command (`email=alice@acme.test`, also URL-encoded) as a
+  target and refused in-scope logins. A URL's user part and user@host tools still name a target.
 - In the sandboxed browser, a step that opened a file download ended the whole run and lost the steps after it.
   The download is still refused, but its response status is recorded and the run continues.
 

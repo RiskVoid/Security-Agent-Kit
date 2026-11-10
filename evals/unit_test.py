@@ -260,6 +260,16 @@ class Scope(unittest.TestCase):
         self.assertEqual(core.precheck("curl https://shop.example.com/api/x", info, pol), ["shop.example.com"])
         self.assertEqual(core.precheck("grep evil.test notes.txt", info, pol), [])  # not a network tool
         self.assertEqual(core.precheck("curl http://10.0.0.1/login.php", info, pol), [])
+        # an email address in form data or a body is data, not a target (found by the release acceptance run)
+        for cmd in ("curl -X POST http://10.0.0.1/login -d 'email=alice%40acme.test&password=x'",
+                    "curl -X POST http://10.0.0.1/login --data-urlencode 'email=alice@acme.test'",
+                    "curl http://10.0.0.1/api -d '{\"email\":\"bob.smith+qa@globex.test\"}'"):
+            self.assertEqual(core.precheck(cmd, info, pol), [], cmd)
+        # ...but a URL's user part and user@host tools still name a target
+        self.assertEqual(core.precheck("curl http://admin:pw@evil.test/", info, pol), ["evil.test"])
+        self.assertEqual(core.precheck("curl http://admin@evil.test/", info, pol), ["evil.test"])
+        self.assertEqual(core.precheck("impacket-psexec admin@evil.test", info, pol), ["evil.test"])
+        self.assertEqual(core.precheck("hydra -l admin@evil.test -P p.txt evil.test ssh", info, pol), ["evil.test"])
 
     def test_names(self):
         self.assertTrue(core._name_ok("acme-2026.11_a"))

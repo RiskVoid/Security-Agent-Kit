@@ -48,7 +48,8 @@ What the numbers say:
   wrong.
 - **Black-box web and API testing is uneven.** DVWA was complete; Juice Shop, DVGA and VAmPI found a third to a
   half, and fewer with full evidence.
-- **The unattended Laravel run is weak.** It ran without the intrusive tier and found one of six. The attended
+- **The unattended Laravel run is weak.** It ran without the intrusive tier and found one of six, and the scope
+  pre-check refused two of its logins because it read the email address as a target (fixed after the run). The attended
   [release acceptance run](#release-acceptance-run) on the same lab, with a person approving the authorization
   matrix and the intrusive checks, confirmed three with evidence.
 - **The default planner refuses some offensive work.** OpenAI's cyber-policy filter refused planner calls in
