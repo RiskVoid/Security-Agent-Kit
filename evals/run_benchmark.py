@@ -1,6 +1,6 @@
 """Unattended benchmark: run the real agent (OpenHands + MCP tools) on a known target and score its findings.
 
-  python3 evals/run_benchmark.py <name|all> [--agent riskvoid-planner|riskvoid-local] [--repeat N]
+  python3 evals/run_benchmark.py <name|all> [--agent riskvoid-planner|riskvoid-local] [--repeat N] [--budget USD]
   python3 evals/run_benchmark.py --history            compare past runs
   python3 evals/run_benchmark.py --score <name> <bench-engagement>   score an existing engagement, no model
   (or ./rvkit bench ...)
@@ -25,7 +25,12 @@ of engagement, a task, and the expected findings. Each run:
      plus OpenRouter cost (usage delta of your key), wall time, planner tokens and the versions of the kit, prompt,
      playbooks, tool images and models. --repeat runs a benchmark N times (model output varies) and reports the
      spread. Results hold scores, ids and titles from the kit's own targets, never client data.
-  5. writes evals/results/bench/<name>-<UTC>.json and a line in evals/results/bench/history.jsonl
+  5. writes evals/results/bench/<name>-<UTC>.json and a line in evals/results/bench/history.jsonl, and keeps the
+     run's data in evals/results/bench/<name>-<UTC>/: the engagement folder (findings database, evidence, report
+     revisions with their frozen inputs) as engagement.tar.gz and the whole conversation as conversation.json, so
+     reports can be rebuilt from them later (the next run of the same benchmark resets the engagement)
+--budget caps the spend of each run below the benchmark's own cap. The harness pauses the conversation when the
+OpenRouter usage of the key since the start of the run passes the cap (planner, fallback and worker together).
 Cost is measured from your OpenRouter key's usage: don't use the key for anything else during a run.
 """
 import datetime, hashlib, json, os, re, shutil, sqlite3, subprocess, sys, time, urllib.error, urllib.request
@@ -148,7 +153,7 @@ def approve_pending(eng):
     return len(pending)
 
 
-def run_conversation(eng, b, agent, target, log):
+def run_conversation(eng, b, agent, target, log, before=None):
     prof = next((p for p in oh("GET", "/api/agent-profiles")["profiles"] if p["name"] == agent), None)
     if not prof:
         raise SystemExit(f"agent profile {agent!r} not found: run ./rvkit openhands")
@@ -175,6 +180,17 @@ def run_conversation(eng, b, agent, target, log):
         if lab_only:
             approved += approve_pending(eng)
         if status not in ("running", "idle") or (status == "idle" and time.time() - t0 > 60):
+            break
+        # Enforce the spend cap from the OpenRouter usage of the key. OpenHands' own max_budget_per_run can't: it
+        # sees the gateway's model alias, can't price it, and counts almost nothing.
+        now = openrouter_usage() if before is not None else None
+        if now is not None and now - before > b.get("max_budget_usd", 5.0):
+            try:
+                oh("POST", f"/api/conversations/{cid}/pause")
+            except Exception:
+                pass
+            status = "budget"
+            log(f"  paused: spent ${now - before:.2f}, over the ${b.get('max_budget_usd', 5.0)} cap")
             break
         if time.time() - t0 > b["max_minutes"] * 60:
             try:
@@ -404,23 +420,57 @@ def models():
             "worker_endpoint": re.sub(r"//([^/]+)\.trycloudflare\.com", "//<colab-tunnel>", E.get("WORKER_API_BASE", ""))}
 
 
-def run_one(name, agent, log=print, group=None):
+def conversation_events(cid):
+    """Every event of a conversation, oldest first (paged)."""
+    items, page = [], None
+    for _ in range(1000):
+        q = "?limit=100&sort_order=TIMESTAMP" + (f"&page_id={page}" if page else "")
+        r = oh("GET", f"/api/conversations/{cid}/events/search{q}")
+        items += r.get("items", [])
+        page = r.get("next_page_id")
+        if not page:
+            break
+    return items
+
+
+def archive(name, eng, cid, stamp):
+    """Keep a run's data: the engagement folder and the conversation (reports can be rebuilt from them)."""
+    d = os.path.join(OUT, f"{name}-{stamp}")
+    os.makedirs(d, exist_ok=True)
+    try:
+        json.dump(conversation_events(cid), open(os.path.join(d, "conversation.json"), "w"), indent=1)
+    except Exception as e:  # the score is still worth keeping
+        print(f"  (conversation not saved: {e})")
+    # files written by the sandbox may belong to engagement users: pack inside a container that can read them all
+    r = subprocess.run(["docker", "compose", "exec", "-T", "findings-mcp", "tar", "-czf", "-", "--exclude=./.home",
+                        "-C", f"/work/{eng}", "."], cwd=KIT, capture_output=True)
+    if r.returncode == 0:
+        open(os.path.join(d, "engagement.tar.gz"), "wb").write(r.stdout)
+    else:
+        print(f"  (engagement not archived: {r.stderr.decode(errors='replace')[-200:]})")
+    return os.path.relpath(d, KIT)
+
+
+def run_one(name, agent, log=print, group=None, budget=None):
     b = json.load(open(os.path.join(BENCH, f"{name}.json")))
+    if budget is not None:
+        b["max_budget_usd"] = min(budget, b.get("max_budget_usd", budget))
     if b.get("lab") and not lab_running(b.get("lab_host", b["target"])):
         log(f"SKIP {name}: lab not running (./rvkit lab up)")
         return None
     log(f"== {name}: {b['description']}")
     eng, target = prepare(name, b)
     before = openrouter_usage()
-    run = run_conversation(eng, b, agent, target, log)
+    run = run_conversation(eng, b, agent, target, log, before)
     after = openrouter_usage()
     s = score(b, findings(eng), os.path.join(ENG_DIR, eng), {"observations_untriaged": observations_untriaged(eng)})
     s["tools"] = tool_outcomes(eng, b)
     prompt_sha = hashlib.sha256(open(os.path.join(KIT, "prompts", "planner.md"), "rb").read()).hexdigest()[:12]
     now = datetime.datetime.now(datetime.timezone.utc)
+    kept = archive(name, eng, run["conversation_id"], f"{now:%Y%m%dT%H%M%SZ}")
     res = {"benchmark": name, "at": now.isoformat(timespec="seconds"), "agent": agent, "models": models(),
            "planner_prompt_sha": prompt_sha, "engagement": eng, "provenance": provenance(), "group": group,
-           "note": b.get("note"),
+           "note": b.get("note"), "budget_cap_usd": b.get("max_budget_usd"), "data": kept,
            "cost_usd": round(after - before, 4) if before is not None and after is not None else None,
            **run, "score": s}
     os.makedirs(OUT, exist_ok=True)
@@ -482,11 +532,12 @@ def main(argv):
         return 0
     agent = argv[argv.index("--agent") + 1] if "--agent" in argv else "riskvoid-planner"
     repeat = int(argv[argv.index("--repeat") + 1]) if "--repeat" in argv else 1
+    budget = float(argv[argv.index("--budget") + 1]) if "--budget" in argv else None
     names = sorted(f[:-5] for f in os.listdir(BENCH) if f.endswith(".json") and f != "smoke.json") \
         if argv[0] == "all" else [argv[0]]
     for n in names:
         group = f"{n}-{datetime.datetime.now(datetime.timezone.utc):%Y%m%dT%H%M%SZ}" if repeat > 1 else None
-        runs = [r for r in (run_one(n, agent, group=group) for _ in range(repeat)) if r]
+        runs = [r for r in (run_one(n, agent, group=group, budget=budget) for _ in range(repeat)) if r]
         if len(runs) > 1:
             rec = [r["score"]["recall"] or 0 for r in runs]
             mean = sum(rec) / len(rec)

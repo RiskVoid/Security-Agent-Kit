@@ -15,6 +15,7 @@ symptom below.
 | OpenHands doesn't start; its log says `Can't locate revision` | Its data volume was used by a newer OpenHands. Set `AGENT_CANVAS_TAG` in `.env` to that version, then `./rvkit up`. |
 | `OpenHands configuration failed` | Run `./rvkit openhands` to see the error. Usually OpenHands wasn't up yet: run it again a minute later. |
 | `MCP servers: <name>: …` in doctor | That server is down or slow to start: `./rvkit logs <name>-mcp`, then `./rvkit up`. |
+| Every tool call in a conversation returns `Session terminated` | An MCP server (usually `kali-mcp`) restarted while the conversation was open, for example after `./rvkit update` or `docker compose restart kali-mcp`. OpenHands doesn't reconnect by itself. Restart it with `docker compose restart agent-canvas`, then continue the same conversation: its history and the engagement are kept. |
 | `Kali scope firewall not loaded` | `./rvkit logs kali-mcp`. The container needs `NET_ADMIN`. Restart it: `docker compose restart kali-mcp`. |
 | `OpenHands container reached example.com` | The egress lockdown isn't working. Don't use the kit for client work until it's fixed; report it ([SECURITY.md](../SECURITY.md)). |
 | The UI opens OpenHands' own onboarding | Open http://localhost:8000/ (the start page), not a deeper link. It marks the onboarding as done. |

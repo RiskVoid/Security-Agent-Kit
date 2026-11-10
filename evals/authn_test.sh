@@ -82,6 +82,9 @@ check "browser signed in through the sandbox"  "$r" 'ACME-INV-1002'
 check "browser: out-of-scope asset blocked"    "$r" 'pixel.png: 10.250.0.15 is not in scope'
 check "browser: script write blocked (read-only run)" "$r" 'PATCH can change state and this run is read-only'
 check "browser: evidence saved"                "$r" 'screenshot.png'
+r="$(py "import actions; print(actions.browse('$ENG', '$V/dashboard', [{'goto': '$V/documents/1/download'}, {'goto': '$V/invoices/1'}, {'text': 'body'}], identity='alice-web'))" </dev/null)"
+check "browser: a download is refused, its status kept" "$r" '"download_refused": true'
+check "browser: the run goes on after a download" "$r" 'ACME-CONFIDENTIAL-1001'
 check "browser: goto outside scope refused"    "$(py "import actions; print(actions.browse('$ENG', '$V/dashboard', [{'goto': 'http://10.250.0.15:8000/'}]))" </dev/null)" \
       'REFUSED: step goto .* not in scope'
 check "browser: click needs approval"          "$(py "import actions; print(actions.browse('$ENG', '$V/dashboard', [{'click': 'button'}]))" </dev/null)" \
@@ -134,7 +137,8 @@ check "cells of an invalid identity are blocked, not denied" "$r" 'carol-api +ex
 check "no FAIL claimed without a valid session" "$r" 'FAIL 0'
 
 # ---------------------------------------------------------------- secrets stay in the vault
-leaks="$(docker compose exec -T kali-mcp sh -c "grep -rl 'alice-lab-pass\|rvlab-alice-7f3a9c41d2\|rvlab-bob-2b8e41a6f0\|rvlab-carol-c04d17e9b3' /control/eng/$ENG /control/audit.log /work/$ENG 2>/dev/null | grep -v '/captures/.*\.raw$' | wc -l" </dev/null)"
+# the audit log is shared: only this engagement's lines count (a benchmark run may type the lab password itself)
+leaks="$(docker compose exec -T kali-mcp sh -c "{ grep -rl 'alice-lab-pass\|rvlab-alice-7f3a9c41d2\|rvlab-bob-2b8e41a6f0\|rvlab-carol-c04d17e9b3' /control/eng/$ENG /work/$ENG 2>/dev/null | grep -v '/captures/.*\.raw$'; grep '\"engagement\": \"$ENG\"' /control/audit.log | grep 'alice-lab-pass\|rvlab-alice-7f3a9c41d2\|rvlab-bob-2b8e41a6f0\|rvlab-carol-c04d17e9b3'; } | wc -l" </dev/null)"
 check "no secret in plain text (control files, audit log, evidence)" "$leaks" '^ *0$'
 check "vault key is root-only"                 "$(docker compose exec -T kali-mcp stat -c %a /control/vault.key </dev/null)" '^600$'
 

@@ -1071,6 +1071,17 @@ def _outputs(root, before):
     return out
 
 
+def _produced_by(e):
+    """What produced an audited output: a command line, or for HTTP requests and matrix runs (which audit no
+    command line) the request or the matrix."""
+    if e.get("command"):
+        return e["command"]
+    if e.get("event") == "authz-run":
+        return f"authz run {e.get('matrix') or e.get('name') or ''}".strip()
+    return " ".join(str(x) for x in (e.get("action"), e.get("method"), e.get("url"),
+                                     f"as {e['identity']}" if e.get("identity") else None) if x)
+
+
 def provenance(eng, paths):
     """For each evidence path: current SHA-256 and the audited command that produced exactly this content."""
     require(eng)
@@ -1089,7 +1100,7 @@ def provenance(eng, paths):
         item["sha256"] = sha256_file(full)
         hit = next((e for e in reversed(entries) if e["outputs"].get(rel) == item["sha256"]), None)
         if hit:
-            item.update(status="verified", produced_by=hit["command"], at=hit["ts"], tier=hit.get("tier"),
+            item.update(status="verified", produced_by=_produced_by(hit), at=hit["ts"], tier=hit.get("tier"),
                         exit=hit.get("exit"))
         elif any(rel in e["outputs"] for e in entries):
             item["status"] = "MODIFIED after it was produced (hash differs from the audited output)"

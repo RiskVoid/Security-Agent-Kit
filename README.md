@@ -43,6 +43,14 @@ The Security Agent Kit is a ready-to-run **AI security assistant** for penetrati
 and consultants. You describe the job in plain language: *"review this repo"* or *"test this API"*. The agent
 then plans the work, runs the tools, checks what it finds and hands you a branded report.
 
+<p align="center">
+  <img src="docs/img/full-run.gif" alt="A full run on the Laravel lab, sped up: the agent plans and tests, the operator approves an authorization matrix and intrusive checks in the console, then approves the report" width="100%">
+</p>
+<p align="center"><sub>A full run on the Laravel lab, about 30 minutes sped up to under a minute: plan, checks, approvals in
+the console, confirmed findings, report approval. Out of it came these reports:
+<a href="docs/samples/riskvoid/ledgerly-report.pdf">PDF</a> and <a href="docs/samples/riskvoid/ledgerly-report.html">HTML</a>
+(RiskVoid brand), <a href="docs/samples/plain/ledgerly-report.pdf">PDF</a> (plain brand).</sub></p>
+
 It's built so you can **trust it on client work**:
 
 | &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; | |
@@ -75,9 +83,27 @@ On top of that:
 - **Findings database:** triage, dedupe and severity.
 - **Report:** a **web page, Word document, PDF and Excel register**, in RiskVoid branding or your own. Each
   revision is frozen and hashed, and a person approves it before delivery. Exports as JSON, SARIF and issue text.
+  See the [sample reports](docs/samples/) from the Laravel lab.
 - **Retests:** compare the original and the fixed build, with before and after evidence.
 
-What each stack is tested and measured for, honestly: [Capability baselines](docs/capability-baselines.md).
+**First measured results** (2026-11-10, one capped run each, GPT-6.1 planner and DeepSeek worker through OpenRouter).
+"With evidence" counts a finding only when it names the right place and has the required proof:
+
+| Benchmark | Found | With evidence | Precision | Cost |
+|---|---|---|---|---|
+| Flask service (source) | 6 of 6 | 6 of 6 | 0.67 | $1.16 |
+| Express API (source) | 9 of 9 | 6 of 9 | 0.50 | $1.48 |
+| LLM app and MCP server | 8 of 10 | 6 of 10 | 1.00 | $1.10 |
+| DVWA | 8 of 8 | 8 of 8 | 0.40 | $3.13 |
+| OWASP Juice Shop | 3 of 7 | 2 of 7 | 0.25 | $1.85 |
+| DVGA (GraphQL) | 3 of 9 | 3 of 9 | 0.75 | $1.01 |
+| VAmPI (REST) | 3 of 9 | 2 of 9 | 1.00 | $0.52 |
+| Laravel lab, unattended | 1 of 6 | 1 of 6 | 1.00 | $1.10 |
+| Laravel lab, with a person approving | 3 of 6 | 3 of 6 | 1.00 | $1.44 |
+
+No run reported a protected control (a fixed build or a safe pattern) as vulnerable. Single runs vary; the
+details, including where the planner's provider refused and the fallback answered, are in
+[Capability baselines](docs/capability-baselines.md).
 
 <details>
 <summary><b>See the full list of 45+ tools</b></summary>

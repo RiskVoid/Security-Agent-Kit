@@ -963,7 +963,7 @@ for k, b in p.items(): print("%s: spent $%.4f in the current 24 h period" % (k, 
       *) die "usage: ./rvkit lab up|down|status|reset" ;;
     esac ;;
   bench)
-    need_env; [ $# -ge 1 ] || die "usage: ./rvkit bench <name|all> [--agent riskvoid-planner|riskvoid-local] [--repeat N] | --history | --score <name> <bench-engagement>   (list: ls evals/benchmarks)"
+    need_env; [ $# -ge 1 ] || die "usage: ./rvkit bench <name|all> [--agent riskvoid-planner|riskvoid-local] [--repeat N] [--budget USD] | --history | --score <name> <bench-engagement>   (list: ls evals/benchmarks)"
     python3 evals/run_benchmark.py "$@" ;;
   finding)    need_env; cmd_finding "$@" ;;
   report)     need_env; cmd_report "$@" ;;
