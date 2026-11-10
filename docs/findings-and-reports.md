@@ -317,7 +317,7 @@ The agent calls `generate_report` at the end of a run. You can run it yourself a
 ./rvkit report acme-2026-11
 ```
 
-It takes about a minute (the PDF is made with LibreOffice) and prints the revision, its state and the readiness
+It takes about a minute (the PDF is the HTML report printed with headless Chromium) and prints the revision, its state and the readiness
 checks. Files in `/work/<engagement>/report/revisions/<R-id>/`, the latest also in `/work/<engagement>/report/`:
 
 | File | Content |

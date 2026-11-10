@@ -107,9 +107,14 @@ every few seconds until it comes back.
 
 ## Keyboard and small screens
 
-Tabs follow the usual pattern: arrow keys, Home and End move between them. A confirmation (close out, delete) puts
+The sidebar's workspace menu is always there: **Home** lists the engagements, with Approvals, Stack status and
+the Model log beside it. Opening an engagement adds that engagement's menu under it: its sections (Overview, Live,
+Findings and the rest, called tabs in this page; its model log is the **Model calls** section). Which engagement
+is open, its state and the Halt, Close out and Delete buttons are in the bar across the top of every section.
+That menu stays until you go back to **Home**. Each section is a link with its own address
+(`#eng-NAME/findings`), so Back and bookmarks work. A confirmation (close out, delete) puts
 focus on Cancel; Escape closes it. Errors are announced to screen readers. On a phone-width window the sidebar
-becomes a menu and the tab strip scrolls sideways; nothing scrolls the whole page sideways.
+becomes a menu and wide tables scroll sideways inside their card; nothing scrolls the whole page sideways.
 
 ## Not in the console yet
 

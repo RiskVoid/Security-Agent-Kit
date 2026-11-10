@@ -1,9 +1,10 @@
-# findings-mcp + report generator: python-docx/openpyxl for the branded report, LibreOffice for the PDF copy,
+# findings-mcp + report generator: python-docx/openpyxl for the branded report, Chromium to print the HTML report to
+# PDF (LibreOffice converts the Word file instead if that fails),
 # and the RiskVoid brand fonts (OFL, google/fonts pinned commit, checksum-verified) so the PDF renders on brand.
 # fonts-liberation renders Arial / Courier New (the plain brand's fonts) metric-compatibly; fonts-dejavu-core is the
 # fallback font fontconfig pulled in before (keep it: it renders glyphs the brand fonts lack). Branding: branding.py.
 FROM python:3.13-slim
-RUN apt-get update && apt-get install -y --no-install-recommends libreoffice-writer-nogui curl ca-certificates \
+RUN apt-get update && apt-get install -y --no-install-recommends libreoffice-writer-nogui chromium curl ca-certificates \
         fontconfig fonts-dejavu-core fonts-liberation && rm -rf /var/lib/apt/lists/*
 ARG FONTS_COMMIT=47d54ca1ebb14fd864695f1d39dc734f39017c33
 RUN set -eu; mkdir -p /usr/share/fonts/truetype/riskvoid; cd /usr/share/fonts/truetype/riskvoid; \

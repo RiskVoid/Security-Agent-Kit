@@ -211,6 +211,7 @@ engagements only). That data comes from many sources, each under its own terms. 
 | | openpyxl | 3.1.5 | MIT | pip |
 | | Pillow | 12.3.0 | MIT-CMU | pip |
 | | LibreOffice Writer (no GUI, Debian) | 25.2.3 | MPL-2.0 | dpkg |
+| | Chromium (Debian) | 156.0.8078.79 | BSD-3-Clause | dpkg |
 | `egress-proxy` | tinyproxy (Alpine package) | Alpine 3.24 | GPL-2.0 | upstream |
 | `php-runner` (optional, built locally by `./rvkit php`) | PHP, Composer | 8.4.27, 2.8 | PHP License 3.01, MIT | upstream |
 

@@ -136,8 +136,9 @@ def label(text):
 
 
 def section(num, eyebrow, title, body, cls=""):
-    return (f'<section class="sec {cls}"><div class="eyebrow">{e(num)} · {e(eyebrow)}</div>'
-            f'<h2>{e(title)}</h2>{body}</section>')
+    # the label and the title are one block, so a page break can't fall between them
+    return (f'<section class="sec {cls}"><header class="sec-head"><div class="eyebrow">{e(num)} · {e(eyebrow)}</div>'
+            f'<h2>{e(title)}</h2></header>{body}</section>')
 
 
 def table(head, rows, cls=""):
@@ -244,7 +245,7 @@ pre.code .ln{color:oklch(50% 0.01 264);display:inline-block;width:26px;text-alig
 .tbl tr:last-child td{border-bottom:0}
 .tbl .t{font-weight:500;color:var(--ink-0)}
 .tbl .m{font-family:var(--font-mono);font-size:11.5px;color:var(--ink-3)}
-.tbl .nw{white-space:nowrap}
+.tbl .nw,.tbl.ids td:first-child,.tbl.ids td:first-child code{white-space:nowrap}
 .tbl.mono td{font-family:var(--font-mono);font-size:11.5px;overflow-wrap:anywhere}
 .finding{padding-top:8px;border-top:1px solid var(--rule)}
 .finding:first-of-type{border-top:0;padding-top:0}
@@ -262,13 +263,21 @@ pre.code .ln{color:oklch(50% 0.01 264);display:inline-block;width:26px;text-alig
   .cover-meta{grid-template-columns:1fr}.cover-meta .kv{border-right:0;padding-right:0}.posture{padding-left:0}
   .kpis,.impact{grid-template-columns:1fr 1fr}
 }
-@page{size:letter;margin:0}
+/* print (the PDF is this page printed): the cover is full bleed, every other page keeps a top and bottom margin so
+   nothing starts or ends at the paper's edge; a heading, its label and its opening paragraph stay with what follows */
+@page{size:letter;margin:14mm 0}
+@page cover{margin:0}
 @media print{
   html,body{background:#fff}.doc{padding:0;gap:0}.toolbar{display:none}
   .page{box-shadow:none;width:100%;break-after:page}.page:last-child{break-after:auto}
-  .cover{height:100vh;min-height:0}
+  .cover{page:cover;height:100vh;min-height:0}
+  .head{padding-top:0}.body{padding-top:36px;padding-bottom:24px}
   .finding,.tbl tr,.kpis,.impact{break-inside:avoid}
-  .sec h2,.sec h3,.sub{break-after:avoid}
+  .sec-head{break-inside:avoid}
+  .sec-head,.sec h3,.sub,.sec-head+p,.sec h3+p{break-after:avoid}
+  /* a table that runs over a page: ruled lines only, so no empty frame hangs at the foot of the page */
+  .tbl{border:0;border-radius:0;overflow:visible}.tbl table{border-top:1px solid var(--rule)}
+  .tbl tr:last-child td{border-bottom:1px solid var(--rule)}
 }
 """
 
@@ -300,6 +309,161 @@ def _brand_css(brand):
 
 
 # ---------------------------------------------------------------- page
+# ---------------------------------------------------------------- methodology: which tools, used for what
+# The audit summary counts the first word of every simple command. That includes shell syntax (for, do, done), file
+# plumbing (find, printf) and the first word of inline scripts (import): none of those say how the testing was done.
+# kali-mcp filters them too (core.NOT_TOOLS); this copy covers frozen inputs and an older kali-mcp image.
+NOT_TOOLS = frozenset("""for do done if then else elif fi while until case esac in function select time export set unset
+    read local return exit break continue source eval exec trap wait sleep printf find xargs cut tr uniq cp mv rm chmod
+    chown touch date basename dirname env pwd which type command test true false tee cat echo head tail ls cd mkdir grep
+    egrep fgrep rg jq yq wc sort sed awk import from print def class try except with nl compgen seq tac rev column
+    paste diff file stat du df id whoami uname hostname ps kill sha256sum md5sum base64 xxd od strings tar gzip gunzip
+    zip unzip ln realpath readlink less more""".split())
+INTERPRETERS = frozenset("python python2 python3 perl ruby node nodejs php lua bash sh dash zsh ksh pwsh".split())
+# What each tool was used for, in the client's words. A tool missing here still shows, without a purpose: add it when
+# you add a tool to the Kali image (CONTRIBUTING.md).
+TOOL_PURPOSE = {
+    # the kit's own tools
+    "rv-llm": "LLM, agent and MCP server testing: prompt injection probes with canaries, tool-call checks",
+    "garak": "Adversarial prompts against the target model",
+    "jwt_tool": "JSON Web Token analysis and tampering",
+    # raw clients
+    "curl": "Individual HTTP requests to the target", "wget": "Individual HTTP requests to the target",
+    "nc": "Raw TCP connections", "netcat": "Raw TCP connections", "ncat": "Raw TCP connections",
+    # discovery
+    "nmap": "Port and service discovery", "masscan": "Port scanning", "naabu": "Port scanning", "rustscan": "Port scanning",
+    "ping": "Host reachability", "traceroute": "Network path discovery",
+    "httpx": "HTTP service probing", "httpx-toolkit": "HTTP service probing", "whatweb": "Technology fingerprinting",
+    "wafw00f": "Web application firewall detection", "gowitness": "Screenshots of web services",
+    "katana": "Crawling", "gospider": "Crawling", "arjun": "Hidden parameter discovery",
+    "ffuf": "Content and parameter discovery", "gobuster": "Content discovery", "feroxbuster": "Content discovery",
+    "dirsearch": "Content discovery", "dirb": "Content discovery",
+    "dnsrecon": "DNS enumeration", "fierce": "DNS enumeration", "amass": "Subdomain enumeration",
+    # vulnerability checks
+    "nuclei": "Template-based vulnerability checks", "nikto": "Web server misconfiguration checks",
+    "wpscan": "WordPress checks", "zap-baseline.py": "OWASP ZAP passive baseline scan",
+    "zap-full-scan.py": "OWASP ZAP active scan", "zaproxy": "OWASP ZAP scan", "zap.sh": "OWASP ZAP scan",
+    "crlfuzz": "CRLF injection checks", "graphw00f": "GraphQL engine fingerprinting",
+    "graphql-cop": "GraphQL security checks", "clairvoyance": "GraphQL schema recovery",
+    "testssl": "TLS configuration review", "testssl.sh": "TLS configuration review", "sslscan": "TLS configuration review",
+    "sslyze": "TLS configuration review", "enum4linux": "SMB enumeration", "smbclient": "SMB access checks",
+    "rpcclient": "RPC enumeration", "snmpwalk": "SNMP enumeration", "onesixtyone": "SNMP community checks",
+    "ldapsearch": "LDAP enumeration",
+    # exploitation and fuzzing (intrusive: each run was approved)
+    "sqlmap": "SQL injection testing", "commix": "Command injection testing", "dalfox": "Cross-site scripting testing",
+    "schemathesis": "API fuzzing from the schema", "st": "API fuzzing from the schema",
+    "hydra": "Password guessing", "medusa": "Password guessing", "ncrack": "Password guessing", "patator": "Password guessing",
+    "kerbrute": "Kerberos account checks", "john": "Password hash cracking", "hashcat": "Password hash cracking",
+    "msfconsole": "Exploitation framework", "nxc": "Network service exploitation checks",
+    "netexec": "Network service exploitation checks", "crackmapexec": "Network service exploitation checks",
+    # source code and dependencies
+    "semgrep": "Static analysis of the source code", "joern": "Data-flow analysis of the source code",
+    "bandit": "Static analysis of Python code", "gitleaks": "Secrets in the repository and its history",
+    "trufflehog": "Secrets in the repository and its history", "osv-scanner": "Known vulnerabilities in dependencies",
+    "trivy": "Known vulnerabilities in dependencies and images", "grype": "Known vulnerabilities in dependencies",
+    "composer": "Dependency inspection", "npm": "Dependency inspection", "pip": "Dependency inspection", "git": "Repository history review",
+}
+
+
+def tool_rows(act, limit=15):
+    """[tool, what it was used for, runs] for the methodology table, most used first. Shell words are dropped and
+    interpreters are shown as one line: what matters to the reader is that custom scripts were run, not which shell."""
+    tools, scripts, langs = {}, 0, []
+    for k, v in (act.get("tools") or {}).items():
+        if k in NOT_TOOLS or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._+-]*", k) or re.fullmatch(r"[\d.]+", k):
+            continue
+        if k in INTERPRETERS or re.sub(r"[\d.]+$", "", k) in INTERPRETERS:
+            scripts += v
+            langs.append(k)
+            continue
+        tools[k] = tools.get(k, 0) + v
+    # named rows only for tools the catalogue knows: other first words are helper programs, script names or stray
+    # fragments (a here-document's end marker), and a name without a purpose tells the reader nothing
+    rows = [[k, TOOL_PURPOSE[k], v] for k, v in sorted(tools.items(), key=lambda kv: -kv[1]) if k in TOOL_PURPOSE][:limit]
+    other = sum(v for k, v in tools.items() if k not in TOOL_PURPOSE)
+    if scripts:
+        rows.append([f"scripts ({', '.join(sorted(langs))})", "Checks written for this engagement, run in the sandbox", scripts])
+    if other:
+        rows.append(["other", "Helper commands (file handling, set-up) around the tools above", other])
+    return rows
+
+
+def commands_line(act):
+    """How many commands ran, by tier, how many the policy refused and how many approvals were given."""
+    n = lambda k, one, many: f"{k} {one if k == 1 else many}"
+    by_tier = ", ".join(f"{v} {k}" for k, v in act["by_tier"].items() if v) or "none"
+    ap = act["approvals"]
+    return (f"{n(act['commands_run'], 'command was', 'commands were')} run ({by_tier}); "
+            f"{n(act['commands_refused'], 'was', 'were')} refused by the policy engine; "
+            f"{n(ap['approved'], 'intrusive action was', 'intrusive actions were')} approved and {ap['denied']} denied.")
+
+
+def activity_line(act):
+    """Testing the command count leaves out: requests sent through the request tool and authorization matrix runs.
+    Empty when the audit summary has neither (or comes from a kali-mcp that doesn't report them yet)."""
+    plural = lambda n, one, many: f"{n} {one if n == 1 else many}"
+    parts, rq = [], act.get("requests") or {}
+    if rq.get("sent") or rq.get("refused"):
+        tiers = ", ".join(f"{v} {k}" for k, v in (rq.get("by_tier") or {}).items() if v)
+        parts.append(f"{plural(rq.get('sent', 0), 'HTTP request was', 'HTTP requests were')} sent one at a time through the "
+                     f"audited request tool{f' ({tiers})' if tiers else ''}"
+                     + (f"; {rq['refused']} more {'was' if rq['refused'] == 1 else 'were'} refused" if rq.get("refused") else ""))
+    if act.get("matrix_runs"):
+        n = act["matrix_runs"]
+        parts.append(f"{plural(n, 'authorization matrix run', 'authorization matrix runs')} compared what each test "
+                     f"identity could reach with what it should be able to reach")
+    return (". ".join(p[0].upper() + p[1:] for p in parts) + ".") if parts else ""
+
+
+# ---------------------------------------------------------------- coverage and limitations
+COVERAGE_LABEL = {"tested": "Tested, no issue found", "failed": "Issue found", "blocked": "Blocked", "planned": "Not run",
+                  "excluded": "Excluded", "not-applicable": "Not applicable"}
+
+
+def coverage_view(cov, limit=40):
+    """What the report says about coverage, from the test plan frozen with it: a summary sentence, a row per area and
+    the tests that did not produce a result with the reason on record. None when the inputs carry no plan (a revision
+    generated before plans were part of them): the section is then left out rather than guessed."""
+    if cov is None:
+        return None
+    items = cov.get("items") or []
+    if not items:
+        return {"summary": "No test plan was recorded for this engagement, so this report cannot state which tests "
+                           "were not carried out. Its findings and the activity summary describe what was done.",
+                "areas": [], "gaps": [], "more": 0}
+    n = lambda s: sum(1 for i in items if i["state"] == s)
+    plural = lambda k, one, many: f"{k} {one if k == 1 else many}"
+    done, failed, stale = n("tested") + n("failed"), n("failed"), [i for i in items if i.get("stale")]
+    parts = [f"{plural(len(items), 'test was', 'tests were')} planned for this scope from the testing playbooks",
+             f"{plural(done, 'was', 'were')} carried out, of which {plural(failed, 'found an issue', 'found an issue')}"]
+    if n("blocked"):
+        parts.append(f"{plural(n('blocked'), 'could not be run', 'could not be run')}")
+    if n("excluded") + n("not-applicable"):
+        parts.append(f"{plural(n('excluded') + n('not-applicable'), 'was excluded or did not apply', 'were excluded or did not apply')}")
+    if n("planned"):
+        parts.append(f"{plural(n('planned'), 'has no result yet', 'have no result yet')}")
+    summary = "; ".join(parts) + "."
+    if stale:
+        summary += (f" {plural(len(stale), 'result was', 'results were')} recorded on an earlier build or scope and should "
+                    "be repeated before relying on it.")
+    areas = []
+    for a in dict.fromkeys(i.get("area") or "Other" for i in items):
+        of = [i for i in items if (i.get("area") or "Other") == a]
+        c = lambda *states: sum(1 for i in of if i["state"] in states)
+        areas.append([a, len(of), c("tested"), c("failed"), c("blocked"), c("excluded", "not-applicable"), c("planned")])
+    order = {"blocked": 0, "planned": 1, "excluded": 2, "not-applicable": 3}
+    gaps = sorted([i for i in items if i["state"] in order or i.get("stale")], key=lambda i: (order.get(i["state"], 4), i["id"]))
+    rows = [[i["id"], i["title"], "Result out of date" if i["state"] not in order else COVERAGE_LABEL[i["state"]],
+             (i.get("stale_reason") if i["state"] not in order else i.get("rationale")) or "No reason recorded"] for i in gaps]
+    return {"summary": summary, "areas": areas, "gaps": rows[:limit], "more": max(0, len(rows) - limit)}
+
+
+COVERAGE_AREAS_HEAD = ["Area", "Planned", "No issue", "Issue found", "Blocked", "Excluded", "Not run"]
+COVERAGE_GAPS_HEAD = ["Test", "What it checks", "Outcome", "Reason"]
+COVERAGE_GAPS_INTRO = ("The tests below did not produce a result that this report can rely on. A weakness in these areas "
+                       "would not have been found by this assessment.")
+
+
 def render(c):
     """c: the dict report.py assembles (see build()). Returns the HTML document."""
     brand, findings, ev, act, info = c["brand"], c["findings"], c["evidence"], c["activity"], c["info"]
@@ -391,17 +555,18 @@ def render(c):
                       ["Testing period", e(c["period"])]]))
 
     # 04 methodology
-    by_tier = ", ".join(f"{v} {k}" for k, v in act["by_tier"].items() if v) or "none"
     meth = (md(c["meth_md"]) if c["meth_md"] else "") + (
         "<p>Each activity is classified by tier: <strong>passive</strong> (code and configuration analysis, research), "
         "<strong>active</strong> (scanning, crawling, fingerprinting) and <strong>intrusive</strong> (exploitation, "
         "brute force). Intrusive commands require explicit, single-use approval. Automated tool output was triaged by "
         "a consultant: only findings confirmed against the evidence are reported.</p>"
-        f"<p>{e(act['commands_run'])} commands were run ({e(by_tier)}); {e(act['commands_refused'])} were refused by "
-        f"the policy engine; {e(act['approvals']['approved'])} intrusive actions were approved and "
-        f"{e(act['approvals']['denied'])} denied.</p>")
-    if act["tools"]:
-        meth += table(["Tool", "Runs"], [[f"<code>{e(k)}</code>", e(v)] for k, v in list(act["tools"].items())[:15]])
+        f"<p>{e(commands_line(act))}</p>")
+    extra = activity_line(act)
+    if extra:
+        meth += f"<p>{e(extra)}</p>"
+    rows = tool_rows(act)
+    if rows:
+        meth += table(["Tool", "Used for", "Runs"], [[f"<code>{e(k)}</code>", e(why or "—"), e(v)] for k, why, v in rows])
     meth += ("<h3>Severity rating</h3><p>Severity reflects the impact and likelihood of exploitation in this "
              "environment. For known vulnerabilities in third-party components, the CVSS base score is adjusted using "
              "CISA's Known Exploited Vulnerabilities catalogue and the FIRST EPSS probability of exploitation.</p>")
@@ -472,6 +637,19 @@ def render(c):
         ["Emergency halts", e(act["halts"])], ["Scope changes", e(act["scope_changes"])],
         ["Results triaged as false positives", e(c["n_fp"])], ["Results merged as duplicates", e(c["n_dup"])]])))
 
+    cv = coverage_view(c.get("coverage"))
+    if cv:
+        cov_body = f"<p>{e(cv['summary'])}</p>"
+        if cv["areas"]:
+            cov_body += table(COVERAGE_AREAS_HEAD, [[e(x) for x in r] for r in cv["areas"]])
+        if cv["gaps"]:
+            cov_body += f"<h3>Not tested, and why</h3><p>{e(COVERAGE_GAPS_INTRO)}</p>" + table(
+                COVERAGE_GAPS_HEAD, [[f"<code>{e(i)}</code>", e(t), e(o), e(w)] for i, t, o, w in cv["gaps"]], "ids")
+            if cv["more"]:
+                cov_body += f"<p>And {e(cv['more'])} more, listed in the engagement's test plan.</p>"
+        secs.insert(4, section("00", "Coverage", "Coverage and limitations", cov_body))  # after the methodology
+    # number the sections in the order they ended up in
+    secs = [re.sub(r'(<div class="eyebrow">)\d\d', lambda m, k=k: f"{m.group(1)}{k:02d}", s, count=1) for k, s in enumerate(secs, 1)]
     body = f'<div class="page">{head()}<div class="body">{draft}{"".join(secs)}</div>{foot("Security assessment report")}</div>'
     return f"""<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">

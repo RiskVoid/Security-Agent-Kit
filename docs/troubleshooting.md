@@ -65,7 +65,7 @@ symptom below.
 | Symptom | Cause and fix |
 |---|---|
 | The report says **DRAFT** | Its first page lists why: no executive summary, untriaged candidates, missing client name, or evidence that is missing, modified or not produced by an audited Kali command. Fix those and regenerate ([findings-and-reports.md](findings-and-reports.md)). |
-| `PDF conversion failed` | The `.docx` is fine; LibreOffice failed. `./rvkit logs findings-mcp`, then try `./rvkit report <eng>` again. |
+| `PDF conversion failed` | The `.html` and `.docx` are fine; printing the HTML with Chromium failed and so did the LibreOffice fallback. `./rvkit logs findings-mcp`, then try `./rvkit report <eng>` again. |
 | A brand error stops the report | `REPORT_BRAND=custom` needs a valid `brand.json` in `REPORT_BRAND_FOLDER`; the message says what to fix. |
 | "Prepared by" shows the old name | `report/meta.txt` is created on the first report with the brand's name. Edit it. |
 | `generate_report` times out in the agent | It takes about a minute. Run `./rvkit report <eng>` yourself. |
