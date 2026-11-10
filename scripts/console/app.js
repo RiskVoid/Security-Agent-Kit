@@ -13,9 +13,9 @@ const PRIORITIES = ["P1", "P2", "P3", "P4"];
 const COVERAGE = ["planned", "tested", "failed", "blocked", "excluded", "not-applicable"];
 const COV_CLASS = { tested: "ok", failed: "sev-critical", blocked: "warn", planned: "", excluded: "", "not-applicable": "" };
 const PLAYBOOKS = ["web-app", "api-security", "laravel", "code-review", "secrets-review", "supply-chain", "ai-llm", "external-network"];
-const TABS = { overview: "Overview", live: "Live", scope: "Scope & rules", investigation: "Investigation", findings: "Findings", tasks: "Worker tasks", testing: "Testing", report: "Report", audit: "Audit log", models: "Model log" };
+const TABS = { overview: "Overview", live: "Live", scope: "Scope & rules", investigation: "Investigation", findings: "Findings", tasks: "Worker tasks", testing: "Testing", report: "Report", audit: "Audit log", models: "Model calls" };
 
-const state = { overview: null, current: null, detail: null, tab: "overview", seenApprovals: null, seenNotices: null, obsFilter: "new", findingFilter: "all", openFinding: null, preview: null, evidence: null, view: "engagements" };
+const state = { overview: null, current: null, detail: null, tab: "overview", seenApprovals: null, seenNotices: null, obsFilter: "new", findingFilter: "all", findingQuery: "", findingSev: "", findingPage: 0, findingTab: "details", openFinding: null, preview: null, evidence: null, view: "engagements" };
 
 async function api(path, body) {
   const opt = body === undefined ? {} : { method: "POST", headers: { "Content-Type": "application/json", "X-RV-Console": "1" }, body: JSON.stringify(body) };
@@ -64,7 +64,7 @@ async function conflict(e) {
       paneFindings();
       if ($("#fe-status")) { $("#fe-status").value = keep.status; $("#fe-sev").value = keep.severity; $("#fe-notes").value = keep.notes; if ($("#fe-dup")) $("#fe-dup").value = keep.dup || ""; }
       const f = d.findings.find((x) => x.id === state.openFinding);
-      if (f && $(".rv-editor")) $(".rv-editor").insertAdjacentHTML("afterbegin", `<div class="rv-banner warn"><div class="rv-banner-body">
+      if (f && $(".rv-fpanel-body")) $(".rv-fpanel-body").insertAdjacentHTML("afterbegin", `<div class="rv-banner warn"><div class="rv-banner-body">
         <p class="rv-banner-title">Saved meanwhile${f.updated_by ? " by " + esc(f.updated_by) : ""} (revision ${esc(f.revision)})</p>
         <p class="rv-banner-sub">Status ${esc(f.status)}, severity ${esc(f.severity)}${f.notes ? `, notes: ${esc(f.notes)}` : ""}. Your edit is below; Save replaces that version.</p></div></div>`);
     }
@@ -99,20 +99,50 @@ function crumbs(parts) {
 }
 function show(view) {
   state.view = view;
-  for (const v of ["engagements", "approvals", "status", "models"]) $(`#view-${v}`).hidden = v !== view;
+  for (const v of ["engagements", "approvals", "status", "models", "kit"]) $(`#view-${v}`).hidden = v !== view;
   $$(".rv-sidebar-item[data-view]").forEach((a) => a.classList.toggle("active", a.dataset.view === view));
   document.body.classList.remove("nav-open");
   if (stream.es) connectStream();  // the live topic only while an engagement's Live tab shows
+  // the engagements view is either the list to pick from or the open engagement, never both
+  const open = view === "engagements" && !!state.current && !state.picking;
+  $("#eng-picker").hidden = view === "engagements" && open; $("#detail").hidden = !open;
+  $$(".rv-sidebar-item[data-view='engagements']").forEach((a) => a.classList.toggle("active", view === "engagements" && !open));
+  renderEngNav();
   if (view === "status") { crumbs([["Console", "#engagements"], ["Stack status"]]); loadStatus(); }
+  else if (view === "kit") { crumbs([["Console", "#engagements"], ["UI kit"]]); renderKit(); }
   else if (view === "models") { crumbs([["Console", "#engagements"], ["Model log"]]); loadModels(); }
   else if (view === "approvals") crumbs([["Console", "#engagements"], ["Approvals"]]);
-  else crumbs(state.current ? [["Console", "#engagements"], ["Engagements", "#engagements"], [state.current]] : [["Console", "#engagements"], ["Engagements"]]);
+  else crumbs(open ? [["Console", "#engagements"], ["Home", "#engagements"], [state.current, `#eng-${state.current}/overview`], [TABS[state.tab]]] : [["Console", "#engagements"], ["Home"]]);
 }
+// #engagements is the list; #eng-NAME/section is one section of one engagement, so sections can be linked and Back works
 function route() {
   const h = location.hash.replace("#", "");
-  if (h === "approvals" || h === "status" || h === "models") return show(h);
-  if (h.startsWith("eng-")) { const name = h.slice(4); if (name !== state.current) { state.current = name; openEngagement(name); } }
+  if (h === "approvals" || h === "status" || h === "models" || h === "kit") return show(h);
+  if (h.startsWith("eng-")) {
+    const [name, sec] = h.slice(4).split("/"), tab = TABS[sec] ? sec : "overview";
+    state.picking = false;
+    if (name !== state.current) { openEngagement(name); state.tab = tab; }
+    else if (tab !== state.tab) { state.tab = tab; if (state.detail) { renderDetail(); window.scrollTo(0, 0); } }
+  } else state.picking = true;
   show("engagements");
+}
+
+// The selected engagement's menu: its sections grouped by what you do there. Which engagement it is, and its state,
+// are in the bar at the top of the page (renderDetail).
+const NAV_GROUPS = [["Run", ["overview", "live", "tasks"]], ["Test", ["scope", "investigation", "testing"]], ["Results", ["findings", "report"]], ["Records", ["audit", "models"]]];
+function renderEngNav() {
+  const box = $("#eng-nav"), name = state.current;
+  // The workspace menu above stays as it is. The selected engagement's menu sits under it from the moment an engagement
+  // is opened until the user goes back to Home; it stays while they look at Approvals, Stack status or the Model log.
+  const selected = !!name && !state.picking, here = selected && state.view === "engagements";
+  box.hidden = !selected;
+  if (!selected) { box.innerHTML = ""; return; }
+  const d = state.detail && state.detail.engagement === name ? state.detail : null;
+  const ov = (state.overview?.engagements || []).find((e) => e.engagement === name) || {};
+  const count = (t) => !d ? "" : t === "overview" && d.approvals.length ? `<span class="rv-count danger" title="waiting for your approval">${d.approvals.length}</span>`
+    : t === "findings" && d.findings.length ? `<span class="rv-count">${d.findings.length}</span>`
+    : t === "models" && ov.model_problems ? `<span class="rv-count danger" title="failed model calls">${ov.model_problems}</span>` : "";
+  box.innerHTML = `${NAV_GROUPS.map(([group, tabs]) => `<div class="rv-side-label">${group}</div><nav class="rv-side-nav" aria-label="${group}">${tabs.map((t) => `<a class="rv-sidebar-item sub ${here && state.tab === t ? "active" : ""}" href="#eng-${esc(name)}/${t}" ${here && state.tab === t ? `aria-current="page"` : ""}><span>${TABS[t]}</span>${count(t)}</a>`).join("")}</nav>`).join("")}`;
 }
 window.addEventListener("hashchange", route);
 $("#menu-btn").addEventListener("click", () => document.body.classList.toggle("nav-open"));
@@ -146,7 +176,7 @@ function applyOverview(o) {
     $("#agent-ui").href = o.ui_url;
     if (o.version) $("#side-version").textContent = "kit " + o.version;
     $("#eng-count").textContent = o.engagements.length || "";
-    renderList(); renderApprovals();
+    renderList(); renderApprovals(); renderEngNav();
     const mb = $("#model-badge"); mb.textContent = o.model_problems || 0; mb.hidden = !o.model_problems;
     mb.title = "failed model calls in the last 24 hours";
     const ids = new Set(o.approvals.map((a) => a.id));
@@ -181,23 +211,37 @@ function notifyNotices(fresh) {
   }
 }
 
+// Home: every engagement as a row, with search, a filter by state and a pager.
+const ENG_FILTERS = [["all", "All"], ["needs", "Needs you"], ["active", "Active"], ["halted", "Halted"], ["closed", "Closed"]];
+const ENG_PILL = { active: "ok", halted: "bad", closed: "closed" };
+const engNeeds = (e) => (e.pending || 0) + ((e.findings || {}).candidate || 0) > 0;
+const engIs = (e, f) => f === "all" || (f === "needs" ? engNeeds(e) : engState(e)[0] === f);
 function renderList() {
-  const q = $("#eng-filter").value.trim().toLowerCase();
-  const rows = (state.overview?.engagements || []).filter((e) => !q || e.engagement.toLowerCase().includes(q) || (e.client || "").toLowerCase().includes(q));
-  $("#eng-list").innerHTML = rows.map((e) => {
-    const f = e.findings || {};
-    const [label, color] = engState(e);
-    const meta = [e.client || label, `${f.confirmed || 0} confirmed`, f.candidate ? `${f.candidate} to triage` : ""].filter(Boolean)
-      .map(esc).join(`<span class="slash">/</span>`);
-    return `<button role="listitem" class="rv-row ${e.engagement === state.current ? "selected" : ""}" data-eng="${esc(e.engagement)}">
-      <span class="ind ${color}" title="${label}"></span>
-      <span style="min-width:0"><div class="title">${esc(e.engagement)}</div><div class="meta">${meta}</div></span>
-      ${e.pending ? `<span class="rv-count danger" title="pending approvals">${e.pending}</span>` : e.closed ? tag("closed") : e.halted ? tag("halted", "halted") : ""}
-    </button>`;
-  }).join("") || `<div class="rv-empty">${q ? "No match." : "No engagements yet."}</div>`;
+  const all = state.overview?.engagements || [], q = $("#eng-filter").value.trim().toLowerCase(), f = state.engFilter || "all";
+  const sum = (k) => all.reduce((a, e) => a + ((e.findings || {})[k] || 0), 0);
+  $("#eng-sum").innerHTML = `<span>${all.length} engagement${all.length === 1 ? "" : "s"}</span><span>${all.reduce((a, e) => a + (e.pending || 0), 0)} approval(s) waiting</span><span>${sum("confirmed")} confirmed finding(s) open</span><span>${sum("candidate")} to triage</span>`;
+  $("#eng-chips").innerHTML = ENG_FILTERS.map(([k, label]) => { const n = all.filter((e) => engIs(e, k)).length; return `<button class="rv-chip ${k === f ? "active" : ""} ${n ? "" : "empty"}" aria-pressed="${k === f}" data-engf="${k}">${label} <span class="count">${n}</span></button>`; }).join("");
+  const rows = all.filter((e) => engIs(e, f) && has(q, [e.engagement, e.client, ...(e.targets || [])]));
+  const [page, from, pages, p] = pageOf(rows, state.engPage || 0);
+  state.engPage = p;
+  $("#eng-list").innerHTML = rows.length ? `<div class="rv-dl" style="--cols:minmax(200px, 1.5fr) 104px minmax(150px, 1.2fr) 120px minmax(140px, 1fr) 180px;--minw:940px"><div class="rv-dl-in">
+      <div class="rv-dl-head"><span>Engagement</span><span>State</span><span>Targets</span><span>Tiers</span><span>Findings</span><span>Needs you</span></div>
+      ${page.map((e) => {
+        const c = e.findings || {}, [label] = engState(e), t = e.targets || [], tiers = e.tiers || [];
+        const top = ["intrusive", "active", "passive"].find((x) => tiers.includes(x));
+        return `<a class="rv-dl-row tall link" href="#eng-${esc(e.engagement)}/overview">
+          <span class="two"><b title="${esc(e.engagement)}">${esc(e.engagement)}</b><small title="${esc(e.client || "")}">${esc(e.client || "no client name")}</small></span>
+          <span>${pill(label, ENG_PILL[label])}</span>
+          <span class="two"><span class="mono" title="${esc(t.join(", "))}">${esc(t[0] || "no targets")}</span><small>${t.length > 1 ? `+${t.length - 1} more · ` : ""}${esc(e.network || "")}${e.worker === "private" ? " · private worker" : ""}</small></span>
+          <span>${top ? (tiers.length > 1 ? `Up to ${top}` : `${cap(top)} only`) : "none"}</span>
+          <span class="two"><span>${c.confirmed || 0} confirmed</span><small>${c.candidate || 0} to triage · ${c.fixed || 0} fixed</small></span>
+          <span class="cell">${e.pending ? pill(`${e.pending} approval${e.pending === 1 ? "" : "s"} waiting`, "bad") : c.candidate ? pill(`${c.candidate} to triage`, "warn") : `<span class="rv-dim">nothing</span>`}</span></a>`;
+      }).join("")}
+    </div></div>${pagerHtml(from, page.length, rows.length, p, pages)}` : `<div class="rv-empty">${all.length ? "No engagement matches these filters." : "No engagements yet. Create one with New engagement."}</div>`;
 }
-$("#eng-list").addEventListener("click", (ev) => { const b = ev.target.closest("[data-eng]"); if (b) location.hash = "eng-" + b.dataset.eng; });
-$("#eng-filter").addEventListener("input", renderList);
+$("#eng-chips").addEventListener("click", (ev) => { const b = ev.target.closest("[data-engf]"); if (b) { state.engFilter = b.dataset.engf; state.engPage = 0; renderList(); } });
+$("#eng-list").addEventListener("click", (ev) => { const b = ev.target.closest("[data-page]"); if (b) { state.engPage = (state.engPage || 0) + Number(b.dataset.page); renderList(); } });
+$("#eng-filter").addEventListener("input", () => { state.engPage = 0; renderList(); });
 
 function approvalCard(a, withEng) {
   return `<div class="rv-card rv-approval"><div class="rv-card-body">
@@ -255,34 +299,29 @@ async function openEngagement(name, keepTab) {
 function renderDetail() {
   const d = state.detail, i = d.info, r = i.rules;
   const ov = (state.overview?.engagements || []).find((e) => e.engagement === d.engagement) || {};
-  const [label, , cls] = engState({ ...ov, halted: i.halted });
-  const counts = { findings: d.findings.length };
-  if (ov.model_problems) counts.models = ov.model_problems;
+  const [label] = engState({ ...ov, halted: i.halted });
   $("#detail").innerHTML = `
-    <div class="rv-detail-head">
-      <div class="rv-detail-title"><h1 class="rv-h-display">${esc(d.engagement)}</h1>${tag(label, cls)} ${tierTags(r.tiers)}</div>
-      <div class="rv-meta"><span>${esc(d.meta.client || "No client name yet")}</span><span>${esc(r.network)}</span><span>max ${esc(r.max_rate)}/s</span>${r.worker === "private" ? "<span>private worker</span>" : ""}</div>
+    <div class="rv-eng-bar">
+      <div class="who">
+        <div class="name"><b>${esc(d.engagement)}</b>${pill(label, ENG_PILL[label])}</div>
+        <div class="rv-meta"><span>${esc(d.meta.client || "No client name yet")}</span><span>${esc(r.network)}</span><span>max ${esc(r.max_rate)}/s</span>${r.worker === "private" ? "<span>private worker</span>" : ""}<span>tiers: ${esc((r.tiers || []).join(", ") || "none")}</span></div>
+      </div>
       <div class="rv-detail-actions">
         ${i.halted ? `<button id="resume-btn" class="rv-btn">Resume</button>` : `<button id="halt-btn" class="rv-btn danger">Halt now</button>`}
-        <button id="close-btn" class="rv-btn">Close out…</button>
-        <button id="delete-btn" class="rv-btn ghost danger-quiet">Delete…</button>
+        <button id="close-btn" class="rv-btn">Close out</button>
+        <button id="delete-btn" class="rv-btn danger-quiet">Delete</button>
       </div>
-      <div id="confirm-slot"></div>
     </div>
-    <div class="rv-tabs" role="tablist" aria-label="Engagement sections">
-      ${Object.entries(TABS).map(([t, name]) => `<button role="tab" id="tab-${t}" aria-controls="pane" aria-selected="${state.tab === t}" tabindex="${state.tab === t ? 0 : -1}" data-tab="${t}" class="rv-tab ${state.tab === t ? "active" : ""}">${name}${counts[t] !== undefined ? ` <span class="n">${counts[t]}</span>` : ""}</button>`).join("")}
-    </div>
-    <div id="pane" class="rv-pane" role="tabpanel" aria-labelledby="tab-${state.tab}" tabindex="-1"></div>`;
-  $$(".rv-tab").forEach((b) => b.addEventListener("click", () => { state.tab = b.dataset.tab; renderDetail(); }));
-  // keyboard: arrow keys, Home and End move between tabs (WAI-ARIA tabs pattern)
-  $(".rv-tabs").addEventListener("keydown", (ev) => {
-    const keys = Object.keys(TABS), i = keys.indexOf(state.tab);
-    const next = { ArrowRight: i + 1, ArrowLeft: i - 1, Home: 0, End: keys.length - 1 }[ev.key];
-    if (next === undefined) return;
-    ev.preventDefault();
-    state.tab = keys[(next + keys.length) % keys.length]; renderDetail();
-    $(`#tab-${state.tab}`).focus();
-  });
+    <div id="confirm-slot"></div>
+    <h1 class="rv-h-display rv-sec-title">${TABS[state.tab]}</h1>
+    <div id="pane" class="rv-pane" role="region" aria-label="${TABS[state.tab]}"></div>`;
+  // the sections are links in the sidebar; keep the address in step when a section is opened from inside a page
+  if (state.view === "engagements" && !state.picking) {
+    const want = `#eng-${d.engagement}/${state.tab}`;
+    if (location.hash !== want) history.replaceState(null, "", want);
+    crumbs([["Console", "#engagements"], ["Home", "#engagements"], [d.engagement, `#eng-${d.engagement}/overview`], [TABS[state.tab]]]);
+  }
+  renderEngNav();
   connectStream();
   $("#halt-btn")?.addEventListener("click", (ev) => lifecycle(ev.currentTarget, "halt", "Halted: running commands were killed."));
   $("#resume-btn")?.addEventListener("click", (ev) => lifecycle(ev.currentTarget, "resume", "Resumed."));
@@ -321,23 +360,36 @@ function paneOverview() {
   d.findings.forEach((f) => { c[f.status] = (c[f.status] || 0) + 1; });
   const conf = d.findings.filter((f) => f.status === "confirmed");
   const n = Object.fromEntries(SEV.map((s) => [s, conf.filter((f) => f.severity === s).length]));
-  const total = conf.length;
+  const total = conf.length, convs = Array.isArray(d.conversations) ? d.conversations : [];
   const prompt = `Engagement \`${d.engagement}\`: <what to test>. Follow the matching playbooks, then write the executive summary and generate the report.`;
-  const kpi = (label, value, color, delta) => `<div class="rv-kpi"><span class="rv-label">${color ? `<span class="rv-dot ${color}"></span>` : ""}${label}</span><span class="rv-value">${value}</span><span class="rv-delta">${delta}</span></div>`;
+  // each tile opens the findings it counts
+  const kpi = (label, value, mark, note, status, sev = "") => `<button class="rv-kpi ${value ? "" : "zero"}" data-kstatus="${status}" data-ksev="${sev}">
+    <span class="rv-label">${mark}${label}</span><span class="rv-value">${value}</span><span class="rv-delta">${note}</span></button>`;
+  const sq = (s) => `<span class="rv-sev c-${s}"><span class="mark"></span></span>`;
+  const next = (title, sub, action = "", cls = "") => `<div class="rv-next ${cls}"><div class="body"><span class="rv-label">${cls === "idle" ? "Status" : "Next step"}</span><b>${title}</b><span class="sub">${sub}</span></div>${action}</div>`;
+  const go = (tab, label, filter = "") => `<button class="rv-btn accent" data-goto="${tab}" data-ffilter="${filter}">${label}</button>`;
+  // the one thing that needs the operator, from what this page already knows; otherwise the report's state decides (below)
+  const first = i.halted ? next("This engagement is halted", "Running commands were stopped and new ones are refused until you resume it.", "", "danger")
+    : d.approvals.length ? next(`${d.approvals.length} command${d.approvals.length === 1 ? " waits" : "s wait"} for your approval`, "Each approval works once, for that exact command. After you approve, tell the agent to run it again.")
+    : c.candidate ? next(`${c.candidate} finding${c.candidate === 1 ? "" : "s"} to triage`, "Confirm each one, or close it as a false positive or a duplicate.", go("findings", "Open findings", "candidate"))
+    : !convs.length && !d.findings.length ? next("Start the agent on this engagement", "No conversation is bound yet. Start one below; it follows this engagement's rules, and halting stops it.")
+    : "";
   $("#pane").innerHTML = `
-    ${d.approvals.length ? `<div class="rv-stack"><span class="rv-label">Waiting for your approval</span>${d.approvals.map((a) => approvalCard(a, false)).join("")}</div>` : ""}
+    <div id="ov-next">${first}</div>
+    ${d.approvals.length ? `<div class="rv-stack">${d.approvals.map((a) => approvalCard(a, false)).join("")}</div>` : ""}
     <div class="rv-stack">
       <div class="rv-kpi-grid">
-        ${kpi("Critical", n.critical, "c-critical", "open, confirmed")}
-        ${kpi("High", n.high, "c-high", "open, confirmed")}
-        ${kpi("Medium", n.medium, "c-medium", "open, confirmed")}
-        ${kpi("Low / info", n.low + n.info, "c-low", "open, confirmed")}
-        ${kpi("To triage", c.candidate || 0, "", `${c["false-positive"] || 0} false positive · ${c.duplicate || 0} duplicate`)}
+        ${kpi("Critical", n.critical, sq("critical"), "open, confirmed", "confirmed", "critical")}
+        ${kpi("High", n.high, sq("high"), "open, confirmed", "confirmed", "high")}
+        ${kpi("Medium", n.medium, sq("medium"), "open, confirmed", "confirmed", "medium")}
+        ${kpi("Low / info", n.low + n.info, sq("low"), "open, confirmed", "confirmed")}
+        ${kpi("To triage", c.candidate || 0, "", `${c["false-positive"] || 0} false positive · ${c.duplicate || 0} duplicate`, "candidate")}
+        ${kpi("Fixed", c.fixed || 0, "", `${c["accepted-risk"] || 0} accepted risk`, "fixed")}
       </div>
       ${total ? `<div class="rv-sev-bar" aria-label="Confirmed findings by severity">${SEV.map((s) => n[s] ? `<span style="width:${(100 * n[s] / total).toFixed(1)}%;background:var(--rv-sev-${s})"></span>` : "").join("")}</div>` : ""}
     </div>
     <div class="rv-two">
-      <div class="rv-card"><div class="rv-card-head"><h3>Scope and rules</h3><button class="rv-btn ghost sm" data-goto="scope">Edit</button></div>
+      <div class="rv-card"><div class="rv-card-head"><h3>Scope and rules</h3><button class="rv-btn ghost" data-goto="scope">Edit</button></div>
         <div class="rv-card-body"><dl class="rv-kv">
           <dt>Targets</dt><dd>${codeChips([...sc.nets, ...sc.domains, ...sc.paths])}</dd>
           <dt>Tiers</dt><dd>${tierTags(i.rules.tiers)}${i.rules.strict ? " " + tag("strict", "warn") : ""}</dd>
@@ -349,13 +401,29 @@ function paneOverview() {
         </dl></div></div>
       ${modelsCard(d)}
     </div>
-    <div class="rv-two">
-      ${conversationsCard(d)}
-      ${credentialsCard(d)}
-    </div>`;
+    ${conversationsCard(d)}
+    ${credentialsCard(d)}`;
   bindConversations(d, prompt);
   bindCredentials(d);
-  $$("[data-goto]").forEach((b) => b.addEventListener("click", () => { state.tab = b.dataset.goto; renderDetail(); }));
+  const bindGoto = () => $$("#pane [data-goto]").forEach((b) => { b.onclick = () => { if (b.dataset.ffilter) { state.findingFilter = b.dataset.ffilter; state.findingPage = 0; } state.tab = b.dataset.goto; renderDetail(); }; });
+  bindGoto();
+  $$("[data-kstatus]").forEach((b) => b.addEventListener("click", () => {
+    Object.assign(state, { findingFilter: b.dataset.kstatus, findingSev: b.dataset.ksev, findingPage: 0, findingQuery: "", tab: "findings" }); renderDetail();
+  }));
+  if (first) return;
+  (async () => {  // nothing urgent on this page: say where the report stands
+    let r;
+    try { r = await api(`/api/eng/${enc(d.engagement)}/delivery`); } catch { return; }
+    if (state.tab !== "overview" || state.current !== d.engagement || !$("#ov-next")) return;
+    const v = r.revisions[0], open = go("report", "Open report");
+    $("#ov-next").innerHTML = !v ? (d.findings.some((f) => ["confirmed", "fixed"].includes(f.status)) ? next("Generate the report", "There are reported findings and no report revision yet.", open)
+        : next("Nothing needs you right now", "No approvals are waiting and there is nothing to triage.", "", "idle"))
+      : v.state === "ready" ? next(`Report ${esc(v.id)} is ready`, "Review it, then approve it for delivery.", open)
+      : v.state === "approved" && !v.transmissions.length ? next(`Report ${esc(v.id)} is approved`, "Record the sending once it is with the client.", open)
+      : v.state === "generated" ? next(`${r.readiness.blocking.length} check${r.readiness.blocking.length === 1 ? " blocks" : "s block"} delivery of ${esc(v.id)}`, "Fix them or record an exception, then generate the report again.", open)
+      : next("Nothing needs you right now", `Report ${esc(v.id)} is ${esc(v.state)}${v.transmissions.length ? " and its sending is recorded" : ""}.`, "", "idle");
+    bindGoto();
+  })();
 }
 
 // ---------------------------------------------------------------- models, conversations, credentials (RW-006/7)
@@ -374,15 +442,17 @@ function modelsCard(d) {
 }
 function conversationsCard(d) {
   const cs = d.conversations, err = cs && !Array.isArray(cs) ? cs.error : null, rows = Array.isArray(cs) ? cs : [];
-  return `<div class="rv-card"><div class="rv-card-head"><h3>Conversations</h3><a class="rv-btn ghost sm" href="${esc(state.overview?.ui_url || "#")}" target="_blank" rel="noopener">Open agent UI ↗</a></div>
+  return `<div class="rv-card"><div class="rv-card-head"><h3>Conversations <span class="rv-dim">${rows.length}</span></h3><a class="rv-btn ghost" href="${esc(state.overview?.ui_url || "#")}" target="_blank" rel="noopener">Open agent UI ↗</a></div>
+    ${rows.length ? `<div class="rv-dl" style="--cols:minmax(0, 1fr) 130px 90px;--minw:440px"><div class="rv-dl-in">${rows.map((c) => `<div class="rv-dl-row tall">
+      <span class="two"><a href="${esc(c.url)}" target="_blank" rel="noopener" title="${esc(c.title || c.id)}">${esc(c.title || c.id)}</a><small>${esc(c.id.slice(0, 8))} · bound ${fmtTime(c.bound)}</small></span>
+      <span>${c.status ? pill(c.status, c.status === "running" ? "ok" : "closed") : ""}</span>
+      <span class="acts"><button class="rv-btn ghost" data-unbind="${esc(c.id)}">Unbind</button></span></div>`).join("")}</div></div>` : ""}
     <div class="rv-card-body">
       ${err ? `<p class="err">${esc(err)}</p>` : ""}
-      ${rows.length ? `<ul class="rv-rows">${rows.map((c) => `<li><a href="${esc(c.url)}" target="_blank" rel="noopener">${esc(c.title || c.id)}</a> ${c.status ? tag(c.status, c.status === "running" ? "running" : "") : ""}
-        <span class="rv-dim">${esc(c.id.slice(0, 8))} · ${fmtTime(c.bound)}</span> <button class="rv-btn ghost sm" data-unbind="${esc(c.id)}">Unbind</button></li>`).join("")}</ul>`
-        : `<p class="hint">No conversation is bound to this engagement yet. A bound conversation follows the engagement: its client-data rule applies to every model it uses, and halting stops it.</p>`}
-      <label class="rv-label" for="conv-msg">First message (optional)</label>
-      <textarea id="conv-msg" class="rv-input" rows="3" placeholder="What to test, e.g. a web assessment of the in-scope app; follow the playbooks and write the report."></textarea>
-      <div class="rv-actions start"><button id="conv-new" class="rv-btn sm">New conversation</button><button id="copy-prompt" class="rv-btn ghost sm">${ICON_COPY} Copy prompt</button></div>
+      ${rows.length ? "" : `<p class="hint">No conversation is bound to this engagement yet. A bound conversation follows the engagement: its client-data rule applies to every model it uses, and halting stops it.</p>`}
+      <label class="rv-field"><span class="rv-field-label">First message for a new conversation (optional)</span>
+        <textarea id="conv-msg" class="rv-input" rows="2" placeholder="What to test, e.g. a web assessment of the in-scope app; follow the playbooks and write the report."></textarea></label>
+      <div class="rv-actions start"><button id="conv-new" class="rv-btn">New conversation</button><button id="copy-prompt" class="rv-btn ghost">${ICON_COPY} Copy starter prompt</button></div>
     </div></div>`;
 }
 function bindConversations(d, prompt) {
@@ -398,14 +468,20 @@ function bindConversations(d, prompt) {
 }
 function credentialsCard(d) {
   const cs = d.credentials || [];
-  return `<div class="rv-card"><div class="rv-card-head"><h3>Credentials</h3></div><div class="rv-card-body">
-    ${cs.length ? `<ul class="rv-rows">${cs.map((c) => `<li><b>${esc(c.name)}</b> <span class="rv-code-chip">$${esc(c.env)}</span> <span class="rv-code-chip">${esc(c.ref)}</span>
-      <span class="rv-dim">${fmtTime(c.set_at)} · ${esc(c.set_by || "")}</span> <button class="rv-btn ghost sm" data-credrm="${esc(c.name)}">Remove</button></li>`).join("")}</ul>`
-      : `<p class="hint">None stored. The agent uses a credential by reference ($RV_CRED_NAME in commands, {{cred:NAME}} in requests); the value never reaches the model and is replaced by the reference in output and evidence.</p>`}
-    <div class="rv-form-row"><input id="cred-name" class="rv-input" placeholder="NAME" autocomplete="off" spellcheck="false" maxlength="32" aria-label="Credential name">
-      <input id="cred-value" class="rv-input" type="password" placeholder="value" autocomplete="new-password" aria-label="Credential value">
-      <button id="cred-save" class="rv-btn sm">Store</button></div>
-  </div></div>`;
+  return `<div class="rv-card"><div class="rv-card-head"><h3>Credentials <span class="rv-dim">${cs.length}</span></h3></div>
+    ${cs.length ? `<div class="rv-dl" style="--cols:minmax(120px, 1fr) minmax(200px, 1.4fr) 270px;--minw:660px"><div class="rv-dl-in">
+      <div class="rv-dl-head"><span>Name</span><span>Stored</span><span></span></div>
+      ${cs.map((c) => `<div class="rv-dl-row"><b class="mono" title="${esc(c.name)}">${esc(c.name)}</b>
+        <span title="${esc(c.set_by || "")}">${fmtTime(c.set_at)}${c.set_by ? ` · ${esc(c.set_by)}` : ""}</span>
+        <span class="acts"><button class="rv-btn ghost" data-copy="$${esc(c.env)}" title="Copy $${esc(c.env)}, the reference for commands">${ICON_COPY} Command</button>
+          <button class="rv-btn ghost" data-copy="${esc(c.ref)}" title="Copy ${esc(c.ref)}, the reference for requests">${ICON_COPY} Request</button>
+          <button class="rv-btn ghost danger-quiet" data-credrm="${esc(c.name)}">Remove</button></span></div>`).join("")}</div></div>` : ""}
+    <div class="rv-card-body">
+      <p class="hint">The agent uses a credential by reference: $RV_CRED_NAME in commands, {{cred:NAME}} in requests. The value never reaches the model and is replaced by the reference in output and evidence.</p>
+      <div class="rv-form-row"><input id="cred-name" class="rv-input" placeholder="NAME" autocomplete="off" spellcheck="false" maxlength="32" aria-label="Credential name">
+        <input id="cred-value" class="rv-input" type="password" placeholder="value" autocomplete="new-password" aria-label="Credential value">
+        <button id="cred-save" class="rv-btn">Store</button></div>
+    </div></div>`;
 }
 function bindCredentials(d) {
   $("#cred-save").addEventListener("click", async (ev) => {
@@ -414,6 +490,7 @@ function bindCredentials(d) {
     $("#cred-value").value = "";
     if (r) openEngagement(d.engagement, true);
   });
+  $$("[data-copy]").forEach((b) => b.addEventListener("click", () => navigator.clipboard.writeText(b.dataset.copy).then(() => toast(`Copied ${b.dataset.copy}`)).catch(() => toast("Copy failed.", true))));
   $$("[data-credrm]").forEach((b) => b.addEventListener("click", async (ev) => {
     const r = await act(ev.currentTarget, () => api(`/api/eng/${enc(d.engagement)}/cred`, { name: b.dataset.credrm, remove: true }), "Removed.");
     if (r) openEngagement(d.engagement, true);
@@ -423,12 +500,13 @@ function bindCredentials(d) {
 function paneScope() {
   const d = state.detail, p = state.preview;
   $("#pane").innerHTML = `
-    <p class="hint">Edit the scope and rules, preview what changes, then apply. Applying rebuilds the engagement's firewall at once.</p>
+    <div class="rv-card"><div class="rv-card-head"><h3>Scope and rules <span class="rv-dim">revision ${esc(d.info.revision ?? "")} in force</span></h3>
+        <span class="rv-actions"><button id="preview-btn" class="rv-btn">Preview changes</button><button id="apply-btn" class="rv-btn accent" ${p && p.diff && !(p.errors || []).length ? "" : "disabled"}>Apply</button></span></div>
+      <div class="rv-card-body"><p class="hint">Edit either file, preview what changes, then apply. Applying rebuilds the engagement's firewall at once; Apply stays off until a preview shows a change without errors.</p>
     <div class="rv-two">
       <label class="rv-field"><span class="rv-field-label">SCOPE.md</span><textarea id="scope-text" class="rv-input" rows="14" spellcheck="false">${esc(d.scope_text)}</textarea></label>
       <label class="rv-field"><span class="rv-field-label">RULES.md</span><textarea id="rules-text" class="rv-input" rows="14" spellcheck="false">${esc(d.rules_text)}</textarea></label>
-    </div>
-    <div class="rv-actions"><button id="preview-btn" class="rv-btn">Preview changes</button><button id="apply-btn" class="rv-btn accent" ${p && p.diff && !(p.errors || []).length ? "" : "disabled"}>Apply</button></div>
+    </div></div></div>
     <div id="preview-out" class="rv-stack">${p ? previewHtml(p) : ""}</div>`;
   const reset = () => { state.preview = null; $("#apply-btn").disabled = true; $("#preview-out").innerHTML = ""; };
   $("#scope-text").addEventListener("input", reset); $("#rules-text").addEventListener("input", reset);
@@ -463,74 +541,133 @@ function previewHtml(p) {
     </div></div>`;
 }
 
+// ---------------------------------------------------------------- findings
+// A list with search, status and severity filters and a pager; the selected finding opens in a panel beside the list.
+const STATUS_LABEL = { all: "All", candidate: "To triage", confirmed: "Confirmed", "false-positive": "False positive", duplicate: "Duplicate", fixed: "Fixed", "accepted-risk": "Accepted risk" };
+const STATUS_DOT = { candidate: "warn", confirmed: "open", fixed: "ok" };
+const FINDING_PAGE = 25;
+const ICON_SEARCH = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg>`;
+const ICON_CLOSE = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18"/></svg>`;
+const cap = (s) => String(s || "").replace(/^./, (c) => c.toUpperCase());
+const statusPill = (f) => `<span class="rv-pill ${STATUS_DOT[f.status] || "closed"}"><span class="rv-dot"></span>${esc(STATUS_LABEL[f.status] || f.status)}${f.duplicate_of ? " of " + esc(f.duplicate_of) : ""}</span>`;
+const sevMark = (s) => `<span class="rv-sev c-${esc(s)}"><span class="mark"></span><span class="word">${esc(cap(s))}</span></span>`;
+
+function findingRows() {
+  const filt = state.findingFilter, q = state.findingQuery.trim().toLowerCase(), sev = state.findingSev;
+  const closed = (f) => (f.status === "candidate" || f.status === "confirmed" ? 0 : 1);
+  return state.detail.findings
+    .filter((f) => (filt === "all" || f.status === filt) && (!sev || f.severity === sev)
+      && (!q || [f.id, f.title, f.asset, f.cwe].some((v) => String(v || "").toLowerCase().includes(q))))
+    .sort((a, b) => closed(a) - closed(b) || SEV.indexOf(a.severity) - SEV.indexOf(b.severity) || a.id.localeCompare(b.id));
+}
+
 function paneFindings() {
-  const d = state.detail, filt = state.findingFilter;
+  const d = state.detail, filt = state.findingFilter, ev = state.evidence;
   const n = (s) => d.findings.filter((f) => s === "all" || f.status === s).length;
-  const rows = d.findings.filter((f) => filt === "all" || f.status === filt).sort((a, b) => SEV.indexOf(a.severity) - SEV.indexOf(b.severity) || a.id.localeCompare(b.id));
-  const ev = state.evidence;
+  const cur = d.findings.find((f) => f.id === state.openFinding);
+  if (!cur) state.openFinding = null;
   $("#pane").innerHTML = `
-    <div class="rv-actions" style="justify-content:space-between">
-      <div class="rv-sev-filters">${["all", ...STATUSES].map((s) => `<button class="rv-sev-filter ${s === filt ? "active" : ""}" data-filter="${s}">${s} <span class="count">${n(s)}</span></button>`).join("")}</div>
-      <button id="ev-btn" class="rv-btn sm">Check evidence integrity</button>
+    <div class="rv-toolbar">
+      <div class="rv-search">${ICON_SEARCH}<input id="f-q" class="rv-input" type="search" placeholder="Search title, id, asset, CWE" aria-label="Search findings" value="${esc(state.findingQuery)}"></div>
+      <div class="rv-chipset" role="group" aria-label="Status">${["all", ...STATUSES].map((s) => `<button class="rv-chip ${s === filt ? "active" : ""} ${n(s) ? "" : "empty"}" aria-pressed="${s === filt}" data-filter="${s}">${STATUS_LABEL[s]} <span class="count">${n(s)}</span></button>`).join("")}</div>
+      <select id="f-sev" class="rv-select fit" aria-label="Severity"><option value="">Any severity</option>${SEV.map((s) => `<option value="${s}" ${s === state.findingSev ? "selected" : ""}>${cap(s)}</option>`).join("")}</select>
     </div>
-    ${ev ? ev.issues.length ? `<div class="rv-banner danger"><div class="rv-banner-body"><p class="rv-banner-title">Evidence problems</p><ul>${ev.issues.map((x) => `<li>${esc(x)}</li>`).join("")}</ul></div></div>`
-      : `<div class="rv-banner"><div class="rv-banner-body"><p class="rv-banner-title">All evidence checks out</p><p class="rv-banner-sub">Every file matches the hash recorded when the sandbox produced it.</p></div></div>` : ""}
-    <div class="rv-finding-list">${rows.map((f) => `<button class="rv-row ${state.openFinding === f.id ? "selected" : ""}" data-fid="${esc(f.id)}">
-        <span class="ind c-${esc(f.severity)}"></span>
-        <span style="min-width:0"><div class="title">${esc(f.title)}</div>
-          <div class="meta">${esc(f.id)}<span class="slash">/</span>${esc(f.asset || "no asset")}${f.cwe ? `<span class="slash">/</span>${esc(f.cwe)}` : ""}</div></span>
-        ${f.priority ? tag(f.priority) : ""}${f.verification === "verified" ? tag("verified", "ok") : f.verification === "not-reproducible" ? tag("not reproducible", "warn") : ""}
-        ${sevTag(f.severity)}
-        ${tag(f.status + (f.duplicate_of ? " of " + f.duplicate_of : ""), { confirmed: "sev-critical", fixed: "ok", candidate: "warn" }[f.status] || "")}
-      </button>${state.openFinding === f.id ? editor(f, ev) : ""}`).join("") || `<div class="rv-empty">No findings${filt === "all" ? " yet" : " with this status"}.</div>`}</div>`;
-  $$("[data-filter]").forEach((b) => b.addEventListener("click", () => { state.findingFilter = b.dataset.filter; paneFindings(); }));
+    ${ev && ev.issues.length ? `<div class="rv-banner danger"><div class="rv-banner-body"><p class="rv-banner-title">Evidence problems</p><ul>${ev.issues.map((x) => `<li>${esc(x)}</li>`).join("")}</ul></div></div>` : ""}
+    <div class="rv-findings ${cur ? "has-open" : ""}">
+      <section class="rv-flist" aria-label="Findings"><div id="f-rows"></div>
+        <div class="rv-evrow"><span class="rv-ok-note">${!ev ? "Evidence files are checked against the hashes recorded when the sandbox produced them."
+          : ev.issues.length ? `<span class="rv-dot c-critical"></span>${ev.issues.length} evidence problem${ev.issues.length === 1 ? "" : "s"}, listed above`
+          : `<span class="rv-dot c-ok"></span>Every evidence file matches its recorded hash`}</span>
+          <button id="ev-btn" class="rv-btn">${ev ? "Check again" : "Check evidence integrity"}</button></div></section>
+      ${cur ? findingPanel(cur, ev) : ""}
+    </div>`;
+
+  const row = (f) => `<button class="rv-frow ${state.openFinding === f.id ? "selected" : ""}" aria-pressed="${state.openFinding === f.id}" data-fid="${esc(f.id)}">
+      ${sevMark(f.severity)}
+      <span class="body"><span class="title">${esc(f.title)}</span>
+        <span class="meta">${[f.id, f.asset || "no asset", f.cwe, f.verification === "verified" ? "verified" : f.verification === "not-reproducible" ? "not reproducible" : ""].filter(Boolean).map(esc).join(" · ")}</span></span>
+      <span class="pri">${esc(f.priority || "")}</span>
+      ${statusPill(f)}
+    </button>`;
+  const fill = () => {
+    const rows = findingRows(), pages = Math.max(1, Math.ceil(rows.length / FINDING_PAGE));
+    state.findingPage = Math.max(0, Math.min(state.findingPage, pages - 1));
+    const from = state.findingPage * FINDING_PAGE, page = rows.slice(from, from + FINDING_PAGE);
+    $("#f-rows").innerHTML = rows.length ? `<div class="rv-fhead" aria-hidden="true"><span>Severity</span><span>Finding</span><span class="pri">Pri</span><span>Status</span></div>
+      ${page.map(row).join("")}
+      <div class="rv-pager"><span>${from + 1}–${from + page.length} of ${rows.length}</span>
+        ${pages > 1 ? `<span class="rv-pager-nav"><button class="rv-btn ghost" data-page="-1" ${state.findingPage ? "" : "disabled"}>Previous</button><span>Page ${state.findingPage + 1} of ${pages}</span><button class="rv-btn ghost" data-page="1" ${state.findingPage < pages - 1 ? "" : "disabled"}>Next</button></span>` : ""}
+        <span>Open first, then by severity</span></div>`
+      : `<div class="rv-empty">${d.findings.length ? "No findings match these filters." : "No findings yet."}</div>`;
+    $$("#f-rows [data-fid]").forEach((b) => b.addEventListener("click", () => {
+      state.openFinding = state.openFinding === b.dataset.fid ? null : b.dataset.fid; state.findingTab = "details"; paneFindings();
+    }));
+    $$("#f-rows [data-page]").forEach((b) => b.addEventListener("click", () => { state.findingPage += Number(b.dataset.page); fill(); }));
+  };
+  fill();
+
+  $$("[data-filter]").forEach((b) => b.addEventListener("click", () => { state.findingFilter = b.dataset.filter; state.findingPage = 0; paneFindings(); }));
+  $("#f-q").addEventListener("input", (e) => { state.findingQuery = e.target.value; state.findingPage = 0; fill(); });
+  $("#f-sev").addEventListener("change", (e) => { state.findingSev = e.target.value; state.findingPage = 0; fill(); });
   $("#ev-btn").addEventListener("click", async (e) => {
     const r = await act(e.currentTarget, () => api(`/api/eng/${enc(d.engagement)}/evidence`));
     if (r) { state.evidence = r; paneFindings(); }
   });
-  $$("[data-fid]").forEach((b) => b.addEventListener("click", () => { state.openFinding = state.openFinding === b.dataset.fid ? null : b.dataset.fid; paneFindings(); }));
+  if (!cur) return;
+
+  $("#fe-close").addEventListener("click", () => { state.openFinding = null; paneFindings(); });
+  // the panel's sections are shown and hidden, not rendered again, so an unsaved edit survives a look at the evidence
+  const showTab = async (t) => {
+    if (!$(`[data-fsec="${t}"]`)) t = "details";
+    state.findingTab = t;
+    $$("[data-ftab]").forEach((b) => { const on = b.dataset.ftab === t; b.classList.toggle("active", on); b.setAttribute("aria-selected", on); });
+    $$("[data-fsec]").forEach((s) => { s.hidden = s.dataset.fsec !== t; });
+    const box = $("#fe-history");
+    if (t === "history" && !box.dataset.loaded) {
+      box.dataset.loaded = "1";
+      const id = state.openFinding, h = await act(null, () => api(`/api/eng/${enc(d.engagement)}/history?id=${enc(id)}`));
+      if (state.openFinding !== id || !$("#fe-history")) return;
+      if (h) $("#fe-history").innerHTML = historyHtml(h); else delete $("#fe-history").dataset.loaded;
+    }
+  };
+  $$("[data-ftab]").forEach((b) => b.addEventListener("click", () => showTab(b.dataset.ftab)));
+  showTab(state.findingTab);
+
   const save = $("#fe-save");
-  if (save) {
-    const cur = d.findings.find((x) => x.id === state.openFinding) || {};
-    const sync = () => {
-      const st = $("#fe-status").value;
-      $("#fe-dup-wrap").hidden = st !== "duplicate";
-      $("#fe-method-wrap").hidden = st !== "confirmed" || cur.status === "confirmed";
-      const needs = ["false-positive", "accepted-risk"].includes(st) && st !== cur.status || $("#fe-sev").value !== cur.severity
-        || cur.priority && $("#fe-prio").value !== cur.priority;
-      $("#fe-reason-label").textContent = needs ? "Reason (required for this change)" : "Reason (optional)";
-    };
-    ["#fe-status", "#fe-sev", "#fe-prio"].forEach((s) => $(s).addEventListener("change", sync));
-    sync();
-    save.addEventListener("click", async () => {
-      const body = { id: state.openFinding, status: $("#fe-status").value, severity: $("#fe-sev").value, notes: $("#fe-notes").value };
-      if (Number.isInteger(cur.revision)) body.revision = cur.revision;
-      if (body.status === "duplicate") body.duplicate_of = $("#fe-dup").value.trim();
-      if ($("#fe-prio").value && $("#fe-prio").value !== (cur.priority || "")) body.priority = $("#fe-prio").value;
-      const vec = $("#fe-cvss").value.trim();
-      if (vec && vec !== (cur.cvss_vector || "")) body.cvss_vector = vec;
-      const pre = $("#fe-prereq").value.trim();
-      if (pre !== (cur.prerequisites || "")) body.prerequisites = pre;
-      if (body.status === "confirmed" && cur.status !== "confirmed" && $("#fe-method").value) body.method = $("#fe-method").value;
-      if ($("#fe-reason").value.trim()) body.reason = $("#fe-reason").value.trim();
-      const r = await act(save, () => api(`/api/eng/${enc(d.engagement)}/finding`, body), "Saved.");
-      if (r) { await openEngagement(d.engagement, true); refresh(); }
-    });
-    $("#fe-nr")?.addEventListener("click", async (ev) => {
-      const reason = $("#fe-reason").value.trim();
-      if (!reason) { toast("Give the reason first: what you tried and what happened.", true); $("#fe-reason").focus(); return; }
-      const r = await act(ev.currentTarget, () => api(`/api/eng/${enc(d.engagement)}/finding`, { id: state.openFinding, not_reproducible: true, reason }), "Recorded as not reproducible.");
-      if (r) { await openEngagement(d.engagement, true); refresh(); }
-    });
-    $("#fe-hist").addEventListener("click", async (ev) => {
-      const h = await act(ev.currentTarget, () => api(`/api/eng/${enc(d.engagement)}/history?id=${enc(state.openFinding)}`));
-      if (h) $("#fe-history").innerHTML = historyHtml(h);
-    });
-    $$("[data-preview]").forEach((b) => b.addEventListener("click", async (ev) => {
-      const pv = await act(ev.currentTarget, () => api(`/api/eng/${enc(d.engagement)}/preview?path=${enc(b.dataset.preview)}`));
-      if (pv) $("#fe-preview").innerHTML = previewBox(pv);
-    }));
-  }
+  const sync = () => {
+    const st = $("#fe-status").value;
+    $("#fe-dup-wrap").hidden = st !== "duplicate";
+    $("#fe-method-wrap").hidden = st !== "confirmed" || cur.status === "confirmed";
+    const needs = ["false-positive", "accepted-risk"].includes(st) && st !== cur.status || $("#fe-sev").value !== cur.severity
+      || cur.priority && $("#fe-prio").value !== cur.priority;
+    $("#fe-reason-label").textContent = needs ? "Reason (required for this change)" : "Reason (optional)";
+  };
+  ["#fe-status", "#fe-sev", "#fe-prio"].forEach((s) => $(s).addEventListener("change", sync));
+  sync();
+  save.addEventListener("click", async () => {
+    const body = { id: state.openFinding, status: $("#fe-status").value, severity: $("#fe-sev").value, notes: $("#fe-notes").value };
+    if (Number.isInteger(cur.revision)) body.revision = cur.revision;
+    if (body.status === "duplicate") body.duplicate_of = $("#fe-dup").value.trim();
+    if ($("#fe-prio").value && $("#fe-prio").value !== (cur.priority || "")) body.priority = $("#fe-prio").value;
+    const vec = $("#fe-cvss").value.trim();
+    if (vec && vec !== (cur.cvss_vector || "")) body.cvss_vector = vec;
+    const pre = $("#fe-prereq").value.trim();
+    if (pre !== (cur.prerequisites || "")) body.prerequisites = pre;
+    if (body.status === "confirmed" && cur.status !== "confirmed" && $("#fe-method").value) body.method = $("#fe-method").value;
+    if ($("#fe-reason").value.trim()) body.reason = $("#fe-reason").value.trim();
+    const r = await act(save, () => api(`/api/eng/${enc(d.engagement)}/finding`, body), "Saved.");
+    if (r) { await openEngagement(d.engagement, true); refresh(); }
+  });
+  $("#fe-nr")?.addEventListener("click", async (ev) => {
+    const reason = $("#fe-reason").value.trim();
+    if (!reason) { toast("Give the reason first: what you tried and what happened.", true); $("#fe-reason").focus(); return; }
+    const r = await act(ev.currentTarget, () => api(`/api/eng/${enc(d.engagement)}/finding`, { id: state.openFinding, not_reproducible: true, reason }), "Recorded as not reproducible.");
+    if (r) { await openEngagement(d.engagement, true); refresh(); }
+  });
+  $$("[data-preview]").forEach((b) => b.addEventListener("click", async (ev) => {
+    const pv = await act(ev.currentTarget, () => api(`/api/eng/${enc(d.engagement)}/preview?path=${enc(b.dataset.preview)}`));
+    if (pv) $("#fe-preview").innerHTML = previewBox(pv);
+  }));
 }
 function evidenceBadge(st) {
   if (!st) return "";
@@ -550,70 +687,82 @@ function previewBox(pv) {
   return `<div class="rv-preview-box"><div class="rv-meta"><span class="mono">${esc(pv.path)}</span><span>${pv.size} bytes</span><span class="mono">sha256 ${esc(pv.sha256.slice(0, 16))}...</span>${pv.truncated ? "<span>first 256 KB</span>" : ""}<span>secrets redacted in this view</span></div>
     ${pv.binary ? `<p class="rv-dim">Binary file: not shown.</p>` : `<pre class="rv-pre">${esc(pv.text)}</pre>`}</div>`;
 }
-function editor(f, ev) {
+function findingPanel(f, ev) {
   const items = ev?.items?.[f.id] || (f.evidence || []).map((p) => ({ path: p }));
-  const opt = (list, cur) => list.map((s) => `<option ${s === cur ? "selected" : ""}>${s}</option>`).join("");
-  return `<div class="rv-editor">
-    <div class="rv-form-grid">
-      <label class="rv-field"><span class="rv-field-label">Status</span><select id="fe-status" class="rv-select">${opt(STATUSES, f.status)}</select></label>
-      <label class="rv-field"><span class="rv-field-label">Severity</span><select id="fe-sev" class="rv-select">${opt(SEV, f.severity)}</select></label>
-      <label class="rv-field"><span class="rv-field-label">Priority</span><select id="fe-prio" class="rv-select"><option value="">not set</option>${opt(PRIORITIES, f.priority)}</select></label>
-      <label id="fe-method-wrap" class="rv-field" hidden><span class="rv-field-label">Verified by</span><select id="fe-method" class="rv-select"><option value="">not stated</option>${opt(METHODS, "")}</select></label>
-      <label id="fe-dup-wrap" class="rv-field" ${f.status === "duplicate" ? "" : "hidden"}><span class="rv-field-label">Duplicate of</span><input id="fe-dup" class="rv-input" value="${esc(f.duplicate_of || "")}" placeholder="F-001"></label>
+  const inst = f.instances || [];
+  const opt = (list, cur, label = (s) => s) => list.map((s) => `<option value="${s}" ${s === cur ? "selected" : ""}>${label(s)}</option>`).join("");
+  const tabs = [["details", "Details"], ["evidence", `Evidence <span class="n">${items.length}</span>`], ...(inst.length ? [["instances", `Instances <span class="n">${inst.length}</span>`]] : []), ["history", "History"]];
+  const block = (label, html) => `<div class="rv-fblock"><span class="rv-field-label">${label}</span>${html}</div>`;
+  return `<aside class="rv-fpanel" aria-label="Finding ${esc(f.id)}">
+    <div class="rv-fpanel-head">
+      <div class="top"><span class="mono rv-muted">${esc(f.id)}</span>
+        ${tag(f.verification || "unverified", { verified: "ok", "not-reproducible": "warn" }[f.verification] || "")}
+        <button id="fe-close" class="rv-btn ghost icon" aria-label="Close finding">${ICON_CLOSE}</button></div>
+      <h2>${esc(f.title)}</h2>
+      <div class="rv-meta"><span>${esc(f.asset || "no asset")}</span>${f.cwe ? `<span>${esc(f.cwe)}</span>` : ""}${f.cvss_score != null ? `<span>CVSS ${esc(f.cvss_score)}${f.cvss_rating ? ` (${esc(f.cvss_rating)})` : ""}</span>` : ""}</div>
     </div>
-    <label class="rv-field"><span id="fe-reason-label" class="rv-field-label">Reason (optional)</span><input id="fe-reason" class="rv-input" maxlength="2000" placeholder="why: kept with the decision in the finding's history"></label>
-    <label class="rv-field"><span class="rv-field-label">Notes</span><textarea id="fe-notes" class="rv-input" rows="3">${esc(f.notes)}</textarea></label>
-    <div class="rv-form-grid">
-      <label class="rv-field"><span class="rv-field-label">CVSS 3.1 vector (the score is computed)</span><input id="fe-cvss" class="rv-input mono" value="${esc(f.cvss_vector || "")}" placeholder="CVSS:3.1/AV:N/AC:L/PR:L/UI:N/S:U/C:H/I:N/A:N" spellcheck="false"></label>
-      <label class="rv-field"><span class="rv-field-label">Prerequisites</span><input id="fe-prereq" class="rv-input" value="${esc(f.prerequisites || "")}" placeholder="an account in another tenant"></label>
+    <div class="rv-fpanel-body">
+      <div class="rv-fprops">
+        <label class="rv-field"><span class="rv-field-label">Status</span><select id="fe-status" class="rv-select">${opt(STATUSES, f.status, (s) => STATUS_LABEL[s])}</select></label>
+        <label class="rv-field"><span class="rv-field-label">Severity</span><select id="fe-sev" class="rv-select">${opt(SEV, f.severity, cap)}</select></label>
+        <label class="rv-field"><span class="rv-field-label">Priority</span><select id="fe-prio" class="rv-select"><option value="">Not set</option>${opt(PRIORITIES, f.priority)}</select></label>
+        <label id="fe-method-wrap" class="rv-field" hidden><span class="rv-field-label">Verified by</span><select id="fe-method" class="rv-select"><option value="">not stated</option>${opt(METHODS, "")}</select></label>
+        <label id="fe-dup-wrap" class="rv-field" ${f.status === "duplicate" ? "" : "hidden"}><span class="rv-field-label">Duplicate of</span><input id="fe-dup" class="rv-input" value="${esc(f.duplicate_of || "")}" placeholder="F-001"></label>
+      </div>
+      <div class="rv-subtabs" role="tablist" aria-label="Finding sections">${tabs.map(([t, label]) => `<button role="tab" class="rv-subtab" data-ftab="${t}" aria-selected="false">${label}</button>`).join("")}</div>
+      <div class="rv-fsec" data-fsec="details">
+        ${block("Description", `<p class="rv-prose">${esc(f.description)}</p>`)}
+        ${f.reproduction ? block("Reproduction", `<pre class="rv-pre">${esc(f.reproduction)}</pre>`) : ""}
+        ${f.remediation ? block("Remediation", `<p class="rv-prose">${esc(f.remediation)}</p>`) : ""}
+        <label class="rv-field"><span class="rv-field-label">CVSS 3.1 vector (the score is computed)</span><input id="fe-cvss" class="rv-input mono" value="${esc(f.cvss_vector || "")}" placeholder="CVSS:3.1/AV:N/AC:L/PR:L/UI:N/S:U/C:H/I:N/A:N" spellcheck="false"></label>
+        <label class="rv-field"><span class="rv-field-label">Prerequisites</span><input id="fe-prereq" class="rv-input" value="${esc(f.prerequisites || "")}" placeholder="an account in another tenant"></label>
+        <label class="rv-field"><span class="rv-field-label">Notes</span><textarea id="fe-notes" class="rv-input" rows="3">${esc(f.notes)}</textarea></label>
+        <div class="rv-meta">${f.verified_by ? `<span>verified by ${esc(f.verified_by)}${f.verified_method ? ", " + esc(f.verified_method) : ""}, ${fmtTime(f.verified_at)}</span>` : ""}
+          <span>${esc(f.source)}</span><span>updated ${fmtTime(f.updated)}</span><span>revision ${esc(f.revision)}</span></div>
+      </div>
+      <div class="rv-fsec" data-fsec="evidence" hidden>
+        ${items.length ? `<ul class="rv-evidence">${items.map((i) => `<li><span class="rv-code-chip">${esc(i.path)}</span>${evidenceBadge(i.status)}${!String(i.path).startsWith("/src/") ? `<button class="rv-btn ghost" data-preview="${esc(i.path)}">View</button>` : ""}${i.note ? `<span class="rv-dim note">${esc(i.note)}</span>` : ""}</li>`).join("")}</ul>` : `<p class="hint">No evidence is attached to this finding.</p>`}
+        <div id="fe-preview"></div>
+      </div>
+      ${inst.length ? `<div class="rv-fsec" data-fsec="instances" hidden><ul class="rv-evidence">${inst.map((i) => `<li><span class="rv-code-chip">${esc(i.location || i)}</span>${i.observation ? `<span class="rv-dim note">${esc(i.observation)}</span>` : ""}</li>`).join("")}</ul></div>` : ""}
+      <div class="rv-fsec" data-fsec="history" hidden><div id="fe-history"><p class="hint">Loading the history…</p></div></div>
     </div>
-    <dl class="rv-kv">
-      <dt>Verification</dt><dd>${tag(f.verification || "unverified", { verified: "ok", "not-reproducible": "warn" }[f.verification] || "")}
-        ${f.verified_by ? `<span class="rv-dim">by ${esc(f.verified_by)}${f.verified_method ? ", " + esc(f.verified_method) : ""}, ${fmtTime(f.verified_at)}</span>` : ""}</dd>
-      <dt>CWE / CVSS</dt><dd>${esc(f.cwe || "n/a")} · ${esc(f.cvss_score ?? "n/a")}${f.cvss_rating ? ` (${esc(f.cvss_rating)})` : ""} <span class="mono rv-dim">${esc(f.cvss_vector || "")}</span></dd>
-      ${(f.instances || []).length ? `<dt>Instances</dt><dd><ul class="rv-evidence">${f.instances.map((i) => `<li><span class="rv-code-chip">${esc(i.location || i)}</span>${i.observation ? `<span class="rv-dim">${esc(i.observation)}</span>` : ""}</li>`).join("")}</ul></dd>` : ""}
-      <dt>Description</dt><dd><p class="rv-prose">${esc(f.description)}</p></dd>
-      ${f.reproduction ? `<dt>Reproduction</dt><dd><pre class="rv-pre">${esc(f.reproduction)}</pre></dd>` : ""}
-      ${f.remediation ? `<dt>Remediation</dt><dd><p class="rv-prose">${esc(f.remediation)}</p></dd>` : ""}
-      <dt>Evidence</dt><dd>${items.length ? `<ul class="rv-evidence">${items.map((i) => `<li><span class="rv-code-chip">${esc(i.path)}</span>${i.note ? `<span class="rv-dim">${esc(i.note)}</span>` : ""}${evidenceBadge(i.status)}${!String(i.path).startsWith("/src/") ? ` <button class="rv-btn ghost sm" data-preview="${esc(i.path)}">View</button>` : ""}</li>`).join("")}</ul>` : `<span class="rv-dim">none</span>`}
-        <div id="fe-preview"></div></dd>
-      <dt>Source</dt><dd>${esc(f.source)} · updated ${fmtTime(f.updated)} · revision ${esc(f.revision)}</dd>
-    </dl>
-    <div id="fe-history"></div>
-    <div class="rv-actions"><button id="fe-hist" class="rv-btn ghost sm">History</button>${f.status === "confirmed" || f.status === "candidate" ? `<button id="fe-nr" class="rv-btn ghost sm danger-quiet" title="Record that a retest couldn't reproduce it (needs the reason)">Not reproducible</button>` : ""}<button id="fe-save" class="rv-btn accent">Save</button></div></div>`;
+    <div class="rv-fpanel-foot">
+      <label class="rv-field"><span id="fe-reason-label" class="rv-field-label">Reason (optional)</span><input id="fe-reason" class="rv-input" maxlength="2000" placeholder="why: kept with the decision in the finding's history"></label>
+      <div class="rv-actions">${f.status === "confirmed" || f.status === "candidate" ? `<button id="fe-nr" class="rv-btn ghost danger-quiet" title="Record that a retest couldn't reproduce it (needs the reason)">Not reproducible</button>` : ""}<button id="fe-save" class="rv-btn accent">Save changes</button></div>
+    </div>
+  </aside>`;
 }
 
 function paneReport() {
   const d = state.detail, m = d.meta;
-  const files = d.report_files || [];
-  const html = files.filter((f) => f.endsWith(".html"));
   $("#pane").innerHTML = `
-    <div class="rv-card"><div class="rv-card-head"><h3>Cover details</h3><button id="m-save" class="rv-btn sm">Save details</button></div>
-      <div class="rv-card-body"><div class="rv-form-grid">
-        <label class="rv-field"><span class="rv-field-label">Client</span><input id="m-client" class="rv-input" value="${esc(m.client || "")}"></label>
-        <label class="rv-field"><span class="rv-field-label">Prepared by</span><input id="m-by" class="rv-input" value="${esc(m["prepared by"] || "")}"></label>
-        <label class="rv-field"><span class="rv-field-label">Version</span><input id="m-ver" class="rv-input" value="${esc(m.version || "1.0")}"></label>
-        <label class="rv-field"><span class="rv-field-label">Classification</span><input id="m-cls" class="rv-input" value="${esc(m.classification || "Confidential")}"></label>
-      </div></div></div>
-    <div class="rv-card"><div class="rv-card-head"><h3>Executive summary</h3><span class="rv-label">markdown</span></div>
-      <div class="rv-card-body">
-        <textarea id="exec" class="rv-input" rows="10" placeholder="3–5 paragraphs: what was assessed, overall posture, the most important findings in business terms, and the top priorities.">${esc(d.executive_summary)}</textarea>
-        <div class="rv-actions"><button id="exec-save" class="rv-btn">Save summary</button><button id="gen-btn" class="rv-btn accent">Generate report</button></div>
-      </div></div>
+    <ol id="rep-steps" class="rv-stepper" aria-label="Delivery steps"></ol>
     <div id="gen-out"></div>
-    <div id="delivery-out" class="rv-stack"><div class="rv-empty">Loading revisions…</div></div>
-    <div class="rv-card"><div class="rv-card-head"><h3>Files</h3>${html.length ? `<a class="rv-btn sm" href="/report/${enc(d.engagement)}/${enc(html[0])}" target="_blank" rel="noopener">View HTML report ↗</a>` : ""}</div>
-      ${files.length ? `<div class="rv-card-body flush"><table class="rv-table"><tbody>${files.map((f) => `<tr><td><span class="mono">${esc(f)}</span></td>
-        <td style="text-align:right">${f.endsWith(".html") ? `<a href="/report/${enc(d.engagement)}/${enc(f)}" target="_blank" rel="noopener">View</a> · ` : ""}<a href="/files/${enc(d.engagement)}/${enc(f)}">Download</a></td></tr>`).join("")}</tbody></table></div>`
-      : `<div class="rv-empty">No report yet.</div>`}</div>`;
+    <div id="rep-latest"><div class="rv-card"><div class="rv-empty">Loading revisions…</div></div></div>
+    <div id="rep-ready"></div>
+    <div class="rv-card"><div class="rv-card-head"><h3>Report content</h3><button id="gen-btn" class="rv-btn">Generate report</button></div>
+      <div class="rv-card-body">
+        <div class="rv-form-grid">
+          <label class="rv-field"><span class="rv-field-label">Client</span><input id="m-client" class="rv-input" value="${esc(m.client || "")}"></label>
+          <label class="rv-field"><span class="rv-field-label">Prepared by</span><input id="m-by" class="rv-input" value="${esc(m["prepared by"] || "")}"></label>
+          <label class="rv-field"><span class="rv-field-label">Version</span><input id="m-ver" class="rv-input" value="${esc(m.version || "1.0")}"></label>
+          <label class="rv-field"><span class="rv-field-label">Classification</span><input id="m-cls" class="rv-input" value="${esc(m.classification || "Confidential")}"></label>
+        </div>
+        <div class="rv-actions"><button id="m-save" class="rv-btn">Save cover details</button></div>
+        <label class="rv-field"><span class="rv-field-label">Executive summary (markdown)</span>
+          <textarea id="exec" class="rv-input" rows="10" placeholder="3–5 paragraphs: what was assessed, overall posture, the most important findings in business terms, and the top priorities.">${esc(d.executive_summary)}</textarea></label>
+        <div class="rv-actions"><button id="exec-save" class="rv-btn">Save summary</button></div>
+      </div></div>
+    <div id="delivery-out" class="rv-stack"></div>`;
   $("#m-save").addEventListener("click", async (e) => {
     const r = await act(e.currentTarget, () => api(`/api/eng/${enc(d.engagement)}/meta`,
       { client: $("#m-client").value, "prepared by": $("#m-by").value, version: $("#m-ver").value, classification: $("#m-cls").value, digest: d.meta_digest }), "Saved.");
-    if (r) { d.meta = r.meta; d.meta_digest = r.digest; refresh(); }
+    if (r) { d.meta = r.meta; d.meta_digest = r.digest; refresh(); reportSteps(); }
   });
   $("#exec-save").addEventListener("click", async (e) => {
     const r = await act(e.currentTarget, () => api(`/api/eng/${enc(d.engagement)}/summary`, { text: $("#exec").value, digest: d.summary_digest }), "Saved.");
-    if (r) { d.executive_summary = $("#exec").value; d.summary_digest = r.digest; }
+    if (r) { d.executive_summary = $("#exec").value; d.summary_digest = r.digest; reportSteps(); }
   });
   $("#gen-btn").addEventListener("click", async (e) => {
     $("#gen-out").innerHTML = `<div class="rv-banner"><div class="rv-banner-body"><p class="rv-banner-title">Building the report</p><p class="rv-banner-sub">Checking evidence and writing the HTML, Word, PDF and Excel files. Up to a minute.</p></div></div>`;
@@ -628,104 +777,182 @@ function paneReport() {
   loadDelivery();
 }
 
-const REV_CLASS = { approved: "ok", ready: "ok", generated: "warn", superseded: "" };
-const fileLink = (eng, p) => `<a href="/files/${enc(eng)}/${p.split("/").map(enc).join("/")}">${esc(p.split("/").pop())}</a>`;
+const REV_PILL = { approved: "ok", ready: "ok", generated: "warn", superseded: "closed" };
+const EXT_ORDER = ["pdf", "docx", "html", "xlsx", "json"];
+const EXT_LABEL = { pdf: "Report", docx: "Report", html: "Report", xlsx: "Findings", json: "Frozen inputs" };
+const fileExt = (n) => String(n).split(".").pop().toLowerCase();
+const byExt = (names) => [...names].sort((a, b) => (EXT_ORDER.indexOf(fileExt(a)) + 1 || 9) - (EXT_ORDER.indexOf(fileExt(b)) + 1 || 9) || a.localeCompare(b));
+const fileHref = (eng, p) => `/files/${enc(eng)}/${p.split("/").map(enc).join("/")}`;
+const fileLink = (eng, p) => `<a href="${fileHref(eng, p)}">${esc(p.split("/").pop())}</a>`;
+// a report file as a tile: the format is what you pick by, the long name is the tooltip
+const fileTile = (eng, p) => { const name = p.split("/").pop(), x = fileExt(name); return `<a class="rv-file" href="${fileHref(eng, p)}" title="${esc(name)}"><span class="ext">${esc(x)}</span><span class="body"><b>${EXT_LABEL[x] || esc(name)}</b><small>Download</small></span></a>`; };
+
+// the six steps from cover details to a recorded sending; the first one not done is the next thing to do
+function reportSteps() {
+  const d = state.detail, r = state.delivery, box = $("#rep-steps");
+  if (!box || !r || r.engagement !== d.engagement) return;
+  const m = d.meta, latest = r.revisions[0], rd = r.readiness, approved = !!latest && latest.state === "approved";
+  const steps = [
+    ["Cover details", !!(m.client && m["prepared by"]), m.client ? (m["prepared by"] ? "" : "prepared by is empty") : "client is empty"],
+    ["Executive summary", !!String(d.executive_summary || "").trim(), ""],
+    ["Readiness checks", !!rd.ready, rd.ready ? "" : `${rd.blocking.length} blocking`],
+    ["Generate", !!latest, latest ? latest.id : ""],
+    ["Approve", approved, ""],
+    ["Record sending", approved && latest.transmissions.length > 0, ""],
+  ];
+  const cur = steps.findIndex((s) => !s[1]);
+  box.innerHTML = steps.map(([name, ok, note], i) => `<li class="${ok ? "done" : i === cur ? "now" : ""}"><span class="st">${ok ? "Done" : i === cur ? "Next" : "Later"}${note ? " · " + esc(note) : ""}</span><b>${name}</b></li>`).join("");
+}
+
 async function loadDelivery() {
   const d = state.detail, e = enc(d.engagement);
   let r;
-  try { r = await api(`/api/eng/${e}/delivery`); } catch (err) { $("#delivery-out").innerHTML = `<div class="rv-empty err">${esc(err.message)}</div>`; return; }
-  if (state.tab !== "report" || state.current !== d.engagement) return;
-  const rd = r.readiness, latest = r.revisions[0];
+  try { r = await api(`/api/eng/${e}/delivery`); } catch (err) { $("#rep-latest").innerHTML = `<div class="rv-card"><div class="rv-empty err">${esc(err.message)}</div></div>`; return; }
+  if (state.tab !== "report" || state.current !== d.engagement || !$("#rep-latest")) return;
+  state.delivery = { ...r, engagement: d.engagement };
+  const rd = r.readiness, latest = r.revisions[0], earlier = r.revisions.slice(1);
   const reported = d.findings.filter((f) => ["confirmed", "fixed"].includes(f.status));
   const material = d.findings.filter((f) => f.status === "confirmed" && ["critical", "high"].includes(f.severity));
-  $("#delivery-out").innerHTML = `
-    <div class="rv-card"><div class="rv-card-head"><h3>Readiness for delivery</h3>${rd.ready ? tag("nothing blocks", "ok") : tag(`${rd.blocking.length} blocking`, "warn")}</div><div class="rv-card-body">
-      ${rd.blocking.length ? `<ul class="rv-rows">${rd.blocking.map((b) => `<li>${tag(b.check.split(":")[0])} ${esc(b.issue)}${r.exceptable.includes(b.check.split(":")[0]) ? ` <button class="rv-btn ghost sm" data-except="${esc(b.check)}">Except…</button>` : ""}</li>`).join("")}</ul>` : `<p class="hint">Every check passes or has an exception.</p>`}
-      ${rd.excepted.length ? `<p class="rv-field-label">Excepted</p><ul class="rv-rows">${rd.excepted.map((x) => `<li>${tag(x.check)} ${esc(x.issue)}<div class="rv-dim">${esc(x.rationale)} (${esc(x.by)}, ${fmtTime(x.at)})</div></li>`).join("")}</ul>` : ""}
-      ${rd.warnings.length ? `<p class="rv-field-label">Warnings</p><ul class="rv-rows">${rd.warnings.map((w) => `<li class="rv-dim">${esc(w)}</li>`).join("")}</ul>` : ""}
-      <div id="except-form"></div>
-      ${r.exceptions.filter((x) => !x.revoked_at).length ? `<details><summary>Active exceptions</summary><ul class="rv-rows">${r.exceptions.filter((x) => !x.revoked_at).map((x) => `<li>${tag(x.check_key)} ${esc(x.rationale)} <span class="rv-dim">${esc(x.actor)}</span> <button class="rv-btn ghost sm danger-quiet" data-revoke="${x.id}">Revoke</button></li>`).join("")}</ul></details>` : ""}
-    </div></div>
-    <div class="rv-card"><div class="rv-card-head"><h3>Report revisions</h3></div>
-      ${r.revisions.length ? `<div class="rv-card-body flush"><table class="rv-table"><thead><tr><th>Revision</th><th>State</th><th>Files</th><th></th></tr></thead><tbody>${r.revisions.map((v) => `<tr>
-        <td><b>${esc(v.id)}</b><div class="rv-dim">${fmtTime(v.created)} · ${esc(v.actor || "")}</div>${v.approved_by ? `<div class="rv-dim">approved by ${esc(v.approved_by)}, ${fmtTime(v.approved_at)}${v.approval_note ? ": " + esc(v.approval_note) : ""}</div>` : ""}${v.superseded_by ? `<div class="rv-dim">superseded by ${esc(v.superseded_by)}</div>` : ""}${v.transmissions.map((t) => `<div class="rv-dim">sent to ${esc(t.to)} via ${esc(t.channel)} (${esc(t.by)}, ${fmtTime(t.at)})</div>`).join("")}</td>
-        <td>${tag(v.state, REV_CLASS[v.state])}</td>
-        <td>${Object.keys(v.artifacts).map((n) => fileLink(d.engagement, `revisions/${v.id}/${n}`)).join("<br>")}</td>
-        <td style="text-align:right;white-space:nowrap">
-          ${v.state === "ready" && v.id === latest.id ? `<button class="rv-btn sm accent" data-approve="${esc(v.id)}">Approve for delivery…</button>` : ""}
-          ${v.state === "approved" ? `<button class="rv-btn ghost sm" data-sent="${esc(v.id)}">Record sending…</button>` : ""}
-          <button class="rv-btn ghost sm" data-verify="${esc(v.id)}">Verify</button><button class="rv-btn ghost sm" data-rebuild="${esc(v.id)}">Rebuild</button></td></tr>`).join("")}</tbody></table></div>
-        <div class="rv-card-body"><div id="rev-form"></div>
-          <div class="rv-actions start"><button id="exp-btn" class="rv-btn sm">Export findings (JSON, SARIF, issues)</button><label class="rv-check"><input type="checkbox" id="exp-draft"> latest revision, as DRAFT</label></div><div id="exp-out"></div></div>`
-      : `<div class="rv-empty">No revision yet: Generate report creates R-001.</div>`}</div>
-    <div class="rv-card"><div class="rv-card-head"><h3>Retests</h3></div><div class="rv-card-body">
-      ${r.retests.length ? `<ul class="rv-rows">${r.retests.map((t) => `<li><b>${esc(t.id)}</b> ${esc(t.finding_id)} ${tag(t.outcome, { resolved: "ok", partial: "warn", unresolved: "sev-critical" }[t.outcome])} build ${esc(t.retest_build)}${t.original_build ? ` (found on ${esc(t.original_build)})` : ""} <span class="rv-dim">${t.cases.map((c) => `${esc(c.name)}: ${esc(c.result)}`).join("; ")} · ${esc(t.actor)}, ${fmtTime(t.at)}</span>${t.reauthorization ? `<div class="rv-dim">re-authorized: ${esc(t.reauthorization)}</div>` : ""}</li>`).join("")}</ul>` : `<p class="hint">No retests yet.</p>`}
-      ${reported.length ? `<details><summary>Record a retest</summary><div class="rv-form-grid">
-        <label class="rv-field"><span class="rv-field-label">Finding</span><select id="rt-f" class="rv-select">${reported.map((f) => `<option>${esc(f.id)}</option>`).join("")}</select></label>
-        <label class="rv-field"><span class="rv-field-label">Retested on build</span><input id="rt-build" class="rv-input mono" spellcheck="false"></label>
-        <label class="rv-field"><span class="rv-field-label">Outcome</span><select id="rt-out" class="rv-select"><option>resolved</option><option>partial</option><option>unresolved</option></select></label></div>
-        <label class="rv-field"><span class="rv-field-label">Cases (one per line: name | pass, fail or partial | evidence path of the retest)</span><textarea id="rt-cases" class="rv-input mono" rows="3" spellcheck="false" placeholder="other tenant reads invoice | pass | evidence/authz/run-2.json"></textarea></label>
-        <label class="rv-field"><span class="rv-field-label">Scope or access re-authorized (who, when), if it was needed</span><input id="rt-reauth" class="rv-input"></label>
-        <div class="rv-actions start"><button id="rt-save" class="rv-btn sm">Record retest</button></div></details>` : ""}
-    </div></div>
-    <div class="rv-card"><div class="rv-card-head"><h3>Cleanup and retention</h3></div><div class="rv-card-body">
-      ${r.obligations.length ? `<ul class="rv-rows">${r.obligations.map((o) => `<li><b>${esc(o.id)}</b> ${tag(o.kind)} ${tag(o.state, { done: "ok", open: "warn" }[o.state])} ${esc(o.what)}${o.note ? `<div class="rv-dim">${esc(o.note)} (${esc(o.updated_by)})</div>` : ""}
-        ${o.state === "open" ? `<button class="rv-btn ghost sm" data-ob="${esc(o.id)}" data-st="done">Done…</button><button class="rv-btn ghost sm" data-ob="${esc(o.id)}" data-st="waived">Waive…</button>` : ""}</li>`).join("")}</ul>` : `<p class="hint">Nothing recorded: test data, fixture changes, credentials to revoke and what to keep or delete at close-out.</p>`}
-      <div class="rv-form-row"><select id="ob-kind" class="rv-select" aria-label="Kind">${["fixture", "credential", "data", "access", "retention", "other"].map((k) => `<option>${k}</option>`).join("")}</select><input id="ob-what" class="rv-input" placeholder="delete the test invoices created in tenant B" aria-label="Obligation"><button id="ob-add" class="rv-btn sm">Add</button></div>
-    </div></div>
-    <div class="rv-card"><div class="rv-card-head"><h3>Material finding notices</h3></div><div class="rv-card-body">
-      ${r.notices.length ? `<ul class="rv-rows">${r.notices.map((n) => `<li><b>${esc(n.id)}</b> ${esc(n.finding_id)} rev ${esc(n.finding_revision)} ${tag(n.state, n.state === "reviewed" ? "ok" : "warn")} ${fileLink(d.engagement, n.path.replace(/^report\//, ""))}${n.reviewed_by ? ` <span class="rv-dim">reviewed by ${esc(n.reviewed_by)}</span>` : ` <button class="rv-btn ghost sm" data-review="${esc(n.id)}">Mark reviewed</button>`}</li>`).join("")}</ul>` : `<p class="hint">A notice is a draft for the client about one confirmed critical or high finding, reviewed by you before it's shared. Nothing is sent from here.</p>`}
-      ${material.length ? `<div class="rv-form-row"><select id="nt-f" class="rv-select" aria-label="Finding">${material.map((f) => `<option>${esc(f.id)}</option>`).join("")}</select><button id="nt-add" class="rv-btn sm">Prepare notice</button></div>` : ""}
-    </div></div>`;
+  const html = (d.report_files || []).filter((f) => f.endsWith(".html"));
   const post = (body) => api(`/api/eng/${e}/delivery`, body);
-  const again = () => loadDelivery();
-  $$("[data-except]").forEach((b) => b.addEventListener("click", () => {
-    $("#except-form").innerHTML = `<div class="rv-editor"><p>Exception for <b>${esc(b.dataset.except)}</b>: recorded with your name and shown in the revision.</p>
-      <input id="ex-why" class="rv-input" placeholder="why the methodology allows this, e.g. the client excluded load testing in the kickoff on 3 Nov"><div class="rv-actions start"><button id="ex-save" class="rv-btn sm">Record exception</button></div></div>`;
-    $("#ex-save").addEventListener("click", async (ev) => { if (await act(ev.currentTarget, () => post({ op: "exception", check: b.dataset.except, rationale: $("#ex-why").value }), "Exception recorded. Generate the report again.")) again(); });
-  }));
-  $$("[data-revoke]").forEach((b) => b.addEventListener("click", async (ev) => { if (await act(ev.currentTarget, () => post({ op: "revoke", id: Number(b.dataset.revoke) }), "Revoked.")) again(); }));
-  $$("[data-approve]").forEach((b) => b.addEventListener("click", () => {
-    $("#rev-form").innerHTML = `<div class="rv-editor"><p>Approve <b>${esc(b.dataset.approve)}</b> for client delivery. Approval checks that nothing changed since it was generated and that its files match their hashes; it doesn't send anything.</p>
-      <input id="ap-note" class="rv-input" placeholder="note (optional): what you reviewed"><div class="rv-actions start"><button id="ap-save" class="rv-btn sm accent">Approve</button></div></div>`;
-    $("#ap-save").addEventListener("click", async (ev) => { if (await act(ev.currentTarget, () => post({ op: "approve", revision: b.dataset.approve, note: $("#ap-note").value }), "Approved for delivery.")) again(); });
-  }));
-  $$("[data-sent]").forEach((b) => b.addEventListener("click", () => {
-    $("#rev-form").innerHTML = `<div class="rv-editor"><p>Record that <b>${esc(b.dataset.sent)}</b> was sent. This is a record only.</p><div class="rv-form-grid">
-      <label class="rv-field"><span class="rv-field-label">To</span><input id="tx-to" class="rv-input" placeholder="client security lead"></label>
-      <label class="rv-field"><span class="rv-field-label">How</span><input id="tx-ch" class="rv-input" placeholder="client portal upload"></label></div>
-      <div class="rv-actions start"><button id="tx-save" class="rv-btn sm">Record</button></div></div>`;
-    $("#tx-save").addEventListener("click", async (ev) => { if (await act(ev.currentTarget, () => post({ op: "transmitted", revision: b.dataset.sent, to: $("#tx-to").value, channel: $("#tx-ch").value }), "Recorded.")) again(); });
-  }));
-  $$("[data-verify]").forEach((b) => b.addEventListener("click", async (ev) => {
-    const x = await act(ev.currentTarget, () => post({ op: "verify", revision: b.dataset.verify }));
-    if (x) toast(x.problems.length ? `${x.revision}: ${x.problems.join("; ")}` : `${x.revision}: all ${x.files} files match their hashes.`, !!x.problems.length);
-  }));
-  $$("[data-rebuild]").forEach((b) => b.addEventListener("click", async (ev) => {
-    const x = await act(ev.currentTarget, () => post({ op: "rebuild", revision: b.dataset.rebuild }));
-    if (x) toast(`${x.revision} rebuilt from its frozen inputs in ${x.folder}: the HTML is ${x.html_identical ? "identical" : "different"}.`, !x.html_identical);
-  }));
-  $("#exp-btn")?.addEventListener("click", async (ev) => {
-    const x = await act(ev.currentTarget, () => post({ op: "export", draft: $("#exp-draft").checked }));
-    if (x) $("#exp-out").innerHTML = `<p>${esc(x.revision)} (${esc(x.state)}): ${Object.keys(x.files).map((n) => fileLink(d.engagement, `${x.folder.replace(/^report\//, "")}/${n}`)).join(" · ")}</p>`;
-  });
-  $("#rt-save")?.addEventListener("click", async (ev) => {
-    const cases = $("#rt-cases").value.split("\n").map((l) => l.split("|").map((s) => s.trim())).filter((c) => c[0]).map(([name, result, after]) => ({ name, result, after: after ? [after] : [] }));
-    if (await act(ev.currentTarget, () => post({ op: "retest", finding_id: $("#rt-f").value, build: $("#rt-build").value.trim(), outcome: $("#rt-out").value, cases, reauthorization: $("#rt-reauth").value }), "Retest recorded.")) { await openEngagement(d.engagement, true); }
-  });
-  $("#ob-add").addEventListener("click", async (ev) => { if (await act(ev.currentTarget, () => post({ op: "cleanup_add", kind: $("#ob-kind").value, what: $("#ob-what").value }), "Added.")) again(); });
-  $$("[data-ob]").forEach((b) => b.addEventListener("click", async (ev) => {
-    const note = prompt(b.dataset.st === "done" ? "What was done?" : "Why is it waived?");
-    if (note === null) return;
-    if (await act(ev.currentTarget, () => post({ op: "cleanup_update", id: b.dataset.ob, state: b.dataset.st, note }), "Updated.")) again();
-  }));
-  $("#nt-add")?.addEventListener("click", async (ev) => { if (await act(ev.currentTarget, () => post({ op: "notice_prepare", finding_id: $("#nt-f").value }), "Notice drafted.")) again(); });
-  $$("[data-review]").forEach((b) => b.addEventListener("click", async (ev) => { if (await act(ev.currentTarget, () => post({ op: "notice_review", id: b.dataset.review }), "Marked reviewed.")) again(); }));
+  const again = () => { state.revForm = null; loadDelivery(); };
+  const files = (v) => byExt(Object.keys(v.artifacts)).map((n) => `revisions/${v.id}/${n}`);
+  const story = (v) => [v.approved_by ? `Approved by ${esc(v.approved_by)}, ${fmtTime(v.approved_at)}${v.approval_note ? ": " + esc(v.approval_note) : ""}` : "",
+    v.superseded_by ? `Superseded by ${esc(v.superseded_by)}` : "", ...v.transmissions.map((t) => `Sent to ${esc(t.to)} via ${esc(t.channel)} (${esc(t.by)}, ${fmtTime(t.at)})`)].filter(Boolean);
+  const form = (v) => {
+    const f = state.revForm;
+    if (!f || f.id !== v.id) return "";
+    return f.kind === "approve" ? `<div class="rv-dl-detail"><p>Approve <b>${esc(v.id)}</b> for client delivery. Approval checks that nothing changed since it was generated and that its files match their hashes; it doesn't send anything.</p>
+        <input id="ap-note" class="rv-input" placeholder="note (optional): what you reviewed" aria-label="Approval note">
+        <div class="rv-actions start"><button id="ap-save" class="rv-btn accent">Approve ${esc(v.id)}</button><button class="rv-btn ghost" data-revcancel="1">Cancel</button></div></div>`
+      : `<div class="rv-dl-detail"><p>Record that <b>${esc(v.id)}</b> was sent. This is a record only; nothing is sent from here.</p><div class="rv-form-grid">
+        <label class="rv-field"><span class="rv-field-label">To</span><input id="tx-to" class="rv-input" placeholder="client security lead"></label>
+        <label class="rv-field"><span class="rv-field-label">How</span><input id="tx-ch" class="rv-input" placeholder="client portal upload"></label></div>
+        <div class="rv-actions start"><button id="tx-save" class="rv-btn accent">Record sending</button><button class="rv-btn ghost" data-revcancel="1">Cancel</button></div></div>`;
+  };
+
+  const render = () => {
+    // one primary action on the page: approve a ready revision, else record the sending of an approved one, else generate
+    const canApprove = latest && latest.state === "ready", canSend = latest && latest.state === "approved";
+    $("#gen-btn").classList.toggle("accent", !canApprove && !(canSend && latest.transmissions.length));
+    reportSteps();
+    $("#rep-latest").innerHTML = latest ? `<div class="rv-card rv-rev-latest ${canApprove ? "focus" : ""}">
+        <div class="rv-rev-head"><div class="body">
+            <div class="top"><h3>${esc(latest.id)}</h3>${pill(latest.state, REV_PILL[latest.state])}<span class="rv-dim">Latest revision</span></div>
+            <p>Generated ${fmtTime(latest.created)}${latest.actor ? " by " + esc(latest.actor) : ""}. ${canApprove ? "Nothing blocks delivery: review it, then approve it." : latest.state === "generated" ? "Not ready for the client: see the readiness checks." : ""}</p>
+            ${story(latest).map((s) => `<p class="rv-dim">${s}</p>`).join("")}</div>
+          <span class="rv-actions">
+            ${html.length ? `<a class="rv-btn" href="/report/${e}/${enc(html[0])}" target="_blank" rel="noopener">View HTML report ↗</a>` : ""}
+            <button class="rv-btn ghost" data-verify="${esc(latest.id)}">Verify hashes</button><button class="rv-btn ghost" data-rebuild="${esc(latest.id)}">Rebuild</button>
+            ${canApprove ? `<button class="rv-btn accent" data-revform="approve" data-rev="${esc(latest.id)}">Approve for delivery</button>` : ""}
+            ${canSend ? `<button class="rv-btn ${latest.transmissions.length ? "" : "accent"}" data-revform="sent" data-rev="${esc(latest.id)}">Record sending</button>` : ""}</span></div>
+        <div class="rv-files">${files(latest).map((p) => fileTile(d.engagement, p)).join("")}</div>
+        ${form(latest)}
+        <div class="rv-rev-foot"><button id="exp-btn" class="rv-btn ghost">Export findings (JSON, SARIF, issues)</button><label class="rv-check"><input type="checkbox" id="exp-draft"> as DRAFT</label><span id="exp-out"></span></div>
+      </div>` : `<div class="rv-card"><div class="rv-card-head"><h3>No revision yet</h3></div>
+        <div class="rv-card-body"><p class="hint">Fill in the report content below, then Generate report creates R-001 with the HTML, Word, PDF and Excel files.</p></div>
+        ${(d.report_files || []).length ? `<div class="rv-files">${byExt(d.report_files).map((p) => fileTile(d.engagement, p)).join("")}</div>` : ""}</div>`;
+
+    const exc = r.exceptions.filter((x) => !x.revoked_at);
+    $("#rep-ready").innerHTML = `<div class="rv-card"><div class="rv-card-head"><h3>Readiness for delivery</h3>${rd.ready ? pill("nothing blocks", "ok") : pill(`${rd.blocking.length} blocking`, "bad")}</div>
+      ${rd.blocking.length || rd.excepted.length || rd.warnings.length || exc.length ? `<div class="rv-dl" style="--cols:150px minmax(0, 1fr) 100px;--minw:520px"><div class="rv-dl-in">
+        ${rd.blocking.map((b) => `<div class="rv-dl-row wrap"><span>${tag(b.check.split(":")[0], "fail")}</span><span>${esc(b.issue)}</span>
+          <span class="acts">${r.exceptable.includes(b.check.split(":")[0]) ? `<button class="rv-btn" data-except="${esc(b.check)}">Except</button>` : ""}</span></div>`).join("")}
+        ${rd.excepted.map((x) => `<div class="rv-dl-row wrap"><span>${tag(x.check)}</span><span>${esc(x.issue)}<small>Excepted: ${esc(x.rationale)} (${esc(x.by)}, ${fmtTime(x.at)})</small></span><span></span></div>`).join("")}
+        ${rd.warnings.map((w) => `<div class="rv-dl-row wrap"><span>${tag("warning", "warn")}</span><span>${esc(w)}</span><span></span></div>`).join("")}
+        ${exc.map((x) => `<div class="rv-dl-row wrap"><span>${tag(x.check_key)}</span><span>Exception in force: ${esc(x.rationale)}<small>${esc(x.actor)}</small></span>
+          <span class="acts"><button class="rv-btn ghost danger-quiet" data-revoke="${x.id}">Revoke</button></span></div>`).join("")}
+      </div></div>` : `<div class="rv-card-body"><p class="hint">Every check passes.</p></div>`}
+      <div id="except-form"></div></div>`;
+
+    $("#delivery-out").innerHTML = `
+      ${earlier.length ? `<div class="rv-card"><div class="rv-card-head"><h3>Earlier revisions <span class="rv-dim">${earlier.length}</span></h3></div>
+        <div class="rv-dl" style="--cols:56px 112px minmax(160px, 1fr) 250px;--minw:620px"><div class="rv-dl-in">
+        <div class="rv-dl-head"><span>Rev</span><span>State</span><span>What happened</span><span></span></div>
+        ${earlier.map((v) => { const s = story(v), open = state.revOpen === v.id; return `<div class="rv-dl-row tall"><b>${esc(v.id)}</b><span>${pill(v.state, REV_PILL[v.state])}</span>
+          <span class="two"><b title="${s[0] || ""}">${s[0] || `Generated ${fmtTime(v.created)}`}</b><small>${s.length > 1 ? `${s.length - 1} more event${s.length > 2 ? "s" : ""} · ` : ""}generated ${fmtTime(v.created)}</small></span>
+          <span class="acts">${v.state === "approved" ? `<button class="rv-btn" data-revform="sent" data-rev="${esc(v.id)}">Record sending</button>` : ""}
+            <button class="rv-btn ${open ? "" : "ghost"}" data-revopen="${esc(v.id)}" aria-expanded="${open}">${open ? "Hide" : "Files and details"}</button></span></div>${form(v)}
+          ${open ? `<div class="rv-dl-detail">${s.map((x) => `<p>${x}</p>`).join("")}<p class="rv-dim">Generated ${fmtTime(v.created)}${v.actor ? " by " + esc(v.actor) : ""}</p>
+            <div class="rv-files flat">${files(v).map((p) => fileTile(d.engagement, p)).join("")}</div>
+            <div class="rv-actions start"><button class="rv-btn" data-verify="${esc(v.id)}">Verify hashes</button><button class="rv-btn" data-rebuild="${esc(v.id)}">Rebuild from frozen inputs</button></div></div>` : ""}`; }).join("")}
+        </div></div></div>` : ""}
+
+      <div class="rv-card"><div class="rv-card-head"><h3>Retests <span class="rv-dim">${r.retests.length}</span></h3></div>
+        ${r.retests.length ? `<div class="rv-dl" style="--cols:64px 64px 120px minmax(0, 1fr);--minw:560px"><div class="rv-dl-in">${r.retests.map((t) => `<div class="rv-dl-row wrap"><b>${esc(t.id)}</b><span class="mono">${esc(t.finding_id)}</span>
+          <span>${pill(t.outcome, { resolved: "ok", partial: "warn", unresolved: "bad" }[t.outcome])}</span>
+          <span>Build ${esc(t.retest_build)}${t.original_build ? ` (found on ${esc(t.original_build)})` : ""}<small>${t.cases.map((c) => `${esc(c.name)}: ${esc(c.result)}`).join("; ")} · ${esc(t.actor)}, ${fmtTime(t.at)}${t.reauthorization ? ` · re-authorized: ${esc(t.reauthorization)}` : ""}</small></span></div>`).join("")}</div></div>` : ""}
+        <div class="rv-card-body">${r.retests.length ? "" : `<p class="hint">No retests yet.</p>`}
+        ${reported.length ? `<details><summary>Record a retest</summary><div class="rv-stack" style="margin-top:12px"><div class="rv-form-grid">
+          <label class="rv-field"><span class="rv-field-label">Finding</span><select id="rt-f" class="rv-select">${reported.map((f) => `<option>${esc(f.id)}</option>`).join("")}</select></label>
+          <label class="rv-field"><span class="rv-field-label">Retested on build</span><input id="rt-build" class="rv-input mono" spellcheck="false"></label>
+          <label class="rv-field"><span class="rv-field-label">Outcome</span><select id="rt-out" class="rv-select"><option>resolved</option><option>partial</option><option>unresolved</option></select></label></div>
+          <label class="rv-field"><span class="rv-field-label">Cases (one per line: name | pass, fail or partial | evidence path of the retest)</span><textarea id="rt-cases" class="rv-input mono" rows="3" spellcheck="false" placeholder="other tenant reads invoice | pass | evidence/authz/run-2.json"></textarea></label>
+          <label class="rv-field"><span class="rv-field-label">Scope or access re-authorized (who, when), if it was needed</span><input id="rt-reauth" class="rv-input"></label>
+          <div class="rv-actions start"><button id="rt-save" class="rv-btn">Record retest</button></div></div></details>` : ""}</div></div>
+
+      <div class="rv-card"><div class="rv-card-head"><h3>Cleanup and retention <span class="rv-dim">${r.obligations.length}</span></h3></div>
+        ${r.obligations.length ? `<div class="rv-dl" style="--cols:64px 104px 96px minmax(0, 1fr) 150px;--minw:640px"><div class="rv-dl-in">${r.obligations.map((o) => `<div class="rv-dl-row wrap"><b>${esc(o.id)}</b><span>${tag(o.kind)}</span>
+          <span>${pill(o.state, { done: "ok", open: "warn" }[o.state])}</span><span>${esc(o.what)}${o.note ? `<small>${esc(o.note)} (${esc(o.updated_by)})</small>` : ""}</span>
+          <span class="acts">${o.state === "open" ? `<button class="rv-btn" data-ob="${esc(o.id)}" data-st="done">Done</button><button class="rv-btn ghost" data-ob="${esc(o.id)}" data-st="waived">Waive</button>` : ""}</span></div>`).join("")}</div></div>` : ""}
+        <div class="rv-card-body">${r.obligations.length ? "" : `<p class="hint">Nothing recorded: test data, fixture changes, credentials to revoke and what to keep or delete at close-out.</p>`}
+          <div class="rv-form-row"><select id="ob-kind" class="rv-select" aria-label="Kind" style="flex:0 0 150px">${["fixture", "credential", "data", "access", "retention", "other"].map((k) => `<option>${k}</option>`).join("")}</select><input id="ob-what" class="rv-input" placeholder="delete the test invoices created in tenant B" aria-label="Obligation"><button id="ob-add" class="rv-btn">Add</button></div></div></div>
+
+      <div class="rv-card"><div class="rv-card-head"><h3>Material finding notices <span class="rv-dim">${r.notices.length}</span></h3></div>
+        ${r.notices.length ? `<div class="rv-dl" style="--cols:64px minmax(0, 1fr) 110px 190px;--minw:560px"><div class="rv-dl-in">${r.notices.map((n) => `<div class="rv-dl-row wrap"><b>${esc(n.id)}</b>
+          <span>${esc(n.finding_id)} revision ${esc(n.finding_revision)}<small>${fileLink(d.engagement, n.path.replace(/^report\//, ""))}</small></span><span>${pill(n.state, n.state === "reviewed" ? "ok" : "warn")}</span>
+          <span class="acts">${n.reviewed_by ? `<span class="rv-dim">reviewed by ${esc(n.reviewed_by)}</span>` : `<button class="rv-btn" data-review="${esc(n.id)}">Mark reviewed</button>`}</span></div>`).join("")}</div></div>` : ""}
+        <div class="rv-card-body">${r.notices.length ? "" : `<p class="hint">A notice is a draft for the client about one confirmed critical or high finding, reviewed by you before it's shared. Nothing is sent from here.</p>`}
+          ${material.length ? `<div class="rv-form-row"><select id="nt-f" class="rv-select" aria-label="Finding" style="flex:0 0 150px">${material.map((f) => `<option>${esc(f.id)}</option>`).join("")}</select><button id="nt-add" class="rv-btn">Prepare notice</button></div>` : ""}</div></div>`;
+    bind();
+  };
+
+  const bind = () => {
+    $$("[data-revform]").forEach((b) => b.addEventListener("click", () => {
+      const same = state.revForm && state.revForm.id === b.dataset.rev && state.revForm.kind === b.dataset.revform;
+      state.revForm = same ? null : { id: b.dataset.rev, kind: b.dataset.revform }; render();
+      ($("#ap-note") || $("#tx-to"))?.focus();
+    }));
+    $$("[data-revopen]").forEach((b) => b.addEventListener("click", () => { state.revOpen = state.revOpen === b.dataset.revopen ? null : b.dataset.revopen; render(); }));
+    $$("[data-revcancel]").forEach((b) => b.addEventListener("click", () => { state.revForm = null; render(); }));
+    $("#ap-save")?.addEventListener("click", async (ev) => { if (await act(ev.currentTarget, () => post({ op: "approve", revision: state.revForm.id, note: $("#ap-note").value }), "Approved for delivery.")) again(); });
+    $("#tx-save")?.addEventListener("click", async (ev) => { if (await act(ev.currentTarget, () => post({ op: "transmitted", revision: state.revForm.id, to: $("#tx-to").value, channel: $("#tx-ch").value }), "Recorded.")) again(); });
+    $$("[data-except]").forEach((b) => b.addEventListener("click", () => {
+      $("#except-form").innerHTML = `<div class="rv-dl-detail"><p>Exception for <b>${esc(b.dataset.except)}</b>: recorded with your name and shown in the revision.</p>
+        <input id="ex-why" class="rv-input" placeholder="why the methodology allows this, e.g. the client excluded load testing in the kickoff on 3 Nov" aria-label="Rationale"><div class="rv-actions start"><button id="ex-save" class="rv-btn">Record exception</button></div></div>`;
+      $("#ex-save").addEventListener("click", async (ev) => { if (await act(ev.currentTarget, () => post({ op: "exception", check: b.dataset.except, rationale: $("#ex-why").value }), "Exception recorded. Generate the report again.")) again(); });
+      $("#ex-why").focus();
+    }));
+    $$("[data-revoke]").forEach((b) => b.addEventListener("click", async (ev) => { if (await act(ev.currentTarget, () => post({ op: "revoke", id: Number(b.dataset.revoke) }), "Revoked.")) again(); }));
+    $$("[data-verify]").forEach((b) => b.addEventListener("click", async (ev) => {
+      const x = await act(ev.currentTarget, () => post({ op: "verify", revision: b.dataset.verify }));
+      if (x) toast(x.problems.length ? `${x.revision}: ${x.problems.join("; ")}` : `${x.revision}: all ${x.files} files match their hashes.`, !!x.problems.length);
+    }));
+    $$("[data-rebuild]").forEach((b) => b.addEventListener("click", async (ev) => {
+      const x = await act(ev.currentTarget, () => post({ op: "rebuild", revision: b.dataset.rebuild }));
+      if (x) toast(`${x.revision} rebuilt from its frozen inputs in ${x.folder}: the HTML is ${x.html_identical ? "identical" : "different"}.`, !x.html_identical);
+    }));
+    $("#exp-btn")?.addEventListener("click", async (ev) => {
+      const x = await act(ev.currentTarget, () => post({ op: "export", draft: $("#exp-draft").checked }));
+      if (x) $("#exp-out").innerHTML = `${esc(x.revision)} (${esc(x.state)}): ${Object.keys(x.files).map((n) => fileLink(d.engagement, `${x.folder.replace(/^report\//, "")}/${n}`)).join(" · ")}`;
+    });
+    $("#rt-save")?.addEventListener("click", async (ev) => {
+      const cases = $("#rt-cases").value.split("\n").map((l) => l.split("|").map((s) => s.trim())).filter((c) => c[0]).map(([name, result, after]) => ({ name, result, after: after ? [after] : [] }));
+      if (await act(ev.currentTarget, () => post({ op: "retest", finding_id: $("#rt-f").value, build: $("#rt-build").value.trim(), outcome: $("#rt-out").value, cases, reauthorization: $("#rt-reauth").value }), "Retest recorded.")) { await openEngagement(d.engagement, true); }
+    });
+    $("#ob-add").addEventListener("click", async (ev) => { if (await act(ev.currentTarget, () => post({ op: "cleanup_add", kind: $("#ob-kind").value, what: $("#ob-what").value }), "Added.")) again(); });
+    $$("[data-ob]").forEach((b) => b.addEventListener("click", async (ev) => {
+      const note = prompt(b.dataset.st === "done" ? "What was done?" : "Why is it waived?");
+      if (note === null) return;
+      if (await act(ev.currentTarget, () => post({ op: "cleanup_update", id: b.dataset.ob, state: b.dataset.st, note }), "Updated.")) again();
+    }));
+    $("#nt-add")?.addEventListener("click", async (ev) => { if (await act(ev.currentTarget, () => post({ op: "notice_prepare", finding_id: $("#nt-f").value }), "Notice drafted.")) again(); });
+    $$("[data-review]").forEach((b) => b.addEventListener("click", async (ev) => { if (await act(ev.currentTarget, () => post({ op: "notice_review", id: b.dataset.review }), "Marked reviewed.")) again(); }));
+  };
+  render();
 }
 
 // ---------------------------------------------------------------- authenticated testing (RW-008 to RW-011)
-const STATE_CLASS = { valid: "c-low", expired: "c-high", challenge: "c-medium", denied: "c-medium", error: "c-high", revoked: "", unchecked: "" };
-const VERDICT_CLASS = { pass: "c-low", FAIL: "c-critical", "unexpected-deny": "c-medium", blocked: "c-medium" };
 const IDENTITY_TEMPLATE = `{
   "kind": "form",
   "role": "member",
@@ -739,49 +966,145 @@ const IDENTITY_TEMPLATE = `{
   "effects": ["read"]
 }`;
 
+const SESSION_PILL = { valid: "ok", expired: "bad", error: "bad", challenge: "warn", denied: "warn", revoked: "closed", unchecked: "closed" };
+const VERDICT_KIND = { FAIL: "fail", blocked: "blocked", "unexpected-deny": "unexpected" };
+const VERDICT_WORD = { fail: "Fail", blocked: "Blocked: not tested", unexpected: "Unexpected deny", pass: "Pass" };
+const cellKind = (c) => VERDICT_KIND[c.verdict] || "pass";
+
+// One run of a matrix as a grid: operations down, identities across. Only a failure is filled, so it is what you see first.
+function matrixGrid(m, res, ids, view) {
+  const cells = res.cells, key = (c) => c.operation + "\n" + c.identity;
+  const ops = [...new Set(cells.map((c) => c.operation))];
+  const cols = [...new Set([...m.identities, ...cells.map((c) => c.identity)])].filter((i) => cells.some((c) => c.identity === i));
+  const at = new Map(cells.map((c) => [key(c), c]));
+  // the request behind an operation: every cell of a run carries its method and URL
+  const route = (o) => { const c = cells.find((x) => x.operation === o && x.url); return c ? `${c.method || "GET"} ${c.url}` : ""; };
+  const who = (name) => { const i = ids.find((x) => x.name === name); return i ? [i.role, i.tenant].filter(Boolean).join(" · ") : name === "anonymous" ? "no session" : ""; };
+  const count = (k) => cells.filter((c) => cellKind(c) === k).length;
+  const f = view.filter || "all", match = (c) => f === "all" || cellKind(c) === f;
+  const rows = ops.filter((o) => cols.some((i) => at.has(o + "\n" + i) && match(at.get(o + "\n" + i))));
+  const sel = (view.cell && at.get(view.cell)) || cells.find((c) => cellKind(c) === "fail") || null;
+  const why = {};
+  cells.filter((c) => cellKind(c) === "blocked").forEach((c) => {
+    const k = cols.reduce((s, i) => s.split(i).join("…"), String(c.reason || "no reason given"));
+    why[k] = (why[k] || 0) + 1;
+  });
+  const chips = [["all", "All cells", cells.length], ["fail", "Fail", count("fail")], ["unexpected", "Unexpected deny", count("unexpected")], ["blocked", "Blocked", count("blocked")], ["pass", "Pass", count("pass")]]
+    .filter(([k, , n]) => k !== "unexpected" || n);
+  const cell = (o, i) => {
+    const c = at.get(o + "\n" + i);
+    if (!c) return `<span class="rv-mx-none" title="Not part of this run">–</span>`;
+    const k = cellKind(c);
+    return `<button class="rv-mx-cell ${k} ${esc(c.outcome)} ${c === sel ? "selected" : ""} ${match(c) ? "" : "dim"}" data-cell="${cells.indexOf(c)}" aria-pressed="${c === sel}"
+      aria-label="${esc(`${o} as ${i}: ${VERDICT_WORD[k]}, expected ${c.expected}, got ${c.outcome}`)}">${esc(cap(c.outcome))}</button>`;
+  };
+  return `<div class="rv-toolbar rv-mx-bar"><div class="rv-chipset" role="group" aria-label="Verdict">${chips.map(([k, label, n]) => `<button class="rv-chip ${k === f ? "active" : ""} ${n ? "" : "empty"}" aria-pressed="${k === f}" data-mxf="${k}">${label} <span class="count">${n}</span></button>`).join("")}</div>
+      <span class="rv-toolbar-end rv-ok-note">Last run ${fmtTime(res.at)}</span></div>
+    ${Object.keys(why).length ? `<div class="rv-mx-note"><b>${count("blocked")} cell(s) could not be tested.</b> ${Object.entries(why).sort((a, b) => b[1] - a[1]).map(([k, n]) => `<span><b>${n}</b> ${esc(k)}</span>`).join("")}</div>` : ""}
+    <div class="rv-mx" style="--n:${cols.length}">
+      <div class="rv-mx-grid">
+        ${rows.length ? `<div class="rv-mx-table">
+          <span class="rv-label">Operation</span>${cols.map((i) => `<span class="rv-mx-col" title="${esc(i)}"><b>${esc(i)}</b><small>${esc(who(i))}</small></span>`).join("")}
+          ${rows.map((o) => `<span class="rv-mx-op" title="${esc(route(o) || o)}"><b>${esc(o)}</b>${route(o) ? `<small>${esc(route(o).replace(/^(\S+ )https?:\/\//, "$1"))}</small>` : ""}</span>${cols.map((i) => cell(o, i)).join("")}`).join("")}
+        </div>` : `<div class="rv-empty">No cell has this verdict.</div>`}
+        <div class="rv-mx-legend"><span><i class="fail"></i>Fail: allowed, should be denied</span><span><i class="blocked"></i>Blocked: not tested</span><span><i></i>Pass: as expected</span></div>
+      </div>
+      <aside class="rv-mx-side" aria-label="Selected cell">${sel ? `<span class="rv-label">Selected cell</span>
+        <b class="rv-mx-title">${esc(sel.operation)} as ${esc(sel.identity)}</b>
+        <span class="rv-mx-verdict ${cellKind(sel)}">${VERDICT_WORD[cellKind(sel)]}</span>
+        <dl class="rv-kv">${route(sel.operation) ? `<dt>Request</dt><dd class="mono">${esc(route(sel.operation))}</dd>` : ""}<dt>Expected</dt><dd>${esc(cap(sel.expected))}</dd><dt>Got</dt><dd>${esc(cap(sel.outcome))}</dd>
+          <dt>Why</dt><dd>${esc(sel.reason || "no reason recorded")}</dd>${who(sel.identity) ? `<dt>Identity</dt><dd>${esc(who(sel.identity))}</dd>` : ""}</dl>
+        <span class="rv-meta">${esc(res.file)}</span>` : `<p class="hint">Select a cell to see what was expected and what came back.</p>`}</aside>
+    </div>`;
+}
+
 async function paneTesting() {
   const d = state.detail, e = enc(d.engagement);
-  $("#pane").innerHTML = `<p class="hint">Test identities, request captures and authorization matrices. Secrets stay on this machine: the agent
+  if (!$("#testing-out")) $("#pane").innerHTML = `<p class="hint">Test identities, request captures and authorization matrices. Secrets stay on this machine: the agent
     sees identity names, roles, tenants and sanitized captures, never a password, token or cookie.</p><div id="testing-out" class="rv-empty">Loading…</div>`;
   let r;
   try { r = await api(`/api/eng/${e}/testing`); } catch (err) { $("#testing-out").textContent = err.message; return; }
+  if (state.tab !== "testing" || state.current !== d.engagement || !$("#testing-out")) return;
   const ids = r.identities || [], caps = r.captures || [], mats = r.matrices || [];
   const idOpts = `<option value="">no identity</option>` + ids.map((i) => `<option>${esc(i.name)}</option>`).join("");
+  const idCols = "minmax(100px, 1.2fr) 100px 76px 76px 92px minmax(90px, 2fr) 128px";
+  const idRow = (i) => {
+    const st = i.status.state || "unchecked", open = state.openIdentity === i.name;
+    return `<div class="rv-dl-row"><b>${esc(i.name)}</b>
+        <span><span class="rv-pill ${SESSION_PILL[st] || "closed"}"><span class="rv-dot"></span>${esc(cap(st))}</span></span>
+        <span>${esc(i.role || "–")}</span><span>${esc(i.tenant || "–")}</span><span>${esc(i.effects.join(", "))}</span>
+        <span class="mono" title="${esc(i.hosts.join(", "))}">${esc(i.hosts.join(", "))}</span>
+        <span class="acts"><button class="rv-btn" data-idop="check" data-name="${esc(i.name)}">Check</button>
+          <button class="rv-btn ghost" data-idopen="${esc(i.name)}" aria-expanded="${open}">${open ? "Hide" : "Details"}</button></span></div>
+      ${open ? `<div class="rv-dl-detail"><dl class="rv-kv">
+          <dt>Session</dt><dd>${esc(i.status.reason || "not checked yet")}</dd>
+          <dt>Sign-in</dt><dd>${esc(i.kind)}</dd>
+          <dt>Owns</dt><dd>${i.fixtures.length ? i.fixtures.map((f) => esc(`${f.kind} ${f.id}`)).join(", ") : `<span class="rv-dim">no fixture records</span>`}</dd>
+          <dt>Hosts</dt><dd>${codeChips(i.hosts)}</dd></dl>
+        <div class="rv-actions start">${st !== "revoked" ? `<button class="rv-btn danger-quiet" data-idop="revoke" data-name="${esc(i.name)}">Revoke session</button>` : ""}
+          <button class="rv-btn danger-quiet" data-idop="rm" data-name="${esc(i.name)}">Remove identity</button></div></div>` : ""}`;
+  };
+  const capCols = "minmax(140px, 2fr) minmax(90px, 1fr) 90px 100px 90px 150px 130px";
   $("#testing-out").outerHTML = `<div id="testing-out" class="rv-stack">
-    <div class="rv-card"><div class="rv-card-head"><h3>Identities</h3></div><div class="rv-card-body">
-      ${ids.length ? `<ul class="rv-rows">${ids.map((i) => `<li><b>${esc(i.name)}</b> ${tag(i.status.state || "unchecked", STATE_CLASS[i.status.state || "unchecked"])}
-        <span class="rv-dim">${esc(i.kind)} · role ${esc(i.role || "-")} · tenant ${esc(i.tenant || "-")} · ${esc(i.effects.join("/"))} · ${esc(i.hosts.join(", "))}</span>
-        ${i.fixtures.length ? `<span class="rv-dim">owns ${i.fixtures.map((f) => esc(`${f.kind} ${f.id}`)).join(", ")}</span>` : ""}
-        ${i.status.reason ? `<span class="rv-dim">${esc(i.status.reason)}</span>` : ""}
-        <button class="rv-btn ghost sm" data-idop="check" data-name="${esc(i.name)}">Check session</button>
-        ${i.status.state !== "revoked" ? `<button class="rv-btn ghost sm danger-quiet" data-idop="revoke" data-name="${esc(i.name)}">Revoke</button>` : ""}
-        <button class="rv-btn ghost sm danger-quiet" data-idop="rm" data-name="${esc(i.name)}">Remove</button></li>`).join("")}</ul>`
-        : `<p class="hint">None yet. An identity is a test account: how it logs in (it names a stored credential), the hosts its session may go to, what it may be used for, and the fixture records it owns.</p>`}
-      <details><summary>Add or replace an identity</summary>
-        <div class="rv-form-row"><input id="id-name" class="rv-input" placeholder="name (e.g. acme-member)" maxlength="32" spellcheck="false" aria-label="Identity name"></div>
-        <textarea id="id-spec" class="rv-input" rows="12" spellcheck="false" aria-label="Identity spec (JSON)">${esc(IDENTITY_TEMPLATE)}</textarea>
-        <div class="rv-actions start"><button id="id-save" class="rv-btn sm">Save identity</button></div>
-      </details>
-    </div></div>
-    <div class="rv-card"><div class="rv-card-head"><h3>Captures</h3></div><div class="rv-card-body">
-      ${caps.length ? `<ul class="rv-rows">${caps.map((c) => `<li><b>${esc(c.name || c.id)}</b> <span class="rv-dim">${esc(c.source)} · ${c.entries} request(s) · ${c.out_of_scope} out of scope · ${Object.values(c.redactions || {}).reduce((a, b) => a + b, 0)} value(s) redacted · ${fmtTime(c.imported_at)}</span>
-        <button class="rv-btn ghost sm" data-capopen="${esc(c.id)}">Open</button> <button class="rv-btn ghost sm danger-quiet" data-caprm="${esc(c.id)}">Delete</button></li>`).join("")}</ul>`
-        : `<p class="hint">Import a HAR file (browser developer tools, ZAP, mitmproxy) or a Burp Suite XML export. The original is kept encrypted for you; the agent sees a sanitized copy.</p>`}
-      <div class="rv-form-row"><input id="cap-file" type="file" accept=".har,.json,.xml" aria-label="Capture file"><button id="cap-import" class="rv-btn sm">Import</button></div>
-      <div id="cap-view"></div>
-    </div></div>
-    <div class="rv-card"><div class="rv-card-head"><h3>Authorization matrices</h3></div><div class="rv-card-body">
-      ${mats.length ? mats.map((m) => { const res = (r.results || {})[m.name]; return `<div class="rv-matrix">
-        <p><b>${esc(m.name)}</b> ${tag(m.state, m.state === "approved" ? "c-low" : "c-medium")} <span class="rv-dim">${m.operations} operation(s) x ${m.identities.length} identit${m.identities.length === 1 ? "y" : "ies"}${m.purpose ? " · " + esc(m.purpose) : ""}</span>
-        <button class="rv-btn ghost sm" data-mxshow="${esc(m.name)}">Review</button>
-        ${m.state === "approved" ? `<button class="rv-btn sm" data-mxrun="${esc(m.name)}">Run</button>` : ""}</p>
-        <div id="mx-${esc(m.name)}"></div>
-        ${res ? `<p class="rv-dim">Last run ${fmtTime(res.at)}: ${Object.entries(res.summary).map(([k, v]) => `${esc(k)} ${v}`).join(", ")} · <code>${esc(res.file)}</code></p>
-          <table class="rv-table"><thead><tr><th>Operation</th><th>Identity</th><th>Expected</th><th>Outcome</th><th>Verdict</th><th>Why</th></tr></thead><tbody>
-          ${res.cells.map((c) => `<tr><td>${esc(c.operation)}</td><td>${esc(c.identity)}</td><td>${esc(c.expected)}</td><td>${esc(c.outcome)}</td><td>${tag(c.verdict, VERDICT_CLASS[c.verdict] || "")}</td><td class="rv-dim">${esc(c.reason)}</td></tr>`).join("")}</tbody></table>` : ""}
-      </div>`; }).join("") : `<p class="hint">The agent proposes a matrix (operations, identities, expected allow or deny). Review it here and approve exactly that version; it can't run before.</p>`}
-    </div></div></div>`;
+    <div class="rv-card"><div class="rv-card-head"><h3>Identities <span class="rv-dim">${ids.length}</span></h3>
+        <span class="rv-actions">${ids.length ? `<button id="id-checkall" class="rv-btn">Check all sessions</button>` : ""}<button id="id-add" class="rv-btn" aria-expanded="${!!state.idForm}">${state.idForm ? "Close form" : "Add identity"}</button></span></div>
+      ${state.idForm ? `<div class="rv-dl-detail">
+        <label class="rv-field"><span class="rv-field-label">Name (saving under an existing name replaces that identity)</span><input id="id-name" class="rv-input" placeholder="acme-member" maxlength="32" spellcheck="false" style="max-width:280px"></label>
+        <label class="rv-field"><span class="rv-field-label">Spec (JSON). "secret" names a stored credential, never the value.</span><textarea id="id-spec" class="rv-input" rows="12" spellcheck="false">${esc(IDENTITY_TEMPLATE)}</textarea></label>
+        <div class="rv-actions start"><button id="id-save" class="rv-btn accent">Save identity</button></div></div>` : ""}
+      ${ids.length ? `<div class="rv-dl" style="--cols:${idCols};--minw:760px"><div class="rv-dl-in">
+        <div class="rv-dl-head"><span>Identity</span><span>Session</span><span>Role</span><span>Tenant</span><span>May</span><span>Hosts</span><span></span></div>
+        ${ids.map(idRow).join("")}</div></div>`
+        : `<div class="rv-card-body"><p class="hint">None yet. An identity is a test account: how it logs in (it names a stored credential), the hosts its session may go to, what it may be used for, and the fixture records it owns.</p></div>`}
+    </div>
 
+    ${mats.length ? mats.map((m, n) => { const res = (r.results || {})[m.name], ok = m.state === "approved"; return `<div class="rv-card">
+      <div class="rv-card-head"><div class="rv-mx-head"><h3>${esc(m.name)}</h3><span class="rv-pill ${ok ? "ok" : "warn"}"><span class="rv-dot"></span>${esc(cap(m.state))}</span>
+          <span class="rv-dim">${m.operations} operation(s) × ${m.identities.length} identit${m.identities.length === 1 ? "y" : "ies"}</span></div>
+        <span class="rv-actions"><button class="rv-btn" data-mxshow="${esc(m.name)}" data-n="${n}">${ok ? "Review definition" : "Review and approve"}</button>
+          ${ok ? `<button class="rv-btn accent" data-mxrun="${esc(m.name)}">${res ? "Run again" : "Run"}</button>` : ""}</span></div>
+      ${m.purpose ? `<p class="rv-mx-purpose" title="${esc(m.purpose)}">${esc(m.purpose)}</p>` : ""}
+      <div id="mxdef-${n}" class="rv-matrix"></div>
+      ${res ? `<div id="mxg-${n}" data-mxg="${n}"></div>` : `<div class="rv-card-body"><p class="hint">${ok ? "Approved, not run yet." : "Proposed by the agent. Review it and approve exactly this version; it can't run before."}</p></div>`}
+    </div>`; }).join("") : `<div class="rv-card"><div class="rv-card-head"><h3>Authorization matrices</h3></div><div class="rv-card-body"><p class="hint">The agent proposes a matrix (operations, identities, expected allow or deny). Review it here and approve exactly that version; it can't run before.</p></div></div>`}
+
+    <div class="rv-card"><div class="rv-card-head"><h3>Captures <span class="rv-dim">${caps.length}</span></h3>
+        <span class="rv-actions"><input id="cap-file" type="file" accept=".har,.json,.xml" aria-label="Capture file"><button id="cap-import" class="rv-btn">Import</button></span></div>
+      ${caps.length ? `<div class="rv-dl" style="--cols:${capCols};--minw:820px"><div class="rv-dl-in">
+        <div class="rv-dl-head"><span>Capture</span><span>Source</span><span>Requests</span><span>Out of scope</span><span>Redacted</span><span>Imported</span><span></span></div>
+        ${caps.map((c) => `<div class="rv-dl-row"><b title="${esc(c.name || c.id)}">${esc(c.name || c.id)}</b><span>${esc(c.source)}</span><span>${c.entries}</span><span>${c.out_of_scope}</span>
+          <span>${Object.values(c.redactions || {}).reduce((a, b) => a + b, 0)}</span><span>${fmtTime(c.imported_at)}</span>
+          <span class="acts"><button class="rv-btn" data-capopen="${esc(c.id)}">Open</button><button class="rv-btn ghost danger-quiet" data-caprm="${esc(c.id)}">Delete</button></span></div>`).join("")}</div></div>`
+        : `<div class="rv-card-body"><p class="hint">Import a HAR file (browser developer tools, ZAP, mitmproxy) or a Burp Suite XML export. The original is kept encrypted for you; the agent sees a sanitized copy.</p></div>`}
+      <div id="cap-view"></div>
+    </div></div>`;
+
+  // matrix grids: the filter and the selected cell are view state, drawn again without asking the server
+  state.mxView = state.mxView || {};
+  $$("[data-mxg]").forEach((box) => {
+    const m = mats[Number(box.dataset.mxg)], res = r.results[m.name];
+    const view = (state.mxView[d.engagement + "/" + m.name] = state.mxView[d.engagement + "/" + m.name] || {});
+    const draw = () => { box.innerHTML = matrixGrid(m, res, ids, view); };
+    box.addEventListener("click", (ev) => {
+      const fb = ev.target.closest("[data-mxf]"), cb = ev.target.closest("[data-cell]");
+      if (fb) { view.filter = fb.dataset.mxf; draw(); }
+      else if (cb) { const c = res.cells[Number(cb.dataset.cell)]; view.cell = c.operation + "\n" + c.identity; draw(); box.querySelector(".rv-mx-cell.selected")?.focus(); }
+    });
+    draw();
+  });
+
+  $$("[data-idopen]").forEach((b) => b.addEventListener("click", () => { state.openIdentity = state.openIdentity === b.dataset.idopen ? null : b.dataset.idopen; paneTesting(); }));
+  $("#id-add").addEventListener("click", () => { state.idForm = !state.idForm; paneTesting(); });
+  $("#id-checkall")?.addEventListener("click", async (ev) => {
+    const btn = ev.currentTarget, live = ids.filter((i) => i.status.state !== "revoked");
+    btn.disabled = true; let bad = 0;
+    for (const i of live) {
+      btn.textContent = `Checking ${i.name}…`;
+      try { if ((await api(`/api/eng/${e}/identity`, { name: i.name, op: "check" })).state !== "valid") bad++; } catch { bad++; }
+    }
+    toast(bad ? `${bad} of ${live.length} session(s) are not valid.` : `All ${live.length} session(s) are valid.`, !!bad);
+    paneTesting();
+  });
   $$("[data-idop]").forEach((b) => b.addEventListener("click", async (ev) => {
     const op = b.dataset.idop;
     if (op === "rm" && !confirm(`Remove identity ${b.dataset.name}?`)) return;
@@ -789,11 +1112,11 @@ async function paneTesting() {
     if (x && op === "check") toast(`${b.dataset.name}: ${x.state}${x.reason ? " (" + x.reason + ")" : ""}`, x.state !== "valid");
     if (x) paneTesting();
   }));
-  $("#id-save").addEventListener("click", async (ev) => {
+  $("#id-save")?.addEventListener("click", async (ev) => {
     let spec;
     try { spec = JSON.parse($("#id-spec").value); } catch { return toast("The spec isn't valid JSON.", true); }
     const x = await act(ev.currentTarget, () => api(`/api/eng/${e}/identity`, { name: $("#id-name").value.trim(), op: "set", spec }), "Identity saved. Check its session next.");
-    if (x) paneTesting();
+    if (x) { state.idForm = false; paneTesting(); }
   });
   $("#cap-import").addEventListener("click", async (ev) => {
     const f = $("#cap-file").files[0];
@@ -811,7 +1134,7 @@ async function paneTesting() {
     const c = await api(`/api/eng/${e}/capture?id=${enc(b.dataset.capopen)}`);
     $("#cap-view").innerHTML = `<table class="rv-table"><thead><tr><th>#</th><th>Request</th><th>Status</th><th></th></tr></thead><tbody>
       ${c.entries.map((q) => `<tr><td>${q.n}</td><td><code>${esc(q.method)} ${esc(q.url)}</code>${q.in_scope ? "" : ` <span class="rv-dim">(${esc(q.scope_note || "out of scope")})</span>`}</td><td>${esc(q.response.status ?? "")}</td>
-        <td>${q.in_scope ? `<select class="rv-input sm" data-replayas="${q.n}" aria-label="Identity for the replay">${idOpts}</select> <button class="rv-btn ghost sm" data-replay="${q.n}">Replay</button>` : ""}</td></tr>`).join("")}</tbody></table><div id="replay-out"></div>`;
+        <td>${q.in_scope ? `<select class="rv-input fit" data-replayas="${q.n}" aria-label="Identity for the replay">${idOpts}</select> <button class="rv-btn ghost" data-replay="${q.n}">Replay</button>` : ""}</td></tr>`).join("")}</tbody></table><div id="replay-out"></div>`;
     $$("[data-replay]").forEach((rb) => rb.addEventListener("click", async (ev) => {
       const n = Number(rb.dataset.replay), identity = $(`[data-replayas="${n}"]`).value;
       const send = (approval_id) => api(`/api/eng/${e}/capture`, { op: "replay", id: c.id, entry: n, identity, approval_id });
@@ -824,13 +1147,15 @@ async function paneTesting() {
     }));
   }));
   $$("[data-mxshow]").forEach((b) => b.addEventListener("click", async () => {
+    const box = $(`#mxdef-${b.dataset.n}`);
+    if (box.innerHTML) { box.innerHTML = ""; return; }  // a second click closes the definition
     const m = await api(`/api/eng/${e}/matrix?name=${enc(b.dataset.mxshow)}`);
     // everything the approved digest covers, as escaped text: headers and bodies are agent-written
     const one = (v) => typeof v === "string" ? v : JSON.stringify(v);
     const reqText = (r) => [...Object.entries(r.headers || {}).map(([k, v]) => `${k}: ${v}`),
       ...(r.body == null || r.body === "" ? [] : ["", one(r.body)])].join("\n");
     const writes = m.operations.some((o) => o.effect === "write") || m.cleanup.length > 0;
-    $(`#mx-${b.dataset.mxshow}`).innerHTML = `<p class="rv-dim">digest ${esc(m.digest)} · proposed by ${esc(m.proposed_by)} ${fmtTime(m.proposed_at)}${m.allow_writes || writes ? ` · <b>changes state</b>: at most ${esc(m.max_writes)} write(s), cleanup included` : " · read-only"}</p>
+    box.innerHTML = `<div class="rv-dl-detail"><p class="rv-dim">digest ${esc(m.digest)} · proposed by ${esc(m.proposed_by)} ${fmtTime(m.proposed_at)}${m.allow_writes || writes ? ` · <b>changes state</b>: at most ${esc(m.max_writes)} write(s), cleanup included` : " · read-only"}</p>
       <table class="rv-table"><thead><tr><th>Operation</th><th>Request</th>${m.identities.map((i) => `<th>${esc(i)}</th>`).join("")}</tr></thead><tbody>
       ${m.operations.map((o) => `<tr><td>${esc(o.id)}${o.effect === "write" ? " <b>(write)</b>" : ""}</td><td><code>${esc(o.method || "GET")} ${esc(o.url)}</code>${o.marker ? `<br><span class="rv-dim">marker ${esc(o.marker)}</span>` : ""}${reqText(o) ? `<pre class="rv-pre">${esc(reqText(o))}</pre>` : ""}</td>${m.identities.map((i) => `<td>${esc(m.expect[o.id][i])}</td>`).join("")}</tr>`).join("")}</tbody></table>
       ${m.cleanup.length ? `<p class="rv-dim">Cleanup, run after the writes (counted in max writes):</p>
@@ -838,8 +1163,8 @@ async function paneTesting() {
       ${m.cleanup.map((c) => `<tr><td><code>${esc(c.method || "POST")} ${esc(c.url)}</code>${reqText(c) ? `<pre class="rv-pre">${esc(reqText(c))}</pre>` : ""}</td><td>${esc(c.identity || "no identity")}</td></tr>`).join("")}</tbody></table>`
       : m.no_cleanup_reason ? `<p class="rv-dim">No cleanup: ${esc(m.no_cleanup_reason)}</p>` : ""}
       <p class="rv-dim">Header values are as proposed: {{cred:NAME}} references are filled in only when sent.</p>
-      <div class="rv-actions start"><button class="rv-btn sm" data-mxapprove="${esc(m.name)}" data-digest="${esc(m.digest)}">Approve this version</button></div>`;
-    $(`[data-mxapprove="${m.name}"]`).addEventListener("click", async (ev) => {
+      <div class="rv-actions start"><button class="rv-btn accent" data-mxapprove="1" data-digest="${esc(m.digest)}">Approve this version</button></div></div>`;
+    box.querySelector("[data-mxapprove]").addEventListener("click", async (ev) => {
       const x = await act(ev.currentTarget, () => api(`/api/eng/${e}/authz`, { name: m.name, op: "approve", digest: ev.currentTarget.dataset.digest }), "Approved.");
       if (x) paneTesting();
     });
@@ -850,94 +1175,65 @@ async function paneTesting() {
   }));
 }
 
+const COV_PILL = { tested: "ok", failed: "bad", blocked: "warn", planned: "open", excluded: "closed", "not-applicable": "closed" };
+const OBS_PILL = { new: "warn", linked: "ok", duplicate: "closed", dismissed: "closed" };
+const INV_TABS = [["summary", "Summary"], ["coverage", "Coverage"], ["observations", "Observations"], ["imports", "Imports"], ["handover", "Handover note"]];
+const LIST_PAGE = 25;
+const human = (s) => cap(String(s || "").replace(/-/g, " "));
+const pill = (text, cls) => `<span class="rv-pill ${cls || "closed"}"><span class="rv-dot"></span>${esc(human(text))}</span>`;
+const has = (q, vals) => !q || vals.some((v) => String(v || "").toLowerCase().includes(q));
+// one page of a list: [rows on this page, index of the first, number of pages, the page it ended up on]
+function pageOf(rows, page) {
+  const pages = Math.max(1, Math.ceil(rows.length / LIST_PAGE)), p = Math.max(0, Math.min(page, pages - 1));
+  return [rows.slice(p * LIST_PAGE, (p + 1) * LIST_PAGE), p * LIST_PAGE, pages, p];
+}
+const pagerHtml = (from, shown, total, page, pages) => `<div class="rv-pager"><span>${from + 1}–${from + shown} of ${total}</span>
+  ${pages > 1 ? `<span class="rv-pager-nav"><button class="rv-btn ghost" data-page="-1" ${page ? "" : "disabled"}>Previous</button><span>Page ${page + 1} of ${pages}</span><button class="rv-btn ghost" data-page="1" ${page < pages - 1 ? "" : "disabled"}>Next</button></span>` : ""}
+  <span>${LIST_PAGE} per page</span></div>`;
+
 async function paneInvestigation() {
   const d = state.detail, e = enc(d.engagement);
-  $("#pane").innerHTML = `<p class="hint">What the engagement must answer, how far testing got and what still needs a decision. Built from the findings, observations and planned tests; the note at the end is yours.</p><div id="inv-out" class="rv-empty">Loading…</div>`;
+  if (state.invEng !== d.engagement) Object.assign(state, { invEng: d.engagement, invTab: "summary", covFilter: "all", covQuery: "", covPage: 0, planOpen: null,
+    obsFilter: "new", obsQuery: "", obsTool: "", obsPage: 0, obsSel: new Set(), impOpen: null, invAllPending: false });
+  if (!$("#inv-out")) $("#pane").innerHTML = `<div id="inv-out" class="rv-empty">Loading…</div>`;
   let r;
   try { r = await api(`/api/eng/${e}/investigation`); } catch (err) { $("#inv-out").textContent = err.message; return; }
-  if (state.tab !== "investigation" || state.current !== d.engagement) return;
-  const h = r.handover, cov = r.coverage, f = state.obsFilter;
-  const obs = r.observations.filter((o) => f === "all" || o.status === f);
-  const nObs = (s) => r.observations.filter((o) => s === "all" || o.status === s).length;
-  const reload = () => paneInvestigation();
-  $("#inv-out").outerHTML = `<div id="inv-out" class="rv-stack">
-    <div class="rv-card"><div class="rv-card-head"><h3>Objective</h3></div><div class="rv-card-body">
-      <textarea id="inv-obj" class="rv-input" rows="2" maxlength="4000" placeholder="What this engagement must answer, e.g. can a member of one tenant read or change another tenant's invoices?">${esc(r.objective)}</textarea>
-      <div class="rv-actions start"><button id="inv-obj-save" class="rv-btn sm">Save objective</button></div>
-    </div></div>
-    <div class="rv-card"><div class="rv-card-head"><h3>Where it stands</h3></div><div class="rv-card-body">
-      <div class="rv-meta"><span>findings: ${Object.entries(h.findings).filter(([, v]) => v).map(([k, v]) => `${v} ${esc(k)}`).join(", ") || "none"}</span>
-        <span>observations: ${Object.entries(h.observations).filter(([, v]) => v).map(([k, v]) => `${v} ${esc(k)}`).join(", ") || "none"}</span>
-        <span>${h.imports} import(s)</span></div>
-      ${h.material.length ? `<p class="rv-field-label">Material findings</p><ul class="rv-rows">${h.material.map((m) => `<li>${sevTag(m.severity)} ${tag(m.status)} <b>${esc(m.id)}</b> ${esc(m.title)}</li>`).join("")}</ul>` : ""}
-      ${h.pending.length ? `<p class="rv-field-label">Pending decisions</p><ul class="rv-rows">${h.pending.slice(0, 30).map((p) => `<li>${tag(p.kind)} ${esc(p.what)}</li>`).join("")}</ul>` : ""}
-      ${h.parse_problems.length ? `<p class="rv-field-label">Import problems</p><ul class="rv-rows">${h.parse_problems.map((p) => `<li class="err">${esc(p)}</li>`).join("")}</ul>` : ""}
-      <p class="rv-field-label">Next</p><ul class="rv-rows">${h.next.map((n) => `<li>${esc(n)}</li>`).join("") || "<li class='rv-dim'>nothing pending</li>"}</ul>
-    </div></div>
-    <div class="rv-card"><div class="rv-card-head"><h3>Coverage</h3></div><div class="rv-card-body">
-      <div class="rv-meta">${cov.total ? COVERAGE.map((s) => `<span>${cov.counts[s]} ${esc(s)}</span>`).join("") : "<span>No plan yet.</span>"}${cov.stale.length ? `<span class="err">${cov.stale.length} stale</span>` : ""}</div>
-      <p class="hint">${esc(cov.note)}</p>
-      <div class="rv-form-row"><select id="inv-pb" class="rv-select" aria-label="Playbook">${PLAYBOOKS.map((p) => `<option>${p}</option>`).join("")}</select><button id="inv-pb-add" class="rv-btn sm">Add its checklist to the plan</button>
-        <input id="inv-build" class="rv-input" placeholder="build or source digest now deployed" aria-label="Current build" spellcheck="false"><button id="inv-reassess" class="rv-btn ghost sm" title="Mark tests that ran on another build or policy revision as stale">Reassess</button></div>
-      ${r.plan.length ? `<table class="rv-table rv-plan"><thead><tr><th>Test</th><th>References</th><th>Outcome</th><th></th></tr></thead><tbody>${r.plan.map((i) => `<tr>
-        <td><b>${esc(i.id)}</b> ${esc(i.title)}${i.area ? `<div class="rv-dim">${esc(i.area)}</div>` : ""}</td>
-        <td>${(i.refs || []).map((x) => `<span class="rv-code-chip">${esc(x)}</span>`).join(" ")}</td>
-        <td>${tag(i.state, COV_CLASS[i.state])}${i.stale ? " " + tag("stale", "warn") : ""}${i.finding_id ? ` <b>${esc(i.finding_id)}</b>` : ""}${i.rationale ? `<div class="rv-dim">${esc(i.rationale)}</div>` : ""}${i.stale_reason ? `<div class="rv-dim">${esc(i.stale_reason)}</div>` : ""}</td>
-        <td><button class="rv-btn ghost sm" data-plan="${esc(i.id)}">Record</button></td></tr>`).join("")}</tbody></table>
-        <div id="plan-form"></div>` : ""}
-    </div></div>
-    <div class="rv-card"><div class="rv-card-head"><h3>Observations</h3></div><div class="rv-card-body">
-      <p class="hint">What tools reported, before anyone decided it's a finding. Link the ones that share a root cause to one finding, dismiss the rest with the reason.</p>
-      <div class="rv-form-row"><input id="obs-path" class="rv-input mono" placeholder="semgrep.json or evidence/authz/....json" aria-label="Tool output to import" spellcheck="false"><button id="obs-import" class="rv-btn sm">Import tool output</button></div>
-      ${r.imports.length ? `<details><summary>${r.imports.length} import(s)</summary><ul class="rv-rows">${r.imports.map((i) => `<li><b>${esc(i.id)}</b> <span class="mono">${esc(i.path)}</span> <span class="rv-dim">${esc(i.parser || "no parser")} v${esc(i.parser_version)} · ${i.observations} observation(s), ${i.new} new · ${fmtTime(i.at)}</span>
-        ${i.errors.map((x) => `<div class="err">${esc(x.type)}: ${esc(x.message)}${x.path ? ` (${esc(x.path)})` : ""}</div>`).join("")}${i.limitations.map((x) => `<div class="rv-dim">${esc(x)}</div>`).join("")}</li>`).join("")}</ul></details>` : ""}
-      ${r.groups.length ? `<p class="rv-field-label">May share a root cause</p><ul class="rv-rows">${r.groups.map((g) => `<li><span class="mono">${esc(g.group_key)}</span> <span class="rv-dim">${esc(g.suggestion)}</span> <button class="rv-btn ghost sm" data-group="${esc(g.observations.join(","))}">Select</button></li>`).join("")}</ul>` : ""}
-      <div class="rv-sev-filters">${["new", "linked", "duplicate", "dismissed", "all"].map((s) => `<button class="rv-sev-filter ${s === f ? "active" : ""}" data-obsf="${s}">${s} <span class="count">${nObs(s)}</span></button>`).join("")}</div>
-      ${obs.length ? `<table class="rv-table rv-obs"><thead><tr><th><input type="checkbox" id="obs-all" aria-label="Select all"></th><th>Observation</th><th>Where</th><th>Status</th></tr></thead><tbody>${obs.map((o) => `<tr>
-        <td><input type="checkbox" class="obs-cb" value="${esc(o.id)}" aria-label="Select ${esc(o.id)}"></td>
-        <td><b>${esc(o.id)}</b> ${sevTag(o.severity || "info")} ${esc(o.title)}<div class="rv-dim">${esc(o.tool)}${o.rule_id ? " · " + esc(o.rule_id) : ""}${o.seen > 1 ? ` · seen ${o.seen} times` : ""}</div></td>
-        <td class="mono">${esc(o.location)}</td>
-        <td>${tag(o.status)}${o.finding_id ? ` <b>${esc(o.finding_id)}</b>` : ""}${o.duplicate_of ? ` of ${esc(o.duplicate_of)}` : ""}${o.reason ? `<div class="rv-dim">${esc(o.reason)}</div>` : ""}</td></tr>`).join("")}</tbody></table>
-        <div class="rv-form-row"><input id="obs-fid" class="rv-input" placeholder="F-001" aria-label="Finding to link to" style="max-width:110px"><button id="obs-link" class="rv-btn sm">Link to finding</button>
-          <input id="obs-reason" class="rv-input" placeholder="reason it's not an issue" aria-label="Dismiss reason"><button id="obs-dismiss" class="rv-btn ghost sm">Dismiss</button><button id="obs-reopen" class="rv-btn ghost sm">Reopen</button></div>`
-        : `<div class="rv-empty">No observations${f === "all" ? " yet" : " with this status"}.</div>`}
-    </div></div>
-    <div class="rv-card"><div class="rv-card-head"><h3>Handover note</h3></div><div class="rv-card-body">
-      <textarea id="inv-note" class="rv-input" rows="5" placeholder="What the next person (or the agent, when it resumes) should know that the records don't say.">${esc(h.note)}</textarea>
-      ${h.note_updated ? `<p class="rv-dim">saved ${fmtTime(h.note_updated.at)} by ${esc(h.note_updated.by)}</p>` : ""}
-      <div class="rv-actions start"><button id="inv-note-save" class="rv-btn sm">Save note</button></div>
-      <details><summary>Handover as text (what the agent reads)</summary><pre class="rv-pre">${esc(h.markdown)}</pre></details>
-    </div></div></div>`;
+  if (state.tab !== "investigation" || state.current !== d.engagement || !$("#inv-out")) return;
+  const h = r.handover, cov = r.coverage, c = cov.counts || {};
   const post = (what, body) => api(`/api/eng/${e}/${what}`, body);
-  const sel = () => $$(".obs-cb").filter((c) => c.checked).map((c) => c.value);
-  $("#inv-obj-save").addEventListener("click", async (ev) => { if (await act(ev.currentTarget, () => post("objective", { text: $("#inv-obj").value, digest: r.objective_digest }), "Objective saved.")) reload(); });
-  $("#inv-note-save").addEventListener("click", async (ev) => { if (await act(ev.currentTarget, () => post("handover", { text: $("#inv-note").value, digest: h.note_digest }), "Note saved.")) reload(); });
-  $("#inv-pb-add").addEventListener("click", async (ev) => {
-    const x = await act(ev.currentTarget, () => post("plan", { op: "playbook", playbook: $("#inv-pb").value }));
-    if (x) { toast(`${x.ids.length} test(s) added from ${x.playbook} (version ${x.version}).`); reload(); }
-  });
-  $("#inv-reassess").addEventListener("click", async (ev) => {
-    const x = await act(ev.currentTarget, () => post("plan", { op: "reassess", build: $("#inv-build").value.trim() }));
-    if (x) { toast(`${x.stale} test(s) now stale.`); reload(); }
-  });
-  $$("[data-obsf]").forEach((b) => b.addEventListener("click", () => { state.obsFilter = b.dataset.obsf; reload(); }));
-  $$("[data-group]").forEach((b) => b.addEventListener("click", () => { const ids = b.dataset.group.split(","); $$(".obs-cb").forEach((c) => { c.checked = ids.includes(c.value); }); }));
-  $("#obs-all")?.addEventListener("change", (ev) => $$(".obs-cb").forEach((c) => { c.checked = ev.target.checked; }));
-  $("#obs-import").addEventListener("click", async (ev) => {
-    const x = await act(ev.currentTarget, () => post("observation", { op: "import", path: $("#obs-path").value.trim() }));
-    if (x) { toast(`${x.observations} observation(s), ${x.new} new${x.errors.length ? `, ${x.errors.length} parser error(s)` : ""}.`, !!x.errors.length); reload(); }
-  });
-  const triage = async (btn, body, msg) => {
-    const ids = sel();
-    if (!ids.length) { toast("Select observations first.", true); return; }
-    if (await act(btn, () => post("observation", { ...body, ids }), msg)) reload();
+  const reload = () => paneInvestigation();
+  const nNew = r.observations.filter((o) => o.status === "new").length;
+  const counts = { coverage: cov.total || "", observations: nNew ? `${nNew} new` : "", imports: r.imports.length || "" };
+  const done = (c.tested || 0) + (c.failed || 0);
+  const covLine = [c.planned && `${c.planned} not run yet`, c.blocked && `${c.blocked} blocked`, cov.stale.length && `${cov.stale.length} stale`].filter(Boolean).join(" · ");
+  const body = (html) => { $("#inv-body").innerHTML = html; };
+
+  const summary = () => {
+    const pend = state.invAllPending ? h.pending : h.pending.slice(0, 8);
+    const line = (obj) => Object.entries(obj).filter(([, v]) => v).map(([k, v]) => `${v} ${esc(k)}`).join(", ") || "none";
+    body(`
+      <div class="rv-card"><div class="rv-card-head"><h3>Objective</h3><button id="inv-obj-save" class="rv-btn">Save objective</button></div><div class="rv-card-body">
+        <textarea id="inv-obj" class="rv-input" rows="2" maxlength="4000" aria-label="Objective" placeholder="What this engagement must answer, e.g. can a member of one tenant read or change another tenant's invoices?">${esc(r.objective)}</textarea></div></div>
+      ${h.parse_problems.length ? `<div class="rv-banner danger"><div class="rv-banner-body"><p class="rv-banner-title">Import problems</p><ul>${h.parse_problems.map((p) => `<li>${esc(p)}</li>`).join("")}</ul></div></div>` : ""}
+      <div class="rv-two">
+        <div class="rv-card"><div class="rv-card-head"><h3>Next</h3></div><div class="rv-card-body">
+          ${h.next.length ? `<ol class="rv-steps">${h.next.map((n) => `<li>${esc(n)}</li>`).join("")}</ol>` : `<p class="hint">Nothing pending.</p>`}</div></div>
+        <div class="rv-card"><div class="rv-card-head"><h3>Where it stands</h3></div><div class="rv-card-body"><dl class="rv-kv">
+          <dt>Findings</dt><dd>${line(h.findings)}</dd>
+          <dt>Observations</dt><dd>${line(h.observations)}</dd>
+          <dt>Coverage</dt><dd>${cov.total ? `${done} of ${cov.total} tests have an outcome${covLine ? `<div class="rv-dim">${covLine}</div>` : ""}` : "no plan yet"}</dd>
+          <dt>Imports</dt><dd>${h.imports}</dd></dl></div></div>
+      </div>
+      ${h.material.length ? `<div class="rv-card"><div class="rv-card-head"><h3>Material findings <span class="rv-dim">${h.material.length}</span></h3></div>
+        <div class="rv-dl" style="--cols:92px 64px minmax(0, 1fr) 132px;--minw:520px"><div class="rv-dl-in">${h.material.map((m) => `<div class="rv-dl-row">${sevMark(m.severity)}<span class="mono">${esc(m.id)}</span><b>${esc(m.title)}</b><span>${statusPill(m)}</span></div>`).join("")}</div></div></div>` : ""}
+      ${h.pending.length ? `<div class="rv-card"><div class="rv-card-head"><h3>Pending decisions <span class="rv-dim">${h.pending.length}</span></h3>
+          ${h.pending.length > 8 ? `<button id="inv-pend" class="rv-btn ghost">${state.invAllPending ? "Show the first 8" : `Show all ${h.pending.length}`}</button>` : ""}</div>
+        <div class="rv-dl" style="--cols:130px minmax(0, 1fr);--minw:420px"><div class="rv-dl-in">${pend.map((p) => `<div class="rv-dl-row"><span>${tag(p.kind)}</span><span title="${esc(p.what)}">${esc(p.what)}</span></div>`).join("")}</div></div></div>` : ""}`);
+    $("#inv-obj-save").addEventListener("click", async (ev) => { if (await act(ev.currentTarget, () => post("objective", { text: $("#inv-obj").value, digest: r.objective_digest }), "Objective saved.")) reload(); });
+    $("#inv-pend")?.addEventListener("click", () => { state.invAllPending = !state.invAllPending; summary(); });
   };
-  $("#obs-link")?.addEventListener("click", (ev) => triage(ev.currentTarget, { op: "link", finding_id: $("#obs-fid").value.trim() }, "Linked."));
-  $("#obs-dismiss")?.addEventListener("click", (ev) => triage(ev.currentTarget, { op: "dismiss", reason: $("#obs-reason").value.trim() }, "Dismissed."));
-  $("#obs-reopen")?.addEventListener("click", (ev) => triage(ev.currentTarget, { op: "reopen" }, "Reopened."));
-  $$("[data-plan]").forEach((b) => b.addEventListener("click", () => {
-    const i = r.plan.find((x) => x.id === b.dataset.plan);
-    $("#plan-form").innerHTML = `<div class="rv-editor"><p><b>${esc(i.id)}</b> ${esc(i.title)}</p>${i.hypothesis ? `<p class="rv-dim">${esc(i.hypothesis)}</p>` : ""}
+
+  const planForm = (i) => `<div class="rv-dl-detail">${i.hypothesis ? `<p class="rv-dim">${esc(i.hypothesis)}</p>` : ""}
       <div class="rv-form-grid">
         <label class="rv-field"><span class="rv-field-label">Outcome</span><select id="pf-state" class="rv-select">${COVERAGE.map((s) => `<option ${s === i.state ? "selected" : ""}>${s}</option>`).join("")}</select></label>
         <label class="rv-field"><span class="rv-field-label">Finding (when failed)</span><input id="pf-fid" class="rv-input" value="${esc(i.finding_id || "")}" placeholder="F-001"></label>
@@ -945,61 +1241,229 @@ async function paneInvestigation() {
       </div>
       <label class="rv-field"><span class="rv-field-label">Evidence (when tested; one path per line)</span><textarea id="pf-ev" class="rv-input mono" rows="2" spellcheck="false">${esc((i.evidence || []).join("\n"))}</textarea></label>
       <label class="rv-field"><span class="rv-field-label">Rationale (blocked, excluded, not applicable: why, and what would unblock it)</span><input id="pf-why" class="rv-input" value="${esc(i.rationale || "")}"></label>
-      <div class="rv-actions start"><button id="pf-save" class="rv-btn sm accent">Save outcome</button></div></div>`;
-    $("#pf-save").addEventListener("click", async (ev) => {
-      const fields = { state: $("#pf-state").value, rationale: $("#pf-why").value.trim() || null, finding_id: $("#pf-fid").value.trim() || null,
-        evidence: $("#pf-ev").value.split("\n").map((s) => s.trim()).filter(Boolean), build: $("#pf-build").value.trim() || null };
-      Object.keys(fields).forEach((k) => fields[k] === null && delete fields[k]);
-      if (await act(ev.currentTarget, () => post("plan", { op: "update", id: i.id, fields, revision: i.revision }), "Outcome recorded.")) reload();
+      <div class="rv-actions start"><button id="pf-save" class="rv-btn accent">Save outcome</button></div></div>`;
+
+  const coverage = () => {
+    const nState = (s) => r.plan.filter((i) => s === "all" || (s === "stale" ? i.stale : i.state === s)).length;
+    const chips = ["all", ...COVERAGE, ...(nState("stale") ? ["stale"] : [])];
+    body(`
+      <div class="rv-card"><div class="rv-card-body">
+        ${cov.total ? `<div class="rv-cov-head"><b>${done} of ${cov.total} tests have an outcome</b><span class="rv-dim">${covLine}</span></div>
+          <div class="rv-cov-bar" role="img" aria-label="${esc(COVERAGE.map((s) => `${c[s] || 0} ${s}`).join(", "))}">${COVERAGE.map((s) => c[s] ? `<span class="${s}" style="flex:${Number(c[s])} 0 0" title="${Number(c[s])} ${s}"></span>` : "").join("")}</div>`
+          : `<p class="hint">No plan yet. Add a playbook's checklist to start one.</p>`}
+        ${cov.note ? `<p class="hint">${esc(cov.note)}</p>` : ""}
+        <div class="rv-toolbar"><select id="inv-pb" class="rv-select fit" aria-label="Playbook">${PLAYBOOKS.map((p) => `<option>${p}</option>`).join("")}</select><button id="inv-pb-add" class="rv-btn">Add its checklist to the plan</button>
+          <span class="rv-toolbar-end"><input id="inv-build" class="rv-input fit mono" placeholder="build or source digest now deployed" aria-label="Current build" spellcheck="false" style="width:260px">
+            <button id="inv-reassess" class="rv-btn" title="Mark tests that ran on another build or policy revision as stale">Reassess</button></span></div>
+      </div></div>
+      ${r.plan.length ? `<div class="rv-card"><div class="rv-toolbar pad">
+          <div class="rv-search">${ICON_SEARCH}<input id="cov-q" class="rv-input" type="search" placeholder="Search tests, references" aria-label="Search tests" value="${esc(state.covQuery)}"></div>
+          <div class="rv-chipset" role="group" aria-label="Outcome">${chips.map((s) => `<button class="rv-chip ${s === state.covFilter ? "active" : ""} ${nState(s) ? "" : "empty"}" aria-pressed="${s === state.covFilter}" data-covf="${s}">${human(s)} <span class="count">${nState(s)}</span></button>`).join("")}</div>
+        </div><div id="cov-rows"></div></div>` : ""}`);
+    const row = (i) => { const open = state.planOpen === i.id, note = i.stale_reason || i.rationale || ""; return `<div class="rv-dl-row tall">
+        <span class="mono" title="${esc(i.id)}">${esc(i.id)}</span>
+        <span class="two"><b title="${esc(i.title)}">${esc(i.title)}</b>${note ? `<small title="${esc(note)}">${esc(note)}</small>` : ""}</span>
+        <span class="mono" title="${esc((i.refs || []).join(", "))}">${esc((i.refs || []).join(" · "))}</span>
+        <span class="cell">${pill(i.state, COV_PILL[i.state])}${i.stale ? tag("stale", "warn") : ""}${i.finding_id ? `<b>${esc(i.finding_id)}</b>` : ""}</span>
+        <span class="acts"><button class="rv-btn ${open ? "" : "ghost"}" data-plan="${esc(i.id)}" aria-expanded="${open}">${open ? "Close" : "Record"}</button></span></div>${open ? planForm(i) : ""}`; };
+    const fill = () => {
+      if (!$("#cov-rows")) return;
+      const q = state.covQuery.trim().toLowerCase(), f = state.covFilter;
+      const rows = r.plan.filter((i) => (f === "all" || (f === "stale" ? i.stale : i.state === f)) && has(q, [i.id, i.title, i.area, i.finding_id, ...(i.refs || [])]));
+      const areas = [...new Set(rows.map((i) => i.area || ""))], grouped = areas.length > 1 || !!areas[0];
+      const [page, from, pages, p] = pageOf(areas.flatMap((a) => rows.filter((i) => (i.area || "") === a)), state.covPage);
+      state.covPage = p;
+      let last = null;
+      $("#cov-rows").innerHTML = rows.length ? `<div class="rv-dl" style="--cols:minmax(64px, 90px) minmax(160px, 2fr) minmax(80px, 1fr) 170px 72px;--minw:700px"><div class="rv-dl-in">
+          <div class="rv-dl-head"><span>Id</span><span>Test</span><span>References</span><span>Outcome</span><span></span></div>
+          ${page.map((i) => { const a = i.area || "", head = grouped && a !== last ? `<div class="rv-dl-group">${esc(a || "No area")} <span class="rv-dim">${rows.filter((x) => (x.area || "") === a).length}</span></div>` : ""; last = a; return head + row(i); }).join("")}
+        </div></div>${pagerHtml(from, page.length, rows.length, p, pages)}` : `<div class="rv-empty">No test matches these filters.</div>`;
+      $$("#cov-rows [data-plan]").forEach((b) => b.addEventListener("click", () => { state.planOpen = state.planOpen === b.dataset.plan ? null : b.dataset.plan; fill(); }));
+      $$("#cov-rows [data-page]").forEach((b) => b.addEventListener("click", () => { state.covPage += Number(b.dataset.page); fill(); }));
+      $("#pf-save")?.addEventListener("click", async (ev) => {
+        const i = r.plan.find((x) => x.id === state.planOpen);
+        const fields = { state: $("#pf-state").value, rationale: $("#pf-why").value.trim() || null, finding_id: $("#pf-fid").value.trim() || null,
+          evidence: $("#pf-ev").value.split("\n").map((s) => s.trim()).filter(Boolean), build: $("#pf-build").value.trim() || null };
+        Object.keys(fields).forEach((k) => fields[k] === null && delete fields[k]);
+        if (await act(ev.currentTarget, () => post("plan", { op: "update", id: i.id, fields, revision: i.revision }), "Outcome recorded.")) { state.planOpen = null; reload(); }
+      });
+    };
+    fill();
+    $("#cov-q")?.addEventListener("input", (ev) => { state.covQuery = ev.target.value; state.covPage = 0; fill(); });
+    $$("[data-covf]").forEach((b) => b.addEventListener("click", () => { state.covFilter = b.dataset.covf; state.covPage = 0; coverage(); }));
+    $("#inv-pb-add").addEventListener("click", async (ev) => {
+      const x = await act(ev.currentTarget, () => post("plan", { op: "playbook", playbook: $("#inv-pb").value }));
+      if (x) { toast(`${x.ids.length} test(s) added from ${x.playbook} (version ${x.version}).`); reload(); }
     });
-  }));
+    $("#inv-reassess").addEventListener("click", async (ev) => {
+      const x = await act(ev.currentTarget, () => post("plan", { op: "reassess", build: $("#inv-build").value.trim() }));
+      if (x) { toast(`${x.stale} test(s) now stale.`); reload(); }
+    });
+  };
+
+  const observations = () => {
+    const nObs = (s) => r.observations.filter((o) => s === "all" || o.status === s).length;
+    const tools = [...new Set(r.observations.map((o) => o.tool).filter(Boolean))].sort();
+    body(`
+      ${r.groups.length ? `<div class="rv-card"><div class="rv-card-head"><h3>May share a root cause <span class="rv-dim">${r.groups.length}</span></h3></div>
+        <div class="rv-scroll">${r.groups.map((g) => `<div class="rv-group-row"><span class="body"><b class="mono">${esc(g.group_key)}</b><small>${esc(g.suggestion)}</small></span>
+          <button class="rv-btn" data-group="${esc(g.observations.join(","))}">Select ${g.observations.length}</button></div>`).join("")}</div></div>` : ""}
+      <div class="rv-card">
+        <div class="rv-toolbar pad">
+          <div class="rv-search">${ICON_SEARCH}<input id="obs-q" class="rv-input" type="search" placeholder="Search title, rule, location" aria-label="Search observations" value="${esc(state.obsQuery)}"></div>
+          <div class="rv-chipset" role="group" aria-label="Status">${["new", "linked", "duplicate", "dismissed", "all"].map((s) => `<button class="rv-chip ${s === state.obsFilter ? "active" : ""} ${nObs(s) ? "" : "empty"}" aria-pressed="${s === state.obsFilter}" data-obsf="${s}">${cap(s)} <span class="count">${nObs(s)}</span></button>`).join("")}</div>
+          ${tools.length > 1 ? `<select id="obs-tool" class="rv-select fit" aria-label="Tool"><option value="">All tools</option>${tools.map((t) => `<option ${t === state.obsTool ? "selected" : ""}>${esc(t)}</option>`).join("")}</select>` : ""}
+        </div>
+        <div id="obs-bulk" class="rv-bulk" hidden><b id="obs-n"></b>
+          <input id="obs-fid" class="rv-input fit" placeholder="F-001" aria-label="Finding to link to" style="width:90px"><button id="obs-link" class="rv-btn">Link to finding</button>
+          <input id="obs-reason" class="rv-input fit" placeholder="reason it's not an issue" aria-label="Dismiss reason"><button id="obs-dismiss" class="rv-btn">Dismiss</button>
+          <button id="obs-reopen" class="rv-btn">Reopen</button><button id="obs-clear" class="rv-btn ghost">Clear</button></div>
+        <div id="obs-rows"></div>
+      </div>`);
+    const sync = () => { const n = state.obsSel.size; $("#obs-bulk").hidden = !n; $("#obs-n").textContent = `${n} selected`; };
+    const fill = () => {
+      const q = state.obsQuery.trim().toLowerCase(), f = state.obsFilter;
+      const rows = r.observations.filter((o) => (f === "all" || o.status === f) && (!state.obsTool || o.tool === state.obsTool) && has(q, [o.id, o.title, o.tool, o.rule_id, o.location, o.finding_id]));
+      const [page, from, pages, p] = pageOf(rows, state.obsPage);
+      state.obsPage = p;
+      $("#obs-rows").innerHTML = rows.length ? `<div class="rv-dl" style="--cols:18px 84px minmax(160px, 2fr) minmax(90px, 1fr) 150px;--minw:700px"><div class="rv-dl-in">
+          <div class="rv-dl-head"><input type="checkbox" id="obs-all" aria-label="Select all on this page" ${page.every((o) => state.obsSel.has(o.id)) ? "checked" : ""}><span>Severity</span><span>Observation</span><span>Where</span><span>Status</span></div>
+          ${page.map((o) => `<label class="rv-dl-row tall ${state.obsSel.has(o.id) ? "on" : ""}">
+            <input type="checkbox" class="obs-cb" value="${esc(o.id)}" aria-label="Select ${esc(o.id)}" ${state.obsSel.has(o.id) ? "checked" : ""}>
+            ${sevMark(o.severity || "info")}
+            <span class="two"><b title="${esc(o.title)}">${esc(o.title)}</b><small>${esc([o.id, o.tool, o.rule_id, o.seen > 1 ? `seen ${o.seen} times` : "", o.reason].filter(Boolean).join(" · "))}</small></span>
+            <span class="mono" title="${esc(o.location)}">${esc(o.location)}</span>
+            <span class="cell">${pill(o.status, OBS_PILL[o.status])}${o.finding_id ? `<b>${esc(o.finding_id)}</b>` : ""}${o.duplicate_of ? `<span class="rv-dim">of ${esc(o.duplicate_of)}</span>` : ""}</span></label>`).join("")}
+        </div></div>${pagerHtml(from, page.length, rows.length, p, pages)}` : `<div class="rv-empty">No observations${f === "all" && !q && !state.obsTool ? " yet" : " match these filters"}.</div>`;
+      $$("#obs-rows .obs-cb").forEach((cb) => cb.addEventListener("change", () => {
+        state.obsSel[cb.checked ? "add" : "delete"](cb.value); cb.closest(".rv-dl-row").classList.toggle("on", cb.checked);
+        $("#obs-all").checked = $$("#obs-rows .obs-cb").every((x) => x.checked); sync();
+      }));
+      $("#obs-all")?.addEventListener("change", (ev) => { page.forEach((o) => state.obsSel[ev.target.checked ? "add" : "delete"](o.id)); fill(); sync(); });
+      $$("#obs-rows [data-page]").forEach((b) => b.addEventListener("click", () => { state.obsPage += Number(b.dataset.page); fill(); }));
+    };
+    fill(); sync();
+    $("#obs-q").addEventListener("input", (ev) => { state.obsQuery = ev.target.value; state.obsPage = 0; fill(); });
+    $("#obs-tool")?.addEventListener("change", (ev) => { state.obsTool = ev.target.value; state.obsPage = 0; fill(); });
+    $$("[data-obsf]").forEach((b) => b.addEventListener("click", () => { state.obsFilter = b.dataset.obsf; state.obsPage = 0; observations(); }));
+    $$("[data-group]").forEach((b) => b.addEventListener("click", () => { state.obsSel = new Set(b.dataset.group.split(",")); fill(); sync(); $("#obs-bulk").scrollIntoView({ block: "nearest" }); }));
+    $("#obs-clear").addEventListener("click", () => { state.obsSel.clear(); fill(); sync(); });
+    const triage = async (btn, fields, msg) => {
+      if (await act(btn, () => post("observation", { ...fields, ids: [...state.obsSel] }), msg)) { state.obsSel.clear(); reload(); }
+    };
+    $("#obs-link").addEventListener("click", (ev) => triage(ev.currentTarget, { op: "link", finding_id: $("#obs-fid").value.trim() }, "Linked."));
+    $("#obs-dismiss").addEventListener("click", (ev) => triage(ev.currentTarget, { op: "dismiss", reason: $("#obs-reason").value.trim() }, "Dismissed."));
+    $("#obs-reopen").addEventListener("click", (ev) => triage(ev.currentTarget, { op: "reopen" }, "Reopened."));
+  };
+
+  const imports = () => {
+    body(`<div class="rv-card"><div class="rv-card-head"><h3>Imports <span class="rv-dim">${r.imports.length}</span></h3>
+        <span class="rv-actions"><input id="obs-path" class="rv-input fit mono" placeholder="semgrep.json or evidence/authz/....json" aria-label="Tool output to import" spellcheck="false" style="width:300px"><button id="obs-import" class="rv-btn">Import tool output</button></span></div>
+      ${r.imports.length ? `<div class="rv-dl" style="--cols:52px minmax(70px, 100px) minmax(160px, 1fr) 90px 150px 96px;--minw:700px"><div class="rv-dl-in">
+        <div class="rv-dl-head"><span>Id</span><span>Tool</span><span>File</span><span>Found</span><span>Imported</span><span></span></div>
+        ${r.imports.map((i) => { const n = i.errors.length + i.limitations.length, open = state.impOpen === i.id; return `<div class="rv-dl-row">
+          <b>${esc(i.id)}</b><span title="${esc(`${i.parser || "no parser"} v${i.parser_version}`)}">${esc(i.parser || "no parser")}</span>
+          <span class="mono" title="${esc(i.path)}">${esc(String(i.path).split("/").pop())}</span>
+          <span>${i.observations ? `${i.observations} · ${i.new} new` : `<span class="rv-dim">0</span>`}</span><span>${fmtTime(i.at)}</span>
+          <span class="acts">${n ? `<button class="rv-btn ${open ? "" : "ghost"} ${i.errors.length ? "danger-quiet" : ""}" data-imp="${esc(i.id)}" aria-expanded="${open}">${i.errors.length ? `${i.errors.length} error${i.errors.length === 1 ? "" : "s"}` : `${n} note${n === 1 ? "" : "s"}`}</button>` : ""}</span></div>
+          ${open ? `<div class="rv-dl-detail"><div class="rv-notes rv-scroll">${i.errors.map((x) => `<div class="err">${esc(x.type)}: ${esc(x.message)}${x.path ? ` (${esc(x.path)})` : ""}</div>`).join("")}${i.limitations.map((x) => `<div>${esc(x)}</div>`).join("")}</div></div>` : ""}`; }).join("")}
+      </div></div>` : `<div class="rv-card-body"><p class="hint">Nothing imported yet. An import turns a tool's output file into observations: what the tool reported, before anyone decided it's a finding.</p></div>`}</div>`);
+    $$("[data-imp]").forEach((b) => b.addEventListener("click", () => { state.impOpen = state.impOpen === b.dataset.imp ? null : b.dataset.imp; imports(); }));
+    $("#obs-import").addEventListener("click", async (ev) => {
+      const x = await act(ev.currentTarget, () => post("observation", { op: "import", path: $("#obs-path").value.trim() }));
+      if (x) { toast(`${x.observations} observation(s), ${x.new} new${x.errors.length ? `, ${x.errors.length} parser error(s)` : ""}.`, !!x.errors.length); reload(); }
+    });
+  };
+
+  const handover = () => {
+    body(`<div class="rv-card"><div class="rv-card-head"><h3>Handover note</h3><button id="inv-note-save" class="rv-btn">Save note</button></div><div class="rv-card-body">
+        <textarea id="inv-note" class="rv-input" rows="6" aria-label="Handover note" placeholder="What the next person (or the agent, when it resumes) should know that the records don't say.">${esc(h.note)}</textarea>
+        ${h.note_updated ? `<p class="rv-dim">saved ${fmtTime(h.note_updated.at)} by ${esc(h.note_updated.by)}</p>` : ""}</div></div>
+      <div class="rv-card"><div class="rv-card-head"><h3>Handover as text</h3><span class="rv-dim">what the agent reads when it resumes</span></div>
+        <div class="rv-card-body"><pre class="rv-pre">${esc(h.markdown)}</pre></div></div>`);
+    $("#inv-note-save").addEventListener("click", async (ev) => { if (await act(ev.currentTarget, () => post("handover", { text: $("#inv-note").value, digest: h.note_digest }), "Note saved.")) reload(); });
+  };
+
+  const panes = { summary, coverage, observations, imports, handover };
+  const draw = () => {
+    $("#inv-out").outerHTML = `<div id="inv-out" class="rv-stack">
+      <div class="rv-subtabs page" role="tablist" aria-label="Investigation sections">${INV_TABS.map(([t, label]) => `<button role="tab" class="rv-subtab ${t === state.invTab ? "active" : ""}" aria-selected="${t === state.invTab}" data-invtab="${t}">${label}${counts[t] ? ` <span class="n">${counts[t]}</span>` : ""}</button>`).join("")}</div>
+      <div id="inv-body" class="rv-stack"></div></div>`;
+    $$("[data-invtab]").forEach((b) => b.addEventListener("click", () => { state.invTab = b.dataset.invtab; draw(); }));
+    (panes[state.invTab] || summary)();
+  };
+  draw();
 }
 
+const TASK_PILL = { running: "open", queued: "closed", waiting: "closed", awaiting_approval: "warn", interrupted: "warn", done: "ok", error: "bad", blocked: "bad" };
+const TASK_ACTIVE = ["queued", "waiting", "running", "awaiting_approval", "interrupted"];
+const taskGroup = (t) => TASK_ACTIVE.includes(t.status) ? "active" : t.status === "done" ? "done" : "stopped";
+
 async function paneTasks() {
-  const d = state.detail;
+  const d = state.detail, eng = d.engagement, gen = (state.taskGen = (state.taskGen || 0) + 1);
   const m = d.models || {}, allowed = d.info.rules.client_data;
+  const active = () => state.tab === "tasks" && state.current === eng && state.taskGen === gen;
+  if (state.taskEng !== eng) Object.assign(state, { taskEng: eng, taskFilter: "all", taskPage: 0, taskOpen: undefined });
   $("#pane").innerHTML = `<div id="tasks-sum" class="rv-card"><div class="rv-card-body"><span class="rv-dim">Loading the investigation…</span></div></div>
-    <p class="hint">Tasks the planner handed to the worker model, newest first. Full output of every step is in
-    <code>evidence/tasks/&lt;task&gt;/</code>.</p><div id="tasks-out" class="rv-empty">Loading…</div>`;
+    <div id="tasks-out" class="rv-card"><div class="rv-empty">Loading…</div></div>`;
   (async () => {  // where the investigation stands (RW-018), above the tasks
     try {
-      const [inv, lv] = await Promise.all([api(`/api/eng/${enc(d.engagement)}/investigation`), api(`/api/eng/${enc(d.engagement)}/live`).catch(() => ({}))]);
-      if (state.tab !== "tasks" || state.current !== d.engagement) return;
+      const [inv, lv] = await Promise.all([api(`/api/eng/${enc(eng)}/investigation`), api(`/api/eng/${enc(eng)}/live`).catch(() => ({}))]);
+      if (!active()) return;
       const h = inv.handover, sp = lv.spend, w = m.worker || {}, fb = m.worker_fallback || {};
-      $("#tasks-sum").innerHTML = `<div class="rv-card-body"><dl class="rv-kv">
-        <dt>Objective</dt><dd>${h.objective ? esc(h.objective) : `<span class="rv-dim">not set (Investigation tab)</span>`}</dd>
+      $("#tasks-sum").innerHTML = `<div class="rv-card-head"><h3>Where the investigation stands</h3><a class="rv-btn ghost" href="#eng-${esc(eng)}/investigation">Open investigation</a></div><div class="rv-card-body"><dl class="rv-kv">
+        <dt>Objective</dt><dd>${h.objective ? esc(h.objective) : `<span class="rv-dim">not set</span>`}</dd>
         <dt>Next</dt><dd>${esc(h.next[0] || "nothing pending")}</dd>
         <dt>Decisions</dt><dd>${h.pending.length ? `${h.pending.length} pending: ${h.pending.slice(0, 3).map((x) => esc(x.what)).join("; ")}${h.pending.length > 3 ? " …" : ""}` : "none pending"}</dd>
         <dt>Coverage</dt><dd>${h.coverage.total ? `${h.coverage.counts.planned} of ${h.coverage.total} planned test(s) not run${h.coverage.blocked.length ? `, ${h.coverage.blocked.length} blocked` : ""}${h.coverage.stale.length ? `, ${h.coverage.stale.length} stale` : ""}` : "no plan yet"}</dd>
         <dt>Worker model</dt><dd>${destTag(w.destination, allowed)} <span class="rv-dim">${esc(w.model || "")}</span>${fb.on ? ` <span class="rv-dim">fallback: ${esc(DEST[fb.destination] || fb.destination)}</span>` : ""}</dd>
         <dt>Spend today</dt><dd>${sp ? `$${sp.spend.toFixed(2)}${sp.budget ? ` of $${sp.budget.toFixed(2)} daily budget` : ""}` : `<span class="rv-dim">unknown</span>`}</dd>
       </dl></div>`;
-    } catch (err) { $("#tasks-sum").innerHTML = `<div class="rv-card-body err">${esc(err.message)}</div>`; }
+    } catch (err) { if (active()) $("#tasks-sum").innerHTML = `<div class="rv-card-body err">${esc(err.message)}</div>`; }
   })();
+
+  const detail = (t) => `<div class="rv-dl-detail">
+      <div class="rv-meta"><span>${esc(t.id)}</span><span>started ${fmtTime(t.started)}</span><span>${t.steps.length} step(s)</span><span>${t.candidates} candidate(s)</span>${t.models.length ? `<span>model: ${t.models.map(esc).join(", ")}</span>` : ""}</div>
+      <p class="rv-prose">${esc(t.goal || "")}</p>
+      ${t.approval ? `<p>Paused for approval <b>${esc(t.approval.id)}</b>: <code>${esc(t.approval.action)}</code>. Decide it on the <a href="#eng-${esc(eng)}/overview">Overview</a>; the task then continues by itself.</p>` : ""}
+      ${(t.depends_on || []).length ? `<p class="rv-dim">waits for ${t.depends_on.map(esc).join(", ")}</p>` : ""}
+      ${t.error ? `<p class="err">${esc(t.error)}</p>` : ""}${t.summary ? `<p class="rv-prose">${esc(t.summary)}</p>` : ""}
+      ${t.recovery ? `<p class="${t.recovery.decision === "needs_review" ? "err" : "rv-dim"}">After a restart: ${esc(t.recovery.note || t.recovery.decision)}${(t.recovery.uncertain || []).length ? ` (in flight: ${t.recovery.uncertain.map((u) => esc(u.action || u.tool)).join("; ")})` : ""}</p>` : ""}
+      ${TASK_ACTIVE.includes(t.status) ? `<div class="rv-actions start">${t.status === "interrupted" ? `<button class="rv-btn" data-task="resume" data-id="${esc(t.id)}">Resume from checkpoint</button>` : `<button class="rv-btn danger-quiet" data-task="cancel" data-id="${esc(t.id)}">Cancel task</button>`}</div>` : ""}
+      ${t.steps.length ? `<pre class="rv-pre rv-scroll">${t.steps.map((s, i) => `<span class="ln">${String(i + 1).padStart(2, " ")}</span>  ${esc(s)}`).join("\n")}</pre>` : ""}
+      <p class="rv-dim">Full output of every step: <code>evidence/tasks/${esc(t.id)}/</code></p></div>`;
+
   const load = async () => {
-    if (state.tab !== "tasks" || state.current !== d.engagement) return;
-    try {
-      const r = await api(`/api/eng/${enc(d.engagement)}/tasks`);
-      $("#tasks-out").outerHTML = `<div id="tasks-out" class="rv-stack">${r.tasks.map((t) => `<details class="rv-card rv-task" ${["running", "awaiting_approval", "interrupted"].includes(t.status) ? "open" : ""}>
-        <summary>${tag(t.status, t.status)} ${tag(t.tier, TIER_CLASS[t.tier] || "")}<span class="goal">${esc((t.goal || "").slice(0, 160))}</span></summary>
-        <div class="rv-card-body">
-          <div class="rv-meta"><span>${esc(t.id)}</span><span>started ${fmtTime(t.started)}</span>${t.finished ? `<span>${Math.max(0, Math.round((t.finished - t.started) / 60))} min</span>` : ""}
-            <span>${t.steps.length} step(s)</span><span>${t.candidates} candidate(s)</span>${t.models.length ? `<span>model: ${t.models.map(esc).join(", ")}</span>` : ""}</div>
-          ${t.approval ? `<p>Paused for approval <b>${esc(t.approval.id)}</b>: <code>${esc(t.approval.action)}</code>. Decide it on the Overview tab; the task then continues by itself.</p>` : ""}
-          ${(t.depends_on || []).length ? `<p class="rv-dim">waits for ${t.depends_on.map(esc).join(", ")}</p>` : ""}
-          ${t.error ? `<p class="err">${esc(t.error)}</p>` : ""}${t.summary ? `<p class="rv-prose">${esc(t.summary)}</p>` : ""}
-          ${t.recovery ? `<p class="${t.recovery.decision === "needs_review" ? "err" : "rv-dim"}">After a restart: ${esc(t.recovery.note || t.recovery.decision)}${(t.recovery.uncertain || []).length ? ` (in flight: ${t.recovery.uncertain.map((u) => esc(u.action || u.tool)).join("; ")})` : ""}</p>` : ""}
-          ${["queued", "waiting", "running", "awaiting_approval", "interrupted"].includes(t.status) ? `<div class="rv-actions start">
-            ${t.status === "interrupted" ? `<button class="rv-btn sm" data-task="resume" data-id="${esc(t.id)}">Resume from checkpoint</button>` : `<button class="rv-btn ghost sm danger-quiet" data-task="cancel" data-id="${esc(t.id)}">Cancel task</button>`}</div>` : ""}
-          ${t.steps.length ? `<pre class="rv-pre">${t.steps.map((s, i) => `<span class="ln">${String(i + 1).padStart(2, " ")}</span>  ${esc(s)}`).join("\n")}</pre>` : ""}
-        </div></details>`).join("") || `<div class="rv-card"><div class="rv-empty">No worker tasks yet.</div></div>`}</div>`;
+    if (!active()) return;
+    let r;
+    try { r = await api(`/api/eng/${enc(eng)}/tasks`); } catch (e) { if (active()) $("#tasks-out").innerHTML = `<div class="rv-empty err">${esc(e.message)}</div>`; return; }
+    if (!active()) return;
+    const tasks = r.tasks, n = (g) => tasks.filter((t) => g === "all" || taskGroup(t) === g).length;
+    if (state.taskOpen === undefined) state.taskOpen = (tasks.find((t) => ["running", "awaiting_approval", "interrupted"].includes(t.status)) || {}).id || null;
+    const draw = () => {
+      const f = state.taskFilter, rows = tasks.filter((t) => f === "all" || taskGroup(t) === f);
+      const [page, from, pages, p] = pageOf(rows, state.taskPage);
+      state.taskPage = p;
+      $("#tasks-out").innerHTML = `<div class="rv-toolbar pad"><div class="rv-chipset" role="group" aria-label="Status">${[["all", "All"], ["active", "Active"], ["done", "Done"], ["stopped", "Failed or stopped"]].map(([g, label]) => `<button class="rv-chip ${g === f ? "active" : ""} ${n(g) ? "" : "empty"}" aria-pressed="${g === f}" data-taskf="${g}">${label} <span class="count">${n(g)}</span></button>`).join("")}</div>
+          <span class="rv-toolbar-end rv-ok-note">Tasks the planner handed to the worker model, newest first</span></div>
+        ${rows.length ? `<div class="rv-dl" style="--cols:150px 104px minmax(160px, 1fr) 76px 84px;--minw:680px"><div class="rv-dl-in">
+          <div class="rv-dl-head"><span>Status</span><span>Tier</span><span>Task</span><span>Took</span><span></span></div>
+          ${page.map((t) => { const open = state.taskOpen === t.id; return `<div class="rv-dl-row tall"><span>${pill(t.status.replace(/_/g, " "), TASK_PILL[t.status])}</span><span>${tag(t.tier, TIER_CLASS[t.tier] || "")}</span>
+            <span class="two"><b title="${esc(t.goal || "")}">${esc(t.goal || "")}</b><small>${esc([t.id, `${t.steps.length} step${t.steps.length === 1 ? "" : "s"}`, t.candidates ? `${t.candidates} candidate${t.candidates === 1 ? "" : "s"}` : "", t.models.join(", ")].filter(Boolean).join(" · "))}</small></span>
+            <span>${t.finished && t.started ? dur(t.finished - t.started) : t.status === "running" ? "running" : ""}</span>
+            <span class="acts"><button class="rv-btn ${open ? "" : "ghost"}" data-taskopen="${esc(t.id)}" aria-expanded="${open}">${open ? "Hide" : "Details"}</button></span></div>${open ? detail(t) : ""}`; }).join("")}
+        </div></div>${pagerHtml(from, page.length, rows.length, p, pages)}` : `<div class="rv-empty">${tasks.length ? "No task has this status." : "No worker tasks yet."}</div>`}`;
+      $$("[data-taskf]").forEach((b) => b.addEventListener("click", () => { state.taskFilter = b.dataset.taskf; state.taskPage = 0; draw(); }));
+      $$("[data-taskopen]").forEach((b) => b.addEventListener("click", () => { state.taskOpen = state.taskOpen === b.dataset.taskopen ? null : b.dataset.taskopen; draw(); }));
+      $$("#tasks-out [data-page]").forEach((b) => b.addEventListener("click", () => { state.taskPage += Number(b.dataset.page); draw(); }));
       $$("[data-task]").forEach((b) => b.addEventListener("click", async (ev) => {
-        const ok = await act(ev.currentTarget, () => api(`/api/eng/${enc(d.engagement)}/task`, { id: b.dataset.id, action: b.dataset.task }),
+        const ok = await act(ev.currentTarget, () => api(`/api/eng/${enc(eng)}/task`, { id: b.dataset.id, action: b.dataset.task }),
           b.dataset.task === "cancel" ? "Cancel requested." : "Resumed from its last checkpoint.");
         if (ok) setTimeout(load, 1500);
       }));
-      if (r.tasks.some((t) => ["running", "queued", "waiting", "awaiting_approval"].includes(t.status))) setTimeout(load, 5000);
-    } catch (e) { $("#tasks-out").textContent = e.message; }
+    };
+    draw();
+    if (tasks.some((t) => ["running", "queued", "waiting", "awaiting_approval"].includes(t.status))) setTimeout(load, 5000);
   };
   load();
 }
@@ -1072,9 +1536,9 @@ async function paneLive() {
     const runs = r.running.map((c) => `<div class="rv-run">${tag(c.tier, TIER_CLASS[c.tier] || "")}<code>${esc(c.command)}</code>
         <span class="rv-elapsed"><span data-since="${Number(c.started)}"></span> / ${dur(c.timeout_s)}</span>
         <div class="rv-meter" title="Time used of the command's timeout"><span data-meter="${Number(c.started)},${Number(c.timeout_s) || 600}"></span></div></div>`).join("");
-    const tasks = r.tasks.map((t) => `<div class="rv-run">${tag(t.status, t.status)}<span>${esc((t.goal || "").slice(0, 140))}</span>
+    const tasks = r.tasks.map((t) => `<div class="rv-run">${pill(t.status.replace(/_/g, " "), TASK_PILL[t.status])}<span class="goal" title="${esc(t.goal || "")}">${esc(t.goal || "")}</span>
         <span class="rv-elapsed">${t.status === "running" ? `<span data-since="${Number(t.started)}"></span>` : t.finished && t.started ? dur(t.finished - t.started) : ""}</span>
-        <div class="rv-meta" style="grid-column:1/-1">${t.steps.length ? `<span>step ${t.steps.length}: ${esc(String(t.steps.slice(-1)[0]).slice(0, 120))}</span>` : "<span>no steps yet</span>"}${t.models.length ? `<span>model: ${t.models.map(esc).join(", ")}</span>` : ""}${t.candidates ? `<span>${esc(t.candidates)} candidate(s)</span>` : ""}</div></div>`).join("");
+        <div class="rv-meta one" style="grid-column:1/-1">${t.steps.length ? `<span>step ${t.steps.length}: ${esc(String(t.steps.slice(-1)[0]).slice(0, 200))}</span>` : "<span>no steps yet</span>"}${t.models.length ? `<span>model: ${t.models.map(esc).join(", ")}</span>` : ""}${t.candidates ? `<span>${esc(t.candidates)} candidate(s)</span>` : ""}</div></div>`).join("");
     $("#live-out").outerHTML = `<div id="live-out" class="rv-stack">
       ${status}
       ${r.approvals.length ? `<div class="rv-stack"><span class="rv-label">Waiting for your approval</span>${r.approvals.map((a) => approvalCard(a, false)).join("")}</div>` : ""}
@@ -1088,10 +1552,10 @@ async function paneLive() {
         <div class="rv-stack">
           <div class="rv-card"><div class="rv-card-head"><h3>Running now</h3>${tag(String(r.running.length), r.running.length ? "running" : "")}</div>
             <div class="rv-card-body flush">${runs || `<div class="rv-empty">No command running.</div>`}</div></div>
-          <div class="rv-card"><div class="rv-card-head"><h3>Worker</h3><button class="rv-btn ghost sm" data-goto="tasks">All tasks</button></div>
+          <div class="rv-card"><div class="rv-card-head"><h3>Worker</h3><button class="rv-btn ghost" data-goto="tasks">All tasks</button></div>
             <div class="rv-card-body flush">${tasks || `<div class="rv-empty">No worker tasks yet.</div>`}</div></div>
         </div>
-        <div class="rv-card"><div class="rv-card-head"><h3>Latest events</h3><button class="rv-btn ghost sm" data-goto="audit">Audit log</button></div>
+        <div class="rv-card"><div class="rv-card-head"><h3>Latest events</h3><button class="rv-btn ghost" data-goto="audit">Audit log</button></div>
           <div class="rv-card-body flush">${r.events.length ? `<ol class="rv-timeline">${r.events.map(liveEvent).join("")}</ol>` : `<div class="rv-empty">No activity yet.</div>`}</div></div>
       </div></div>`;
     $$("#live-out [data-goto]").forEach((b) => b.addEventListener("click", () => { state.tab = b.dataset.goto; renderDetail(); }));
@@ -1124,48 +1588,155 @@ function actorTag(a) {
   return `<span class="rv-actor ${esc(kind)}" title="${esc(a)}">${esc(kind === "agent" ? "agent" : name || kind)}<span class="rv-dim"> ${esc(kind === "agent" ? name || "" : "via " + kind)}</span></span>`;
 }
 
+// what an audit entry is: a command or request that ran, one that was refused, or a change to a record
+const auditKind = (e) => e.refused ? "refused" : e.command || e.action === "http" ? "commands" : "changes";
+const auditWhat = (e) => e.command ? e.command : e.action === "http" ? `${e.method || "GET"} ${e.url || ""}` : String(e.event || "event").replace(/-/g, " ");
+
 async function paneAudit() {
   const d = state.detail;
-  $("#pane").innerHTML = `<p class="hint">Newest first. The authoritative log is in the kit's control volume.</p><div id="audit-out" class="rv-empty">Loading…</div>`;
-  try {
-    const r = await api(`/api/eng/${enc(d.engagement)}/audit?n=300`);
-    $("#audit-out").outerHTML = `<div class="rv-table-wrap"><table class="rv-table"><thead><tr><th>Time</th><th>Who</th><th>What</th><th>Tier</th><th>Result</th></tr></thead><tbody>
-      ${r.entries.map((e) => {
-        const what = e.command ? `<code>${esc(e.command)}</code>` : `${esc(String(e.event || "").replace(/-/g, " "))}${e.target ? ` <span class="mono">${esc(e.target)}</span>` : ""}${e.fields ? ` <span class="rv-dim">${esc([].concat(e.fields).join(", "))}</span>` : ""}`;
-        const rev = e.before !== undefined || e.after !== undefined ? `<span class="mono rv-dim">${esc(e.before ?? "new")} → ${esc(e.after ?? "")}</span>` : "";
-        const res = e.refused ? `${tag("refused", "fail")} <span class="rv-dim">${esc(e.refused)}</span>` : e.exit !== undefined ? `<span class="mono">exit ${esc(e.exit)} · ${esc(e.seconds)}s</span>` : rev || esc(e.archive || e.status || "");
-        return `<tr><td class="nowrap">${fmtTime(e.ts)}</td><td class="nowrap">${actorTag(e.actor)}</td><td>${what}</td><td>${e.tier ? tag(e.tier, TIER_CLASS[e.tier] || "") : ""}</td><td>${res}</td></tr>`;
-      }).join("") || `<tr><td colspan="5"><div class="rv-empty">No activity yet.</div></td></tr>`}</tbody></table></div>`;
-  } catch (e) { $("#audit-out").textContent = e.message; }
+  if (state.auditEng !== d.engagement) Object.assign(state, { auditEng: d.engagement, auditQuery: "", auditKind: "all", auditWho: "", auditPage: 0, auditOpen: null });
+  $("#pane").innerHTML = `<div id="audit-out" class="rv-card"><div class="rv-empty">Loading…</div></div>`;
+  let r;
+  try { r = await api(`/api/eng/${enc(d.engagement)}/audit?n=300`); } catch (e) { $("#audit-out").innerHTML = `<div class="rv-empty err">${esc(e.message)}</div>`; return; }
+  if (state.tab !== "audit" || state.current !== d.engagement || !$("#audit-out")) return;
+  const all = r.entries, n = (k) => all.filter((e) => k === "all" || auditKind(e) === k).length;
+  const isAgent = (e) => String(e.actor || "").startsWith("agent");
+  $("#audit-out").innerHTML = `<div class="rv-toolbar pad">
+      <div class="rv-search">${ICON_SEARCH}<input id="au-q" class="rv-input" type="search" placeholder="Search commands, events, people" aria-label="Search the audit log" value="${esc(state.auditQuery)}"></div>
+      <div class="rv-chipset" role="group" aria-label="Kind">${[["all", "All"], ["commands", "Commands and requests"], ["changes", "Changes"], ["refused", "Refused"]].map(([k, label]) => `<button class="rv-chip ${k === state.auditKind ? "active" : ""} ${n(k) ? "" : "empty"}" aria-pressed="${k === state.auditKind}" data-auk="${k}">${label} <span class="count">${n(k)}</span></button>`).join("")}</div>
+      <select id="au-who" class="rv-select fit" aria-label="Who"><option value="">Anyone</option><option value="people" ${state.auditWho === "people" ? "selected" : ""}>People</option><option value="agent" ${state.auditWho === "agent" ? "selected" : ""}>The agent</option></select>
+    </div><div id="au-rows"></div>
+    <p class="rv-list-note">Newest first, the latest ${all.length} entries. The authoritative log is in the kit's control volume.</p>`;
+  const result = (e) => {
+    const last = (e.hops || []).slice(-1)[0] || {};
+    return e.refused ? pill("refused", "bad") : e.exit !== undefined ? `<span class="mono">exit ${esc(e.exit)} · ${esc(e.seconds)}s</span>`
+      : e.action === "http" ? `<span class="mono">${esc(last.status || last.error || "no response")}</span>`
+      : e.before !== undefined || e.after !== undefined ? `<span class="mono">${esc(e.before ?? "new")} → ${esc(e.after ?? "")}</span>` : esc(e.archive || e.status || "");
+  };
+  const sub = (e) => [e.refused, e.target, e.fields ? [].concat(e.fields).join(", ") : "", e.approval ? `approval ${e.approval}` : ""].filter(Boolean).join(" · ");
+  const detail = (e) => `<div class="rv-dl-detail"><pre class="rv-pre">${esc(auditWhat(e))}</pre>
+      ${e.refused ? `<p class="err">Refused: ${esc(e.refused)}</p>` : ""}
+      <div class="rv-meta"><span>${fmtTime(e.ts)}</span><span>${esc(e.actor || "unknown actor")}</span>${e.approval ? `<span>approval ${esc(e.approval)}</span>` : ""}${e.target ? `<span>${esc(e.target)}</span>` : ""}
+        ${e.fields ? `<span>fields: ${esc([].concat(e.fields).join(", "))}</span>` : ""}${(e.hops || []).length > 1 ? `<span>${e.hops.length - 1} redirect(s)</span>` : ""}</div>
+      ${(e.notes || []).map((x) => `<p class="rv-dim">${esc(x)}</p>`).join("")}</div>`;
+  const fill = () => {
+    const q = state.auditQuery.trim().toLowerCase(), k = state.auditKind, who = state.auditWho;
+    const rows = all.filter((e) => (k === "all" || auditKind(e) === k) && (!who || (who === "agent") === isAgent(e)) && has(q, [auditWhat(e), e.actor, e.target, e.refused, e.tier]));
+    const [page, from, pages, p] = pageOf(rows, state.auditPage);
+    state.auditPage = p;
+    $("#au-rows").innerHTML = rows.length ? `<div class="rv-dl" style="--cols:156px minmax(90px, 150px) minmax(180px, 1fr) 104px minmax(90px, 150px) 76px;--minw:820px"><div class="rv-dl-in">
+        <div class="rv-dl-head"><span>Time</span><span>Who</span><span>What</span><span>Tier</span><span>Result</span><span></span></div>
+        ${page.map((e) => { const i = all.indexOf(e), open = state.auditOpen === i, code = auditKind(e) !== "changes" || e.command; return `<div class="rv-dl-row tall"><span>${fmtTime(e.ts)}</span><span>${actorTag(e.actor)}</span>
+          <span class="two"><b class="${code ? "mono" : ""}" title="${esc(auditWhat(e))}">${esc(auditWhat(e))}</b>${sub(e) ? `<small title="${esc(sub(e))}">${esc(sub(e))}</small>` : ""}</span>
+          <span>${e.tier ? tag(e.tier, TIER_CLASS[e.tier] || "") : ""}</span><span>${result(e)}</span>
+          <span class="acts"><button class="rv-btn ${open ? "" : "ghost"}" data-auopen="${i}" aria-expanded="${open}">${open ? "Hide" : "Details"}</button></span></div>${open ? detail(e) : ""}`; }).join("")}
+      </div></div>${pagerHtml(from, page.length, rows.length, p, pages)}` : `<div class="rv-empty">${all.length ? "No entry matches these filters." : "No activity yet."}</div>`;
+    $$("[data-auopen]").forEach((b) => b.addEventListener("click", () => { const i = Number(b.dataset.auopen); state.auditOpen = state.auditOpen === i ? null : i; fill(); }));
+    $$("#au-rows [data-page]").forEach((b) => b.addEventListener("click", () => { state.auditPage += Number(b.dataset.page); fill(); }));
+  };
+  fill();
+  $("#au-q").addEventListener("input", (ev) => { state.auditQuery = ev.target.value; state.auditPage = 0; fill(); });
+  $("#au-who").addEventListener("change", (ev) => { state.auditWho = ev.target.value; state.auditPage = 0; fill(); });
+  $$("[data-auk]").forEach((b) => b.addEventListener("click", () => {
+    state.auditKind = b.dataset.auk; state.auditPage = 0;
+    $$("[data-auk]").forEach((x) => { const on = x === b; x.classList.toggle("active", on); x.setAttribute("aria-pressed", on); });
+    fill();
+  }));
 }
 
 // ---------------------------------------------------------------- model log (litellm/rv_events.py)
 // Failed model calls (no credits, budget used up, worker down, refusals nobody recovered from) and calls another model
-// answered instead. Per engagement in its "Model log" tab; all of them on the Model log page.
-function modelTable(events, withEng) {
-  const head = `<th>Time</th>${withEng ? "<th>Engagement</th>" : ""}<th>Model</th><th>What happened</th><th>Result</th>`;
-  const rows = events.map((e) => `<tr>
-      <td class="nowrap">${fmtTime(e.ts)}</td>
-      ${withEng ? `<td class="nowrap">${e.engagement ? `<a href="#eng-${esc(e.engagement)}">${esc(e.engagement)}</a>` : `<span class="rv-dim">none</span>`}</td>` : ""}
-      <td class="nowrap"><span class="mono">${esc(e.model)}</span>${e.model_id ? `<div class="rv-dim mono sm">${esc(e.model_id.replace(/^openrouter\//, ""))}</div>` : ""}</td>
-      <td class="rv-model-text">${esc(e.text || e.message)}${e.count > 1 ? ` <span class="rv-dim mono">x${e.count}</span>` : ""}</td>
-      <td class="nowrap">${e.problem ? tag("failed", "fail") : tag("recovered", "ok")}</td></tr>`).join("");
-  const cols = withEng ? 5 : 4;
-  return `<div class="rv-table-wrap"><table class="rv-table"><thead><tr>${head}</tr></thead><tbody>${rows ||
-    `<tr><td colspan="${cols}"><div class="rv-empty">No model problems in this period.</div></td></tr>`}</tbody></table></div>`;
+// answered instead. Per engagement in its "Model calls" section; all of them on the Model log page.
+// One list for both places: failed calls first in the eye (filled red dot), a filter by result and a pager. `view` keeps
+// the filter and the page between refreshes.
+function modelList(box, events, withEng, view) {
+  const n = (f) => events.filter((e) => f === "all" || (f === "failed") === !!e.problem).length;
+  const cols = `156px ${withEng ? "minmax(100px, 180px) " : ""}minmax(120px, 210px) minmax(200px, 1fr) 116px`;
+  const fill = () => {
+    const f = view.filter || "all", rows = events.filter((e) => f === "all" || (f === "failed") === !!e.problem);
+    const [page, from, pages, p] = pageOf(rows, view.page || 0);
+    view.page = p;
+    box.innerHTML = `<div class="rv-toolbar pad"><div class="rv-chipset" role="group" aria-label="Result">${[["all", "All"], ["failed", "Failed"], ["recovered", "Recovered"]].map(([k, label]) => `<button class="rv-chip ${k === f ? "active" : ""} ${n(k) ? "" : "empty"}" aria-pressed="${k === f}" data-mlf="${k}">${label} <span class="count">${n(k)}</span></button>`).join("")}</div></div>
+      ${rows.length ? `<div class="rv-dl" style="--cols:${cols};--minw:${withEng ? 860 : 720}px"><div class="rv-dl-in">
+        <div class="rv-dl-head"><span>Time</span>${withEng ? "<span>Engagement</span>" : ""}<span>Model</span><span>What happened</span><span>Result</span></div>
+        ${page.map((e) => `<div class="rv-dl-row wrap"><span>${fmtTime(e.ts)}</span>
+          ${withEng ? `<span>${e.engagement ? `<a href="#eng-${esc(e.engagement)}/models">${esc(e.engagement)}</a>` : `<span class="rv-dim">none</span>`}</span>` : ""}
+          <span><span class="mono">${esc(e.model)}</span>${e.model_id ? `<small class="mono">${esc(e.model_id.replace(/^openrouter\//, ""))}</small>` : ""}</span>
+          <span>${esc(e.text || e.message)}${e.count > 1 ? ` <span class="rv-dim mono">x${e.count}</span>` : ""}</span>
+          <span>${e.problem ? pill("failed", "bad") : pill("recovered", "ok")}</span></div>`).join("")}
+      </div></div>${pagerHtml(from, page.length, rows.length, p, pages)}` : `<div class="rv-empty">${events.length ? "No call has this result." : "No model problems in this period."}</div>`}`;
+    box.querySelectorAll("[data-mlf]").forEach((b) => b.addEventListener("click", () => { view.filter = b.dataset.mlf; view.page = 0; fill(); }));
+    box.querySelectorAll("[data-page]").forEach((b) => b.addEventListener("click", () => { view.page += Number(b.dataset.page); fill(); }));
+  };
+  fill();
 }
 async function loadModels() {
   const out = $("#models-out");
-  try { const r = await api(`/api/models?since=${enc($("#models-since").value)}`); out.outerHTML = `<div id="models-out">${modelTable(r.events, true)}</div>`; }
-  catch (e) { out.textContent = e.message; }
+  try { const r = await api(`/api/models?since=${enc($("#models-since").value)}`); modelList(out, r.events, true, (state.modelView = state.modelView || {})); }
+  catch (e) { out.innerHTML = `<div class="rv-empty err">${esc(e.message)}</div>`; }
 }
 $("#models-refresh").addEventListener("click", loadModels);
 $("#models-since").addEventListener("change", loadModels);
 async function paneModels() {
   const d = state.detail;
-  $("#pane").innerHTML = `<p class="hint">Model calls for this engagement that failed, or that another model answered instead (last 7 days, newest first). Calls not matched to an engagement are on the <a href="#models">Model log</a> page.</p><div id="models-eng" class="rv-empty">Loading…</div>`;
-  try { const r = await api(`/api/models?eng=${enc(d.engagement)}`); $("#models-eng").outerHTML = modelTable(r.events, false); }
-  catch (e) { $("#models-eng").textContent = e.message; }
+  $("#pane").innerHTML = `<div class="rv-card"><div class="rv-card-body"><p class="hint">Model calls for this engagement that failed, or that another model answered instead (last 7 days, newest first). Calls not matched to an engagement are on the <a href="#models">Model log</a> page.</p></div>
+    <div id="models-eng"><div class="rv-empty">Loading…</div></div></div>`;
+  try {
+    const r = await api(`/api/models?eng=${enc(d.engagement)}`);
+    if (state.tab !== "models" || state.current !== d.engagement || !$("#models-eng")) return;
+    if (state.modelEng !== d.engagement) { state.modelEng = d.engagement; state.modelEngView = {}; }
+    modelList($("#models-eng"), r.events, false, state.modelEngView);
+  } catch (e) { $("#models-eng").innerHTML = `<div class="rv-empty err">${esc(e.message)}</div>`; }
+}
+
+// ---------------------------------------------------------------- UI kit (#kit)
+// A reference page, reached by its address only (/#kit): nothing in the console links to it.
+// Every component the console is built from, drawn with the same classes and helpers the pages use, so this page
+// cannot drift from them. Add a component here when you add one to app.css; reuse one before writing a new one.
+function renderKit() {
+  const item = (name, cls, html, note = "") => `<div class="rv-kit-item"><div class="rv-kit-demo">${html}</div>
+    <div class="rv-kit-doc"><b>${name}</b><code>${esc(cls)}</code>${note ? `<span>${note}</span>` : ""}</div></div>`;
+  const sec = (title, rule, items) => `<div class="rv-card"><div class="rv-card-head"><h3>${title}</h3></div>
+    <div class="rv-card-body">${rule ? `<p class="hint">${rule}</p>` : ""}<div class="rv-kit-grid">${items.join("")}</div></div></div>`;
+  const btns = (size) => `<button class="rv-btn accent ${size}">Primary</button><button class="rv-btn ${size}">Default</button><button class="rv-btn ghost ${size}">Quiet</button><button class="rv-btn danger ${size}">Danger</button><button class="rv-btn danger-quiet ${size}">Delete</button><button class="rv-btn ${size}" disabled>Disabled</button>`;
+  $("#kit-out").innerHTML = [
+    sec("Buttons", "Two heights only. 32px for the actions of a page, a card, a bar or a form; 28px for actions inside a list row, a pager or a side panel header. The place sets the size, so the markup never does: write .rv-btn and a kind, nothing else. One primary (accent) button per view.", [
+      item("Standard, 32px", ".rv-btn  + .accent | .ghost | .danger | .danger-quiet", `<div class="rv-actions start">${btns("")}</div>`, "Card heads, the engagement bar, toolbars, forms, banners."),
+      item("Compact, 28px", ".rv-btn inside a row, pager, bulk bar or panel header", `<div class="rv-kit-row">${btns("sm")}</div>`, "Automatic in those places. .rv-btn.sm forces it somewhere the rules do not cover; avoid it."),
+      item("With an icon", ".rv-btn > svg", `<div class="rv-actions start"><button class="rv-btn">${ICON_COPY} Copy</button><button class="rv-btn ghost icon" aria-label="Close">${ICON_CLOSE}</button></div>`, "Icon-only buttons are square: add .icon and an aria-label."),
+    ]),
+    sec("Fields", "Inputs, selects and chips are 32px, the same as standard buttons, so a toolbar is one even row; 28px inside a bulk bar or a list row, automatically. A field fills its container unless it has .fit. Every field has a visible label or an aria-label.", [
+      item("Text input", ".rv-input", `<label class="rv-field"><span class="rv-field-label">Label</span><input class="rv-input" placeholder="placeholder"></label>`),
+      item("Select", ".rv-select", `<label class="rv-field"><span class="rv-field-label">Label</span><select class="rv-select"><option>Option</option></select></label>`),
+      item("Search", ".rv-search > svg + .rv-input", `<div class="rv-search">${ICON_SEARCH}<input class="rv-input" type="search" placeholder="Search" aria-label="Search"></div>`),
+      item("Text area", "textarea.rv-input", `<textarea class="rv-input" rows="2" aria-label="Example">mono, for files and JSON</textarea>`),
+      item("Filter chips", ".rv-chipset > .rv-chip  + .active | .empty", `<div class="rv-chipset"><button class="rv-chip active">All <span class="count">12</span></button><button class="rv-chip">Open <span class="count">3</span></button><button class="rv-chip empty">None <span class="count">0</span></button></div>`, "Always with a count. One is active."),
+      item("Toolbar", ".rv-toolbar  (.pad inside a card)", `<div class="rv-toolbar"><div class="rv-search">${ICON_SEARCH}<input class="rv-input" type="search" placeholder="Search" aria-label="Search"></div><div class="rv-chipset"><button class="rv-chip active">All <span class="count">12</span></button><button class="rv-chip">Open <span class="count">3</span></button></div><select class="rv-select fit" aria-label="Example"><option>Any</option></select><span class="rv-toolbar-end"><button class="rv-btn">Action</button></span></div>`, "Search, chips, selects, then actions at the end."),
+    ]),
+    sec("Status and labels", "Four vocabularies, never mixed. Severity is a square marker and a word and is the only use of the warm scale. Workflow status is a round pill. Tags are square and neutral. All are 22px high.", [
+      item("Severity", "sevMark(severity)", `<div class="rv-kit-row">${SEV.map(sevMark).join("")}</div>`),
+      item("Status pill", "pill(text, kind)   kinds: ok | open | warn | bad | closed", `<div class="rv-kit-row">${[["ok", "ok"], ["open", "open"], ["warn", "warn"], ["bad", "bad"], ["closed", "closed"]].map(([t, k]) => pill(t, k)).join("")}</div>`, "ok done or valid, open active, warn needs a decision, bad failed, closed over."),
+      item("Tag", "tag(text, kind)", `<div class="rv-kit-row">${tag("neutral")}${tag("passive", "passive")}${tag("ok", "ok")}${tag("warn", "warn")}${tag("fail", "fail")}</div>`, "Categories and kinds: tier, parser, check name."),
+      item("Count badge", ".rv-count  + .danger", `<div class="rv-kit-row"><span class="rv-count">12</span><span class="rv-count danger">3</span></div>`, "Red only when it needs the operator."),
+      item("Code chip", ".rv-code-chip", `<span class="rv-code-chip">10.250.0.16/32</span>`, "Things you can copy: paths, targets, ids."),
+    ]),
+    sec("Surfaces", "", [
+      item("Card", ".rv-card > .rv-card-head + .rv-card-body", `<div class="rv-card"><div class="rv-card-head"><h3>Title <span class="rv-dim">4</span></h3><button class="rv-btn">Action</button></div><div class="rv-card-body"><p class="hint">Body text.</p></div></div>`, "The count sits in the title; actions on the right."),
+      item("Next step", ".rv-next  + .idle | .danger", `<div class="rv-next"><div class="body"><span class="rv-label">Next step</span><b>One thing that needs you</b><span class="sub">What to do about it.</span></div><button class="rv-btn accent">Do it</button></div>`),
+      item("Banner", ".rv-banner  + .warn | .danger", `<div class="rv-banner warn"><div class="rv-banner-body"><p class="rv-banner-title">Check this</p><p class="rv-banner-sub">Something the operator should read.</p></div></div>`),
+      item("Key and value", "dl.rv-kv", `<dl class="rv-kv"><dt>Rate</dt><dd>10 per second</dd><dt>Network</dt><dd>online</dd></dl>`),
+      item("File tile", "fileTile(engagement, path)", `<div class="rv-files flat">${fileTile("example", "report.pdf")}${fileTile("example", "findings.xlsx")}</div>`),
+      item("Steps", "ol.rv-stepper > li  + .done | .now", `<ol class="rv-stepper"><li class="done"><span class="st">Done</span><b>First</b></li><li class="now"><span class="st">Next</span><b>Second</b></li><li><span class="st">Later</span><b>Third</b></li></ol>`),
+    ]),
+    sec("Lists", "Every list is the same: a toolbar, a header, rows of one height (52px, or 56px with two lines), an optional detail row under a row, and a pager. Columns are set per list with --cols.", [
+      item("Data list", ".rv-dl > .rv-dl-in > .rv-dl-head + .rv-dl-row (+ .tall | .wrap) + .rv-dl-detail", `<div class="rv-card"><div class="rv-dl" style="--cols:84px minmax(0, 1fr) 110px 84px;--minw:420px"><div class="rv-dl-in">
+        <div class="rv-dl-head"><span>Severity</span><span>Item</span><span>Status</span><span></span></div>
+        <div class="rv-dl-row tall">${sevMark("high")}<span class="two"><b>Title on one line, cut with an ellipsis</b><small>id · one line of detail</small></span><span>${pill("open", "open")}</span><span class="acts"><button class="rv-btn">Hide</button></span></div>
+        <div class="rv-dl-detail"><p>The detail row: the full text, the form or the secondary actions for the row above.</p></div>
+        <div class="rv-dl-row tall">${sevMark("low")}<span class="two"><b>Second row</b><small>id · detail</small></span><span>${pill("done", "ok")}</span><span class="acts"><button class="rv-btn ghost">Details</button></span></div>
+      </div></div>${pagerHtml(0, 2, 60, 0, 3)}</div>`, "One visible action per row; the rest go in the detail row."),
+    ]),
+  ].join("");
 }
 
 // ---------------------------------------------------------------- new engagement

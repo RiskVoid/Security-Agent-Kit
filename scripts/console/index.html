@@ -17,11 +17,12 @@
       <span class="rv-tag">Console</span>
     </div>
 
+    <div id="ws-nav">
     <div class="rv-side-label">Workspace</div>
     <nav class="rv-side-nav">
       <a class="rv-sidebar-item" href="#engagements" data-view="engagements">
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/></svg>
-        <span>Engagements</span><span id="eng-count" class="rv-count"></span>
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m3 11 9-8 9 8"/><path d="M5 10v10h14V10"/></svg>
+        <span>Home</span><span id="eng-count" class="rv-count" title="engagements"></span>
       </a>
       <a class="rv-sidebar-item" href="#approvals" data-view="approvals">
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><path d="m9 12 2 2 4-4"/></svg>
@@ -44,6 +45,10 @@
         <span>Open agent UI</span>
       </a>
     </nav>
+    </div>
+
+    <!-- the workspace menu above never changes; the selected engagement's menu appears under it (renderEngNav in app.js) -->
+    <div id="eng-nav" hidden></div>
 
     <div class="rv-side-foot">
       <span><span class="rv-dot ok"></span> local · 127.0.0.1 only</span>
@@ -53,7 +58,7 @@
 
   <div class="rv-main">
     <header class="rv-topbar">
-      <button id="menu-btn" class="rv-btn ghost sm rv-menu-btn" aria-label="Menu">☰</button>
+      <button id="menu-btn" class="rv-btn ghost rv-menu-btn" aria-label="Menu">☰</button>
       <div id="crumbs" class="rv-crumbs"><span>Console</span></div>
       <div class="rv-topbar-right">
         <button id="new-btn" class="rv-btn accent" aria-label="New engagement">
@@ -65,18 +70,23 @@
 
     <main class="rv-page">
       <section id="view-engagements">
-        <div class="rv-split">
-          <div class="rv-split-list">
-            <div class="rv-search">
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg>
-              <input id="eng-filter" class="rv-input" type="search" placeholder="Filter engagements" aria-label="Filter engagements">
-            </div>
-            <div id="eng-list" class="rv-list" role="list"></div>
+        <div id="eng-picker" class="rv-stack">
+          <div class="rv-detail-title">
+            <h1 class="rv-h-display">Engagements</h1>
+            <div id="eng-sum" class="rv-meta"></div>
           </div>
-          <div id="detail" class="rv-split-detail">
-            <div class="rv-empty">Pick an engagement, or create one.</div>
+          <div class="rv-card rv-picker">
+            <div class="rv-toolbar pad">
+              <div class="rv-search">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg>
+                <input id="eng-filter" class="rv-input" type="search" placeholder="Search name, client, target" aria-label="Search engagements">
+              </div>
+              <div id="eng-chips" class="rv-chipset" role="group" aria-label="State"></div>
+            </div>
+            <div id="eng-list"></div>
           </div>
         </div>
+        <div id="detail" hidden></div>
       </section>
 
       <section id="view-approvals" class="rv-stack" hidden>
@@ -85,7 +95,7 @@
             <p class="rv-banner-title">Intrusive commands wait here until you decide</p>
             <p class="rv-banner-sub">Each approval works once, for this exact command. After you approve, tell the agent to run it again.</p>
           </div>
-          <button id="notify-btn" class="rv-btn sm">Enable desktop notifications</button>
+          <button id="notify-btn" class="rv-btn">Enable desktop notifications</button>
         </div>
         <div id="appr-all" class="rv-stack"></div>
       </section>
@@ -94,18 +104,26 @@
         <div class="rv-card">
           <div class="rv-card-head"><h3>Model log</h3>
             <span class="rv-model-filters">
-              <select id="models-since" class="rv-input sm" aria-label="Period"><option value="3600">Last hour</option><option value="86400">Last 24 hours</option><option value="604800" selected>Last 7 days</option></select>
-              <button id="models-refresh" class="rv-btn sm">Refresh</button>
+              <select id="models-since" class="rv-input fit" aria-label="Period"><option value="3600">Last hour</option><option value="86400">Last 24 hours</option><option value="604800" selected>Last 7 days</option></select>
+              <button id="models-refresh" class="rv-btn">Refresh</button>
             </span>
           </div>
-          <p class="hint">Model calls that failed, and calls another model answered instead, for every engagement. Each entry says what to do.</p>
-          <div id="models-out" class="rv-empty">Loading…</div>
+          <div class="rv-card-body"><p class="hint">Model calls that failed, and calls another model answered instead, for every engagement. Each entry says what to do.</p></div>
+          <div id="models-out"><div class="rv-empty">Loading…</div></div>
         </div>
+      </section>
+
+      <section id="view-kit" class="rv-stack" hidden>
+        <div class="rv-detail-title">
+          <h1 class="rv-h-display">UI kit</h1>
+          <div class="rv-meta"><span>The components every page of this console is built from. Reuse one before adding a new one.</span></div>
+        </div>
+        <div id="kit-out" class="rv-stack"></div>
       </section>
 
       <section id="view-status" class="rv-stack" hidden>
         <div class="rv-card">
-          <div class="rv-card-head"><h3>./rvkit status</h3><button id="status-refresh" class="rv-btn sm">Refresh</button></div>
+          <div class="rv-card-head"><h3>./rvkit status</h3><button id="status-refresh" class="rv-btn">Refresh</button></div>
           <pre id="status-text" class="rv-status">Loading…</pre>
         </div>
         <div class="rv-card">
