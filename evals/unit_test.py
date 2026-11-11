@@ -1306,6 +1306,18 @@ class BenchmarkScore(unittest.TestCase):
         self.assertEqual({a["id"]: a["as"] for a in s["also_valid"]}, {"F-002": "sqli", "F-003": "open-redirect"})
         self.assertEqual([u["id"] for u in s["unmatched_findings"]], ["F-004"])
 
+    def test_stuck_note_quotes_the_repeated_result(self):
+        obs = {"kind": "ObservationEvent", "tool_name": "findings_update_coverage", "observation": {"content": [
+            {"type": "text", "text": "[Tool 'findings_update_coverage' executed.]"},
+            {"type": "text", "text": "REFUSED: blocked needs a rationale"}]}}
+        note = self.rb.stuck_note([{"kind": "ActionEvent"}, obs, {"kind": "ConversationStateUpdateEvent"}])
+        self.assertIn("stopped as stuck", note)
+        self.assertIn('findings_update_coverage was: "REFUSED: blocked needs a rationale".', note)
+        self.assertNotIn("[Tool ", note)
+        plain = self.rb.stuck_note([])  # nothing to quote: still a usable message
+        self.assertIn("Do not send that call again", plain)
+        self.assertNotIn("The last result", plain)
+
     def test_tool_outcomes(self):
         p = os.path.join(self.tmp.name, "audit.log")
         rows = [{"engagement": "e", "command": "nmap -sV x", "exit": 0},

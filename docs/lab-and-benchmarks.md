@@ -186,7 +186,9 @@ issues, so read them before treating low precision as a problem, and add the rea
 
 An unattended run must start with a test plan and give every planned test an outcome. If the agent stops with
 planned tests open, candidates untriaged or no plan at all, and it has time and budget left, the harness sends it
-back to work, at most three times; the result records each time under `continued`.
+back to work, at most three times; the result records each time under `continued`. The same goes for a run that
+OpenHands stops as stuck, which happens when the agent repeats one call, usually one a tool keeps refusing: the
+harness quotes the refusal back to it and tells it not to send that call again.
 
 The result also records findings marked false
 positive or duplicate, wall time, planner tokens, automatic approvals, the agent, the worker model and endpoint.
