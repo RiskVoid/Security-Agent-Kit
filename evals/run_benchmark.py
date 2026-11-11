@@ -186,18 +186,27 @@ def run_conversation(eng, b, agent, target, log, before=None):
         if lab_only:
             approved += approve_pending(eng)
         if status not in ("running", "idle") or (status == "idle" and time.time() - t0 > 60):
-            # Stopped. With time and budget left, an unfinished plan sends it back to work (at most 3 times):
-            # agents tend to stop at a third of their time with checklist items never run.
-            todo = open_work(eng, cid) if status in ("finished", "idle") else []
+            # Stopped. With time and budget left, it is sent back to work (at most 3 times) when the plan is
+            # unfinished (agents tend to stop at a third of their time with checklist items never run) or when
+            # OpenHands stopped it as stuck (the same call repeated, usually one a tool keeps refusing).
+            if status == "stuck":
+                try:
+                    todo = [stuck_note(conversation_events(cid))]
+                except (urllib.error.URLError, TimeoutError):
+                    todo = [stuck_note([])]
+                text = todo[0]
+            else:
+                todo = open_work(eng, cid) if status in ("finished", "idle") else []
+                text = ("Not done yet: " + "; ".join(todo) + ". You still have time: continue until every planned "
+                        "test has an outcome (tested, failed with its finding, blocked, excluded or not-applicable, "
+                        "each with evidence or a rationale) and every candidate is triaged.")
             spent = (openrouter_usage() or 0) - before if before is not None else 0
             if todo and len(nudges) < 3 and time.time() - t0 < (b["max_minutes"] - 5) * 60 \
                     and spent < 0.8 * b.get("max_budget_usd", 5.0):
                 nudges.append(todo)
-                log(f"  not done yet ({'; '.join(todo)[:200]}): continuing")
-                oh("POST", f"/api/conversations/{cid}/events", {"role": "user", "run": True, "content": [
-                    {"type": "text", "text": "Not done yet: " + "; ".join(todo) + ". You still have time: continue "
-                     "until every planned test has an outcome (tested, failed with its finding, blocked, excluded or "
-                     "not-applicable, each with evidence or a rationale) and every candidate is triaged."}]})
+                log(f"  {'stuck' if status == 'stuck' else 'not done yet'} ({'; '.join(todo)[:200]}): continuing")
+                oh("POST", f"/api/conversations/{cid}/events", {"role": "user", "run": True,
+                                                                "content": [{"type": "text", "text": text}]})
                 status = "running"
                 continue
             break
@@ -231,6 +240,21 @@ def run_conversation(eng, b, agent, target, log, before=None):
         status = "asked-question"  # stopped to wait for a human: an unattended run that did this has failed
     return {"conversation_id": cid, "status": status, "seconds": round(time.time() - t0),
             "approvals_auto": approved, "tokens": tok, "final_response": final[:2000], "continued": nudges}
+
+
+def stuck_note(events):
+    """The message that sends a stuck conversation back to work: it quotes the result of the call it kept
+    repeating, since the usual cause is a refusal the model did not read."""
+    last = next((e for e in reversed(events) if e.get("kind") == "ObservationEvent"), None)
+    tool, result = (last or {}).get("tool_name") or "", ""
+    for c in ((last or {}).get("observation") or {}).get("content") or []:
+        t = (c.get("text") or "").strip() if isinstance(c, dict) else ""
+        if t and not t.startswith("[Tool "):
+            result = t
+    said = (f" The last result{' of ' + tool if tool else ''} was: \"{result[:400]}\"." if result else "")
+    return ("The run was stopped as stuck: you repeated the same call and got the same result." + said +
+            " Do not send that call again. Read the result, then change the arguments it asks for or take a different "
+            "step, and continue with the plan.")
 
 
 def open_work(eng, cid):

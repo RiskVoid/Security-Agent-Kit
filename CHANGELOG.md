@@ -34,6 +34,8 @@ settings or the findings database; `./rvkit update` migrates existing installs a
   kept as `precision_expected_only`.
 - An unattended run must plan its tests and give each one an outcome. A run that stops early with planned tests
   open or candidates untriaged is sent back to work, at most three times, while time and budget remain.
+- A run that OpenHands stops as stuck (the agent repeating one refused call) is sent back to work with the refusal
+  quoted, within the same limit of three, instead of ending with nothing recorded.
 - First results with GLM-5.3 as planner and GLM-5.3 Flash as worker, in `docs/capability-baselines.md`.
 
 ### Models
