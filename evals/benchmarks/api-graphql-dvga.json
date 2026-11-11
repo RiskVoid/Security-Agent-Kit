@@ -166,5 +166,16 @@
     "reproduction"
    ]
   }
+ ],
+ "also_valid": [
+  {
+   "id": "private-paste-bola",
+   "cwe": [
+    "CWE-639"
+   ],
+   "any": [
+    "private paste"
+   ]
+  }
  ]
 }

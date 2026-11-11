@@ -184,5 +184,69 @@
     "(sql injection|sqli)\\W+(in|at|via|on)\\W+((get|post) )?(/api/(orders|login)|db\\.js|finduser)"
    ]
   }
+ ],
+ "also_valid": [
+  {
+   "id": "jwt-no-expiry",
+   "cwe": [
+    "CWE-613"
+   ],
+   "any": [
+    "no expiration",
+    "expiresin"
+   ]
+  },
+  {
+   "id": "no-login-throttling",
+   "cwe": [
+    "CWE-307"
+   ],
+   "any": [
+    "throttl",
+    "rate limit",
+    "brute"
+   ]
+  },
+  {
+   "id": "no-audit-log",
+   "cwe": [
+    "CWE-778"
+   ],
+   "any": [
+    "audit event",
+    "security log"
+   ]
+  },
+  {
+   "id": "dependency-pins",
+   "cwe": [
+    "CWE-1395",
+    "CWE-1104"
+   ],
+   "any": [
+    "lockfile",
+    "pins (express|jsonwebtoken|sqlite3)"
+   ]
+  },
+  {
+   "id": "unhandled-async-errors",
+   "cwe": [
+    "CWE-248"
+   ],
+   "any": [
+    "async route failures",
+    "unhandled (promise )?rejection"
+   ]
+  },
+  {
+   "id": "unbounded-preview-buffer",
+   "cwe": [
+    "CWE-770"
+   ],
+   "any": [
+    "without a byte-size limit",
+    "maxcontentlength"
+   ]
+  }
  ]
 }
