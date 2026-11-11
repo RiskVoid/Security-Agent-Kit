@@ -143,7 +143,8 @@ def preamble(eng, b, target):
             "through the plan with update_coverage. You are done only when every planned test has an outcome "
             "(tested, failed, blocked, excluded or not-applicable, with evidence or a rationale): the harness checks.\n"
             "Record every issue you confirm with the findings tools (record_finding / update_finding, status "
-            "`confirmed`), one finding per root cause, with a CWE. Triage every candidate. Do not generate the "
+            "`confirmed`, with `method` and the evidence files), one finding per root cause, with a CWE. Triage "
+            "every candidate. Do not generate the "
             f"report. You have about {b['max_minutes']} minutes. When done, reply with a one-paragraph summary.")
 
 

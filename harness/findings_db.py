@@ -292,7 +292,34 @@ def _decision(con, finding_id, kind, before, after, reason, method, actor, revis
                                                 revision))
 
 
-def record(engagement: str, actor: str | None = None, **fields) -> dict:
+# Methods that produce output: a finding confirmed by one of them must cite the evidence file that shows it.
+EVIDENCE_METHODS = ("runtime-reproduction", "replay", "authorization-matrix", "tool-output")
+
+
+def confirm_problem(method, evidence) -> str | None:
+    """Why an agent may not mark a finding confirmed with this method and evidence (None: it may). People using
+    the console or the CLI are not held to this: their confirmation is recorded as theirs, "not stated" if so."""
+    stated = [m for m in METHODS if m != "not stated"]
+    if not method or method == "not stated":
+        return ("status=confirmed needs method: how you verified it (" + ", ".join(stated) + "). "
+                "Record it as a candidate if you have not verified it yet")
+    if method not in METHODS:
+        return f"method must be one of {', '.join(stated)}"
+    if isinstance(evidence, str):
+        try:
+            evidence = json.loads(evidence)
+        except ValueError:
+            evidence = [evidence]
+    if method in EVIDENCE_METHODS and not [e for e in (evidence or []) if str(e).strip()]:
+        return (f"a finding confirmed by {method} needs evidence: the /work/<engagement>/evidence/runs/... file "
+                "of the command that showed it (the run result names it)")
+    return None
+
+
+def record(engagement: str, actor: str | None = None, method: str | None = None, **fields) -> dict:
+    """method: how a finding recorded as confirmed was verified (METHODS)."""
+    if method is not None and method not in METHODS:
+        raise ValueError(f"method must be one of {METHODS}")
     f = _clean(fields)
     if not f.get("title") or not f.get("severity"):
         raise ValueError("title and severity are required")
@@ -303,9 +330,10 @@ def record(engagement: str, actor: str | None = None, **fields) -> dict:
         f.setdefault("status", "candidate")
         con.execute(f"INSERT INTO findings ({','.join(f)}) VALUES ({','.join('?' * len(f))})", list(f.values()))
         _snapshot(con, f["id"], actor)
-        _decision(con, f["id"], "recorded", None, f["status"], None, None, actor, 1)
-        if f["status"] == "confirmed":
-            _verify(con, f["id"], "not stated", actor)
+        confirmed = f["status"] == "confirmed"
+        _decision(con, f["id"], "recorded", None, f["status"], None, method if confirmed else None, actor, 1)
+        if confirmed:
+            _verify(con, f["id"], method or "not stated", actor)
         return _row(con.execute("SELECT * FROM findings WHERE id=?", (f["id"],)).fetchone())
 
 

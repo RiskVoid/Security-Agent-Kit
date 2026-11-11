@@ -119,7 +119,10 @@ paths (one per line; add a note after a space, e.g. `/work/<eng>/semgrep.json (r
 `update_finding` to confirm them (status `confirmed`, with `method`: how you verified it), reject them (status
 `false-positive` with the `reason`; a severity change also needs one) or
 merge them (status `duplicate` with `duplicate_of` = the finding you keep, after adding the duplicate's evidence to it),
-and `record_finding` for issues you find yourself. Secrets in worker summaries are redacted; read the evidence
+and `record_finding` for issues you find yourself. A finding recorded as `confirmed`, with either tool, needs
+`method` (`runtime-reproduction`, `replay`, `authorization-matrix`, `source-review`, `tool-output` or `retest`), and
+every method except `source-review` and `retest` needs the `evidence/runs/` file that shows it: the tools refuse a
+confirmation without them. Secrets in worker summaries are redacted; read the evidence
 file if you need the exact value, and never repeat a live secret in a finding (describe and locate it instead).
 
 ## Communication

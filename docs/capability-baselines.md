@@ -95,6 +95,23 @@ What the numbers say:
   reading anything into it.
 - **Juice Shop stopped at the cap** with every finding triaged; a higher cap would give it more time.
 
+**After the confirmation rule.** The missing proof had a cause in the kit: `record_finding` took no verification
+method, so a finding recorded as confirmed in one call had none. The agent's tools now refuse a confirmed finding
+without a method, and without an evidence file for the methods that produce output. Two runs later the same day
+with that change, same models, capped at $0.90:
+
+| Benchmark | Found | With evidence | Precision, expected only | Precision, with known lab issues | Clean | Minutes | Cost | Planner calls refused |
+|---|---|---|---|---|---|---|---|---|
+| `api-vampi` (stopped at the spend cap) | 8 of 9 | 7 of 9 | 0.73 | 0.91 | 0 | 8 | $0.96 | 0 |
+| `laravel-ledgerly` (stopped by OpenHands as stuck) | 0 of 6 | 0 of 6 | n/a | n/a | 0 | 9 | $0.48 | 0 |
+
+- **VAmPI went from 0 to 7 of 9 with evidence**, and every confirmed finding has a method. The eighth names a
+  different endpoint than the benchmark expects.
+- **The Ledgerly run failed before it recorded anything.** The planner repeated one refused `update_coverage`
+  call (a blocked test without a rationale) until OpenHands stopped the conversation as stuck. The run the night
+  before finished, so this is one bad run in two, not a measure of the rule. It does show a weakness of this
+  planner: it can repeat a refused call instead of reading the refusal.
+
 ### Release acceptance run
 
 On 2026-11-10 the kit ran its release acceptance scenario on the Ledgerly lab, with the same models and a person

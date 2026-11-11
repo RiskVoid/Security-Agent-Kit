@@ -77,13 +77,16 @@ def finding_list(engagement, actor=None, status=None, severity=None):
 
 
 @op("finding.record")
-def finding_record(engagement, actor, fields):
+def finding_record(engagement, actor, fields, method=None):
     if not isinstance(fields, dict):
         raise OpError("fields must be an object")
     unknown = set(fields) - set(db.FIELDS)
     if unknown:
         raise OpError(f"unknown fields: {', '.join(sorted(unknown))}")
-    row = db.record(engagement, actor=actor, **_limit(fields))
+    try:
+        row = db.record(engagement, actor=actor, method=method, **_limit(fields))
+    except ValueError as e:
+        raise OpError(str(e))
     return row, _event("finding-recorded", actor, row["id"], None, row["revision"])
 
 
