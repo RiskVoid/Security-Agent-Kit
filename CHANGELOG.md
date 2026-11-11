@@ -31,6 +31,9 @@ settings or the findings database; `./rvkit update` migrates existing installs a
 - First results with GLM-5.3 as planner and GLM-5.3 Flash as worker, in `docs/capability-baselines.md`.
 
 ### Models
+- The default planner is now GLM-5.3 (`z-ai/glm-5.3`) instead of GPT-6.1. In the lab runs GPT-6.1 had planner calls
+  refused in every black-box run; GLM-5.3 had none, found more of the seeded issues and costs less per token. The
+  fallback stays DeepSeek V4 Pro. An existing `.env` keeps its planner: change it with `./rvkit planner z-ai/glm-5.3`.
 - An empty reply from a model is retried once on the same model before the fallback answers. A refusal still goes
   straight to the fallback.
 

@@ -332,7 +332,7 @@ flowchart LR
 | Piece | What it does |
 |---|---|
 | **Agent UI** ([OpenHands](https://github.com/All-Hands-AI/OpenHands)) | Where you talk to the agent. Its container has **no direct internet**. |
-| **Planner** | A frontier model (default GPT-6.1 via OpenRouter, ZDR providers only) that plans, triages and writes. |
+| **Planner** | A hosted model (default GLM-5.3 via OpenRouter, ZDR providers only) that plans, triages and writes. |
 | **Worker** | Qwen3.8-27B on Colab, your GPU or any OpenAI-compatible endpoint. It runs the tools and reads the code. |
 | **Kali sandbox** | The tools, isolated per engagement, behind the scope firewall, with tiers, rate caps and approvals. |
 | **Console** | A local web page for engagements, the live run view, approvals, findings triage, reports and the audit log. |

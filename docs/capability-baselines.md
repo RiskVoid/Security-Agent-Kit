@@ -52,7 +52,7 @@ What the numbers say:
   pre-check refused two of its logins because it read the email address as a target (fixed after the run). The attended
   [release acceptance run](#release-acceptance-run) on the same lab, with a person approving the authorization
   matrix and the intrusive checks, confirmed three with evidence.
-- **The default planner refuses some offensive work.** OpenAI's cyber-policy filter refused planner calls in
+- **GPT-6.1, the default planner at the time, refuses some offensive work.** OpenAI's cyber-policy filter refused planner calls in
   every black-box lab run, and DeepSeek V4 Pro answered them, so those rows measure the two planners together.
   Before 2026-11-10 such a refusal stopped the conversation instead; see the CHANGELOG.
 - **Two runs went over their cap.** The cap wasn't enforced until the `laravel-ledgerly` run: OpenHands' own
