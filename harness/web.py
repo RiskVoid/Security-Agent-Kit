@@ -13,7 +13,9 @@ import webfetch
 
 SEARXNG = os.environ.get("SEARXNG_URL", "http://searxng:8080")
 KALI_MCP = os.environ.get("KALI_MCP_URL", "http://kali-mcp:8090/mcp")
-mcp = FastMCP("web", host="0.0.0.0", port=8094)
+# Stateless: no per-client session, so a conversation that was open when this server restarted keeps working
+# (with sessions, every later tool call failed with "Session terminated" until OpenHands itself was restarted).
+mcp = FastMCP("web", host="0.0.0.0", port=8094, stateless_http=True)
 _scope = {"at": 0.0, "nets": [], "domains": []}
 
 

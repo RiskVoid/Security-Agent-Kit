@@ -10,7 +10,9 @@ from mcp.server.fastmcp import FastMCP
 import core
 import actions
 
-mcp = FastMCP("kali", host="0.0.0.0", port=core.MCP_PORT)
+# Stateless: no per-client session, so a conversation that was open when this server restarted keeps working
+# (with sessions, every later tool call failed with "Session terminated" until OpenHands itself was restarted).
+mcp = FastMCP("kali", host="0.0.0.0", port=core.MCP_PORT, stateless_http=True)
 
 
 async def _thread(fn, *args, **kw):
