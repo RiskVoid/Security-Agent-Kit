@@ -36,7 +36,7 @@ The kit uses two models with different jobs.
 
 | Model | Job | Sees |
 |---|---|---|
-| **Planner**: a frontier model via OpenRouter (default GPT-6.1) | plans, decides what to run next, verifies, writes findings and the report | task descriptions, the worker's redacted summaries, findings, files it chooses to open |
+| **Planner**: a hosted model via OpenRouter (default GLM-5.3) | plans, decides what to run next, verifies, writes findings and the report | task descriptions, the worker's redacted summaries, findings, files it chooses to open |
 | **Worker**: Qwen3.8-27B on a Colab GPU, your own or a rented GPU, any OpenAI-compatible endpoint, or a hosted model on OpenRouter (no GPU) | carries out one focused, hands-on task at a time: runs tools, reads code, records candidates | raw tool output, client code, evidence |
 
 The split keeps the bulk of client data with the worker. The planner hands over a goal ("run semgrep and bandit

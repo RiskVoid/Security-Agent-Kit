@@ -53,7 +53,7 @@ need_env() {
   envensure WORKER_MODEL_ID "openai/qwen38-27b-obl"
   envensure WORKER_FALLBACK_MODEL "openrouter/deepseek/deepseek-v4.1-flash"
   envensure WORKER_FALLBACK "off"
-  envensure PLANNER_MODEL "openrouter/openai/gpt-6.1-sol"
+  envensure PLANNER_MODEL "openrouter/z-ai/glm-5.3"
   envensure PLANNER_FALLBACK_MODEL "openrouter/deepseek/deepseek-v4-pro"
   envensure OPENROUTER_DAILY_BUDGET "20"
   envensure REDIS_PASSWORD "$(rand 24)"

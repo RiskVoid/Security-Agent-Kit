@@ -183,7 +183,7 @@ Every change recreates LiteLLM and sends a test prompt.
 
 ```sh
 ./rvkit planner                                  # show
-./rvkit planner <openrouter-model> [fallback]    # set, e.g. openai/gpt-6.1-sol deepseek/deepseek-v4-pro
+./rvkit planner <openrouter-model> [fallback]    # set, e.g. z-ai/glm-5.3 deepseek/deepseek-v4-pro
 ./rvkit planner --direct anthropic/<model> [fallback]   # Anthropic or OpenAI directly, without OpenRouter
 ```
 

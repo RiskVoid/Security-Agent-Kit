@@ -11,7 +11,7 @@ routes each model name to the right place:
 
 | LiteLLM name | Points at | Used by | Falls back to |
 |---|---|---|---|
-| `planner` | `PLANNER_MODEL` on OpenRouter (default `openai/gpt-6.1-sol`) | the `riskvoid-planner` agent | `planner-fallback` on errors, outages, refusals and empty replies |
+| `planner` | `PLANNER_MODEL` on OpenRouter (default `z-ai/glm-5.3`) | the `riskvoid-planner` agent | `planner-fallback` on errors, outages, refusals and empty replies |
 | `planner-fallback` | `PLANNER_FALLBACK_MODEL` on OpenRouter (default `deepseek/deepseek-v4-pro`) | | |
 | `colab-qwen` | the worker endpoint (`WORKER_API_BASE`, `WORKER_MODEL_ID`) | `delegate_task` in the worker MCP server | `colab-qwen-fallback`, **only** when the fallback is on |
 | `colab-qwen-fallback` | `WORKER_FALLBACK_MODEL` on OpenRouter (default `deepseek/deepseek-v4.1-flash`) | | |
@@ -249,17 +249,30 @@ Delegated tasks for that engagement then use `private-llm`, which never falls ba
 
 ```sh
 ./rvkit planner                                             # show the planner and its fallback
-./rvkit planner openai/gpt-6.1-sol                          # change the planner
-./rvkit planner openai/gpt-6.1-sol deepseek/deepseek-v4-pro  # change both
+./rvkit planner z-ai/glm-5.3                               # change the planner
+./rvkit planner z-ai/glm-5.3 deepseek/deepseek-v4-pro      # change both
 ./rvkit test planner                                        # send a test prompt
 ```
 
 Models are OpenRouter ids; the `openrouter/` prefix is optional. The fallback is used when the planner errors (an
 outage, a rate limit), refuses, or sends an empty reply. Choose a model that is good at long tool-using sessions
-and doesn't refuse authorised security work. With the kit's planner prompt and a lab engagement brief, GPT-6.1,
-DeepSeek V4 Pro and Gemini 3.1 Pro answered with a tool call, and Claude Sonnet 5.5 refused (November 2026). Check a
-candidate with `python3 evals/planner_smoke.py`. The fallback should come from another vendor, so a rate limit on
-one doesn't stop both.
+and doesn't refuse authorised security work. Check a candidate with `python3 evals/planner_smoke.py`, then with
+a benchmark run. The fallback should come from another vendor, so a rate limit on one doesn't stop both.
+
+**Why GLM-5.3 is the default** (measured November 2026, see [capability baselines](capability-baselines.md)):
+
+| Planner | Refused planner calls in the lab runs | Price per million tokens: input, output, cached input |
+|---|---|---|
+| GLM-5.3 (`z-ai/glm-5.3`), the default | none in 3 runs | $0.07, $1.40, $0.07 |
+| DeepSeek V4 Pro (`deepseek/deepseek-v4-pro`), the fallback | none; it answered every call GPT-6.1 refused | $0.11, $4.44, $0.10 |
+| GPT-6.1 (`openai/gpt-6.1-sol`), the default before | 152 across the 5 black-box runs, none in the source reviews | $2.00, $10.00, $0.10 |
+
+On the three benchmarks both planners ran, GLM-5.3 found more of the seeded issues at the same cost or less. Its
+weak point is the record: it often confirms a finding without stating how it was verified, so read its findings
+before delivery. Prices are OpenRouter list prices and change; the kit's runs are mostly cached input.
+
+In an earlier check with the kit's planner prompt and a lab engagement brief, GPT-6.1, DeepSeek V4 Pro and Gemini
+3.1 Pro answered with a tool call, and Claude Sonnet 5.5 refused (November 2026).
 
 Without `OPENROUTER_API_KEY` in `.env`, the planner doesn't work: use `riskvoid-local`, or add the key and run
 `./rvkit up`.
