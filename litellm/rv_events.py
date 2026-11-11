@@ -270,19 +270,24 @@ class RvEvents(CustomLogger):
         if sent:
             return
         kind = "refusal" if finish == "content_filter" else "empty"
-        fb, fb_error = (None if request_data.get("disable_fallbacks") else fallback_for(group)), None
-        if fb:
-            record(kind, group, engagement=eng, message=f"{model_name(group)} " + ("refused this request" if kind == "refusal" else
-                   "returned an empty reply") + f"; answering with the fallback {model_name(fb)}.", fallback=fb)
+        fb, fb_error, raw = (None if request_data.get("disable_fallbacks") else fallback_for(group)), None, None
+        # An empty reply is often a one-off (a provider hiccup): ask the same model once more first. A refusal goes
+        # straight to the fallback, since asking the same model again gets the same answer.
+        tries = ([group] if kind == "empty" else []) + ([fb] if fb else [])
+        if tries:
+            steps = (["retrying it once"] if kind == "empty" else []) + ([f"answering with the fallback {model_name(fb)}"] if fb else [])
+            what = "refused this request" if kind == "refusal" else "returned an empty reply"
+            record(kind, group, engagement=eng, message=f"{model_name(group)} {what}; {', then '.join(steps)}.", fallback=fb)
+        for target in tries:
             try:
                 from litellm.proxy.proxy_server import llm_router
                 params = {k: request_data[k] for k in PASS if k in request_data}
                 for attempt in range(3):  # shared OpenRouter pools rate-limit in short bursts: wait 4 s, then 8 s
                     try:
-                        stream = await llm_router.acompletion(model=fb, stream=True, **params)
+                        stream = await llm_router.acompletion(model=target, stream=True, **params)
                         break
                     except Exception as e:  # noqa: BLE001
-                        if attempt == 2 or classify(fb, e)[0] != "rate_limit":
+                        if attempt == 2 or classify(target, e)[0] != "rate_limit":
                             raise
                         await asyncio.sleep(4 * (attempt + 1))
                 fb_held, got, fb_finish = [], False, None
@@ -300,14 +305,9 @@ class RvEvents(CustomLogger):
                         fb_held.append(c)
                 if got:
                     return
-                if fb_finish != "content_filter":
-                    fb_error = "empty reply"
+                fb_error, raw = ("empty reply" if fb_finish != "content_filter" else None), None
             except Exception as e:  # noqa: BLE001
-                fb_error, raw = classify(fb, e)[1], f"{type(e).__name__}: {e}"[:400]
-            else:
-                raw = None
-        else:
-            raw = None
+                fb_error, raw = classify(target, e)[1], f"{type(e).__name__}: {e}"[:400]
         text = no_answer_text(group, kind, fb, fb_error)
         record("no_answer", group, text[len(PREFIX):], engagement=eng, reason=kind, fallback=fb, **({"error": raw} if raw else {}))
         for c in notice_chunks(group, text):

@@ -296,8 +296,9 @@ fallback can't catch it. The kit's LiteLLM callback (`litellm/rv_events.py`) clo
 visible:
 
 - **Refusals and empty replies use the fallback.** It holds back each streamed reply until real text or a tool call
-  arrives. If the model refuses or sends nothing, the fallback model (`planner-fallback`, or `colab-qwen-fallback`
-  when the worker fallback is on) answers instead. A rate-limited fallback is retried twice.
+  arrives. If the model refuses, the fallback model (`planner-fallback`, or `colab-qwen-fallback` when the worker
+  fallback is on) answers instead. If it sends nothing, the same model is asked once more first, since an empty
+  reply is often a one-off, and then the fallback. A rate-limited model is retried twice.
 - **The reason shows in the chat.** When no model answers, the agent's reply is a short `[RiskVoid] ...` message
   that says what happened and what to do, instead of an empty reply. Errors reach OpenHands with the same kind of
   explanation, followed by the provider's original error text (OpenHands' own retry rules read it):
