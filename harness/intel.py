@@ -10,7 +10,9 @@ Responses are cached in /cache/intel.db (24 h; KEV feed 12 h).
 import json, os, re, sqlite3, threading, time, urllib.parse, urllib.request
 from mcp.server.fastmcp import FastMCP
 
-mcp = FastMCP("intel", host="0.0.0.0", port=8093)
+# Stateless: no per-client session, so a conversation that was open when this server restarted keeps working
+# (with sessions, every later tool call failed with "Session terminated" until OpenHands itself was restarted).
+mcp = FastMCP("intel", host="0.0.0.0", port=8093, stateless_http=True)
 CACHE = os.environ.get("INTEL_CACHE", "/cache/intel.db")
 NVD_KEY = os.environ.get("NVD_API_KEY", "")
 TTL, KEV_TTL = 24 * 3600, 12 * 3600

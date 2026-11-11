@@ -109,7 +109,7 @@ coverage, report approval, and retests. It was recorded; the
 | False confirmations on clean controls | 0 (the fixed build was tested and each finding says whether it is affected) |
 | Approvals | 1 authorization matrix (12 requests, 5 identities) and 7 intrusive actions, each approved once in the console |
 | Resume after approval without a chat message | yes, 21 seconds after the first approval |
-| Recovery after a service restart | partial: findings, evidence and decisions were intact, but OpenHands did not reconnect to the restarted tool server until it was restarted itself ([troubleshooting](troubleshooting.md)) |
+| Recovery after a service restart | partial: findings, evidence and decisions were intact, but OpenHands did not reconnect to the restarted tool server until it was restarted itself. Fixed after the run: the tool servers no longer keep sessions, so an open conversation continues after a restart |
 | Report | 4 revisions; R-003 approved for delivery; a later revision left it unchanged |
 | Defects found and fixed during the run | 3: report provenance for HTTP evidence, the planner fallback on in-stream refusals, a browser download ending the run (see the CHANGELOG) |
 | Time and cost | about 30 minutes, $1.44 |

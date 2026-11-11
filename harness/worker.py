@@ -39,7 +39,9 @@ CTX_CHARS = int(os.environ.get("WORKER_CONTEXT_CHARS", "90000"))  # ~25k tokens:
 TOOL_CHARS = 6000          # tool output kept in context per call; full output goes to a file
 TIERS = ("passive", "active", "intrusive")
 
-mcp = FastMCP("worker", host="0.0.0.0", port=8091)
+# Stateless: no per-client session, so a conversation that was open when this server restarted keeps working
+# (with sessions, every later tool call failed with "Session terminated" until OpenHands itself was restarted).
+mcp = FastMCP("worker", host="0.0.0.0", port=8091, stateless_http=True)
 TASKS: dict[str, dict] = {}
 # How many tasks run at once. 1 (default) suits a single-slot llama-server on Colab; raise it for an endpoint that
 # serves parallel requests (an API, or llama-server with --parallel N).

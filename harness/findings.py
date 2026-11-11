@@ -10,7 +10,9 @@ import ops
 
 ACTOR = "agent:planner"  # changes made through this server are attributed to the planner agent
 
-mcp = FastMCP("findings", host="0.0.0.0", port=8092)
+# Stateless: no per-client session, so a conversation that was open when this server restarted keeps working
+# (with sessions, every later tool call failed with "Session terminated" until OpenHands itself was restarted).
+mcp = FastMCP("findings", host="0.0.0.0", port=8092, stateless_http=True)
 
 
 def _out(x) -> str:

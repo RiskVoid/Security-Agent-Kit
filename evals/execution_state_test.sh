@@ -225,5 +225,42 @@ check "failed prerequisite blocks a task"       "$r" '"c": "blocked"'
 check "unknown dependency refused"              "$r" 'REFUSED: depends_on: no task nope'
 [ "$fail" -eq 0 ] || { echo "--- driver output"; tail -30 "$OUT"; }
 
+# ---------------------------------------------------------------- tool servers survive a restart
+# A client that was connected before a tool server restarted must keep working afterwards, as an open OpenHands
+# conversation does. intel-mcp is the one to restart: it holds no engagement state.
+docker compose exec -T worker-mcp python3 - > "$OUT" 2>&1 <<'PY' &
+import asyncio, time, urllib.error, urllib.request
+from mcp import ClientSession
+from mcp.client.streamable_http import streamablehttp_client
+URL = "http://intel-mcp:8093/mcp"
+def up():
+    try:
+        urllib.request.urlopen(URL, timeout=2)
+    except urllib.error.HTTPError:
+        return True
+    except Exception:
+        return False
+    return True
+async def main():
+    async with streamablehttp_client(URL, timeout=20) as (r, w, _):
+        async with ClientSession(r, w) as s:
+            await s.initialize()
+            print("BEFORE", len((await s.list_tools()).tools), flush=True)
+            t, down = time.time(), False
+            while time.time() - t < 120 and not (down and up()):   # wait for the restart: down, then up again
+                down = down or not up()
+                await asyncio.sleep(0.5)
+            print("RESTARTED", down, flush=True)
+            print("AFTER", len((await asyncio.wait_for(s.list_tools(), 30)).tools), flush=True)
+asyncio.run(main())
+PY
+client=$!
+for _ in $(seq 30); do grep -q '^BEFORE' "$OUT" && break; sleep 1; done
+docker compose restart intel-mcp >/dev/null 2>&1
+wait $client
+r="$(cat "$OUT")"
+check "tool server restarted under an open client" "$r" '^RESTARTED True'
+check "the same client still works after the restart" "$r" '^AFTER [1-9]'
+
 echo; echo "execution state test: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]
