@@ -23,6 +23,16 @@ settings or the findings database; `./rvkit update` migrates existing installs a
   it can't price the gateway's model alias.
 - Each run keeps its data in `evals/results/bench/<name>-<UTC>/`: the engagement folder (findings database,
   evidence, report revisions with their frozen inputs) and the whole conversation, so reports can be rebuilt later.
+- Precision now counts real findings outside the expected list: a second instance of an expected issue, or a known
+  issue of the lab listed under `also_valid` in the benchmark. They never count for recall. The earlier figure is
+  kept as `precision_expected_only`.
+- An unattended run must plan its tests and give each one an outcome. A run that stops early with planned tests
+  open or candidates untriaged is sent back to work, at most three times, while time and budget remain.
+- First results with GLM-5.3 as planner and GLM-5.3 Flash as worker, in `docs/capability-baselines.md`.
+
+### Models
+- An empty reply from a model is retried once on the same model before the fallback answers. A refusal still goes
+  straight to the fallback.
 
 ## [0.1.0]
 

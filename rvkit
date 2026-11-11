@@ -95,7 +95,7 @@ wait_litellm() {
 llm() { # llm <model> -> response JSON (one short completion through LiteLLM)
   curl -s -m 180 $LITELLM_URL/v1/chat/completions \
     -H "Authorization: Bearer $(envget LITELLM_MASTER_KEY)" -H "Content-Type: application/json" \
-    -d '{"model":"'"$1"'","max_tokens":40,"messages":[{"role":"user","content":"Reply with one word: ready"}]}' || true
+    -d '{"model":"'"$1"'","max_tokens":400,"messages":[{"role":"user","content":"Reply with one word: ready"}]}' || true
 }
 test_model() {
   local out model="${1:-colab-qwen}"

@@ -156,5 +156,123 @@
     "reproduction"
    ]
   }
+ ],
+ "also_valid": [
+  {
+   "id": "weak-session-id",
+   "cwe": [
+    "CWE-330",
+    "CWE-384"
+   ],
+   "any": [
+    "weak session id",
+    "predictable session",
+    "weak_id"
+   ]
+  },
+  {
+   "id": "dom-xss",
+   "cwe": [
+    "CWE-79"
+   ],
+   "any": [
+    "dom-based xss",
+    "dom xss",
+    "xss_d"
+   ]
+  },
+  {
+   "id": "open-redirect",
+   "cwe": [
+    "CWE-601"
+   ],
+   "any": [
+    "open redirect"
+   ]
+  },
+  {
+   "id": "javascript-challenge",
+   "cwe": [
+    "CWE-602"
+   ],
+   "any": [
+    "client-side security control",
+    "/vulnerabilities/javascript"
+   ]
+  },
+  {
+   "id": "captcha-bypass",
+   "cwe": [
+    "CWE-804"
+   ],
+   "any": [
+    "captcha"
+   ]
+  },
+  {
+   "id": "csp-bypass",
+   "cwe": [],
+   "any": [
+    "csp bypass",
+    "/vulnerabilities/csp"
+   ]
+  },
+  {
+   "id": "weak-crypto",
+   "cwe": [
+    "CWE-321",
+    "CWE-327"
+   ],
+   "any": [
+    "weak cryptograph",
+    "xor key",
+    "/vulnerabilities/cryptography"
+   ]
+  },
+  {
+   "id": "cookie-flags",
+   "cwe": [
+    "CWE-1004",
+    "CWE-614",
+    "CWE-1275"
+   ],
+   "any": [
+    "httponly",
+    "samesite"
+   ]
+  },
+  {
+   "id": "security-headers",
+   "cwe": [
+    "CWE-693",
+    "CWE-1021"
+   ],
+   "any": [
+    "security (response )?header",
+    "x-frame-options",
+    "content-security-policy"
+   ]
+  },
+  {
+   "id": "exposed-config-files",
+   "cwe": [
+    "CWE-538"
+   ],
+   "any": [
+    "php\\.ini",
+    "\\.gitattributes"
+   ]
+  },
+  {
+   "id": "no-tls",
+   "cwe": [
+    "CWE-319"
+   ],
+   "any": [
+    "no tls",
+    "plaintext http",
+    "cleartext"
+   ]
+  }
  ]
 }

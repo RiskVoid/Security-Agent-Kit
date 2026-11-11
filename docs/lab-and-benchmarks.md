@@ -174,13 +174,21 @@ and what proof it needs, and the strict score counts only findings that meet all
 | recall | expected issues found / expected issues |
 | weighted recall | the same, weighted by severity: critical 4, high 3, medium 2, low 1 |
 | strict recall | expected issues found with every requirement met / expected issues |
-| precision | confirmed findings that matched an expected issue / all confirmed findings |
+| precision | confirmed findings that are real / all confirmed findings. Real means a match to an expected issue, a second instance of one on another asset, or a known issue of the lab that the benchmark lists under `also_valid`. The last two count for precision only, never for recall |
+| precision, expected only | confirmed findings that matched an expected issue / all confirmed findings (the definition used before `also_valid`) |
 | clean violations | confirmed findings on a clean control: a fixed build, a safe route or pattern the benchmark lists under `clean`. Each one is a false positive |
 | tools | commands run, failed (exit 2 or more), timed out and refused by the policy, from the audit log; commands matching a `must_not_run` pattern that ran anyway; whether each `expected_refusals` pattern was refused |
 | decisions | candidates left untriaged, findings confirmed without a method, tool observations not triaged |
 
 Confirmed findings that matched nothing are listed as "not in the expected list, review": they may be real extra
-issues, so read them before treating low precision as a problem. The result also records findings marked false
+issues, so read them before treating low precision as a problem, and add the real ones to the benchmark's
+`also_valid` list.
+
+An unattended run must start with a test plan and give every planned test an outcome. If the agent stops with
+planned tests open, candidates untriaged or no plan at all, and it has time and budget left, the harness sends it
+back to work, at most three times; the result records each time under `continued`.
+
+The result also records findings marked false
 positive or duplicate, wall time, planner tokens, automatic approvals, the agent, the worker model and endpoint.
 
 Every result carries its **provenance**, so you can tell which change moved a score: the kit commit and whether

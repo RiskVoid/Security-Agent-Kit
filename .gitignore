@@ -2,6 +2,10 @@
 .env
 # internal roadmap, kept locally only
 IMPLEMENTATION_PLAN.md
+# launch planning and working notes, kept locally only
+LAUNCH_STRATEGY.md
+Summary and Gaps.pdf
+docs/research-workspace-plan.md
 .claude/settings.local.json
 # your runs (benchmark and smoke-test results can contain model output about your targets)
 evals/results/

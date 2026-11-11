@@ -61,6 +61,40 @@ What the numbers say:
 Every run's data is kept: the engagement folder (findings database, evidence, report revisions with their frozen
 inputs) and the whole conversation, in `evals/results/bench/<name>-<UTC>/`. Reports can be rebuilt from it.
 
+### GLM as planner and worker
+
+On 2026-11-11 four of the benchmarks ran with another model pair: planner GLM-5.3 (`z-ai/glm-5.3`) with DeepSeek
+V4 Pro as its fallback, worker GLM-5.3 Flash (`z-ai/glm-5.3-flash`), through OpenRouter. Agent
+`riskvoid-planner`, **one run each, capped at $1.20**. `code-flask`, `code-node`, `ai-llm-lab`, `web-dvwa` and
+`smoke` have not run with this pair.
+
+These runs are not a like-for-like comparison with the table above. They used a newer harness: the task now
+requires a test plan with an outcome for every planned test, and precision also counts real issues of the lab
+that are outside the expected list (a second instance of an expected issue, or a known issue listed under
+`also_valid` in the benchmark). The table gives precision both ways; **expected only** is the figure the first
+baselines used.
+
+| Benchmark | Found | With evidence | Precision, expected only | Precision, with known lab issues | Clean | Minutes | Cost | Planner calls refused |
+|---|---|---|---|---|---|---|---|---|
+| `api-vampi` | 8 of 9 | 0 of 9 | 0.53 | 0.93 | 0 | 14 | $0.56 | 0 |
+| `laravel-ledgerly` (source plus staging, unattended) | 5 of 6 | 0 of 6 | 1.00 | 1.00 | 0 | 7 | $0.28 | 0 |
+| `web-juice-shop` (stopped at the spend cap) | 5 of 7 | 3 of 7 | 0.36 | 0.86 | 0 | 24 | $1.22 | 0 |
+| `api-graphql-dvga` | not measured | | | | | 76 | $0.27 | 0 |
+
+What the numbers say:
+- **GLM found more of the seeded issues, for less.** VAmPI went from 3 to 8 of 9, Ledgerly from 1 to 5 of 6 and
+  Juice Shop from 3 to 5 of 7, at about the same cost or lower. The harness change above may account for part
+  of that.
+- **It did not record the proof the strict score needs.** No finding on VAmPI or Ledgerly had a verification
+  method, and the VAmPI findings linked no evidence files, so neither run has a finding that counts as "with
+  evidence". Juice Shop had three.
+- **No planner call was refused.** The gateway logged no refusal and no fallback during the four runs, so these
+  rows measure GLM alone.
+- **The DVGA run measured nothing.** The agent reported that the target accepted connections but never answered
+  an HTTP request during the whole run, and it recorded no findings. Restart the lab and run it again before
+  reading anything into it.
+- **Juice Shop stopped at the cap** with every finding triaged; a higher cap would give it more time.
+
 ### Release acceptance run
 
 On 2026-11-10 the kit ran its release acceptance scenario on the Ledgerly lab, with the same models and a person

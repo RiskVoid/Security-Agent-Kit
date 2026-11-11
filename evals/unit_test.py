@@ -1295,7 +1295,16 @@ class BenchmarkScore(unittest.TestCase):
         self.assertEqual(s["found"], 1)  # the second SQL injection doesn't count twice
         self.assertEqual([c["finding"] for c in s["clean_violations"]], ["F-003"])
         self.assertEqual(s["decisions"]["candidates_left"], 1)
-        self.assertEqual(s["precision"], round(1 / 3, 3))
+        self.assertEqual(s["precision"], round(1 / 3, 3))  # the same issue twice is not a second real one
+
+    def test_real_extras_count_for_precision_only(self):
+        b = dict(self.b, also_valid=[{"id": "open-redirect", "cwe": ["CWE-601"], "any": ["open redirect"]}])
+        fs = [self.f(1, "SQL injection", asset="/user"), self.f(2, "Blind SQL injection", asset="/search"),
+              self.f(3, "Open redirect in /go"), self.f(4, "Clickjacking")]
+        s = self.rb.score(b, fs, self.tmp.name)
+        self.assertEqual((s["found"], s["precision"], s["precision_expected_only"]), (1, 0.75, 0.25))
+        self.assertEqual({a["id"]: a["as"] for a in s["also_valid"]}, {"F-002": "sqli", "F-003": "open-redirect"})
+        self.assertEqual([u["id"] for u in s["unmatched_findings"]], ["F-004"])
 
     def test_tool_outcomes(self):
         p = os.path.join(self.tmp.name, "audit.log")

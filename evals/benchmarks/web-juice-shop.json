@@ -136,5 +136,58 @@
     "reproduction"
    ]
   }
+ ],
+ "also_valid": [
+  {
+   "id": "search-sqli",
+   "cwe": [
+    "CWE-89"
+   ],
+   "any": [
+    "/rest/products/search"
+   ]
+  },
+  {
+   "id": "jwt-password-hash",
+   "cwe": [
+    "CWE-916",
+    "CWE-522"
+   ],
+   "any": [
+    "password hash"
+   ]
+  },
+  {
+   "id": "verbose-errors",
+   "cwe": [
+    "CWE-209"
+   ],
+   "any": [
+    "stack trace",
+    "verbose error"
+   ]
+  },
+  {
+   "id": "captcha-answer-leak",
+   "cwe": [
+    "CWE-799",
+    "CWE-804"
+   ],
+   "any": [
+    "captcha"
+   ]
+  },
+  {
+   "id": "unauth-data-exposure",
+   "cwe": [],
+   "any": [
+    "/rest/memories",
+    "security questions?",
+    "/api/challenges",
+    "challenge database",
+    "application version",
+    "application-version"
+   ]
+  }
  ]
 }

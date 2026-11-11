@@ -100,5 +100,29 @@
     "cve-"
    ]
   }
+ ],
+ "also_valid": [
+  {
+   "id": "dependency-pins",
+   "cwe": [
+    "CWE-1395",
+    "CWE-1104"
+   ],
+   "any": [
+    "dependency pinned",
+    "known security advisor"
+   ]
+  },
+  {
+   "id": "html-reflection-xss",
+   "cwe": [
+    "CWE-79"
+   ],
+   "any": [
+    "unescaped",
+    "xss",
+    "cross-site scripting"
+   ]
+  }
  ]
 }
