@@ -6,45 +6,6 @@ settings or the findings database; `./rvkit update` migrates existing installs a
 
 ## [Unreleased]
 
-### Fixed (found by the release acceptance run)
-- Report generation failed with `'command'` when a finding cited evidence from an HTTP request or an
-  authorization matrix run. Provenance now names the request or the matrix.
-- When the planner's provider refused a request with an error inside the stream (OpenRouter's cyber-policy filter)
-  the conversation stopped with an error instead of answering from the planner fallback. Such a refusal now falls
-  back like a `content_filter` one.
-- The scope pre-check read an email address in a command (`email=alice@acme.test`, also URL-encoded) as a
-  target and refused in-scope logins. A URL's user part and user@host tools still name a target.
-- In the sandboxed browser, a step that opened a file download ended the whole run and lost the steps after it.
-  The download is still refused, but its response status is recorded and the run continues.
-- The agent could record a finding as confirmed without saying how it was verified, and without evidence; some
-  models did so for every finding. Its tools now refuse `confirmed` without a method, and without an evidence file
-  for the methods that produce output. `record_finding` takes the method too.
-- After a tool server restarted (`./rvkit update`, `docker compose restart kali-mcp`), every tool call in an open
-  conversation failed with `Session terminated` until OpenHands itself was restarted. The tool servers no longer
-  keep a session per client, so the conversation continues.
-
-### Benchmarks
-- `./rvkit bench --budget USD` caps the spend of each run below the benchmark's own cap. The harness now enforces
-  every run's cap itself from the key's OpenRouter usage: OpenHands' per-conversation budget never fired, because
-  it can't price the gateway's model alias.
-- Each run keeps its data in `evals/results/bench/<name>-<UTC>/`: the engagement folder (findings database,
-  evidence, report revisions with their frozen inputs) and the whole conversation, so reports can be rebuilt later.
-- Precision now counts real findings outside the expected list: a second instance of an expected issue, or a known
-  issue of the lab listed under `also_valid` in the benchmark. They never count for recall. The earlier figure is
-  kept as `precision_expected_only`.
-- An unattended run must plan its tests and give each one an outcome. A run that stops early with planned tests
-  open or candidates untriaged is sent back to work, at most three times, while time and budget remain.
-- A run that OpenHands stops as stuck (the agent repeating one refused call) is sent back to work with the refusal
-  quoted, within the same limit of three, instead of ending with nothing recorded.
-- First results with GLM-5.3 as planner and GLM-5.3 Flash as worker, in `docs/capability-baselines.md`.
-
-### Models
-- The default planner is now GLM-5.3 (`z-ai/glm-5.3`) instead of GPT-6.1. In the lab runs GPT-6.1 had planner calls
-  refused in every black-box run; GLM-5.3 had none, found more of the seeded issues and costs less per token. The
-  fallback stays DeepSeek V4 Pro. An existing `.env` keeps its planner: change it with `./rvkit planner z-ai/glm-5.3`.
-- An empty reply from a model is retried once on the same model before the fallback answers. A refusal still goes
-  straight to the fallback.
-
 ## [0.1.0]
 
 First public release.
@@ -57,6 +18,11 @@ First public release.
 - A daily spend cap that survives restarts. The worker fallback to a hosted model is off by default.
 - Client data routes are enforced at the model gateway: an engagement marked offline or local can't reach a cloud
   model, whatever the conversation asks.
+- The default planner is GLM-5.3 (`z-ai/glm-5.3`), with DeepSeek V4 Pro as its fallback. In the lab runs it had no
+  planner calls refused, where GPT-6.1 had refusals in every black-box run, and it costs less per token.
+  `./rvkit planner` changes it.
+- When the planner's provider refuses a request, also with an error inside the stream, the fallback answers. An
+  empty reply is retried once on the same model first.
 
 ### Scope and safety
 - A Kali Linux sandbox per command, with a per-engagement firewall that only reaches the targets in scope. The
@@ -85,6 +51,8 @@ First public release.
 ### Investigation and delivery
 - Findings database with revisions, actors and conflict detection; observations imported from scanner output;
   coverage plans and outcomes; duplicates linked to their original.
+- The agent can't record a finding as confirmed without naming how it was verified, and without an evidence file
+  for the methods that produce output.
 - Report revisions with frozen inputs and hashes, readiness checks, human-only exceptions and delivery approval.
   Reports as a web page, Word document, PDF and Excel register, in RiskVoid branding or your own.
 - Retests against a fixed build, cleanup obligations, reviewed client notices, and exports as JSON, SARIF and
@@ -99,6 +67,16 @@ First public release.
   a fixed build).
 - Benchmarks scored on evidence: the exact asset, evidence, verification and reproduction, clean controls, tool
   outcomes, repeats and provenance.
+- Each benchmark run has a spend cap the harness enforces from the key's OpenRouter usage
+  (`./rvkit bench --budget USD` lowers it), and keeps its engagement folder and whole conversation in
+  `evals/results/bench/<name>-<UTC>/`, so reports can be rebuilt later.
+- Precision counts real findings outside the expected list (a second instance of an expected issue, or a known
+  issue of the lab listed under `also_valid`); they never count for recall. `precision_expected_only` keeps the
+  stricter figure.
+- An unattended run that stops with planned tests open, or that OpenHands stops as stuck, is sent back to work, at
+  most three times, while time and budget remain.
+- Results per model pair, including GLM-5.3 with GLM-5.3 Flash, are in `docs/capability-baselines.md`.
+- An open conversation keeps its tools when a tool server restarts (`./rvkit update`).
 
 [Unreleased]: https://github.com/RiskVoid/Security-Agent-Kit/compare/v0.1.0...HEAD
 [0.1.0]: https://github.com/RiskVoid/Security-Agent-Kit/releases/tag/v0.1.0
