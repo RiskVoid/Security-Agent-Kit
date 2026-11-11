@@ -23,11 +23,18 @@ def _out(x) -> str:
 def record_finding(engagement: str, title: str, severity: str, asset: str, description: str,
                    impact: str = "", reproduction: str = "", remediation: str = "", evidence: list[str] | None = None,
                    cvss_vector: str = "", cvss_score: float | None = None, cwe: str = "",
-                   status: str = "candidate", notes: str = "") -> str:
+                   status: str = "candidate", notes: str = "", method: str = "") -> str:
     """Record a finding for an engagement. severity: critical|high|medium|low|info.
     status: candidate (default, not yet verified) or confirmed (you have reproduced or verified it).
+    status=confirmed needs method = how you verified it (runtime-reproduction, replay, authorization-matrix,
+    source-review, tool-output, retest). runtime-reproduction, replay, authorization-matrix and tool-output also
+    need the evidence file that shows it.
     evidence: file paths under /work/<engagement>/evidence/. Returns the stored finding with its id (F-001...)."""
-    row, _ = ops.call("finding.record", {"engagement": engagement, "actor": ACTOR, "fields": dict(
+    if status == "confirmed":
+        problem = db.confirm_problem(method, evidence)
+        if problem:
+            return f"REFUSED: {problem}"
+    row, _ = ops.call("finding.record", {"engagement": engagement, "actor": ACTOR, "method": method or None, "fields": dict(
         title=title, severity=severity, asset=asset, description=description, impact=impact,
         reproduction=reproduction, remediation=remediation, evidence=evidence or [], cvss_vector=cvss_vector,
         cvss_score=cvss_score, cwe=cwe, status=status, source="planner", notes=notes)})
@@ -43,7 +50,9 @@ def update_finding(engagement: str, finding_id: str, status: str | None = None, 
                    duplicate_of: str | None = None, reason: str | None = None, method: str | None = None,
                    priority: str | None = None, prerequisites: str | None = None, root_cause: str | None = None) -> str:
     """Update a finding. Use status=confirmed after verifying a candidate, with method = how you verified it
-    (runtime-reproduction, replay, authorization-matrix, source-review, tool-output, retest); status=false-positive
+    (runtime-reproduction, replay, authorization-matrix, source-review, tool-output, retest; required, and
+    runtime-reproduction, replay, authorization-matrix and tool-output also need the evidence file that shows
+    it); status=false-positive
     when it doesn't hold; status=duplicate with duplicate_of=<id of the finding to keep>; fixed or accepted-risk
     after client feedback. reason is required for false-positive, accepted-risk and any severity or priority
     change. Severity is the technical severity; priority (P1-P4) is the remediation order, set separately; the
@@ -55,6 +64,15 @@ def update_finding(engagement: str, finding_id: str, status: str | None = None, 
                   prerequisites=prerequisites, root_cause=root_cause)
     if reason is None and status in ("false-positive", "accepted-risk") and notes:
         reason = notes  # the reason given in notes, as before
+    if status == "confirmed":
+        try:
+            cur = db.get(engagement, finding_id)
+        except ValueError as e:
+            return f"REFUSED: {e}"
+        # confirming again without a method keeps the one already recorded
+        problem = db.confirm_problem(method or cur.get("verified_method"), evidence if evidence is not None else cur.get("evidence"))
+        if problem:
+            return f"REFUSED: {problem}"
     try:
         row, _ = ops.call("finding.update", {"engagement": engagement, "actor": ACTOR, "id": finding_id,
                                              "fields": {k: v for k, v in fields.items() if v is not None},

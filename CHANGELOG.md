@@ -16,6 +16,9 @@ settings or the findings database; `./rvkit update` migrates existing installs a
   target and refused in-scope logins. A URL's user part and user@host tools still name a target.
 - In the sandboxed browser, a step that opened a file download ended the whole run and lost the steps after it.
   The download is still refused, but its response status is recorded and the run continues.
+- The agent could record a finding as confirmed without saying how it was verified, and without evidence; some
+  models did so for every finding. Its tools now refuse `confirmed` without a method, and without an evidence file
+  for the methods that produce output. `record_finding` takes the method too.
 - After a tool server restarted (`./rvkit update`, `docker compose restart kali-mcp`), every tool call in an open
   conversation failed with `Session terminated` until OpenHands itself was restarted. The tool servers no longer
   keep a session per client, so the conversation continues.

@@ -380,6 +380,29 @@ class Findings(unittest.TestCase):
     def add(self, title):
         return db.record("e", title=title, severity="high")["id"]
 
+    def test_confirmed_records_its_method(self):
+        r = db.record("e", title="A", severity="high", status="confirmed", method="runtime-reproduction")
+        self.assertEqual((r["verification"], r["verified_method"]), ("verified", "runtime-reproduction"))
+        r = db.record("e", title="B", severity="high", status="confirmed")  # a person, through the console or CLI
+        self.assertEqual(r["verified_method"], "not stated")
+        r = db.record("e", title="C", severity="high", method="replay")  # a candidate is not verified yet
+        self.assertEqual((r["verification"], r["verified_method"]), ("unverified", None))
+        with self.assertRaises(ValueError):
+            db.record("e", title="D", severity="high", status="confirmed", method="guess")
+
+    def test_agent_confirmation_needs_method_and_evidence(self):
+        ev = ["/work/e/evidence/runs/20261111T000000-curl-abc123.txt (200 with another tenant's invoice)"]
+        self.assertIn("needs method", db.confirm_problem(None, ev))
+        self.assertIn("needs method", db.confirm_problem("not stated", ev))
+        self.assertIn("must be one of", db.confirm_problem("guess", ev))
+        for m in ("runtime-reproduction", "replay", "authorization-matrix", "tool-output"):
+            self.assertIn("needs evidence", db.confirm_problem(m, []))
+            self.assertIn("needs evidence", db.confirm_problem(m, "[]"))  # as stored
+            self.assertIsNone(db.confirm_problem(m, ev))
+            self.assertIsNone(db.confirm_problem(m, json.dumps(ev)))
+        for m in ("source-review", "retest", "client-confirmation"):  # the proof is the code, the retest or the client
+            self.assertIsNone(db.confirm_problem(m, []))
+
     def test_duplicates(self):
         a, b, c = self.add("A"), self.add("B"), self.add("C")
         self.assertEqual((a, b, c), ("F-001", "F-002", "F-003"))

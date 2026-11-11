@@ -63,6 +63,9 @@ Every change keeps the finding's earlier revision, and every decision is recorde
   was already set. The change is refused without one.
 - Confirming a finding records the verification method; without one it says `not stated`, and the handover lists
   it as a pending decision.
+- The agent can't confirm a finding without saying how: its tools refuse `confirmed` without a method, and for
+  `runtime-reproduction`, `replay`, `authorization-matrix` and `tool-output` without an evidence file. A person
+  confirming in the console or with `./rvkit` is not refused; their confirmation is recorded under their name.
 - **Not reproducible** (console, or the `finding.not_reproducible` operation) records that a retest couldn't
   reproduce a finding, with the reason; the status stays as it was until someone decides.
 - `get_finding` with `history=true` (or **History** in the console) shows every revision and decision.
