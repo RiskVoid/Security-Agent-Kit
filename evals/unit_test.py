@@ -1433,5 +1433,93 @@ class StateFolder(unittest.TestCase):
                 db.WORK = saved
 
 
+class AgentViewTests(unittest.TestCase):
+    """The console's Agent section: OpenHands events become messages and typed steps (scripts/agent_view.py)."""
+
+    @classmethod
+    def setUpClass(cls):
+        import agent_view
+        cls.av = agent_view
+
+    @staticmethod
+    def action(i, tool, args, thought="", why=""):
+        return {"kind": "ActionEvent", "id": f"a{i}", "timestamp": f"2026-01-01T00:00:{i:02d}", "tool_name": tool,
+                "tool_call": {"arguments": json.dumps(args)}, "reasoning_content": why,
+                "thought": [{"type": "text", "text": thought}]}
+
+    @staticmethod
+    def result(i, tool, text, **extra):
+        return {"kind": "ObservationEvent", "id": f"o{i}", "action_id": f"a{i}", "tool_name": tool,
+                "observation": {"content": [{"type": "text", "text": f"[Tool '{tool}' executed.]"},
+                                            {"type": "text", "text": text}], "is_error": False, **extra}}
+
+    def view(self):
+        A, R = self.action, self.result
+        events = [
+            {"kind": "SystemPromptEvent", "id": "s"},
+            {"kind": "MessageEvent", "id": "m1", "source": "user", "timestamp": "2026-01-01T00:00:00",
+             "llm_message": {"content": [{"type": "text", "text": "Test the app. password=hunter22"}]}},
+            A(1, "kali_run", {"engagement": "e", "command": "nmap -sV 10.0.0.5", "task": "ports"}, why="scan first"),
+            R(1, "kali_run", "exit=0 tier=active\n22/tcp open\n[output saved as verified evidence: "
+                             "/work/e/evidence/runs/20260101T000001-nmap-aaaaaa.txt]"),
+            A(2, "kali_http_request", {"engagement": "e", "method": "PATCH", "url": "http://10.0.0.5/api/me"}),
+            R(2, "kali_http_request", "REFUSED: PATCH is tier 'intrusive', RULES.md allows only ['passive']"),
+            A(3, "kali_run", {"engagement": "e", "command": "sqlmap -u http://10.0.0.5/s?q=1"}),
+            R(3, "kali_run", "APPROVAL REQUIRED (intrusive). Approval id: 81900c5e\nAsk the user."),
+            A(4, "kali_http_request", {"engagement": "e", "method": "GET", "url": "http://10.0.0.5/", "identity": "bob"}),
+            R(4, "kali_http_request", "GET http://10.0.0.5/\n  GET http://10.0.0.5/ -> 200 OK\n\nSet-Cookie: x"),
+            A(5, "findings_record_finding", {"engagement": "e", "title": "SQL injection in /s", "severity": "high"},
+              thought="Recording it."),
+            R(5, "findings_record_finding", json.dumps({"id": "F-001", "title": "SQL injection in /s",
+                                                        "severity": "high", "cwe": "CWE-89", "status": "candidate"})),
+            A(6, "terminal", {"command": "cat /src/app/routes.php"}),
+            R(6, "terminal", "<?php", exit_code=2),
+            A(7, "kali_run", {"engagement": "e", "command": "nikto -h 10.0.0.5"}),
+            {"kind": "ConversationStateUpdateEvent", "id": "c1", "key": "execution_status", "value": "running"},
+            A(8, "finish", {"message": "Done: one finding."}),
+            {"kind": "AgentErrorEvent", "id": "x1", "timestamp": "2026-01-01T00:01:00", "error": "model call failed"},
+        ]
+        return self.av.normalize(events)
+
+    def test_messages_and_steps(self):
+        v = self.view()
+        self.assertEqual((v["status"], v["steps"]), ("running", 8))
+        kinds = [i["t"] for i in v["items"]]
+        self.assertEqual(kinds, ["user", "step", "step", "step", "step", "agent", "step", "step", "step", "agent", "note"])
+        self.assertNotIn("hunter22", v["items"][0]["text"])        # secrets are redacted, as in evidence previews
+        steps = {i["id"]: i for i in v["items"] if i["t"] == "step"}
+        run = steps["a1"]
+        self.assertEqual((run["kind"], run["tier"], run["res"], run["state"], run["title"], run["task"], run["why"]),
+                         ("kali", "active", "exit 0", "ok", "nmap -sV 10.0.0.5", "ports", "scan first"))
+        self.assertEqual(run["evidence"], ["evidence/runs/20260101T000001-nmap-aaaaaa.txt"])
+        self.assertFalse(run["out"].startswith("[Tool"))
+        self.assertEqual(v["items"][-2]["text"], "Done: one finding.")   # finish is the planner's closing message
+        self.assertTrue(v["items"][-1]["bad"])
+
+    def test_refusals_approvals_and_results(self):
+        steps = {i["id"]: i for i in self.view()["items"] if i["t"] == "step"}
+        self.assertEqual((steps["a2"]["state"], steps["a2"]["tier"], steps["a2"]["kind"]), ("refused", "intrusive", "http"))
+        self.assertIn("RULES.md allows only", steps["a2"]["reason"])
+        self.assertEqual((steps["a3"]["state"], steps["a3"]["approval"]), ("approval", "81900c5e"))
+        self.assertEqual((steps["a4"]["res"], steps["a4"]["title"]), ("200", "GET http://10.0.0.5/ as bob"))
+        self.assertEqual(steps["a5"]["finding"], {"id": "F-001", "title": "SQL injection in /s", "severity": "high",
+                                                  "cwe": "CWE-89", "status": "candidate"})
+        self.assertEqual(steps["a5"]["kind"], "record")
+        # OpenHands' own tools run in the planner's container, not in the Kali sandbox: marked, with their exit code
+        self.assertEqual((steps["a6"]["local"], steps["a6"]["kind"], steps["a6"]["res"], steps["a6"]["state"]),
+                         (True, "shell", "exit 2", "bad"))
+        self.assertFalse(steps["a1"]["local"])
+        self.assertEqual(steps["a7"]["state"], "running")            # no result yet
+
+    def test_long_output_is_cut_and_ids_are_checked(self):
+        A, R = self.action, self.result
+        v = self.av.normalize([A(1, "kali_run", {"command": "cat big"}), R(1, "kali_run", "exit=0 tier=passive\n" + "x" * 20000)])
+        self.assertTrue(v["items"][0]["cut"])
+        self.assertLessEqual(len(v["items"][0]["out"]), self.av.OUT_CHARS)
+        for bad in ("", "../x", "abc", "406edb5b;rm"):
+            with self.assertRaises(self.av.Fail):
+                self.av.view("e", bad)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=1)

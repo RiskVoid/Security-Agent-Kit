@@ -21,6 +21,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import model_events  # noqa: E402  (log written by litellm/rv_events.py)
 import conversations  # noqa: E402  (OpenHands conversations bound to engagements)
+import agent_view  # noqa: E402  (a bound conversation as the Agent section shows it)
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "litellm"))
 import rv_routes  # noqa: E402  (where each model route sends data)
 
@@ -486,6 +487,16 @@ def api_get(path, q):
         return {"entries": [json.loads(l) for l in lines if l.startswith("{")][::-1]}
     if what == "tasks":
         return {"tasks": worker_tasks(eng)}
+    if what == "agent":  # a bound conversation: messages and typed tool calls (read-only)
+        cid, rev = q.get("id", [""])[0], q.get("rev", [""])[0]
+        if not agent_view.CID_RX.match(cid):
+            raise Fail("invalid conversation id")
+        if rev and not re.fullmatch(r"[0-9a-f]{16}", rev):
+            raise Fail("invalid rev")
+        try:
+            return agent_view.view(eng, cid, ACTOR, rev)
+        except conversations.Fail as e:
+            raise Fail(str(e), 404 if "not bound" in str(e) else 502)
     if what == "live":
         return live(eng)
     if what == "evidence":

@@ -6,6 +6,11 @@ settings or the findings database; `./rvkit update` migrates existing installs a
 
 ## [Unreleased]
 
+### Console and operation
+- Console: an **Agent** section shows a conversation bound to the engagement, read-only, in the console's own
+  design: messages, and each tool call as a typed line with its tier and result, refusals and approvals marked,
+  and the findings it recorded. Sending a message still happens in the OpenHands UI.
+
 ## [0.1.0]
 
 First public release.
