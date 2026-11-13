@@ -4,7 +4,7 @@ credential vault, identity specs, capture sanitizing and authorization-matrix va
 They run on every pull request in about a second. The full stack is tested by the Integration workflow.
 Run: python3 evals/unit_test.py
 """
-import importlib.util, json, os, sys, tempfile, unittest
+import importlib.util, json, os, re, sys, tempfile, time, unittest
 
 KIT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path[:0] = [os.path.join(KIT, "kali-mcp"), os.path.join(KIT, "harness"), os.path.join(KIT, "scripts")]
@@ -1354,6 +1354,64 @@ class BenchmarkScore(unittest.TestCase):
         self.assertEqual((t["ran"], t["failed"], t["timed_out"], t["refused"]), (3, 2, 1, 1))
         self.assertEqual(len(t["must_not_run"]), 1)
         self.assertEqual(t["expected_refusals"], {"hydra": True})
+
+
+class LookupPolicy(unittest.TestCase):
+    """Epic #52 #27: clean benchmark runs limit web search and fetch, and every lookup is logged and flagged."""
+
+    @classmethod
+    def setUpClass(cls):
+        spec = importlib.util.spec_from_file_location("rv_lookup", os.path.join(KIT, "harness", "lookup.py"))
+        cls.lk = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(cls.lk)
+
+    def test_no_policy_or_expired_is_open(self):
+        with tempfile.TemporaryDirectory() as d:
+            p = os.path.join(d, "policy.json")
+            self.assertEqual(self.lk.policy(path=p)["mode"], "open")
+            json.dump({"mode": "clean", "until": 100}, open(p, "w"))
+            self.assertEqual(self.lk.policy(now=200, path=p)["mode"], "open")
+            self.assertEqual(self.lk.policy(now=50, path=p)["mode"], "clean")
+            json.dump({"mode": "something"}, open(p, "w"))
+            self.assertEqual(self.lk.policy(path=p)["mode"], "clean")       # unknown mode fails closed
+
+    def test_clean_allows_docs_and_records_only(self):
+        pol = {"mode": "clean", "allow": list(self.lk.CLEAN_ALLOW), "deny": ["juice.?shop"] + list(self.lk.KIT_DENY),
+               "run": "r"}
+        self.assertIsNone(self.lk.check_fetch(pol, "https://nvd.nist.gov/vuln/detail/CVE-2024-1"))
+        self.assertIsNone(self.lk.check_fetch(pol, "https://github.com/advisories/GHSA-x"))
+        self.assertIn("clean run", self.lk.check_fetch(pol, "https://github.com/someone/ctf-writeups"))
+        self.assertIn("clean run", self.lk.check_fetch(pol, "https://owasp.org/www-community/attacks/"))
+        self.assertIn("write-up", self.lk.check_fetch(pol, "https://cheatsheetseries.owasp.org/juice-shop.html"))
+        self.assertIn("write-up", self.lk.check_search(pol, "OWASP Juice Shop challenge solutions"))
+        self.assertIsNone(self.lk.check_search(pol, "express jwt none algorithm"))
+        rows = [{"url": "https://cwe.mitre.org/data/definitions/89.html", "title": "CWE-89"},
+                {"url": "https://medium.com/x/pwning-it", "title": "my write-up"},
+                {"url": "https://nvd.nist.gov/x", "title": "Juice Shop CVE"}]
+        self.assertEqual([r["title"] for r in self.lk.filter_results(pol, rows)], ["CWE-89"])
+        open_pol = {"mode": "open", "allow": [], "deny": list(self.lk.KIT_DENY), "run": None}
+        self.assertEqual(len(self.lk.filter_results(open_pol, rows)), 3)
+        self.assertIn("write-up", self.lk.check_fetch(open_pol, "https://github.com/RiskVoid/Security-Agent-Kit"))
+
+    def test_log_window_and_flags(self):
+        with tempfile.TemporaryDirectory() as d:
+            p = os.path.join(d, "log.jsonl")
+            self.lk.log({"tool": "web_search", "query": "dvwa sqli low security solution", "decision": "ok",
+                         "results": ["https://example.com/dvwa"]}, p)
+            self.lk.log({"tool": "fetch", "url": "https://nvd.nist.gov/x", "decision": "ok"}, p)
+            now = time.time()
+            rows = self.lk.read_log(now - 60, now + 1, p)
+            self.assertEqual(len(rows), 2)
+            self.assertEqual(self.lk.read_log(now + 100, now + 200, p), [])
+            flags = self.lk.flagged(rows, [r"\bdvwa\b"])
+            self.assertEqual([(f["tool"], f["pattern"]) for f in flags], [("web_search", r"\bdvwa\b")])
+
+    def test_every_benchmark_names_its_writeups(self):
+        for f in os.listdir(os.path.join(KIT, "evals", "benchmarks")):
+            b = json.load(open(os.path.join(KIT, "evals", "benchmarks", f)))
+            self.assertTrue(b.get("writeups"), f)
+            for rx in b["writeups"]:
+                re.compile(rx)
 
 
 class BenchStats(unittest.TestCase):

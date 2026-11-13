@@ -103,6 +103,9 @@ services:
     expose: ["8094"]           # OpenHands reaches it as web-mcp:8094
     environment:
       SEARXNG_URL: http://searxng:8080
+    volumes:
+      # lookup policy (open, or clean for benchmark runs) and the log of every search and fetch (harness/lookup.py)
+      - ${ENGAGEMENTS_DIR:-~/riskvoid/engagements}/.control/lookup:/lookup
     depends_on: [searxng, kali-mcp]
     networks: [default, rvagent]
     restart: unless-stopped

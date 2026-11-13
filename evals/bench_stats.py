@@ -98,7 +98,8 @@ def group_summary(runs):
         figures[key] = {"mean": _r(m), "se": _r(se), "n": k}
     first = runs[0]
     return {"benchmark": first.get("benchmark"), "group": first.get("group"), "label": first.get("label"),
-            "agent": first.get("agent"), "models": first.get("models"), "lookup": first.get("lookup", "open"),
+            "agent": first.get("agent"), "models": first.get("models"), "lookup": first.get("lookup_mode", "open"),
+            "writeup_lookups": sum(len((r.get("lookup") or {}).get("writeups") or []) for r in runs),
             "runs": n, "statuses": [r.get("status") for r in runs],
             "results": [r.get("_file") for r in runs if r.get("_file")],
             "figures": figures, "items": list(items.values()),

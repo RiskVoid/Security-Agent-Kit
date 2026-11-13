@@ -1,6 +1,7 @@
 """Unattended benchmark: run the real agent (OpenHands + MCP tools) on a known target and score its findings.
 
   python3 evals/run_benchmark.py <name|all> [--agent riskvoid-planner|riskvoid-local] [--repeat N] [--budget USD]
+                                 [--label NAME] [--clean]
   python3 evals/run_benchmark.py --history            compare past runs (and the result groups)
   python3 evals/run_benchmark.py --groups [name] [--label L] [--json]   repeated runs: found k of n, pass^k, SE
   python3 evals/run_benchmark.py --compare <label-a> <label-b> [--json]  paired comparison of two labelled sets
@@ -32,7 +33,9 @@ of engagement, a task, and the expected findings. Each run:
      tasks by status, tool-call errors and cost per verified finding. --repeat runs a benchmark N times (model
      output varies) and reports, per expected finding, found in k of n runs, then pass^k and pass@k, and every
      mean with its standard error (evals/bench_stats.py). --label names a set of runs (for example "ref-2026-11")
-     so two sets can be compared with --compare. Results hold scores, ids and titles from the kit's own targets, never client data.
+     so two sets can be compared with --compare. --clean runs with web search and fetch limited to vendor
+     documentation and vulnerability records (harness/lookup.py); every run records its searches and fetches and
+     flags any that went for a write-up of its target (the benchmark's "writeups" patterns). Results hold scores, ids and titles from the kit's own targets, never client data.
   5. writes evals/results/bench/<name>-<UTC>.json and a line in evals/results/bench/history.jsonl, and keeps the
      run's data in evals/results/bench/<name>-<UTC>/: the engagement folder (findings database, evidence, report
      revisions with their frozen inputs) as engagement.tar.gz and the whole conversation as conversation.json, so
@@ -47,6 +50,8 @@ import datetime, glob, hashlib, json, os, re, shutil, sqlite3, subprocess, sys, 
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import bench_stats as stats  # noqa: E402
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "harness"))
+import lookup  # noqa: E402
 
 KIT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 OH = os.environ.get("OPENHANDS_URL", "http://127.0.0.1:8000")
@@ -70,6 +75,7 @@ def env():
 E = env()
 EXPAND = lambda p: os.path.expanduser(p or "")
 ENG_DIR = EXPAND(E.get("ENGAGEMENTS_DIR") or "~/riskvoid/engagements")
+LOOKUP_DIR = os.path.join(ENG_DIR, ".control", "lookup")   # web-mcp's /lookup
 PROJ_DIR = EXPAND(E.get("PROJECTS_DIR") or "~/riskvoid/projects")
 
 
@@ -141,6 +147,45 @@ def prepare(name, b):
     return eng, target
 
 
+def writeup_patterns(b):
+    """What a write-up of this benchmark's target looks like in a query or URL: the benchmark's own "writeups"
+    patterns and this kit's repository (its expected findings are public)."""
+    return list(b.get("writeups", [])) + list(lookup.KIT_DENY)
+
+
+def set_lookup(b, mode, run_id, minutes):
+    """Write web-mcp's lookup policy for this run. clean: vendor docs and vulnerability records only, write-ups
+    refused; open: everything, except this kit's own answers. Expires after the run's time limit."""
+    pol = {"mode": mode, "deny": list(lookup.KIT_DENY) + (list(b.get("writeups", [])) if mode == "clean" else []),
+           "run": run_id, "until": time.time() + (minutes + 15) * 60}
+    try:
+        os.makedirs(LOOKUP_DIR, exist_ok=True)
+        tmp = os.path.join(LOOKUP_DIR, "policy.json.tmp")
+        json.dump(pol, open(tmp, "w"), indent=1)
+        os.replace(tmp, os.path.join(LOOKUP_DIR, "policy.json"))
+        return True
+    except OSError as e:
+        print(f"  (lookup policy not written: {e}; web-mcp stays open)")
+        return False
+
+
+def clear_lookup():
+    try:
+        os.remove(os.path.join(LOOKUP_DIR, "policy.json"))
+    except OSError:
+        pass
+
+
+def lookups(b, mode, start, end):
+    """The run's searches and fetches (web-mcp's log), and those that went for a write-up of the target."""
+    entries = lookup.read_log(start, end, os.path.join(LOOKUP_DIR, "log.jsonl"))
+    calls = [{k: e.get(k) for k in ("tool", "query", "url", "decision", "kept")} for e in entries]
+    return {"mode": mode, "searches": sum(1 for e in entries if e.get("tool") == "web_search"),
+            "fetches": sum(1 for e in entries if e.get("tool") == "fetch"),
+            "refused": sum(1 for e in entries if e.get("decision") == "refused"),
+            "calls": calls[:300], "writeups": lookup.flagged(entries, writeup_patterns(b))}
+
+
 def preamble(eng, b, target):
     approvals = ("Intrusive commands return an approval id: the benchmark harness approves them within about "
                  "30 seconds. Wait (`sleep 30` in your terminal), then call run again with the identical command and "
@@ -156,7 +201,9 @@ def preamble(eng, b, target):
             "Record every issue you confirm with the findings tools (record_finding / update_finding, status "
             "`confirmed`, with `method` and the evidence files), one finding per root cause, with a CWE. Triage "
             "every candidate. Do not generate the "
-            f"report. You have about {b['max_minutes']} minutes. When done, reply with a one-paragraph summary.")
+            "report. Don't look up this target's known issues, solutions or write-ups: find them on the target itself "
+            "(vendor documentation and vulnerability records are fine). "
+            f"You have about {b['max_minutes']} minutes. When done, reply with a one-paragraph summary.")
 
 
 # ---------------------------------------------------------------- run
@@ -590,7 +637,8 @@ def groups(benchmark=None, label=None, out=print):
     """Summaries of every result group (or of every labelled set, per benchmark), recomputed from the results."""
     by = {}
     for r in load_results(benchmark, label):
-        key = (r["benchmark"], r.get("label")) if label or not r.get("group") else (r["benchmark"], r["group"])
+        key = (r["benchmark"], r.get("label"), r.get("lookup_mode", "open")) if label or not r.get("group") \
+            else (r["benchmark"], r["group"])
         if label or r.get("group"):
             by.setdefault(key, []).append(r)
     shown = 0
@@ -602,7 +650,7 @@ def groups(benchmark=None, label=None, out=print):
         out("no result group with more than one run: ./rvkit bench <name> --repeat 3 [--label NAME]")
 
 
-def run_one(name, agent, log=print, group=None, budget=None, label=None):
+def run_one(name, agent, log=print, group=None, budget=None, label=None, mode="open"):
     b = json.load(open(os.path.join(BENCH, f"{name}.json")))
     if budget is not None:
         b["max_budget_usd"] = min(budget, b.get("max_budget_usd", budget))
@@ -613,16 +661,21 @@ def run_one(name, agent, log=print, group=None, budget=None, label=None):
     eng, target = prepare(name, b)
     before = openrouter_usage()
     t_start = time.time()
-    run = run_conversation(eng, b, agent, target, log, before)
+    set_lookup(b, mode, f"bench-{name}-{int(t_start)}", b["max_minutes"])
+    try:
+        run = run_conversation(eng, b, agent, target, log, before)
+    finally:
+        clear_lookup()
     after = openrouter_usage()
     s = score(b, findings(eng), os.path.join(ENG_DIR, eng), {"observations_untriaged": observations_untriaged(eng)})
     s["tools"] = tool_outcomes(eng, b, start=t_start, end=time.time())
+    looked = lookups(b, mode, t_start, time.time())
     prompt_sha = hashlib.sha256(open(os.path.join(KIT, "prompts", "planner.md"), "rb").read()).hexdigest()[:12]
     now = datetime.datetime.now(datetime.timezone.utc)
     kept = archive(name, eng, run["conversation_id"], f"{now:%Y%m%dT%H%M%SZ}")
     res = {"benchmark": name, "at": now.isoformat(timespec="seconds"), "agent": agent, "models": models(),
            "planner_prompt_sha": prompt_sha, "engagement": eng, "provenance": provenance(), "group": group,
-           "label": label,
+           "label": label, "lookup_mode": mode, "lookup": looked,
            "note": b.get("note"), "budget_cap_usd": b.get("max_budget_usd"), "data": kept,
            "cost_usd": round(after - before, 4) if before is not None and after is not None else None,
            **run, "score": s}
@@ -635,6 +688,7 @@ def run_one(name, agent, log=print, group=None, budget=None, label=None):
                            | {k: s[k] for k in ("recall", "weighted_recall", "precision", "found", "expected",
                                                 "confirmed", "strict_recall")}
                            | {"clean_violations": len(s["clean_violations"]), "group": group, "label": label,
+                              "lookup_mode": mode, "writeup_lookups": len(looked["writeups"]),
                               "commit": res["provenance"]["commit"]}
                            | {"approvals_requested": res["operator"]["approvals"]["requested"],
                               "questions": res["operator"]["questions"],
@@ -654,6 +708,10 @@ def run_one(name, agent, log=print, group=None, budget=None, label=None):
     if b.get("note"):
         log(f"  note: {b['note']}")
     log(f"  operator: {stats.operator_line(res['operator'])}")
+    log(f"  lookups ({mode}): {looked['searches']} search(es), {looked['fetches']} fetch(es), {looked['refused']} refused"
+        + (f"; WENT FOR A WRITE-UP {len(looked['writeups'])} time(s): "
+           + "; ".join((w.get('query') or w.get('url') or '')[:80] for w in looked['writeups'][:3])
+           if looked["writeups"] else ""))
     t_ = s["tools"]
     log(f"  tools: {t_['ran']} ran, {t_['failed']} failed, {t_['timed_out']} timed out, {t_['refused']} refused"
         + (f"; RAN BUT MUST NOT: {t_['must_not_run']}" if t_["must_not_run"] else ""))
@@ -680,6 +738,8 @@ def history():
               f"{f(r['precision']):>5} {f(r['cost_usd'], '${:.2f}'):>7} {f(r.get('cost_per_verified'), '${:.2f}'):>6} "
               f"{f(r.get('approvals_requested'), '{}'):>4} {f(r.get('questions'), '{}'):>2} "
               f"{f(r.get('tool_errors'), '{}'):>4} {r['seconds'] // 60:>4} {r['status']}"
+              + (" clean" if r.get("lookup_mode") == "clean" else "")
+              + (f" WRITE-UP x{r['writeup_lookups']}" if r.get("writeup_lookups") else "")
               + (f"  [{r['label']}]" if r.get("label") else ""))
 
 
@@ -700,7 +760,7 @@ def main(argv):
             by = {}
             for r in load_results(bench, lab):
                 if lab or r.get("group"):
-                    by.setdefault((r["benchmark"], lab or r["group"]), []).append(r)
+                    by.setdefault((r["benchmark"], lab or r["group"], r.get("lookup_mode", "open")), []).append(r)
             print(json.dumps([stats.group_summary(rs) for rs in by.values()], indent=1))
         else:
             groups(bench, lab)
@@ -729,11 +789,12 @@ def main(argv):
     repeat = int(argv[argv.index("--repeat") + 1]) if "--repeat" in argv else 1
     budget = float(argv[argv.index("--budget") + 1]) if "--budget" in argv else None
     label = argv[argv.index("--label") + 1] if "--label" in argv else None
+    mode = "clean" if "--clean" in argv else "open"
     names = sorted(f[:-5] for f in os.listdir(BENCH) if f.endswith(".json") and f != "smoke.json") \
         if argv[0] == "all" else [argv[0]]
     for n in names:
         group = f"{n}-{datetime.datetime.now(datetime.timezone.utc):%Y%m%dT%H%M%SZ}" if repeat > 1 else None
-        runs = [r for r in (run_one(n, agent, group=group, budget=budget, label=label) for _ in range(repeat)) if r]
+        runs = [r for r in (run_one(n, agent, group=group, budget=budget, label=label, mode=mode) for _ in range(repeat)) if r]
         if len(runs) > 1:
             stats.print_group(save_group(runs))
             print(f"  summary: evals/results/bench/groups/{group}.json")

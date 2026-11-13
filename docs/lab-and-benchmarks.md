@@ -123,6 +123,7 @@ The budget is the OpenHands per-conversation limit for the run. The code targets
 ./rvkit bench code-node --agent riskvoid-local   # worker model only
 ./rvkit bench all                                # every benchmark except smoke
 ./rvkit bench code-flask --repeat 3 --label ref  # three runs: found k of n per issue, pass^k, standard errors
+./rvkit bench web-dvwa --clean                   # no write-ups: search and fetch limited to docs and CVE records
 ./rvkit bench --history                          # compare past runs, then the result groups
 ./rvkit bench --groups code-flask                # the figures of every repeated set of code-flask runs
 ./rvkit bench --compare ref after-change         # paired comparison of two labelled sets of runs
@@ -206,6 +207,23 @@ finding ids and titles from the kit's own targets, never client data.
 **Cost** is the change in your OpenRouter key's total usage between the start and the end of the run. Don't use
 the same key for anything else during a run, or the number will include that too. Without an OpenRouter key, cost
 is `n/a`.
+
+### Clean runs
+
+The lab targets are public, and so are their write-ups: Juice Shop's solutions, DVWA walkthroughs, and this kit's
+own benchmark files with their expected findings. A model looks the answers up when it can, and a score that
+includes looked-up answers says little about an application nobody has written about.
+
+Every benchmark brief tells the agent not to look up the target's known issues or write-ups. `--clean` also
+enforces it: during the run, web search returns only results on vendor documentation and vulnerability records
+(NVD, CVE, CWE, OSV, GitHub advisories, framework and tool documentation, the OWASP cheat sheets and testing
+guide; the list is `CLEAN_ALLOW` in `harness/lookup.py`), fetch reads only those sites, and searches or URLs that
+match the benchmark's `writeups` patterns are refused. Without `--clean` everything is open, except this kit's
+own repository.
+
+Both modes log every search and fetch (web-mcp writes `<ENGAGEMENTS_DIR>/.control/lookup/log.jsonl`). Each result
+records its lookups under `lookup` and flags the ones that went for a write-up of the target, whether or not they
+were refused; `--history` marks such runs `WRITE-UP`. Publish both numbers: with lookup, and clean.
 
 ### Repeated runs
 

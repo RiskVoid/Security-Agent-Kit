@@ -6,6 +6,7 @@
  "max_minutes": 60,
  "max_budget_usd": 4.0,
  "task": "Full source code security review of {src}, including its dependencies and secrets.",
+ "writeups": ["rv-node-api"],
  "expected": [
   {
    "id": "sqli",
