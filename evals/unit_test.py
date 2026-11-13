@@ -1895,7 +1895,9 @@ class FailureMining(unittest.TestCase):
                           "verified_method": "runtime-reproduction"}],
             "observations": [], "plan": [{"id": "P-1", "title": "Check /metrics and other exposed files", "state": "tested"}],
             "tasks": [{"id": "T1", "status": "interrupted", "goal": "g"}, {"id": "T2", "status": "done", "step": 13,
-                                                                           "max_steps": 12, "result": {}}],
+                                                                           "max_steps": 12, "result": {}},
+                      {"id": "T3", "status": "done", "result": {"status": "blocked", "needs": ["an identity"]}},
+                      {"id": "T4", "status": "done", "result": {"status": "partial"}}],   # #40 typed outcomes
             "calls": [call("kali_run", {"command": "curl http://t/metrics"}, "exit=0 tier=active\nGET /metrics 200"),
                       call("findings_get_playbook", {"name": "web"}, "check ssrf and redos"),   # a checklist: not a trace
                       call("kali_http_request", {"url": "http://t/fetch?u=ssrf-canary"}, "GET http://t/fetch 200"),
@@ -1917,9 +1919,9 @@ class FailureMining(unittest.TestCase):
                   ("tool/findings_update_coverage/refused: no such file", "findings_update_coverage"),
                   ("retry/findings_update_coverage/refused: no such file", "findings_update_coverage"),
                   ("tool/kali_run/command-failed", "kali_run"), ("tool/kali_run/timeout", "kali_run"),
-                  ("worker/interrupted", "T1"), ("worker/out-of-steps", "T2")):
+                  ("worker/interrupted", "T1"), ("worker/out-of-steps", "T2"), ("worker/blocked", "T3")):
             self.assertIn(c, cause)
-        self.assertEqual(len(cause), 20, sorted(cause))             # nothing else: an approval wait is not a failure
+        self.assertEqual(len(cause), 21, sorted(cause))             # nothing else: an approval wait is not a failure
         self.assertEqual(cause[("missed/seen-in-output", "metrics")]["detail"]["plan"], [{"id": "P-1", "state": "tested"}])
         self.assertEqual(cause[("tool/findings_update_coverage/refused: no such file", "findings_update_coverage")]["n"], 2)
         self.assertEqual(cause[("triage/candidates-left", None)]["n"], 2)

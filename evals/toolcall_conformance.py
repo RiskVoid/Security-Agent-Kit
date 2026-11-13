@@ -63,14 +63,16 @@ CASES = [
     ("candidate-low", "nested", "You already checked the evidence. Record a low-severity candidate now: 'Server "
      "header discloses nginx version' on http://10.0.0.5/, evidence /work/acme/evidence/http/a.txt.", "record_candidate",
      {"severity": "low", "evidence": ["/work/acme/evidence/http/a.txt"]}),
-    ("finish-found", "finish", "You are done. You confirmed one SQL injection in /login and nothing else. Return "
-     "your result now with high confidence.", "finish", {"confidence": "high", "summary": r"(?i)sql"}),
+    ("finish-found", "finish", "You are done: the goal is met. You confirmed one SQL injection in /login and nothing "
+     "else. Return your result now with high confidence.", "finish",
+     {"status": "completed", "confidence": "high", "summary": r"(?i)sql"}),
     ("finish-nothing", "finish", "Stop now and return the result: you found nothing, and you couldn't test the "
-     "admin area because it needs an account. Confidence low; list the admin area as an open question.", "finish",
-     {"confidence": "low", "open_questions": r"(?i)admin"}),
-    ("finish-observations", "finish", "Finish with confidence medium, summary 'Two open ports, no issues', and two "
-     "observations: 'port 22 open' and 'port 80 open'.", "finish",
-     {"confidence": "medium", "observations": ["port 22 open", "port 80 open"]}),
+     "admin area because it needs an account, so the task is blocked. Confidence low; say what you need.", "finish",
+     {"status": "blocked", "confidence": "low", "needs": r"(?i)(admin|account|login|identity)"}),
+    ("finish-candidates", "finish", "Finish with status completed, summary 'One SQL injection', and one candidate: "
+     "title 'SQL injection in /login', state reproduced, evidence /work/acme/evidence/runs/sqlmap.txt, check "
+     "'sqlmap -u http://10.0.0.5/login?id=1 --batch'.", "finish",
+     {"status": "completed", "candidates": [{"state": "reproduced", "evidence": "/work/acme/evidence/runs/sqlmap.txt"}]}),
     ("no-tool-question", "none", "In one sentence, without using any tool: what does the passive tier allow?", None, {}),
     ("no-tool-thanks", "none", "Thanks, that's all I needed to know. No action needed.", None, {}),
     ("no-tool-explain", "none", "Explain in two sentences what a boolean-based blind SQL injection is. Don't run "
@@ -124,6 +126,8 @@ def _matches(want, got):
             return False
         low = {str(k).lower(): v for k, v in got.items()}
         return all(k.lower() in low and _matches(v, low[k.lower()]) for k, v in want.items())
+    if isinstance(want, list) and want and all(isinstance(w, dict) for w in want):   # each wanted item in got
+        return isinstance(got, list) and len(got) == len(want) and all(any(_matches(w, g) for g in got) for w in want)
     if isinstance(want, list):
         return isinstance(got, list) and sorted(map(str, want)) == sorted(map(str, got))
     if isinstance(want, str) and isinstance(got, str):

@@ -309,6 +309,10 @@ def worker_tasks(eng):
                               or s.get("args", {}).get("url") or s.get("args", {}).get("path") or s.get("tool")
                               for s in t.get("steps", [])],
                     "candidates": len(t.get("candidates", [])), "summary": res.get("summary"),
+                    "outcome": t.get("outcome") or res.get("status"),
+                    "typed": [{k: c.get(k) for k in ("title", "state", "evidence")}
+                              for c in res.get("candidates") or [] if isinstance(c, dict)][:20],
+                    "needs": res.get("needs") or [],
                     "confidence": res.get("confidence"), "error": t.get("error")})
     return sorted(out, key=lambda t: t.get("started") or 0, reverse=True)[:100]
 

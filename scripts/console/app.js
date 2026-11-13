@@ -1426,11 +1426,11 @@ async function paneTasks() {
   })();
 
   const detail = (t) => `<div class="rv-dl-detail">
-      <div class="rv-meta"><span>${esc(t.id)}</span><span>started ${fmtTime(t.started)}</span><span>${t.steps.length} step(s)</span><span>${t.candidates} candidate(s)</span>${t.models.length ? `<span>model: ${t.models.map(esc).join(", ")}</span>` : ""}</div>
+      <div class="rv-meta"><span>${esc(t.id)}</span><span>started ${fmtTime(t.started)}</span><span>${t.steps.length} step(s)</span><span>${t.candidates} candidate(s)</span>${t.outcome ? `<span>outcome: ${esc(t.outcome)}</span>` : ""}${t.models.length ? `<span>model: ${t.models.map(esc).join(", ")}</span>` : ""}</div>
       <p class="rv-prose">${esc(t.goal || "")}</p>
       ${t.approval ? `<p>Paused for approval <b>${esc(t.approval.id)}</b>: <code>${esc(t.approval.action)}</code>. Decide it on the <a href="#eng-${esc(eng)}/overview">Overview</a>; the task then continues by itself.</p>` : ""}
       ${(t.depends_on || []).length ? `<p class="rv-dim">waits for ${t.depends_on.map(esc).join(", ")}</p>` : ""}
-      ${t.error ? `<p class="err">${esc(t.error)}</p>` : ""}${t.summary ? `<p class="rv-prose">${esc(t.summary)}</p>` : ""}
+      ${t.error ? `<p class="err">${esc(t.error)}</p>` : ""}${(t.typed || []).length ? `<ul>${t.typed.map((c) => `<li><b>${esc(c.state || "")}</b> ${esc(c.title || "")}${c.evidence ? ` <code>${esc(c.evidence)}</code>` : ""}</li>`).join("")}</ul>` : ""}${(t.needs || []).length ? `<p>Needs: ${t.needs.map(esc).join("; ")}</p>` : ""}${t.summary ? `<p class="rv-prose">${esc(t.summary)}</p>` : ""}
       ${t.recovery ? `<p class="${t.recovery.decision === "needs_review" ? "err" : "rv-dim"}">After a restart: ${esc(t.recovery.note || t.recovery.decision)}${(t.recovery.uncertain || []).length ? ` (in flight: ${t.recovery.uncertain.map((u) => esc(u.action || u.tool)).join("; ")})` : ""}</p>` : ""}
       ${TASK_ACTIVE.includes(t.status) ? `<div class="rv-actions start">${t.status === "interrupted" ? `<button class="rv-btn" data-task="resume" data-id="${esc(t.id)}">Resume from checkpoint</button>` : `<button class="rv-btn danger-quiet" data-task="cancel" data-id="${esc(t.id)}">Cancel task</button>`}</div>` : ""}
       ${t.steps.length ? `<pre class="rv-pre rv-scroll">${t.steps.map((s, i) => `<span class="ln">${String(i + 1).padStart(2, " ")}</span>  ${esc(s)}`).join("\n")}</pre>` : ""}

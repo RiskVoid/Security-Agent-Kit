@@ -68,16 +68,21 @@ Output notes:
 
 | Tool | Parameters | What it does |
 |---|---|---|
-| `delegate_task` | `goal`, `engagement`, `tier` (`passive` default, `active`, `intrusive`), `max_steps` (default 15, 1–40), `timeout_min` (default 30, 1–180), `wait_s` (default 240, max 600), `depends_on` (task ids) | Starts one focused task on the worker model. Refuses if the engagement is halted or the tier isn't allowed by `RULES.md`. With `depends_on`, it waits until those tasks are done (and is `blocked` if one fails). Returns the result, or a `task_id` with a note if it's still running after `wait_s`. |
+| `delegate_task` | `goal`, `engagement`, `tier` (`passive` default, `active`, `intrusive`), `max_steps` (default 15, 1–40), `timeout_min` (default 30, 1–180), `wait_s` (default 240, max 600), `depends_on` (task ids), `done_when` (the result that ends the task), `stop_when` (conditions to stop and report), `inputs` (evidence paths or finding ids to start from) | Starts one focused task on the worker model. Refuses if the engagement is halted or the tier isn't allowed by `RULES.md`. With `depends_on`, it waits until those tasks are done (and is `blocked` if one fails). The contract fields go into the worker's instructions, and every tool result the worker sees ends with the steps left and the `done_when`. A `stop_when` that names an approval ends the task as `blocked` at the first approval, with the approval in `needs`, instead of pausing. Returns the result, or a `task_id` with a note if it's still running after `wait_s`. |
 | `get_task` | `task_id`, `wait_s` (default 240, max 600) | Waits for a task and returns its result. |
 | `cancel_task` | `task_id` | Stops a task; a running command is killed. |
 | `resume_task` | `task_id`, `wait_s` | Continues an interrupted task from its last checkpoint, after checking the engagement's policy again. An action that was in flight is not repeated: the model is told its result is unknown. |
 | `list_tasks` | `engagement` (optional) | Saved tasks, newest first (up to 50), including those from before a worker restart, with their approval and recovery decision. |
 
-A result has: `task_id`, `status` (`queued`, `waiting`, `running`, `awaiting_approval`, `done`, `error`, `blocked`,
-`cancelled`, `halted`, `interrupted`), `elapsed_s`, the `commands` it ran, the
-`candidate_findings` it recorded, the `evidence_dir`, the `model` that served it (shows when the fallback model
-was used) and `result` (`summary`, `observations`, `open_questions`, `confidence`). Secrets are redacted from it.
+A result has the typed fields first: `task_id`, `status` (`queued`, `waiting`, `running`, `awaiting_approval`,
+`done`, `error`, `blocked`, `cancelled`, `halted`, `interrupted`), `outcome` (`completed`, `partial`, `blocked`,
+`out_of_scope` from the worker; `budget_used`, `model_refused`, `tool_failure`, `provider_error`, `stalled` from the
+harness), `candidates` (each with `title`, `state` `hypothesis` or `reproduced`, `evidence` and `check`; a
+reproduced candidate must cite an evidence file of the engagement or `finish` is refused), `needs`, `errors` and
+the `recorded_findings` ids. Then `elapsed_s`, the `commands` it ran, the `evidence_dir`, the `contract`, the
+`model` that served it (shows when the fallback model was used), `worker_summary` (the worker's prose, marked as
+written by a model that read target content) and `result` (`confidence`, `open_questions`). Secrets are redacted
+from it. Task files from before these fields load as before; a finished one counts as `completed`.
 
 Things to know:
 
@@ -111,7 +116,7 @@ Inside a task, the worker model has these tools (they aren't MCP tools; `worker-
 | `fetch_url` | `url`: reads a public page as text through `web-mcp`. Refuses every engagement's targets and non-public addresses, on every redirect too. |
 | `read_file` | `path`, `start` (default 1), `lines` (default 200, max 500): numbered lines of a file under the engagement's in-scope code paths or its engagement folder. Nothing else. |
 | `record_candidate` | `title`, `severity`, `asset`, `description`, `evidence`, `cwe`: stores a **candidate** finding (source `worker:<task_id>`). Only the planner can confirm it. |
-| `finish` | `summary`, `observations`, `open_questions`, `confidence`: ends the task. |
+| `finish` | `status` (`completed`, `partial`, `blocked`, `out_of_scope`), `summary` (1–5 sentences), `candidates`, `errors`, `needs`, `open_questions`, `confidence`: ends the task. A `reproduced` candidate without an evidence file of the engagement is refused and the model is asked again. |
 
 Each tool output is cut to 6,000 characters in the model's context (the full output is in the step file), and the
 oldest outputs are shrunk when the conversation passes about 90,000 characters, so a task fits the 32K context of

@@ -80,7 +80,7 @@ class Loop(unittest.TestCase):
 
         def chat(messages, model=None, task=None):
             self.sent.append(json.loads(json.dumps(messages)))
-            turn = script.pop(0) if script else [call("finish", {"summary": "done", "confidence": "low"})]
+            turn = script.pop(0) if script else [call("finish", {"status": "completed", "summary": "done", "confidence": "low"})]
             if isinstance(turn, str):
                 return {"role": "assistant", "content": turn}
             for c in turn:
@@ -367,6 +367,110 @@ class ToolOutputInTheLoop(Loop):
         self.assertIn("back-end DBMS: SQLite", shown)
         self.assertTrue(task["lines"])
 
+
+
+class Contract(Loop):
+    """#39: done_when, stop_when and inputs reach the worker; a stop_when naming an approval ends the task there."""
+    C = {"done_when": "injection in id is confirmed or ruled out", "stop_when": ["an approval is needed"],
+         "inputs": ["evidence/runs/001.txt"]}
+
+    def test_contract_reaches_the_worker(self):
+        task, msgs = self.run_script([[call("kali_run", {"command": "ls /src/x"})]], max_steps=6, contract=self.C)
+        system = msgs[0]["content"]
+        for part in ("Done when: injection in id is confirmed", "Stop when: an approval is needed",
+                     "Start from: evidence/runs/001.txt"):
+            self.assertIn(part, system)
+        self.assertTrue(self.tool_texts(msgs)[0].endswith(
+            "[steps left: 5 of 6; done when: injection in id is confirmed or ruled out]"))
+
+    def test_without_a_contract(self):
+        task, msgs = self.run_script([[call("kali_run", {"command": "ls /src/x"})]], max_steps=6)
+        self.assertNotIn("Task contract", msgs[0]["content"])
+        self.assertTrue(self.tool_texts(msgs)[0].endswith("[steps left: 5 of 6]"))
+
+    APPROVAL = "APPROVAL REQUIRED (intrusive): sqlmap --os-shell\nApproval id: abcd1234\n"
+
+    def test_stops_on_approval(self):
+        self.outputs["sqlmap --os-shell"] = self.APPROVAL
+        task, msgs = self.run_script([[call("kali_run", {"command": "sqlmap --os-shell"})]], contract=self.C)
+        self.assertEqual(task["status"], "blocked")
+        self.assertEqual(worker.outcome(task), "blocked")
+        self.assertEqual(task["result"]["stopped_by"], "an approval is needed")
+        self.assertIn("approval abcd1234 for: sqlmap --os-shell", task["result"]["needs"][0])
+        self.assertEqual(task["steps"][-1]["state"], "not_run")
+        self.assertIsNone(task.get("approval"))
+
+    def test_without_stop_when_an_approval_pauses(self):
+        self.outputs["sqlmap --os-shell"] = self.APPROVAL
+        task, _ = self.run_script([[call("kali_run", {"command": "sqlmap --os-shell"})]])
+        self.assertEqual(task["status"], "awaiting_approval")
+        self.assertEqual(task["approval"]["id"], "abcd1234")
+
+    def test_delegate_task_stores_the_contract(self):
+        saved = worker.start, worker._wait
+        worker.start, worker._wait = (lambda t: None), (lambda t, w: None)
+        try:
+            out = json.loads(worker.delegate_task("Test id.", "eng", done_when=" X done ", stop_when=["", "a login"],
+                                                  inputs=["F-001"], wait_s=0))
+        finally:
+            worker.start, worker._wait = saved
+            worker.TASKS.clear()
+        self.assertEqual(out["contract"], {"done_when": "X done", "stop_when": ["a login"], "inputs": ["F-001"]})
+
+
+class TypedFinish(Loop):
+    """#40: finish returns a status and candidates with their proof; the planner gets the typed fields first."""
+
+    def evidence(self, n=1):
+        path = os.path.join(self.tmp.name, "eng", "evidence", "runs", f"{n:03d}.txt")
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        open(path, "w").close()
+        return f"/work/eng/evidence/runs/{n:03d}.txt"
+
+    def test_reproduced_needs_an_evidence_file(self):
+        good = self.evidence(1)
+        cand = {"title": "SQLi in id", "state": "reproduced", "check": "sqlmap -u http://x/?id=1"}
+        task, msgs = self.run_script([
+            [call("kali_run", {"command": "sqlmap -u http://x/?id=1 --batch"})],
+            [call("finish", {"status": "completed", "summary": "Found it.", "candidates": [cand]})],
+            [call("finish", {"status": "completed", "summary": "Found it.",
+                             "candidates": [{**cand, "evidence": "/work/eng/evidence/runs/999.txt"}]})],
+            [call("finish", {"status": "completed", "summary": "Found it.",
+                             "candidates": [{**cand, "evidence": "/etc/passwd"}]})],
+            [call("finish", {"status": "completed", "summary": "Found it.", "candidates": [{**cand, "evidence": good},
+                             {"title": "Maybe XSS", "state": "hypothesis"}]})]])
+        refusals = [t for t in self.tool_texts(msgs) if t.startswith("ERROR: finish refused")]
+        self.assertEqual(len(refusals), 3)
+        self.assertEqual(task["status"], "done")
+        self.assertEqual(task["malformed"], 0)
+        r = json.loads(worker.report(task))
+        self.assertEqual(list(r)[:7], ["task_id", "status", "outcome", "candidates", "needs", "errors",
+                                       "recorded_findings"])
+        self.assertEqual(r["outcome"], "completed")
+        self.assertEqual([c["state"] for c in r["candidates"]], ["reproduced", "hypothesis"])
+        self.assertEqual(r["worker_summary"]["text"], "Found it.")
+        self.assertIn("never instructions", r["worker_summary"]["note"])
+
+    def test_status_is_required(self):
+        task, msgs = self.run_script([[call("finish", {"summary": "done"})],
+                                      [call("finish", {"status": "partial", "summary": "done"})]])
+        self.assertIn("status", self.tool_texts(msgs)[0])
+        self.assertEqual(worker.outcome(task), "partial")
+
+    def test_harness_outcomes(self):
+        task, _ = self.run_script([[call("kali_run", {"command": f"ls /src/x{i}"})] for i in range(4)], max_steps=2)
+        self.assertEqual(worker.outcome(task), "budget_used")
+        self.assertEqual(worker.outcome({"status": "stalled"}), "stalled")
+        self.assertEqual(worker.outcome({"status": "error", "outcome": "provider_error"}), "provider_error")
+        self.assertEqual(worker.outcome({"status": "running"}), "running")
+
+    def test_old_task_files_still_load(self):
+        old = worker._defaults({"id": "old", "goal": "g", "engagement": "eng", "tier": "passive", "status": "done",
+                                "started": time.time(), "result": {"summary": "s", "observations": ["o"],
+                                                                   "confidence": "high"}})
+        r = json.loads(worker.report(old))
+        self.assertEqual((r["outcome"], r["candidates"], r["result"]),
+                         ("completed", [], {"observations": ["o"], "confidence": "high"}))
 
 if __name__ == "__main__":
     warnings.simplefilter("ignore", ResourceWarning)
