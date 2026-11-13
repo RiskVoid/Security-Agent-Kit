@@ -13,7 +13,7 @@ const PRIORITIES = ["P1", "P2", "P3", "P4"];
 const COVERAGE = ["planned", "tested", "failed", "blocked", "excluded", "not-applicable"];
 const COV_CLASS = { tested: "ok", failed: "sev-critical", blocked: "warn", planned: "", excluded: "", "not-applicable": "" };
 const PLAYBOOKS = ["web-app", "api-security", "laravel", "code-review", "secrets-review", "supply-chain", "ai-llm", "external-network"];
-const TABS = { overview: "Overview", live: "Live", scope: "Scope & rules", investigation: "Investigation", findings: "Findings", tasks: "Worker tasks", testing: "Testing", report: "Report", audit: "Audit log", models: "Model calls" };
+const TABS = { overview: "Overview", agent: "Agent", live: "Live", scope: "Scope & rules", investigation: "Investigation", findings: "Findings", tasks: "Worker tasks", testing: "Testing", report: "Report", audit: "Audit log", models: "Model calls" };
 
 const state = { overview: null, current: null, detail: null, tab: "overview", seenApprovals: null, seenNotices: null, obsFilter: "new", findingFilter: "all", findingQuery: "", findingSev: "", findingPage: 0, findingTab: "details", openFinding: null, preview: null, evidence: null, view: "engagements" };
 
@@ -119,17 +119,19 @@ function route() {
   const h = location.hash.replace("#", "");
   if (h === "approvals" || h === "status" || h === "models" || h === "kit") return show(h);
   if (h.startsWith("eng-")) {
-    const [name, sec] = h.slice(4).split("/"), tab = TABS[sec] ? sec : "overview";
+    const [name, sec, sub] = h.slice(4).split("/"), tab = TABS[sec] ? sec : "overview";
+    // #eng-NAME/agent/<conversation id> opens that conversation in the Agent section
+    const conv = tab === "agent" && /^[0-9a-f-]{8,64}$/i.test(sub || "") ? sub : null;
     state.picking = false;
-    if (name !== state.current) { openEngagement(name); state.tab = tab; }
-    else if (tab !== state.tab) { state.tab = tab; if (state.detail) { renderDetail(); window.scrollTo(0, 0); } }
+    if (name !== state.current) { if (conv) state.agentConv = conv; openEngagement(name); state.tab = tab; }
+    else if (tab !== state.tab || (conv && conv !== state.agentConv)) { state.tab = tab; if (conv) state.agentConv = conv; if (state.detail) { renderDetail(); window.scrollTo(0, 0); } }
   } else state.picking = true;
   show("engagements");
 }
 
 // The selected engagement's menu: its sections grouped by what you do there. Which engagement it is, and its state,
 // are in the bar at the top of the page (renderDetail).
-const NAV_GROUPS = [["Run", ["overview", "live", "tasks"]], ["Test", ["scope", "investigation", "testing"]], ["Results", ["findings", "report"]], ["Records", ["audit", "models"]]];
+const NAV_GROUPS = [["Run", ["overview", "agent", "live", "tasks"]], ["Test", ["scope", "investigation", "testing"]], ["Results", ["findings", "report"]], ["Records", ["audit", "models"]]];
 function renderEngNav() {
   const box = $("#eng-nav"), name = state.current;
   // The workspace menu above stays as it is. The selected engagement's menu sits under it from the moment an engagement
@@ -318,7 +320,7 @@ function renderDetail() {
   // the sections are links in the sidebar; keep the address in step when a section is opened from inside a page
   if (state.view === "engagements" && !state.picking) {
     const want = `#eng-${d.engagement}/${state.tab}`;
-    if (location.hash !== want) history.replaceState(null, "", want);
+    if (location.hash !== want && !(state.tab === "agent" && location.hash.startsWith(want + "/"))) history.replaceState(null, "", want);
     crumbs([["Console", "#engagements"], ["Home", "#engagements"], [d.engagement, `#eng-${d.engagement}/overview`], [TABS[state.tab]]]);
   }
   renderEngNav();
@@ -335,7 +337,7 @@ function renderDetail() {
       await act(btn, () => api(`/api/eng/${enc(d.engagement)}/delete`, { force: !ov.closed }), "Deleted.");
       state.current = null; location.hash = "engagements"; $("#detail").innerHTML = `<div class="rv-empty">Pick an engagement, or create one.</div>`; refresh(); show("engagements");
     }));
-  ({ overview: paneOverview, live: paneLive, scope: paneScope, investigation: paneInvestigation, findings: paneFindings, tasks: paneTasks, testing: paneTesting, report: paneReport, audit: paneAudit, models: paneModels })[state.tab]();
+  ({ overview: paneOverview, agent: paneAgent, live: paneLive, scope: paneScope, investigation: paneInvestigation, findings: paneFindings, tasks: paneTasks, testing: paneTesting, report: paneReport, audit: paneAudit, models: paneModels })[state.tab]();
 }
 
 function confirmBox(title, text, label, fn) {
@@ -444,7 +446,7 @@ function conversationsCard(d) {
   const cs = d.conversations, err = cs && !Array.isArray(cs) ? cs.error : null, rows = Array.isArray(cs) ? cs : [];
   return `<div class="rv-card"><div class="rv-card-head"><h3>Conversations <span class="rv-dim">${rows.length}</span></h3><a class="rv-btn ghost" href="${esc(state.overview?.ui_url || "#")}" target="_blank" rel="noopener">Open agent UI ↗</a></div>
     ${rows.length ? `<div class="rv-dl" style="--cols:minmax(0, 1fr) 130px 90px;--minw:440px"><div class="rv-dl-in">${rows.map((c) => `<div class="rv-dl-row tall">
-      <span class="two"><a href="${esc(c.url)}" target="_blank" rel="noopener" title="${esc(c.title || c.id)}">${esc(c.title || c.id)}</a><small>${esc(c.id.slice(0, 8))} · bound ${fmtTime(c.bound)}</small></span>
+      <span class="two"><a href="#eng-${esc(d.engagement)}/agent/${esc(c.id)}" title="${esc(c.title || c.id)}">${esc(c.title || c.id)}</a><small>${esc(c.id.slice(0, 8))} · bound ${fmtTime(c.bound)} · <a href="${esc(c.url)}" target="_blank" rel="noopener">OpenHands ↗</a></small></span>
       <span>${c.status ? pill(c.status, c.status === "running" ? "ok" : "closed") : ""}</span>
       <span class="acts"><button class="rv-btn ghost" data-unbind="${esc(c.id)}">Unbind</button></span></div>`).join("")}</div></div>` : ""}
     <div class="rv-card-body">
@@ -1689,6 +1691,178 @@ async function paneModels() {
   } catch (e) { $("#models-eng").innerHTML = `<div class="rv-empty err">${esc(e.message)}</div>`; }
 }
 
+// ---------------------------------------------------------------- agent (the planner's conversation, read-only)
+// A conversation bound to the engagement, from /api/eng/<eng>/agent as typed items (scripts/agent_view.py): messages
+// and one step per tool call. All of it was written by the agent or a tool, so it reaches the page through esc() only;
+// mdLite escapes first and then adds a fixed set of tags.
+const STEP_KIND = { kali: "Kali", http: "HTTP", browser: "Browser", record: "Record", worker: "Worker", web: "Web", intel: "Intel", shell: "Shell", file: "File", tool: "Tool" };
+const COMMAND_KINDS = ["kali", "http", "browser", "shell", "file", "web", "worker"];
+const AGENT_STATUS = { running: ["Running", "ok"], finished: ["Finished", "closed"], paused: ["Paused", "warn"], idle: ["Idle", "closed"], error: ["Error", "bad"], stuck: ["Stuck", "bad"], waiting_for_confirmation: ["Waiting for you", "warn"], missing: ["Not in OpenHands", "bad"] };
+const AGENT_FILTERS = [["all", "Everything", () => true], ["messages", "Messages", (i) => i.t === "user" || i.t === "agent"],
+  ["commands", "Commands", (i) => i.t === "step" && COMMAND_KINDS.includes(i.kind)], ["findings", "Findings", (i) => i.t === "step" && !!i.finding],
+  ["refused", "Refused", (i) => i.t === "step" && (i.state === "refused" || i.state === "approval")]];
+const utc = (ts) => new Date(/Z$|[+-]\d\d:?\d\d$/.test(ts || "") ? ts : ts + "Z");
+const clock = (ts) => { const d = utc(ts); return isNaN(d) ? "" : d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }); };
+function mdLite(text) {
+  const inline = (s) => esc(s).replace(/`([^`\n]+)`/g, "<code>$1</code>").replace(/\*\*([^*\n]+)\*\*/g, "<b>$1</b>");
+  const line = (l) => { const h = l.match(/^#{1,6}\s+(.*)$/); return h ? `<b>${inline(h[1])}</b>` : inline(l); };
+  return String(text || "").split(/```[^\n]*\n?/).map((part, i) => i % 2 ? `<pre class="rv-pre">${esc(part.replace(/\n$/, ""))}</pre>`
+    : part.split(/\n{2,}/).filter((p) => p.trim()).map((p) => `<p>${p.split("\n").map(line).join("<br>")}</p>`).join("")).join("");
+}
+function agentStep(s, open) {
+  // an approval this call asked for is still waiting only while the overview lists it
+  const waiting = s.state === "approval" && (state.overview?.approvals || []).some((a) => a.id === s.approval);
+  const mark = s.state === "refused" ? tag("refused", "fail") : s.state === "approval" ? tag("approval", "warn")
+    : s.local ? tag("agent box", "warn") : s.tier ? tag(s.tier, TIER_CLASS[s.tier] || "") : "<span></span>";
+  const res = s.state === "running" ? `<span class="res"><span class="rv-progress-dot"></span>running</span>`
+    : s.state === "approval" ? `<span class="res warn">${waiting ? "waiting for you" : "asked for approval"}</span>`
+    : s.state === "refused" ? `<span class="res bad">not run</span>`
+    : s.res ? `<span class="res ${s.state === "bad" ? "bad" : ""}"><span class="rv-dot ${s.state === "bad" ? "" : "c-ok"}"></span>${esc(s.res)}</span>`
+    : s.state === "bad" ? `<span class="res bad">error</span>` : "<span></span>";
+  return `<details class="rv-step ${s.state === "refused" || s.state === "bad" ? "refused" : s.state === "approval" || s.local ? "local" : ""}" data-step="${esc(s.id)}" ${open.has(s.id) ? "open" : ""}>
+    <summary><span class="kind">${esc(STEP_KIND[s.kind] || s.kind)}</span>${mark}<code>${esc(s.title)}</code>${res}</summary>
+    <div class="rv-step-body">
+      ${s.reason ? `<p class="err">Refused: ${esc(s.reason)}</p>` : ""}
+      ${s.state === "approval" ? `<p class="hint">${waiting ? `Waiting for your decision in <a href="#approvals">Approvals</a>` : "This call asked for an approval"}${s.approval ? ` (<code>${esc(s.approval)}</code>)` : ""}. ${waiting ? "After you approve, tell the agent to run it again." : "It is no longer waiting: it was decided or it expired."}</p>` : ""}
+      ${s.local ? `<p class="hint">Ran in the planner's own container with an OpenHands built-in tool, not in the Kali sandbox.</p>` : ""}
+      <div class="rv-meta">${s.task ? `<span>${esc(s.task)}</span>` : ""}<span>${esc(s.tool)}</span><span>${esc(clock(s.ts))}</span></div>
+      ${s.why ? `<p class="rv-why">${esc(s.why)}</p>` : ""}
+      <pre class="rv-pre">${esc(s.args || "")}</pre>
+      ${s.out ? `<pre class="rv-pre">${esc(s.out)}</pre>` : ""}
+      ${s.cut ? `<p class="hint">The output is longer than what is shown here.${s.evidence ? " The evidence file has all of it." : ""}</p>` : ""}
+      ${s.evidence ? codeChips(s.evidence) : ""}
+    </div></details>`;
+}
+// consecutive record-keeping calls of one tool (44 coverage updates) fold into one row
+function agentSteps(steps, open) {
+  const rows = [];
+  for (let i = 0; i < steps.length;) {
+    let j = i; while (j < steps.length && steps[j].tool === steps[i].tool) j++;
+    const run = steps.slice(i, j), f = run[0];
+    if (run.length >= 3 && f.kind === "record" && !run.some((s) => s.finding)) {
+      const bad = run.filter((s) => s.state === "refused" || s.state === "bad").length, id = "g-" + f.id;
+      rows.push(`<details class="rv-step" data-step="${esc(id)}" ${open.has(id) ? "open" : ""}><summary><span class="kind">${esc(STEP_KIND[f.kind])}</span><span></span>
+        <code>${esc(f.tool.replace(/^[a-z]+_/, "").replace(/_/g, " "))} × ${run.length}</code><span class="res ${bad ? "warn" : ""}">${bad ? `${bad} refused` : ""}</span></summary>
+        <div class="rv-step-sub">${run.map((s) => agentStep(s, open)).join("")}</div></details>`);
+    } else rows.push(...run.map((s) => agentStep(s, open)));
+    i = j;
+  }
+  return `<div class="rv-steps-box">${rows.join("")}</div>`;
+}
+function agentFinding(f, current) {
+  const now = current.find((x) => x.id === f.id), sev = (now || f).severity, status = (now || f).status;
+  return `<div class="rv-obj"><span class="id"><span class="rv-sev c-${esc(sev)}"><span class="mark"></span></span>${esc(f.id)}</span><span class="t" title="${esc(f.title)}">${esc(f.title)}</span>
+    <span class="rv-meta"><span>${esc(sev)}</span>${f.cwe ? `<span>${esc(f.cwe)}</span>` : ""}${status ? `<span>${esc(human(status))}</span>` : ""}${now ? "" : "<span>no longer in the findings list</span>"}</span>
+    ${now ? `<button class="rv-btn" data-finding="${esc(f.id)}">Open finding</button>` : ""}</div>`;
+}
+function agentStream(items, open, findings) {
+  const turns = [];
+  for (const it of items) {
+    const last = turns[turns.length - 1];
+    if (it.t === "step") { if (last && last.t === "agent") last.steps.push(it); else turns.push({ t: "agent", ts: it.ts, steps: [it] }); }
+    else turns.push({ ...it, steps: [] });
+  }
+  if (!turns.length) return `<div class="rv-empty">Nothing here yet.</div>`;
+  return turns.map((t) => {
+    if (t.t === "note") return `<div class="rv-turn"><p class="${t.bad ? "err" : "hint"}">${esc(t.text)}</p></div>`;
+    const found = t.steps.filter((s) => s.finding);
+    return `<div class="rv-turn ${t.t === "user" ? "operator" : ""}">
+      <div class="rv-turn-head"><span class="rv-label">${t.t === "user" ? "You" : "Planner"}</span><time>${esc(clock(t.ts))}</time></div>
+      ${t.text ? `<div class="rv-prose">${mdLite(t.text)}</div>${t.cut ? `<p class="hint">This message is longer than what is shown here.</p>` : ""}` : ""}
+      ${t.steps.length ? agentSteps(t.steps, open) : ""}
+      ${found.length ? `<div class="rv-obj-list">${found.map((s) => agentFinding(s.finding, findings)).join("")}</div>` : ""}</div>`;
+  }).join("");
+}
+async function paneAgent() {
+  const d = state.detail, eng = d.engagement, gen = (state.agentGen = (state.agentGen || 0) + 1);
+  const active = () => state.tab === "agent" && state.current === eng && state.agentGen === gen;
+  const cs = d.conversations, convs = Array.isArray(cs) ? [...cs].sort((a, b) => String(b.updated || "").localeCompare(String(a.updated || ""))) : [];
+  if (!convs.length) {
+    $("#pane").innerHTML = `<div class="rv-card"><div class="rv-empty">${cs && cs.error ? `<p class="err">${esc(cs.error)}</p>` : ""}
+      No conversation is bound to this engagement yet. Start one under Conversations on the <a href="#eng-${esc(eng)}/overview">Overview</a>.</div></div>`;
+    return;
+  }
+  if (state.agentEng !== eng) Object.assign(state, { agentEng: eng, agentFilter: "all", agentOpen: new Set() });
+  const cid = (state.agentConv = convs.some((c) => c.id === state.agentConv) ? state.agentConv : convs[0].id);
+  const conv = convs.find((c) => c.id === cid), open = state.agentOpen;
+  history.replaceState(null, "", `#eng-${eng}/agent/${cid}`);
+  $("#pane").innerHTML = `<div class="rv-agent">
+    <div class="rv-card">
+      <div class="rv-conv-head">
+        <select id="agent-conv" class="rv-select fit" aria-label="Conversation">${convs.map((c) => `<option value="${esc(c.id)}" ${c.id === cid ? "selected" : ""}>${esc(c.title || c.id)}</option>`).join("")}</select>
+        <span id="agent-pill"></span>
+        <div class="end"><a class="rv-btn ghost" href="${esc(conv.url)}" target="_blank" rel="noopener">Reply in OpenHands ↗</a></div>
+      </div>
+      <div class="rv-toolbar pad"><div id="agent-chips" class="rv-chipset" role="group" aria-label="Show"></div></div>
+      <div id="agent-stream" class="rv-stream"><div class="rv-empty">Loading…</div></div>
+      <button id="agent-jump" class="rv-btn rv-jump" hidden>Latest ↓</button>
+      <p class="rv-list-note">This view is read-only and refreshes by itself. To send a message, pause or resume, use the OpenHands UI.</p>
+    </div>
+    <div id="agent-rail" class="rv-agent-rail"></div>
+  </div>`;
+  // A chat log, not a long page: the section fills the window below the engagement bar, the conversation scrolls
+  // inside its own panel and the page stays where it is. The crumbs already say "Agent", so the page title goes.
+  $(".rv-sec-title").hidden = true;
+  const box = $("#agent-stream"), jump = $("#agent-jump");
+  const fit = () => { const el = $(".rv-agent"); if (el) el.style.setProperty("--agent-h", Math.max(420, innerHeight - (el.getBoundingClientRect().top + scrollY) - 32) + "px"); };
+  state.agentFit = fit; fit(); window.scrollTo(0, 0);
+  const atEnd = () => box.scrollHeight - box.scrollTop - box.clientHeight < 120;
+  const toEnd = () => { box.scrollTop = box.scrollHeight; jump.hidden = true; };
+  let view = null, rev = "", problem = "";
+  const drawRail = () => {
+    if (!view) return;
+    const [label, cls] = AGENT_STATUS[view.status] || [human(view.status || "unknown"), "closed"];
+    $("#agent-pill").innerHTML = `<span class="rv-pill ${cls}">${view.status === "running" ? `<span class="rv-progress-dot"></span>` : `<span class="rv-dot"></span>`}${esc(label)}</span>`;
+    const waiting = (state.overview?.approvals || []).filter((a) => a.engagement === eng);
+    const found = view.items.filter((i) => i.finding).map((i) => i.finding), started = utc(view.created), upd = utc(view.updated);
+    $("#agent-rail").innerHTML = `
+      ${problem ? `<div class="rv-banner warn"><div class="rv-banner-body"><p class="rv-banner-title">Can't refresh</p><p class="rv-banner-sub">${esc(problem)}</p></div></div>` : ""}
+      ${waiting.length ? `<div class="rv-next danger"><div class="body"><span class="rv-label">Waiting for you</span><b>${waiting.length} approval${waiting.length > 1 ? "s" : ""}</b><span class="sub">The planner can't run ${waiting.length > 1 ? "these" : "this"} until you decide.</span></div><a class="rv-btn" href="#approvals">Review</a></div>` : ""}
+      <div class="rv-card"><div class="rv-card-body">
+        <div class="rv-rail-status"><span class="rv-label">${esc(label)}</span><b>${esc(view.title || "Conversation")}</b>
+          <span class="sub">${isNaN(started) ? "" : "Started " + esc(started.toLocaleString())}${isNaN(upd) ? "" : " · last activity " + esc(upd.toLocaleTimeString())}</span></div>
+        <div class="rv-rail-row"><span>Tool calls</span><span class="mono">${view.steps}${view.max_steps ? " of " + esc(view.max_steps) : ""}</span></div>
+        ${view.truncated ? `<p class="hint">This conversation is very long: only its first part is shown.</p>` : ""}
+      </div></div>
+      <div class="rv-card"><div class="rv-card-head"><h3>Findings <span class="rv-dim">recorded here</span></h3></div><div class="rv-card-body" style="gap:2px">
+        ${found.length ? found.map((f) => `<a class="rv-rail-find c-${esc((d.findings.find((x) => x.id === f.id) || f).severity)}" href="#eng-${esc(eng)}/findings" data-finding="${esc(f.id)}"><span class="mark"></span><span class="mono">${esc(f.id)}</span><span title="${esc(f.title)}">${esc(f.title)}</span></a>`).join("") : `<span class="rv-dim" style="font-size:12.5px">None yet.</span>`}
+      </div></div>
+      ${modelsCard(d)}`;
+  };
+  const draw = () => {
+    const f = AGENT_FILTERS.find((x) => x[0] === state.agentFilter) || AGENT_FILTERS[0];
+    $("#agent-chips").innerHTML = AGENT_FILTERS.map(([k, name, fn]) => { const n = k === "all" ? "" : view.items.filter(fn).length;
+      return `<button class="rv-chip ${k === f[0] ? "active" : ""} ${n === 0 ? "empty" : ""}" data-filter="${k}" aria-pressed="${k === f[0]}">${name}${n === "" ? "" : ` <span class="count">${n}</span>`}</button>`; }).join("");
+    $("#agent-stream").innerHTML = agentStream(view.items.filter(f[2]), open, d.findings);
+    drawRail();
+  };
+  const load = async () => {
+    try {
+      const r = await api(`/api/eng/${enc(eng)}/agent?id=${enc(cid)}${rev ? "&rev=" + rev : ""}`);
+      if (!active()) return;
+      problem = "";
+      if (!r.unchanged) {
+        const follow = !view || atEnd();   // open at the latest message; keep following only while the reader is there
+        view = r; rev = r.rev; draw();
+        if (follow) toEnd(); else jump.hidden = false;
+      } else drawRail();
+    } catch (e) {
+      if (!active()) return;
+      if (view) { problem = e.message; drawRail(); } else $("#agent-stream").innerHTML = `<div class="rv-empty err">${esc(e.message)}</div>`;
+    }
+    setTimeout(() => { if (active()) load(); }, view && view.status === "running" ? 3000 : 10000);
+  };
+  $("#agent-conv").addEventListener("change", (ev) => { state.agentConv = ev.target.value; state.agentOpen = new Set(); paneAgent(); });
+  $("#agent-chips").addEventListener("click", (ev) => { const b = ev.target.closest("[data-filter]"); if (b && view) { state.agentFilter = b.dataset.filter; draw(); toEnd(); } });
+  box.addEventListener("scroll", () => { jump.hidden = atEnd(); }, { passive: true });
+  jump.addEventListener("click", toEnd);
+  // toggle doesn't bubble: capture it, so an open step stays open when the stream is drawn again
+  $("#agent-stream").addEventListener("toggle", (ev) => { const id = ev.target.dataset?.step; if (id) open[ev.target.open ? "add" : "delete"](id); }, true);
+  $("#agent-stream").addEventListener("click", (ev) => { const b = ev.target.closest("[data-finding]"); if (b) { state.openFinding = b.dataset.finding; location.hash = `eng-${eng}/findings`; } });
+  $("#agent-rail").addEventListener("click", (ev) => { const b = ev.target.closest("[data-finding]"); if (b) state.openFinding = b.dataset.finding; });
+  load();
+}
+
 // ---------------------------------------------------------------- UI kit (#kit)
 // A reference page, reached by its address only (/#kit): nothing in the console links to it.
 // Every component the console is built from, drawn with the same classes and helpers the pages use, so this page
@@ -1763,5 +1937,6 @@ async function loadStatus() {
 }
 $("#status-refresh").addEventListener("click", loadStatus);
 
+window.addEventListener("resize", () => { if (state.tab === "agent" && state.agentFit) state.agentFit(); });
 refresh().then(route).then(connectStream);
 setInterval(() => { if (!streamFresh()) { refresh(); connectStream(); } }, 5000);

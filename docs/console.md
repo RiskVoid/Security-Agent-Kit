@@ -2,7 +2,8 @@
 
 The console is a local web page for the operator's side of the kit: engagements, approvals, findings, reports
 and the audit log. Everything in it can also be done with `./rvkit`; the console puts it in one place and saves
-you the terminal round-trips. You still talk to the agent in the OpenHands UI.
+you the terminal round-trips. You follow the agent's conversation in the **Agent** section; to send it a message
+you still use the OpenHands UI.
 
 ```sh
 ./rvkit console            # starts it and opens it in your browser, signed in
@@ -22,6 +23,7 @@ It runs in the foreground; Ctrl-C stops it. The address is `http://127.0.0.1:810
 | **Engagements** list | Every engagement with its client, status (active, halted, closed), confirmed findings, how many wait for triage, and pending approvals. Filter by name or client. | `./rvkit eng list` |
 | **New engagement** | Name, client, targets, tiers, rate, network and the private-worker switch, validated before anything is created. | `./rvkit new` |
 | Engagement **Overview** | Findings by severity, the active scope and rules (with where client data may go), pending approvals for this engagement, and a ready prompt to paste into the agent UI. **Models** shows where each model route sends data now and flags routes the engagement's `Client data:` rule doesn't allow. **Conversations**: start an OpenHands conversation bound to the engagement (with an optional first message), open or unbind one. **Credentials**: store, replace or remove a credential the agent uses by reference; values are never shown. | `./rvkit show`, `conversation`, `cred` |
+| **Agent** | A conversation bound to the engagement, read-only: your messages and the planner's, and each tool call as one line with its kind (Kali, HTTP, Browser, Record, Worker, Shell), its tier and its result. Open a line for the call, its output and the evidence files it recorded. Calls the kit refused and calls that asked for an approval are marked, and so are calls that ran in the planner's own container instead of the Kali sandbox. A finding recorded in the conversation shows as a card that opens it in **Findings**. Filter by messages, commands, findings and refusals; pick another bound conversation at the top. The conversation scrolls inside its own panel, opens at the latest message and follows new ones while you are at the end (**Latest ↓** takes you back there); the page itself stays put. Refreshes every few seconds while the conversation runs. Secrets are redacted as in evidence previews. | the OpenHands UI |
 | **Live** | What the engagement is doing now, refreshed every few seconds: the commands running in the Kali sandbox (with their tier and time against their timeout), worker tasks and their current step and model, approvals waiting for you, today's OpenRouter spend against the daily budget, and the latest commands, refusals and approvals. | `./rvkit status`, `./rvkit audit` |
 | **Scope & rules** | Edit `SCOPE.md` and `RULES.md`, **Preview changes** (a diff, the parser's warnings, and exactly what the firewall will allow), then **Apply**. Preview writes nothing. | `./rvkit scope <eng>` |
 | **Investigation** | The **Objective**; **Where it stands** (finding counts, material findings, pending decisions, import problems, next actions); **Coverage** (add a playbook's checklist to the plan, record each test's outcome with its evidence, finding or rationale, **Reassess** for a new build); **Observations** (import a tool output from `evidence/`, the imports with their parser errors, suggested groups, then link, dismiss with a reason or reopen); and the **Handover note**, with the handover text the agent reads. | the workspace tools in chat |
@@ -118,10 +120,10 @@ becomes a menu and wide tables scroll sideways inside their card; nothing scroll
 
 ## Not in the console yet
 
-- The planner's own reasoning and messages: use the OpenHands UI. The **Live** tab shows what it runs (every
-  Kali command and worker task) and the spend, but not the conversation, and spend is for the whole kit, not per run.
-- The conversation itself: **New conversation** creates and binds it and can send the first message; you follow
-  it in the OpenHands UI.
+- Talking to the planner: the **Agent** section shows a bound conversation but can't send a message, pause or
+  resume it. **New conversation** creates and binds one and can send the first message; after that, use
+  **Reply in OpenHands**. A conversation that isn't bound to an engagement shows only in the OpenHands UI.
+- Spend per conversation: the spend on the **Live** tab is for the whole kit, not per run.
 - Continuing the planner automatically after an approval: tell it to run the command again. Worker tasks continue
   by themselves.
 - Models and the worker (Colab, fallback, budget): use `./rvkit worker`, `./rvkit budget` and `/rv-start`.

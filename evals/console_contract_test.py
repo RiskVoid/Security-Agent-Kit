@@ -120,6 +120,9 @@ def run_checks():
     check("scope revision must be what the page loaded", post(f"/api/eng/{ENG}/apply", {"scope": "- 198.51.100.20\n", "revision": "x"})[0] == 400)
     check("audit size must be a number", req("GET", f"/api/eng/{ENG}/audit?n=abc")[0] == 400)
     check("bad engagement in a path refused", req("GET", "/api/eng/..%2Fetc")[0] == 400)
+    check("agent view: conversation id checked", req("GET", f"/api/eng/{ENG}/agent?id=../x")[0] == 400)
+    check("agent view: a conversation that isn't bound to the engagement is not shown",
+          req("GET", f"/api/eng/{ENG}/agent?id=00000000-0000-0000-0000-000000000000")[0] == 404)
 
     print("== conflicts and attribution")
     d = req("GET", f"/api/eng/{ENG}")[1]
