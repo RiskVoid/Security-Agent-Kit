@@ -1501,11 +1501,15 @@ class BenchStats(unittest.TestCase):
             cls = lambda t, b, e: "refused: x" if b.startswith("REFUSED") else "command-failed" if "exit=2" in b else None
             res = {"at": "2026-11-13T10:30:00+00:00", "seconds": 1800, "cost_usd": 1.5, "status": "finished",
                    "score": {"strict_recall": 2 / 3, "expected": 3}}
-            op = self.st.operator_load(res, "e", audit, events=events, tasks=[{"status": "done"}, {"status": "error"}],
+            op = self.st.operator_load(res, "e", audit, events=events,
+                                       tasks=[{"status": "done", "malformed": 2}, {"status": "error",
+                                                                                    "stalls": [{"kind": "repeat"}]}],
                                        calls=calls, tool_class=cls)
             self.assertEqual(op["approvals"], {"requested": 2, "granted": 1, "denied": 1, "stale": 0})
             self.assertEqual(op["questions"], 1)
-            self.assertEqual(op["tool_errors"], {"malformed": 1, "refused": 1, "failed": 1, "timeout": 0})
+            self.assertEqual(op["tool_errors"], {"malformed": 1, "refused": 1, "failed": 1, "timeout": 0,
+                                                 "worker_malformed": 2})
+            self.assertEqual(op["worker_stalls"], 1)
             self.assertEqual(op["worker_tasks"], {"done": 1, "error": 1})
             self.assertEqual((op["verified_findings"], op["cost_per_verified"]), (2, 0.75))
             self.assertIn("2 asked", self.st.operator_line(op))

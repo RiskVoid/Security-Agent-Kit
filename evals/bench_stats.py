@@ -248,10 +248,14 @@ def operator_load(res, eng, audit_path, events=None, tasks=None, calls=None, too
     if questions is not None and res.get("status") == "asked-question":
         questions = max(questions, 1)
     worker = dict(collections.Counter(str(t.get("status")) for t in tasks)) if tasks is not None else None
+    if errors is not None and tasks:
+        errors["worker_malformed"] = sum(int(t.get("malformed") or 0) for t in tasks)
+    stalls = sum(len(t.get("stalls") or []) for t in tasks) if tasks is not None else None
     s = res.get("score") or {}
     verified = round((s.get("strict_recall") or 0) * (s.get("expected") or 0))
     cost = res.get("cost_usd")
-    return {"approvals": approvals, "questions": questions, "worker_tasks": worker, "tool_errors": errors,
+    return {"approvals": approvals, "questions": questions, "worker_tasks": worker, "worker_stalls": stalls,
+            "tool_errors": errors,
             "tokens": res.get("tokens"), "cost_usd": cost, "verified_findings": verified,
             "cost_per_verified": round(cost / verified, 4) if cost is not None and verified else None}
 

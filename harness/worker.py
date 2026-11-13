@@ -255,7 +255,9 @@ CONTROL = os.path.join(db.WORK, ".control", "tasks")   # cancel/resume requests 
                                                        # the sandbox mounts only its engagement's folder)
 APPROVAL_RX = re.compile(r"APPROVAL REQUIRED.*?Approval id: ([a-f0-9]{8})", re.S)
 ACTIVE = ("queued", "waiting", "running", "awaiting_approval")
-FAILED = ("error", "cancelled", "halted", "interrupted", "blocked")
+FAILED = ("error", "cancelled", "halted", "interrupted", "blocked", "tool_failure", "stalled")
+SCHEMA = {t["function"]["name"]: t["function"]["parameters"] for t in TOOLS}
+MALFORMED_LIMIT = 3                  # malformed tool calls in a row before the task stops (tool_failure)
 SAFE_METHODS = ("GET", "HEAD", "OPTIONS")
 APPROVAL_WAIT_H = 72                 # a task stops waiting for a decision after this long
 
@@ -335,7 +337,7 @@ def load_messages(task):
 
 def _defaults(task):
     for k, v in (("steps", []), ("evidence", []), ("candidates", []), ("pending_calls", []), ("depends_on", []),
-                 ("waited_s", 0), ("step", 0), ("served_by", [])):
+                 ("waited_s", 0), ("step", 0), ("served_by", []), ("malformed", 0)):
         task.setdefault(k, v)
     return task
 
@@ -376,13 +378,49 @@ def _step_file(task, step, name, args, out):
     return path
 
 
+def parse_args(name, raw):
+    """(arguments, None) for a well-formed call, else (None, what is wrong with it, said so the model can fix it)."""
+    if name not in SCHEMA:
+        return None, f"there is no tool named {name!r}. Your tools: {', '.join(SCHEMA)}."
+    if isinstance(raw, dict):
+        args = raw
+    else:
+        raw = raw or "{}"
+        try:
+            args = json.loads(raw)
+        except json.JSONDecodeError as e:
+            near = raw[max(0, e.pos - 40):e.pos + 20]
+            return None, f"the arguments are not valid JSON ({e.msg} at position {e.pos}, near {near!r})."
+    if not isinstance(args, dict):
+        return None, "the arguments must be a JSON object with the parameter names as keys."
+    spec = SCHEMA[name]
+    unknown = [k for k in args if k not in spec.get("properties", {}) and k != "approval_id"]
+    if unknown:
+        return None, (f"unknown argument(s) {', '.join(unknown)}; {name} takes "
+                      f"{', '.join(spec.get('properties', {}))}.")
+    if name == "finish":
+        args.setdefault("confidence", "low")
+    missing = [k for k in spec.get("required", []) if args.get(k) in (None, "")]
+    if missing:
+        return None, f"missing required argument: {', '.join(missing)}."
+    return args, None
+
+
 def _do_call(task, c, messages):
     """Run one tool call of the current assistant turn. Returns ok | finish | approval."""
     name = c["function"]["name"]
-    try:
-        args = json.loads(c["function"].get("arguments") or "{}")
-    except ValueError:
-        args = {}
+    args, problem = parse_args(name, c["function"].get("arguments"))
+    if problem:   # never run a call the model didn't make correctly: say what is wrong and let it send it again
+        task["malformed"] = task.get("malformed", 0) + 1
+        task["malformed_streak"] = task.get("malformed_streak", 0) + 1
+        messages.append({"role": "tool", "tool_call_id": c.get("id", name), "content":
+                         f"ERROR: your call to {name} was malformed: {problem} Nothing was run. Send the call again "
+                         "with valid arguments."})
+        save(task, messages)
+        if task["malformed_streak"] >= MALFORMED_LIMIT:
+            raise Stop("tool_failure", f"{MALFORMED_LIMIT} malformed tool calls in a row (last: {name}: {problem})")
+        return "ok"
+    task["malformed_streak"] = 0
     args = {k: v for k, v in args.items() if k != "approval_id"}  # approvals come from the user, not the model
     if name == "finish":
         task["result"] = args
@@ -414,7 +452,7 @@ def _do_call(task, c, messages):
     rec.update(state="started", at=_now(), **({"approval": ap["id"]} if ap else {}))
     save(task, messages)  # checkpoint: the action may run from here on
     try:
-        out = IMPL[name](task, **args, **extra) if name in IMPL else f"unknown tool {name}"
+        out = IMPL[name](task, **args, **extra)
     except Exception as e:  # tool errors go back to the model
         out = f"ERROR: {type(e).__name__}: {e}"
     m = APPROVAL_RX.search(out) if name in ("kali_run", "http_request") and not extra else None
@@ -742,6 +780,8 @@ def report(task) -> str:
            if task["evidence"] else None}
     if task.get("served_by"):
         out["model"] = task["served_by"]  # which model did the work (the fallback model shows up here)
+    if task.get("malformed"):
+        out["malformed_calls"] = task["malformed"]
     if task.get("depends_on"):
         out["depends_on"] = task["depends_on"]
     if task.get("result"):

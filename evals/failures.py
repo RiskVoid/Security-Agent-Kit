@@ -32,7 +32,9 @@ and model versions:
   tool/<tool>/<class>       a tool call was refused, invalid, timed out or failed; the class is the reason with
                             names, ids, paths and numbers removed
   retry/<tool>/<class>      the same call was sent again after it failed the same way
-  worker/<what>             a worker task was interrupted, ran out of steps or ended without calling finish
+  worker/<what>             a worker task was interrupted, ran out of steps or ended without calling finish, sent
+                            malformed tool calls (malformed-calls), stopped on them (tool_failure), or stalled:
+                            stall/<repeat|error|no-progress>/<nudge|advice|stop>
 
 The stage of a missed item comes from keyword matches ("any" and "cwe" of the expected item), so read it as a lead:
 --show lists the finding ids, plan items and tool calls behind each record. Records hold ids, titles and commands
@@ -257,6 +259,10 @@ def collect(res, bench, data):
             add("worker", "no-finish", t.get("id"), goal=str(t.get("goal") or "")[:160])
         elif (t.get("step") or 0) > (t.get("max_steps") or 10 ** 6):
             add("worker", "out-of-steps", t.get("id"), goal=str(t.get("goal") or "")[:160])
+        if t.get("malformed"):
+            add("worker", "malformed-calls", t.get("id"), n=int(t["malformed"]), goal=str(t.get("goal") or "")[:160])
+        for st in t.get("stalls") or []:
+            add("worker", f"stall/{st.get('kind')}/{st.get('action')}", t.get("id"), what=str(st.get("detail"))[:160])
     return [{**base, "kind": SUMMARY, "cause": SUMMARY, "subject": None, "n": 0, "failures": len(out)}] + out
 
 
