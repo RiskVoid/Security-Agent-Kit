@@ -1379,6 +1379,58 @@ class BenchmarkScore(unittest.TestCase):
         self.assertEqual(t["expected_refusals"], {"hydra": True})
 
 
+class ToolCallConformance(unittest.TestCase):
+    """Epic #52 #36: scoring of the worker model's tool calls (evals/toolcall_conformance.py), no model."""
+
+    @classmethod
+    def setUpClass(cls):
+        spec = importlib.util.spec_from_file_location("rv_tcc", os.path.join(KIT, "evals", "toolcall_conformance.py"))
+        cls.tc = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(cls.tc)
+        src = open(os.path.join(KIT, "harness", "worker.py")).read()
+        cls.tools = {m for m in re.findall(r'"name": "(\w+)", "description"', src)}
+
+    def msg(self, name, args):
+        raw = args if isinstance(args, str) else json.dumps(args)
+        return {"tool_calls": [{"function": {"name": name, "arguments": raw}}]}
+
+    def case(self, cid):
+        return next(c for c in self.tc.CASES if c[0] == cid)
+
+    def test_cases_use_the_workers_tools(self):
+        self.assertGreaterEqual(len(self.tc.CASES), 20)
+        used = {c[3] for c in self.tc.CASES if c[3]}
+        self.assertEqual(used - self.tools, set())
+        self.assertEqual({c[1] for c in self.tc.CASES}, {"single", "several", "nested", "finish", "none"})
+
+    def test_scores(self):
+        schemas = {"record_candidate": {"type": "object", "required": ["title", "severity", "asset", "description",
+                                                                       "evidence"], "properties": {
+            "title": {"type": "string"}, "severity": {"type": "string", "enum": ["high", "low"]},
+            "asset": {"type": "string"}, "description": {"type": "string"}, "cwe": {"type": "string"},
+            "evidence": {"type": "array", "items": {"type": "string"}}}}}
+        good = {"title": "SQL injection in /login", "severity": "high", "asset": "/login", "description": "d",
+                "cwe": "CWE-89", "evidence": ["/src/app/views.py:42", "/work/acme/evidence/runs/sqlmap.txt"]}
+        c = self.case("candidate")
+        self.assertTrue(self.tc.score_case(c, self.msg("record_candidate", good), schemas)["pass"])
+        r = self.tc.score_case(c, self.msg("record_candidate", '{"title": "x"'), schemas)
+        self.assertEqual((r["json"], r["pass"]), (False, False))
+        r = self.tc.score_case(c, self.msg("record_candidate", {**good, "evidence": "/src/a.py:1"}), schemas)
+        self.assertEqual((r["json"], r["schema"]), (True, False))
+        r = self.tc.score_case(c, self.msg("record_candidate", {**good, "severity": "critical"}), schemas)
+        self.assertFalse(r["schema"])
+        r = self.tc.score_case(c, self.msg("finish", {"summary": "s"}), schemas)
+        self.assertFalse(r["tool"])
+        none = self.case("no-tool-question")
+        self.assertTrue(self.tc.score_case(none, {"content": "Code review and research."}, {})["pass"])
+        self.assertFalse(self.tc.score_case(none, self.msg("web_search", {"query": "x"}), {})["pass"])
+        s = self.tc.summary([{"id": "a", "kind": "none", "json": True, "schema": True, "tool": True, "pass": True,
+                              "problem": None},
+                             {"id": "b", "kind": "nested", "json": True, "schema": False, "tool": True, "pass": False,
+                              "problem": "x"}], "m")
+        self.assertEqual((s["score"], s["by_kind"]["nested"], s["failures"][0]["id"]), (0.5, "0/1", "b"))
+
+
 class LookupPolicy(unittest.TestCase):
     """Epic #52 #27: clean benchmark runs limit web search and fetch, and every lookup is logged and flagged."""
 

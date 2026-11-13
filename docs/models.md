@@ -196,6 +196,20 @@ Every `worker` command recreates LiteLLM and sends a test prompt.
 Both repos are pinned to a commit, so a re-upload can't change what runs. The abliterated build will not refuse
 harmful requests: you are responsible for how you use it ([SECURITY.md](../SECURITY.md#responsible-use)).
 
+### Tool-call conformance
+
+The same model calls tools differently on different servers and quantizations. `./rvkit doctor --models` sends the
+configured worker 24 fixed prompts built from its own tools (single calls, several and nested arguments, "finish
+now", "don't call a tool") and scores valid JSON, the tool's schema and the right tool with the right values. It
+warns below 85%, and keeps each result in `.rvkit/conformance/history.jsonl`. `/rv-start` runs it once the Colab
+model is connected.
+
+| Worker profile | Model | Score | Measured |
+|---|---|---|---|
+| Hosted (OpenRouter) | GLM-5.3 Flash (`z-ai/glm-5.3-flash`) | 92% and 96% in two runs: it misses "finish with high confidence" and once read the evidence again instead of recording a candidate | 2026-11-13 |
+| Colab L4 (Q4_K_M) | Qwen3.8-27B abliterated | not measured yet | |
+| Colab A100 (Q8_0) | Qwen3.8-27B abliterated | not measured yet | |
+
 ### Worker limits
 
 | Limit | Value |
@@ -203,8 +217,10 @@ harmful requests: you are responsible for how you use it ([SECURITY.md](../SECUR
 | Tasks at a time | one by default (`WORKER_PARALLEL_TASKS`): Colab handles one request at a time, so delegated tasks queue. Raise it for an endpoint that serves parallel requests |
 | Tool calls per task | `max_steps`, 15 by default, 1–40 |
 | Time per task | `timeout_min`, 30 by default, 1–180 minutes |
-| Context | about 90,000 characters (~25K tokens, fits the L4 profile's 32K). Older tool outputs are shrunk to keep within it; each step's full output is saved in `/work/<engagement>/evidence/tasks/<task_id>/step-NN-<tool>.txt` |
-| Tool output shown to the model | 6,000 characters per call; the rest is in the step file |
+| Context | about 90,000 characters (~25K tokens, fits the L4 profile's 32K). Past it, older tool results shrink to one line each (tool, command, exit status, digest, evidence path); the latest five stay whole. Each step's full output is saved in `/work/<engagement>/evidence/tasks/<task_id>/step-NN-<tool>.txt` |
+| Tool output shown to the model | a digest for semgrep, OSV-Scanner, pip-audit, bandit, gitleaks, nmap, sqlmap and nuclei output; otherwise the first 4,000 and the last 2,000 characters, with the cut marked |
+| Malformed tool calls | not run: the model gets the parser error and sends the call again; three in a row stop the task (`tool_failure`) |
+| Stalls | the same call or error three times, or 8 calls with nothing new: a nudge, then advice from the planner model (at most twice, `WORKER_ADVISOR`), then the task stops (`stalled`) |
 
 The planner sets `max_steps` and `timeout_min` per task. Each task's state is saved next to its evidence
 (`evidence/tasks/<task_id>/task.json`), so results survive a `worker-mcp` restart. A task that was running during

@@ -336,7 +336,19 @@ cmd_doctor() {
   else note "Worker endpoint not reachable: $(envget WORKER_API_BASE) (start Colab with /rv-start, or ./rvkit worker)"; fi
   if [ "${1:-}" = "--models" ]; then
     llm planner | grep -q '"choices"' && pass "Planner answers ($(envget PLANNER_MODEL))" || fail "Planner call failed (./rvkit test planner)"
-  else echo "   ${D}planner not called (costs a fraction of a cent): ./rvkit doctor --models${N}"; fi
+    if worker_reachable; then   # tool-call conformance of the worker model (evals/toolcall_conformance.py, 24 calls)
+      mkdir -p .rvkit/conformance
+      v="$(docker compose exec -T worker-mcp python3 - --json < evals/toolcall_conformance.py 2>/dev/null | tail -1)"
+      if echo "$v" | grep -q '"score"'; then
+        echo "$v" | python3 -c "import json,sys; d=json.load(sys.stdin); d['worker']=sys.argv[1]; d['endpoint']=sys.argv[2]; print(json.dumps(d))" \
+          "$(envget WORKER_MODEL_ID)" "$(envget WORKER_API_BASE | sed -E 's#//[^/]*trycloudflare.com#//<colab-tunnel>#')" >> .rvkit/conformance/history.jsonl
+        s="$(echo "$v" | python3 -c "import json,sys; d=json.load(sys.stdin); print(f\"{d['score']:.0%} (valid JSON {d['json']:.0%}, schema {d['schema']:.0%}, right tool {d['right_tool']:.0%})\")")"
+        if echo "$v" | python3 -c "import json,sys; d=json.load(sys.stdin); sys.exit(0 if d['score'] >= d['threshold'] else 1)"; then
+          pass "Worker tool calls: $s"
+        else note "Worker tool calls: $s, below 85%: expect malformed calls (details: docker compose exec -T worker-mcp python3 - < evals/toolcall_conformance.py)"; fi
+      else note "Worker tool-call check didn't run: ${v:-no output}"; fi
+    fi
+  else echo "   ${D}planner and worker tool calls not checked (costs a fraction of a cent): ./rvkit doctor --models${N}"; fi
   if [ -n "$(python3 scripts/model_events.py --since 86400 --problems 2>/dev/null)" ]; then
     note "Model calls failed in the last 24 hours:"; python3 scripts/model_events.py --since 86400 --problems | head -5 | sed 's/^/   /'
   else pass "No failed model calls in the last 24 hours"; fi
