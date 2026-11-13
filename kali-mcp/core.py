@@ -34,7 +34,9 @@ RECORDABLE = {"finding-updated", "finding-recorded", "meta-updated", "summary-up
               "coverage-updated", "coverage-reassessed", "objective-set", "handover-saved",
               "report-exception", "report-exception-revoked", "report-approved", "report-rebuilt",
               "report-transmitted", "retest-recorded", "cleanup-added", "cleanup-updated", "notice-prepared",
-              "notice-reviewed", "findings-exported"}
+              "notice-reviewed", "findings-exported",
+              # the operator's side of a bound conversation, from the console's Agent section
+              "conversation-message", "conversation-paused", "conversation-resumed"}
 
 
 class Conflict(ValueError):
