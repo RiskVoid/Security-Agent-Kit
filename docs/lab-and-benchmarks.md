@@ -208,6 +208,23 @@ finding ids and titles from the kit's own targets, never client data.
 the same key for anything else during a run, or the number will include that too. Without an OpenRouter key, cost
 is `n/a`.
 
+### Plain-agent baseline
+
+`--agent riskvoid-plain` runs the same benchmark with the same planner model and almost none of the kit: one MCP
+server (`harness/plain.py`) with the sandboxed Kali `run` tool and `record_finding`, and a four-line prompt
+(`prompts/plain.md`). It has no worker, playbooks, test plan, triage workflow, verification rule, web search or
+vulnerability intel. Scope, tiers, approvals and the audit log still apply, because kali-mcp enforces them. The
+brief is the benchmark's task without its playbook line; its findings are scored by the same rules.
+
+```sh
+./rvkit bench api-vampi --agent riskvoid-plain --repeat 3 --label plain
+./rvkit bench --compare plain ref        # what the kit adds over a plain agent on the same model
+```
+
+The first run starts `plain-mcp` (compose profile `baseline`) and adds the `riskvoid-plain` profile to OpenHands;
+a normal install has neither. A harness feature that doesn't beat this baseline on the same model isn't earning
+its cost.
+
 ### Clean runs
 
 The lab targets are public, and so are their write-ups: Juice Shop's solutions, DVWA walkthroughs, and this kit's

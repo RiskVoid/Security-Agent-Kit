@@ -25,7 +25,7 @@ services:
       HTTPS_PROXY: http://egress-proxy:3128
       http_proxy: http://egress-proxy:3128
       https_proxy: http://egress-proxy:3128
-      NO_PROXY: &noproxy localhost,127.0.0.1,litellm,web-mcp,kali-mcp,worker-mcp,findings-mcp,intel-mcp,agent-canvas
+      NO_PROXY: &noproxy localhost,127.0.0.1,litellm,web-mcp,kali-mcp,worker-mcp,findings-mcp,intel-mcp,plain-mcp,agent-canvas
       no_proxy: *noproxy
     volumes:
       - openhands-data:/home/openhands/.openhands
@@ -163,6 +163,20 @@ services:
     volumes:
       - ${ENGAGEMENTS_DIR:-~/riskvoid/engagements}:/work
       - ${REPORT_BRAND_FOLDER:-./harness/brands/example}:/brand-custom:ro   # used when REPORT_BRAND=custom
+    networks: [default, rvagent]
+    restart: unless-stopped
+
+  # Plain-agent baseline for benchmarks (harness/plain.py): only the sandboxed run tool and record_finding.
+  # Started by ./rvkit bench --agent riskvoid-plain; not part of a normal install.
+  plain-mcp:
+    image: ${RVKIT_REGISTRY:-ghcr.io/riskvoid/security-agent-kit}-harness:${RVKIT_VERSION:-0.1.0}
+    build: ./harness
+    command: ["python3", "plain.py"]
+    profiles: ["baseline"]
+    expose: ["8095"]           # OpenHands reaches it as plain-mcp:8095
+    volumes:
+      - ${ENGAGEMENTS_DIR:-~/riskvoid/engagements}:/work
+    depends_on: [kali-mcp]
     networks: [default, rvagent]
     restart: unless-stopped
 

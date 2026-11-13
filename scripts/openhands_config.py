@@ -10,6 +10,8 @@ Creates or updates:
   MCP servers     web, kali, worker, findings, intel
   Agent profiles  riskvoid-planner  planner LLM, prompts/planner.md, all five MCP servers (default)
                   riskvoid-local    private-llm only, no OpenRouter: prompts/planner.md + prompts/local.md
+  --plain         also the benchmark baseline: MCP server plain (plain-mcp, started with the compose profile
+                  "baseline") and agent profile riskvoid-plain: planner LLM, prompts/plain.md, the plain server only
 Keys are read from .env and sent only to the local OpenHands API; nothing is printed.
 """
 import json, os, sys, urllib.error, urllib.request
@@ -89,6 +91,21 @@ def agent_profile(name, llm_ref, mcp_refs, persona):
     return (res.get("profile") or res).get("id") or api("GET", f"/api/agent-profiles/{name}")["profile"]["id"]
 
 
+PLAIN = {"url": "http://plain-mcp:8095/mcp", "transport": "http", "timeout": 120, "sse_read_timeout": 1800,
+         "description": "Benchmark baseline: the sandboxed run tool and record_finding only"}
+
+
+def plain():
+    """The plain-agent baseline (benchmarks only): the plain MCP server and the riskvoid-plain profile."""
+    have = set((api("GET", "/api/settings").get("agent_settings", {}).get("mcp_config") or {}).keys())
+    api("PATCH" if "plain" in have else "POST", "/api/settings/mcp/plain", {**PLAIN, "enabled": True})
+    agent_profile("riskvoid-plain", "planner", ["plain"], open(os.path.join(KIT, "prompts", "plain.md")).read())
+    r = api("POST", "/api/mcp/test", {"server": {**PLAIN, "enabled": True}})
+    if not r.get("ok"):
+        raise SystemExit(f"plain MCP server does not answer: {r.get('error', json.dumps(r))[:160]} "
+                         "(docker compose --profile baseline up -d plain-mcp)")
+
+
 def check_mcp():
     """Ask OpenHands to connect to every MCP server; returns a list of failures."""
     bad = []
@@ -102,6 +119,10 @@ def check_mcp():
 def main():
     quiet = "--quiet" in sys.argv
     say = (lambda *a: None) if quiet else print
+    if "--plain" in sys.argv:   # ./rvkit bench --agent riskvoid-plain
+        plain()
+        say("  Agent profile: riskvoid-plain (benchmark baseline)")
+        return
     if "--check" in sys.argv:  # used by ./rvkit doctor: test only, change nothing
         bad = check_mcp()
         print("\n".join(bad) if bad else "all MCP servers answer")

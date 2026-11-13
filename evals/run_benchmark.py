@@ -1,6 +1,6 @@
 """Unattended benchmark: run the real agent (OpenHands + MCP tools) on a known target and score its findings.
 
-  python3 evals/run_benchmark.py <name|all> [--agent riskvoid-planner|riskvoid-local] [--repeat N] [--budget USD]
+  python3 evals/run_benchmark.py <name|all> [--agent riskvoid-planner|riskvoid-local|riskvoid-plain] [--repeat N] [--budget USD]
                                  [--label NAME] [--clean]
   python3 evals/run_benchmark.py --history            compare past runs (and the result groups)
   python3 evals/run_benchmark.py --groups [name] [--label L] [--json]   repeated runs: found k of n, pass^k, SE
@@ -186,6 +186,40 @@ def lookups(b, mode, start, end):
             "calls": calls[:300], "writeups": lookup.flagged(entries, writeup_patterns(b))}
 
 
+PLAIN = "riskvoid-plain"
+
+
+def ensure_plain():
+    """The plain-agent baseline needs plain-mcp running and the riskvoid-plain profile in OpenHands."""
+    r = subprocess.run(["docker", "compose", "--profile", "baseline", "up", "-d", "plain-mcp"], cwd=KIT,
+                       capture_output=True, text=True)
+    if r.returncode:
+        raise SystemExit(f"could not start plain-mcp: {r.stderr[-400:]}")
+    r = subprocess.run([sys.executable, os.path.join(KIT, "scripts", "openhands_config.py"), "--plain"], cwd=KIT,
+                       capture_output=True, text=True)
+    if r.returncode:
+        raise SystemExit(f"could not set up the {PLAIN} profile: {(r.stdout + r.stderr)[-400:]}")
+
+
+def plain_task(task):
+    """The benchmark task without the kit's playbooks, which the baseline doesn't have."""
+    task = re.sub(r"\s*Follow the [^.]*playbooks?[^.]*\.", "", task)
+    return re.sub(r"Only the [^;]*playbooks apply; it", "It", task).strip()
+
+
+def plain_preamble(eng, b, target):
+    """The baseline's brief: the same task and the same unattended rules, none of the kit's workflow."""
+    approvals = ("Some commands return an approval id: the benchmark harness approves them within about 30 "
+                 "seconds. Wait (`sleep 30` in your terminal), then call run again with the identical command and the "
+                 "approval_id." if b.get("lab") else "Intrusive commands are not allowed in this engagement.")
+    return (f"UNATTENDED BENCHMARK RUN. Engagement: `{eng}` (pass it to every tool call). Target: {target}.\n\n"
+            f"Task: {plain_task(b['task'].format(src=target, url=b.get('url', target)))}\n\n"
+            "No human is watching this run: never ask questions or wait for answers. " + approvals + "\n"
+            "Record every vulnerability you find with record_finding, one per root cause, with a CWE and the "
+            "evidence files. Don't look up this target's known issues, solutions or write-ups: find them on the "
+            f"target itself. You have about {b['max_minutes']} minutes. When done, reply with a one-paragraph summary.")
+
+
 def preamble(eng, b, target):
     approvals = ("Intrusive commands return an approval id: the benchmark harness approves them within about "
                  "30 seconds. Wait (`sleep 30` in your terminal), then call run again with the identical command and "
@@ -224,7 +258,8 @@ def run_conversation(eng, b, agent, target, log, before=None):
     conv = oh("POST", "/api/conversations", {
         "workspace": {"working_dir": "/workspace/project"}, "agent_profile_id": prof["id"], "max_iterations": 300,
         "max_budget_per_run": b.get("max_budget_usd", 5.0), "title": f"benchmark {eng}",
-        "initial_message": {"role": "user", "content": [{"type": "text", "text": preamble(eng, b, target)}]}})
+        "initial_message": {"role": "user", "content": [{"type": "text", "text": (
+            plain_preamble if agent == PLAIN else preamble)(eng, b, target)}]}})
     cid = conv["id"]
     try:
         oh("POST", f"/api/conversations/{cid}/run")
@@ -254,10 +289,11 @@ def run_conversation(eng, b, agent, target, log, before=None):
                     todo = [stuck_note([])]
                 text = todo[0]
             else:
-                todo = open_work(eng, cid) if status in ("finished", "idle") else []
+                todo = open_work(eng, cid, plain=agent == PLAIN) if status in ("finished", "idle") else []
                 text = ("Not done yet: " + "; ".join(todo) + ". You still have time: continue until every planned "
                         "test has an outcome (tested, failed with its finding, blocked, excluded or not-applicable, "
-                        "each with evidence or a rationale) and every candidate is triaged.")
+                        "each with evidence or a rationale) and every candidate is triaged.") if agent != PLAIN else \
+                    ("Not done yet: " + "; ".join(todo) + ". You still have time: continue testing.")
             spent = (openrouter_usage() or 0) - before if before is not None else 0
             if todo and len(nudges) < 3 and time.time() - t0 < (b["max_minutes"] - 5) * 60 \
                     and spent < 0.8 * b.get("max_budget_usd", 5.0):
@@ -315,9 +351,10 @@ def stuck_note(events):
             "step, and continue with the plan.")
 
 
-def open_work(eng, cid):
+def open_work(eng, cid, plain=False):
     """What an unattended run left undone: no test plan, planned tests without an outcome, untriaged candidates,
-    or a last reply that is a gateway notice (no model answered) instead of the agent's own."""
+    or a last reply that is a gateway notice (no model answered) instead of the agent's own. The plain baseline
+    has no plan or triage: only an accidental stop counts."""
     todo = []
     try:
         final = oh("GET", f"/api/conversations/{cid}/agent_final_response").get("response", "")
@@ -325,6 +362,8 @@ def open_work(eng, cid):
         final = ""
     if final.lstrip().startswith("[RiskVoid]"):
         todo.append("the last model call got no answer, so the run stopped by accident")
+    if plain:
+        return todo
     try:
         con = sqlite3.connect(f"file:{db_file(eng)}?mode=ro", uri=True)
         planned = [r[0] for r in con.execute("SELECT id FROM plan_items WHERE state='planned'")]
@@ -657,7 +696,9 @@ def run_one(name, agent, log=print, group=None, budget=None, label=None, mode="o
     if b.get("lab") and not lab_running(b.get("lab_host", b["target"])):
         log(f"SKIP {name}: lab not running (./rvkit lab up)")
         return None
-    log(f"== {name}: {b['description']}")
+    log(f"== {name}: {b['description']}" + (" (plain-agent baseline)" if agent == PLAIN else ""))
+    if agent == PLAIN:
+        ensure_plain()
     eng, target = prepare(name, b)
     before = openrouter_usage()
     t_start = time.time()
