@@ -1790,9 +1790,10 @@ $("#fail-collect").addEventListener("click", async () => {
   loadFailures();
 });
 
-// ---------------------------------------------------------------- agent (the planner's conversation, read-only)
+// ---------------------------------------------------------------- agent (the planner's conversation)
 // A conversation bound to the engagement, from /api/eng/<eng>/agent as typed items (scripts/agent_view.py): messages
-// and one step per tool call. All of it was written by the agent or a tool, so it reaches the page through esc() only;
+// and one step per tool call, with a composer to answer the planner and Pause / Resume. All of it was written by the
+// agent or a tool, so it reaches the page through esc() only;
 // mdLite escapes first and then adds a fixed set of tags.
 const STEP_KIND = { kali: "Kali", http: "HTTP", browser: "Browser", record: "Record", worker: "Worker", web: "Web", intel: "Intel", shell: "Shell", file: "File", tool: "Tool" };
 const COMMAND_KINDS = ["kali", "http", "browser", "shell", "file", "web", "worker"];
@@ -1800,6 +1801,10 @@ const AGENT_STATUS = { running: ["Running", "ok"], finished: ["Finished", "close
 const AGENT_FILTERS = [["all", "Everything", () => true], ["messages", "Messages", (i) => i.t === "user" || i.t === "agent"],
   ["commands", "Commands", (i) => i.t === "step" && COMMAND_KINDS.includes(i.kind)], ["findings", "Findings", (i) => i.t === "step" && !!i.finding],
   ["refused", "Refused", (i) => i.t === "step" && (i.state === "refused" || i.state === "approval")]];
+// starters fill the composer; nothing is sent until the operator sends it
+const AGENT_STARTERS = [["Continue", "Continue."], ["Approved, run it again", "The approval is granted. Run that command again."],
+  ["Where do we stand?", "Summarise where the engagement stands: what is tested, what is left, and the findings so far."],
+  ["Draft executive summary", "Draft the executive summary from the confirmed findings and save it for the report."]];
 const utc = (ts) => new Date(/Z$|[+-]\d\d:?\d\d$/.test(ts || "") ? ts : ts + "Z");
 const clock = (ts) => { const d = utc(ts); return isNaN(d) ? "" : d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }); };
 function mdLite(text) {
@@ -1883,34 +1888,43 @@ async function paneAgent() {
   }
   if (state.agentEng !== eng) Object.assign(state, { agentEng: eng, agentFilter: "all", agentOpen: new Set() });
   const cid = (state.agentConv = convs.some((c) => c.id === state.agentConv) ? state.agentConv : convs[0].id);
-  const conv = convs.find((c) => c.id === cid), open = state.agentOpen;
+  const conv = convs.find((c) => c.id === cid), open = state.agentOpen, halted = !!d.info.halted;
   history.replaceState(null, "", `#eng-${eng}/agent/${cid}`);
   $("#pane").innerHTML = `<div class="rv-agent">
     <div class="rv-card">
       <div class="rv-conv-head">
         <select id="agent-conv" class="rv-select fit" aria-label="Conversation">${convs.map((c) => `<option value="${esc(c.id)}" ${c.id === cid ? "selected" : ""}>${esc(c.title || c.id)}</option>`).join("")}</select>
         <span id="agent-pill"></span>
-        <div class="end"><a class="rv-btn ghost" href="${esc(conv.url)}" target="_blank" rel="noopener">Reply in OpenHands ↗</a></div>
+        <div class="end"><span id="agent-ctl"></span><a class="rv-btn ghost" href="${esc(conv.url)}" target="_blank" rel="noopener" title="The same conversation in the OpenHands UI">OpenHands ↗</a></div>
       </div>
       <div class="rv-toolbar pad"><div id="agent-chips" class="rv-chipset" role="group" aria-label="Show"></div></div>
-      <div id="agent-stream" class="rv-stream"><div class="rv-empty">Loading…</div></div>
-      <button id="agent-jump" class="rv-btn rv-jump" hidden>Latest ↓</button>
-      <p class="rv-list-note">This view is read-only and refreshes by itself. To send a message, pause or resume, use the OpenHands UI.</p>
+      <div class="rv-stream-wrap"><div id="agent-stream" class="rv-stream"><div class="rv-empty">Loading…</div></div>
+        <button id="agent-jump" class="rv-btn rv-jump" hidden>Latest ↓</button></div>
+      <form id="agent-form" class="rv-composer">
+        ${halted ? `<p class="err">${esc(eng)} is halted: resume the engagement to talk to the planner.</p>` : ""}
+        <textarea id="agent-msg" class="rv-input" rows="2" maxlength="20000" aria-label="Message to the planner" placeholder="Message the planner. Enter sends, Shift+Enter adds a line." ${halted ? "disabled" : ""}></textarea>
+        <div class="row"><div class="rv-chipset" role="group" aria-label="Starters">${AGENT_STARTERS.map(([name], i) => `<button type="button" class="rv-chip" data-starter="${i}" ${halted ? "disabled" : ""}>${esc(name)}</button>`).join("")}</div>
+          <div class="send"><button id="agent-send" type="submit" class="rv-btn accent" ${halted ? "disabled" : ""}>Send</button></div></div>
+      </form>
     </div>
     <div id="agent-rail" class="rv-agent-rail"></div>
   </div>`;
   // A chat log, not a long page: the section fills the window below the engagement bar, the conversation scrolls
   // inside its own panel and the page stays where it is. The crumbs already say "Agent", so the page title goes.
   $(".rv-sec-title").hidden = true;
-  const box = $("#agent-stream"), jump = $("#agent-jump");
+  const box = $("#agent-stream"), jump = $("#agent-jump"), msg = $("#agent-msg");
+  state.agentDraft = state.agentDraft || {};   // what the operator was typing survives the page drawing itself again
+  msg.value = state.agentDraft[cid] || "";
   const fit = () => { const el = $(".rv-agent"); if (el) el.style.setProperty("--agent-h", Math.max(420, innerHeight - (el.getBoundingClientRect().top + scrollY) - 32) + "px"); };
   state.agentFit = fit; fit(); window.scrollTo(0, 0);
   const atEnd = () => box.scrollHeight - box.scrollTop - box.clientHeight < 120;
   const toEnd = () => { box.scrollTop = box.scrollHeight; jump.hidden = true; };
-  let view = null, rev = "", problem = "";
+  let view = null, rev = "", problem = "", timer = 0, busy = false, again = false, follow = false;
   const drawRail = () => {
     if (!view) return;
     const [label, cls] = AGENT_STATUS[view.status] || [human(view.status || "unknown"), "closed"];
+    $("#agent-ctl").innerHTML = view.status === "running" ? `<button class="rv-btn" data-do="pause">Pause</button>`
+      : ["paused", "error", "stuck"].includes(view.status) && !halted ? `<button class="rv-btn" data-do="resume">Resume</button>` : "";
     $("#agent-pill").innerHTML = `<span class="rv-pill ${cls}">${view.status === "running" ? `<span class="rv-progress-dot"></span>` : `<span class="rv-dot"></span>`}${esc(label)}</span>`;
     const waiting = (state.overview?.approvals || []).filter((a) => a.engagement === eng);
     const found = view.items.filter((i) => i.finding).map((i) => i.finding), started = utc(view.created), upd = utc(view.updated);
@@ -1935,22 +1949,50 @@ async function paneAgent() {
     $("#agent-stream").innerHTML = agentStream(view.items.filter(f[2]), open, d.findings);
     drawRail();
   };
+  // one load at a time; a load asked for meanwhile (after sending) runs right after it
   const load = async () => {
+    if (busy) { again = true; return; }
+    busy = true; clearTimeout(timer);
     try {
       const r = await api(`/api/eng/${enc(eng)}/agent?id=${enc(cid)}${rev ? "&rev=" + rev : ""}`);
       if (!active()) return;
       problem = "";
       if (!r.unchanged) {
-        const follow = !view || atEnd();   // open at the latest message; keep following only while the reader is there
-        view = r; rev = r.rev; draw();
-        if (follow) toEnd(); else jump.hidden = false;
+        const stay = follow || !view || atEnd();   // open at the latest message; keep following only while the reader is there
+        view = r; rev = r.rev; follow = false; draw();
+        if (stay) toEnd(); else jump.hidden = false;
       } else drawRail();
     } catch (e) {
       if (!active()) return;
       if (view) { problem = e.message; drawRail(); } else $("#agent-stream").innerHTML = `<div class="rv-empty err">${esc(e.message)}</div>`;
-    }
-    setTimeout(() => { if (active()) load(); }, view && view.status === "running" ? 3000 : 10000);
+    } finally { busy = false; }
+    if (!active()) return;
+    if (again) { again = false; return load(); }
+    timer = setTimeout(load, view && view.status === "running" ? 3000 : 10000);
   };
+  const tell = async (btn, do_, text) => {
+    const r = await act(btn, () => api(`/api/eng/${enc(eng)}/agent`, { id: cid, do: do_, text }));
+    if (r && active()) { follow = do_ === "message"; load(); }
+    return r;
+  };
+  const send = async () => {
+    const text = msg.value.trim();
+    if (!text || halted) return;
+    msg.disabled = true;   // one message at a time: Enter twice doesn't send it twice
+    const r = await tell($("#agent-send"), "message", text);
+    if (!active()) return;
+    msg.disabled = false;
+    if (r) { msg.value = ""; delete state.agentDraft[cid]; }
+    msg.focus();
+  };
+  $("#agent-form").addEventListener("submit", (ev) => { ev.preventDefault(); send(); });
+  msg.addEventListener("keydown", (ev) => { if (ev.key === "Enter" && !ev.shiftKey && !ev.isComposing) { ev.preventDefault(); send(); } });
+  msg.addEventListener("input", () => { state.agentDraft[cid] = msg.value; });
+  $("#agent-form").addEventListener("click", (ev) => {
+    const b = ev.target.closest("[data-starter]"); if (!b) return;
+    msg.value = AGENT_STARTERS[Number(b.dataset.starter)][1]; state.agentDraft[cid] = msg.value; msg.focus();
+  });
+  $("#agent-ctl").addEventListener("click", (ev) => { const b = ev.target.closest("[data-do]"); if (b) tell(b, b.dataset.do, ""); });
   $("#agent-conv").addEventListener("change", (ev) => { state.agentConv = ev.target.value; state.agentOpen = new Set(); paneAgent(); });
   $("#agent-chips").addEventListener("click", (ev) => { const b = ev.target.closest("[data-filter]"); if (b && view) { state.agentFilter = b.dataset.filter; draw(); toEnd(); } });
   box.addEventListener("scroll", () => { jump.hidden = atEnd(); }, { passive: true });

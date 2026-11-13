@@ -1520,6 +1520,48 @@ class AgentViewTests(unittest.TestCase):
             with self.assertRaises(self.av.Fail):
                 self.av.view("e", bad)
 
+    def test_operator_talks_to_a_bound_conversation(self):
+        """Message, pause, resume: only for a bound conversation, never while halted, and each one is an audit event."""
+        av, conv = self.av, self.av.conversations
+        cid, calls, state = "406edb5b-f6a8-4d9f-94f5-65006ca86c05", [], {"halted": False, "busy": False}
+
+        def api(method, path, body=None, timeout=30):
+            calls.append((method, path, body))
+            if state["busy"] and path.endswith("/events"):
+                raise conv.Fail("OpenHands API POST /events: HTTP 429 busy")
+            return {}
+        saved = conv.api, conv.ctl, conv.bound
+        conv.api = api
+        conv.ctl = lambda actor, *a: json.dumps({"halted": state["halted"], "rules": {}})
+        conv.bound = lambda eng, actor="x": [{"id": cid}] if eng == "e" else []
+        try:
+            ev = av.act("e", cid, "message", "  run it again  ", "console:alice")
+            self.assertEqual(ev, {"event": "conversation-message", "actor": "console:alice", "target": cid, "count": 12})
+            self.assertEqual(calls[-1], ("POST", f"/api/conversations/{cid}/events", {
+                "role": "user", "content": [{"type": "text", "text": "run it again"}], "run": True}))
+            self.assertEqual(av.act("e", cid, "pause", "", "console:alice")["event"], "conversation-paused")
+            self.assertEqual(calls[-1][1], f"/api/conversations/{cid}/pause")
+            self.assertEqual(av.act("e", cid, "resume", "", "console:alice")["event"], "conversation-resumed")
+            self.assertEqual(calls[-1][1], f"/api/conversations/{cid}/run")
+            state["busy"] = True     # OpenHands kept the message but refused to start: start it, don't send it twice
+            av.act("e", cid, "message", "again", "console:alice")
+            self.assertEqual([c[1].rsplit("/", 1)[1] for c in calls[-2:]], ["events", "run"])
+            state["busy"], n = False, len(calls)
+            for args in (("other", cid, "message", "hi"), ("e", cid, "message", "   "), ("e", cid, "delete", ""),
+                         ("e", "../x", "pause", ""), ("e", cid, "message", "x" * (av.MESSAGE_CHARS + 1))):
+                with self.assertRaises(av.Fail):
+                    av.act(*args, "console:alice")
+            state["halted"] = True
+            for do in ("message", "resume"):
+                with self.assertRaisesRegex(av.Fail, "halted"):
+                    av.act("e", cid, do, "hi", "console:alice")
+            self.assertEqual(len(calls), n)                      # none of the refused ones reached OpenHands
+            av.act("e", cid, "pause", "", "console:alice")       # pausing a halted engagement's conversation is fine
+            for name in ("conversation-message", "conversation-paused", "conversation-resumed"):
+                self.assertIn(name, core.RECORDABLE)             # the console adds them to the audit log (rvctl record)
+        finally:
+            conv.api, conv.ctl, conv.bound = saved
+
 
 class FailureMining(unittest.TestCase):
     """Failure records and their causes (evals/failures.py), with no model and no stack."""

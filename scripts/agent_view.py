@@ -1,10 +1,11 @@
-"""The planner's conversation as the console's Agent section shows it. Host only, read-only.
+"""The planner's conversation as the console's Agent section shows it. Host only.
 
 Reads the events of a conversation bound to an engagement from the local OpenHands API and turns them into the
 items the page renders: the operator's and the planner's messages, and one step per tool call with what kind of
 call it was, its tier, its result, whether the kit refused it or asked for an approval, the evidence files it
 recorded and the finding it created. Secrets are redacted the same way as in evidence previews and the report.
-Nothing here writes to OpenHands or to the engagement.
+act() is the operator's side of the conversation: send a message, pause, resume. Both only for a conversation
+bound to the engagement.
 
   python3 scripts/agent_view.py <eng> <conversation id>     the view as JSON
 """
@@ -210,11 +211,11 @@ def events(cid):
         return list(c["events"]), c["cut"]
 
 
-def is_bound(eng, cid, actor):
+def is_bound(eng, cid, actor, fresh=False):
     """Only a conversation bound to the engagement is shown under it (the binding is in kali-mcp's control volume)."""
     with _lock:
         at, ids = _bound.get(eng, (0, set()))
-    if time.time() - at > 10 or cid not in ids:
+    if fresh or time.time() - at > 10 or cid not in ids:
         ids = {c["id"] for c in conversations.bound(eng, actor)}
         with _lock:
             _bound[eng] = (time.time(), ids)
@@ -236,6 +237,33 @@ def view(eng, cid, actor="cli:host", rev=""):
     if rev and rev == out["rev"]:
         return {"id": cid, "rev": rev, "unchanged": True}
     return out
+
+
+MESSAGE_CHARS = 20000
+
+
+def act(eng, cid, do, text="", actor="cli:host"):
+    """The operator talks to a bound conversation: do is "message" (with text), "pause" or "resume"."""
+    if not CID_RX.match(cid or ""):
+        raise Fail("invalid conversation id")
+    if do not in ("message", "pause", "resume"):
+        raise Fail("do: message, pause or resume")
+    text = (text or "").strip()
+    if do == "message" and not text:
+        raise Fail("the message is empty")
+    if len(text) > MESSAGE_CHARS:
+        raise Fail(f"message: at most {MESSAGE_CHARS} characters")
+    if not is_bound(eng, cid, actor, fresh=True):   # checked now, not from the cache: it may just have been unbound
+        raise Fail(f"this conversation is not bound to {eng}")
+    if do == "message":
+        conversations.send(eng, cid, text, actor)
+    elif do == "pause":
+        conversations.pause_one(cid)
+    else:
+        conversations.resume(eng, cid, actor)
+    return {"event": {"message": "conversation-message", "pause": "conversation-paused",
+                      "resume": "conversation-resumed"}[do], "actor": actor, "target": cid.lower(),
+            **({"count": len(text)} if do == "message" else {})}
 
 
 if __name__ == "__main__":

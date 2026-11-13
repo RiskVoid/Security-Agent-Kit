@@ -7,6 +7,9 @@ module creates the conversation through the local OpenHands API and pauses bound
   python3 scripts/conversations.py new <eng> [--message <text>] [--actor console:<name>]
   python3 scripts/conversations.py list <eng>         bound conversations with their OpenHands status (JSON)
   python3 scripts/conversations.py pause <eng>        pause every bound conversation (after a halt)
+
+The console's Agent section also sends a message to one bound conversation, pauses it and resumes it (send,
+pause_one, resume): a halted engagement takes no message and doesn't resume.
 """
 import json, os, re, subprocess, sys, urllib.error, urllib.request
 
@@ -127,6 +130,32 @@ def pause(eng, actor="cli:host"):
         except Fail as e:
             out.append({"id": c["id"], "paused": False, "error": str(e)})
     return out
+
+
+def _not_halted(eng, actor):
+    if json.loads(ctl(actor, "show", eng)).get("halted"):
+        raise Fail(f"{eng} is halted: resume it first")
+
+
+def send(eng, cid, text, actor="cli:host"):
+    """A message from the operator to a bound conversation; the planner starts on it if it isn't running."""
+    _not_halted(eng, actor)
+    try:
+        api("POST", f"/api/conversations/{cid}/events",
+            {"role": "user", "content": [{"type": "text", "text": text}], "run": True})
+    except Fail as e:
+        if "HTTP 429" not in str(e):
+            raise
+        api("POST", f"/api/conversations/{cid}/run")   # OpenHands saved the message; only the start was refused
+
+
+def pause_one(cid):
+    api("POST", f"/api/conversations/{cid}/pause", timeout=10)
+
+
+def resume(eng, cid, actor="cli:host"):
+    _not_halted(eng, actor)
+    api("POST", f"/api/conversations/{cid}/run", timeout=10)
 
 
 def main(a):

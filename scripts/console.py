@@ -633,6 +633,28 @@ def api_post(path, body):
                 return conversations.new(eng, ACTOR, msg)
             except conversations.Fail as e:
                 raise Fail(str(e), 502)
+        if action == "agent":  # the operator talks to a bound conversation: a message, pause, resume
+            cid, do, text = field(body, "id", str, ""), field(body, "do", str, ""), field(body, "text", str, "")
+            if not agent_view.CID_RX.match(cid):
+                raise Fail("invalid conversation id")
+            if do not in ("message", "pause", "resume"):
+                raise Fail("do: message, pause or resume")
+            if do == "message" and not text.strip():
+                raise Fail("the message is empty")
+            if len(text) > agent_view.MESSAGE_CHARS:
+                raise Fail(f"message: at most {agent_view.MESSAGE_CHARS} characters")
+            try:
+                event = agent_view.act(eng, cid, do, text, ACTOR)
+            except conversations.Fail as e:
+                msg = str(e)
+                raise Fail(msg, 404 if "not bound" in msg else 409 if "is halted" in msg else 502)
+            try:  # who said what to the agent is in the conversation; that it happened, and who, is in the audit log
+                ctl("record", eng, stdin=json.dumps(event))
+            except Fail as e:  # an older kali-mcp image doesn't know these events yet
+                why = "the kali-mcp image is older than this console; run ./rvkit update" \
+                    if "event must be one of" in str(e) else str(e)
+                return {"ok": True, "warning": f"Done, but not added to the audit log: {why}"}
+            return {"ok": True}
         if action == "unbind":
             cid = field(body, "id", str, "")
             if not re.fullmatch(r"[0-9a-fA-F-]{8,64}", cid):

@@ -646,7 +646,7 @@ label.rv-dl-row:hover { background: var(--rv-bg-2); }
 .rv-kit-doc b { font-size: 13px; font-weight: 500; color: var(--rv-text-0); }
 .rv-kit-doc code { color: var(--rv-text-1); overflow-wrap: anywhere; }
 
-/* ---------------------------------------------------------------- agent: a bound conversation (read-only)
+/* ---------------------------------------------------------------- agent: a bound conversation
    The stream is turns (the operator, the planner); a turn holds text, then its tool calls as steps, then what they
    produced. A step is one line closed and shows the call and its output open.
    A chat log, not a long page: the section is as tall as the window allows (--agent-h, set by the page), the stream
@@ -655,7 +655,7 @@ label.rv-dl-row:hover { background: var(--rv-bg-2); }
 .rv-agent > .rv-card { position: relative; display: flex; flex-direction: column; min-height: 0; overflow: hidden; }
 .rv-agent > .rv-card > * { flex-shrink: 0; }
 .rv-agent-rail { display: grid; gap: 12px; align-content: start; min-height: 0; overflow-y: auto; }
-.rv-jump { position: absolute; right: 20px; bottom: 54px; z-index: 2; height: var(--rv-control-sm); padding: 0 10px; font-size: 12.5px; background: var(--rv-bg-3); border-color: var(--rv-border-strong); }
+.rv-jump { position: absolute; right: 20px; bottom: 12px; z-index: 2; height: var(--rv-control-sm); padding: 0 10px; font-size: 12.5px; background: var(--rv-bg-3); border-color: var(--rv-border-strong); }
 @media (max-width: 1180px) {
   .rv-agent { grid-template-columns: 1fr; height: auto; }
   .rv-agent > .rv-card { height: var(--agent-h, 70vh); min-height: 420px; }
@@ -667,7 +667,18 @@ label.rv-dl-row:hover { background: var(--rv-bg-2); }
 .rv-conv-head .end { margin-left: auto; display: flex; align-items: center; gap: 8px; }
 .rv-conv-head .rv-btn { height: var(--rv-control); padding: 0 12px; font-size: 13px; }
 
-.rv-agent .rv-stream { flex: 1 1 0; min-height: 0; overflow-y: auto; overscroll-behavior: contain; }
+.rv-agent .rv-stream-wrap { position: relative; flex: 1 1 0; min-height: 0; }
+.rv-agent .rv-stream { height: 100%; overflow-y: auto; overscroll-behavior: contain; }
+
+/* the composer under the stream: a message field, starters that fill it, Send */
+.rv-composer { margin: 0; padding: 12px 20px 14px; border-top: 1px solid var(--rv-border); display: grid; gap: 10px; }
+.rv-composer textarea.rv-input { font-family: var(--sans); font-size: 13.5px; line-height: 1.5; resize: none; min-height: 60px; }
+.rv-composer .row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.rv-composer .rv-chip { height: var(--rv-control-sm); font-size: 12px; padding: 0 10px; }
+.rv-composer .rv-chip:disabled { opacity: 0.45; cursor: default; }
+.rv-composer .send { margin-left: auto; }
+.rv-composer .rv-btn { height: var(--rv-control); padding: 0 14px; font-size: 13px; }
+.rv-composer .err { font-size: 12.5px; }
 .rv-turn { padding: 18px 20px; border-top: 1px solid var(--rv-border-subtle); display: grid; gap: 12px; min-width: 0; }
 .rv-turn:first-child { border-top: 0; }
 .rv-turn-head { display: flex; align-items: center; gap: 10px; }
@@ -724,7 +735,6 @@ label.rv-dl-row:hover { background: var(--rv-bg-2); }
 .rv-rail-find .mark { width: 8px; height: 8px; border-radius: 2px; background: currentColor; }
 .rv-rail-find .mono { font-size: 11.5px; color: var(--rv-text-2); }
 .rv-rail-find span:last-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--rv-text-1); }
-.rv-agent .rv-card > .rv-list-note { margin: 0; padding: 10px 20px; }
 .rv-agent-rail .rv-kv { gap: 8px 16px; }
 
 /* failures: causes with their records */
