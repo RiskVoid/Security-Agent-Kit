@@ -99,7 +99,7 @@ function crumbs(parts) {
 }
 function show(view) {
   state.view = view;
-  for (const v of ["engagements", "approvals", "status", "models", "kit"]) $(`#view-${v}`).hidden = v !== view;
+  for (const v of ["engagements", "approvals", "status", "models", "failures", "kit"]) $(`#view-${v}`).hidden = v !== view;
   $$(".rv-sidebar-item[data-view]").forEach((a) => a.classList.toggle("active", a.dataset.view === view));
   document.body.classList.remove("nav-open");
   if (stream.es) connectStream();  // the live topic only while an engagement's Live tab shows
@@ -111,13 +111,14 @@ function show(view) {
   if (view === "status") { crumbs([["Console", "#engagements"], ["Stack status"]]); loadStatus(); }
   else if (view === "kit") { crumbs([["Console", "#engagements"], ["UI kit"]]); renderKit(); }
   else if (view === "models") { crumbs([["Console", "#engagements"], ["Model log"]]); loadModels(); }
+  else if (view === "failures") { crumbs([["Console", "#engagements"], ["Failures"]]); loadFailures(); }
   else if (view === "approvals") crumbs([["Console", "#engagements"], ["Approvals"]]);
   else crumbs(open ? [["Console", "#engagements"], ["Home", "#engagements"], [state.current, `#eng-${state.current}/overview`], [TABS[state.tab]]] : [["Console", "#engagements"], ["Home"]]);
 }
 // #engagements is the list; #eng-NAME/section is one section of one engagement, so sections can be linked and Back works
 function route() {
   const h = location.hash.replace("#", "");
-  if (h === "approvals" || h === "status" || h === "models" || h === "kit") return show(h);
+  if (h === "approvals" || h === "status" || h === "models" || h === "failures" || h === "kit") return show(h);
   if (h.startsWith("eng-")) {
     const [name, sec, sub] = h.slice(4).split("/"), tab = TABS[sec] ? sec : "overview";
     // #eng-NAME/agent/<conversation id> opens that conversation in the Agent section
@@ -1690,6 +1691,104 @@ async function paneModels() {
     modelList($("#models-eng"), r.events, false, state.modelEngView);
   } catch (e) { $("#models-eng").innerHTML = `<div class="rv-empty err">${esc(e.message)}</div>`; }
 }
+
+// ---------------------------------------------------------------- failures (evals/failures.py)
+// What went wrong, grouped by cause: in engagements (ids, counts and causes only: no titles, commands or hosts) and in
+// benchmark runs (the kit's own targets, with the finding, the tool call and its message). A cause is built from fixed
+// rules, so it can be counted across runs.
+const FAIL_HINT = {
+  engagements: "What went wrong while the agent worked on your engagements, grouped by cause: decisions you overruled, approvals you denied, refused and failed commands, worker tasks and model calls. Only ids, counts and causes are kept; <b>Details</b> reads the commands, findings and tasks behind a cause from the engagement itself. <b>Collect now</b> reads every engagement again.",
+  bench: "What went wrong in benchmark runs, grouped by cause: expected findings the agent missed and how far it got, findings without proof, unexpected ones, and tool calls that were refused or failed. The stage of a missed finding comes from keyword matches, so check it in the details.",
+};
+const failDay = (ts) => (ts ? esc(String(ts).slice(0, 10)) : `<span class="rv-dim">unknown</span>`);
+function failRecord(r, bench) {
+  const n = (r.n || 1) > 1 ? ` <span class="rv-dim mono">x${r.n}</span>` : "";
+  const detail = Object.entries(r.detail || {}).map(([k, v]) => `<span class="rv-fail-kv"><span class="rv-dim">${esc(k)}</span> <span class="mono">${esc(typeof v === "string" ? v : JSON.stringify(v))}</span></span>`).join("");
+  return `<div class="rv-fail-rec"><p><b class="mono">${esc(r.run)}</b>${r.subject ? ` <span class="mono">${esc(r.subject)}</span>` : ""}${n}
+    <span class="rv-dim">run ended ${esc(r.ended || "unknown")} · planner ${esc(String(r.planner || "unknown").replace(/^openrouter\//, ""))} · worker ${esc(String(r.worker || "unknown").replace(/^openrouter\//, ""))} · prompt ${esc(r.prompt || "unknown")}</span></p>${detail}</div>`;
+}
+// Engagement records hold ids and counts only, so the details of a cause are read from each engagement when it is opened
+// (/api/failures/detail): the commands, requests, findings and tasks behind it, newest first. All of it through esc().
+function failEvents(d) {
+  if (!d.items.length) return `<p class="rv-dim">Nothing behind this cause in the engagement now: collect again to update the counts.</p>`;
+  return `<div class="rv-fail-events">${d.items.map((i) => `<div class="rv-fail-event"><span class="rv-dim mono">${i.at ? fmtTime(i.at) : ""}</span>
+    <span><span class="mono">${esc(i.what || "")}</span>${i.tier ? ` ${tag(i.tier, i.tier === "intrusive" ? "intrusive" : i.tier === "active" ? "active-tier" : "")}` : ""}<small>${esc(i.why || "")}</small></span></div>`).join("")}</div>
+    ${d.cut ? `<p class="rv-dim">${d.cut} older one${d.cut === 1 ? "" : "s"} not shown.</p>` : ""}`;
+}
+async function failDetails(box, g, view) {
+  const cache = (view.cache = view.cache || {});
+  for (const eng of [...new Set(g.records.map((r) => r.engagement))]) {
+    const slot = box.querySelector(`[data-fdetail="${CSS.escape(eng)}"]`), key = `${eng}\n${g.cause}`;
+    if (!slot) continue;
+    try { cache[key] = cache[key] || await api(`/api/failures/detail?eng=${enc(eng)}&cause=${enc(g.cause)}`); }
+    catch (e) { if (view.open === g.cause && slot.isConnected) slot.innerHTML = `<p class="rv-dim">${esc(e.message)}</p>`; continue; }
+    if (view.open === g.cause && slot.isConnected) slot.innerHTML = failEvents(cache[key]);
+  }
+}
+function failList(box, data, view) {
+  const bench = data.source === "bench", unit = bench ? "runs" : "engagements";
+  const kpi = (label, value, note) => `<div class="rv-kpi ${value ? "" : "zero"}"><span class="rv-label">${label}</span><span class="rv-value">${value}</span><span class="rv-delta">${note}</span></div>`;
+  const count = (k) => data.groups.filter((g) => k === "all" || g.kind === k).length;
+  const cols = "96px minmax(240px, 1.6fr) 76px 56px 96px minmax(140px, 1fr) 84px";
+  // "tool/kali_run/refused: targets not in scope" reads as kind Tool, cause "Refused: targets not in scope", on kali_run
+  const parts = (g) => {
+    let rest = g.cause.slice(g.kind.length + 1), on = "";
+    if (g.kind === "tool" || g.kind === "retry") { const i = rest.indexOf("/"); on = rest.slice(0, i); rest = rest.slice(i + 1); }
+    else if (g.kind === "model") { const i = rest.lastIndexOf("/"); on = rest.slice(i + 1); rest = rest.slice(0, i); }
+    return [/[: ]/.test(rest) ? rest[0].toUpperCase() + rest.slice(1) : human(rest), on];
+  };
+  const where = (g) => g.subjects.map(([s, n]) => s + (n > 1 ? ` x${n}` : "")).join(", ") + (g.more ? `, and ${g.more} more` : "");
+  const fill = () => {
+    if (!data.runs) { box.innerHTML = `<div class="rv-empty">${bench ? "No benchmark run recorded yet. Run one with <span class=\"mono\">./rvkit bench &lt;name&gt;</span>, or derive the records of saved runs with <span class=\"mono\">./rvkit bench --failures --rebuild</span>." : "No engagement collected yet. <b>Collect now</b> reads every engagement."}</div>`; return; }
+    const k = view.kind && count(view.kind) ? view.kind : "all", rows = data.groups.filter((g) => k === "all" || g.kind === k);
+    const [page, from, pages, p] = pageOf(rows, view.page || 0);
+    view.page = p;
+    box.innerHTML = `<div class="rv-card-body"><div class="rv-kpi-grid">
+        ${kpi(bench ? "Runs" : "Engagements", data.runs, bench ? `${data.names.length} benchmark${data.names.length === 1 ? "" : "s"}` : "collected")}
+        ${kpi("Failure records", data.records, `in ${data.runs - data.clean} ${unit}`)}
+        ${kpi("Causes", data.groups.length, "distinct")}
+        ${kpi("Without failures", data.clean, unit)}
+      </div></div>
+      <div class="rv-toolbar pad"><div class="rv-chipset" role="group" aria-label="Kind">${["all", ...data.kinds].map((x) => `<button class="rv-chip ${x === k ? "active" : ""}" aria-pressed="${x === k}" data-fkind="${esc(x)}">${x === "all" ? "All" : esc(human(x))} <span class="count">${count(x)}</span></button>`).join("")}</div></div>
+      ${rows.length ? `<div class="rv-dl" style="--cols:${cols};--minw:940px"><div class="rv-dl-in">
+        <div class="rv-dl-head"><span>Kind</span><span>Cause</span><span>Seen in</span><span>Count</span><span>Last seen</span><span>Where</span><span></span></div>
+        ${page.map((g) => { const open = view.open === g.cause, [cause, on] = parts(g);
+          return `<div class="rv-dl-row ${open ? "open" : ""}"><span class="rv-fail-kind">${esc(human(g.kind))}</span>
+            <span class="rv-fail-cause" title="${esc(g.cause)}"><b>${esc(cause)}</b>${on ? ` <span class="rv-dim mono">${esc(on)}</span>` : ""}</span>
+            <span>${g.runs} of ${data.runs}</span><span>${g.count}</span><span>${failDay(g.last)}</span>
+            <span class="rv-fail-where" title="${esc(where(g))}">${esc(where(g))}</span>
+            <span class="acts"><button class="rv-btn ${open ? "" : "ghost"}" data-fopen="${esc(g.cause)}" aria-expanded="${open}">${open ? "Hide" : "Details"}</button></span></div>
+            ${!open ? "" : bench ? `<div class="rv-dl-detail">${g.records.map((r) => failRecord(r, bench)).join("")}${g.cut ? `<p class="rv-dim">${g.cut} older record${g.cut === 1 ? "" : "s"} not shown.</p>` : ""}</div>`
+              : `<div class="rv-dl-detail">${[...new Set(g.records.map((r) => r.engagement))].map((eng) => `<div class="rv-fail-rec"><p><a href="#eng-${esc(eng)}/audit"><b>${esc(eng)}</b></a> <span class="rv-dim">read from the engagement now</span></p><div data-fdetail="${esc(eng)}"><p class="rv-dim">Loading…</p></div></div>`).join("")}</div>`}`; }).join("")}
+      </div></div>${pagerHtml(from, page.length, rows.length, p, pages)}` : `<div class="rv-empty">No failures recorded.</div>`}`;
+    const opened = !bench && page.find((g) => g.cause === view.open);
+    if (opened) failDetails(box, opened, view);
+    box.querySelectorAll("[data-fkind]").forEach((b) => b.addEventListener("click", () => { view.kind = b.dataset.fkind; view.page = 0; view.open = null; fill(); }));
+    box.querySelectorAll("[data-fopen]").forEach((b) => b.addEventListener("click", () => { view.open = view.open === b.dataset.fopen ? null : b.dataset.fopen; fill(); }));
+    box.querySelectorAll("[data-page]").forEach((b) => b.addEventListener("click", () => { view.page += Number(b.dataset.page); view.open = null; fill(); }));
+  };
+  fill();
+}
+async function loadFailures() {
+  const view = (state.failView = state.failView || { source: "engagements" }), out = $("#fail-out");
+  $$("[data-fsrc]").forEach((b) => { b.classList.toggle("active", b.dataset.fsrc === view.source); b.setAttribute("aria-pressed", b.dataset.fsrc === view.source); });
+  $("#fail-hint").innerHTML = FAIL_HINT[view.source];
+  $("#fail-collect").hidden = view.source !== "engagements";
+  try {
+    const data = await api(`/api/failures?source=${enc(view.source)}`);
+    if (state.failView.source !== data.source) return;   // the other source was picked meanwhile
+    failList(out, data, view);
+  } catch (e) { out.innerHTML = `<div class="rv-empty err">${esc(e.message)}</div>`; }
+}
+$$("[data-fsrc]").forEach((b) => b.addEventListener("click", () => { state.failView = { source: b.dataset.fsrc }; loadFailures(); }));
+$("#fail-collect").addEventListener("click", async () => {
+  const b = $("#fail-collect");
+  b.disabled = true; b.textContent = "Collecting…";
+  try { const r = await api("/api/failures/collect", {}); toast(`Collected ${r.collected} engagement${r.collected === 1 ? "" : "s"}.`); }
+  catch (e) { toast(e.message, true); }
+  b.disabled = false; b.textContent = "Collect now";
+  loadFailures();
+});
 
 // ---------------------------------------------------------------- agent (the planner's conversation)
 // A conversation bound to the engagement, from /api/eng/<eng>/agent as typed items (scripts/agent_view.py): messages

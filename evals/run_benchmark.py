@@ -3,6 +3,7 @@
   python3 evals/run_benchmark.py <name|all> [--agent riskvoid-planner|riskvoid-local] [--repeat N] [--budget USD]
   python3 evals/run_benchmark.py --history            compare past runs
   python3 evals/run_benchmark.py --score <name> <bench-engagement>   score an existing engagement, no model
+  python3 evals/run_benchmark.py --failures [...]     what went wrong in past runs, grouped by cause (failures.py)
   (or ./rvkit bench ...)
 
 Benchmarks are evals/benchmarks/<name>.json: a target (code fixture in evals/targets/, or a lab host), the rules
@@ -31,6 +32,8 @@ of engagement, a task, and the expected findings. Each run:
      run's data in evals/results/bench/<name>-<UTC>/: the engagement folder (findings database, evidence, report
      revisions with their frozen inputs) as engagement.tar.gz and the whole conversation as conversation.json, so
      reports can be rebuilt from them later (the next run of the same benchmark resets the engagement)
+  6. adds the run's failures (missed and weakly proven findings, unexpected ones, refused and failed tool calls,
+     early stops) to evals/results/bench/failures.jsonl, each with a cause: see evals/failures.py
 --budget caps the spend of each run below the benchmark's own cap. The harness pauses the conversation when the
 OpenRouter usage of the key since the start of the run passes the cap (planner, fallback and worker together).
 Cost is measured from your OpenRouter key's usage: don't use the key for anything else during a run.
@@ -569,6 +572,11 @@ def run_one(name, agent, log=print, group=None, budget=None):
                                                 "confirmed", "strict_recall")}
                            | {"clean_violations": len(s["clean_violations"]), "group": group,
                               "commit": res["provenance"]["commit"]}) + "\n")
+    try:   # failure mining (evals/failures.py): a problem there must not cost the result
+        import failures
+        res["failures"] = len(failures.record(os.path.join(OUT, f"{name}-{now:%Y%m%dT%H%M%SZ}.json")))
+    except Exception as e:
+        log(f"  (failures not recorded: {e})")
     log(f"  status {run['status']} in {run['seconds'] // 60} min, cost "
         f"{'$%.2f' % res['cost_usd'] if res['cost_usd'] is not None else 'n/a'}, "
         f"recall {s['found']}/{s['expected']} (weighted {s['weighted_recall']:.0%}, with evidence "
@@ -586,6 +594,8 @@ def run_one(name, agent, log=print, group=None, budget=None):
         log(f"    + {u['id']} {u['title'][:70]}: real, outside the expected list ({u['as']})")
     for u in s["unmatched_findings"]:
         log(f"    ? {u['id']} {u['title'][:70]} ({u['severity']}, {u['cwe']}): not in the expected list, review")
+    if res.get("failures"):
+        log(f"  {res['failures']} failure record(s) kept: ./rvkit bench --failures")
     return res
 
 
@@ -609,6 +619,9 @@ def main(argv):
     if argv[0] == "--history":
         history()
         return 0
+    if argv[0] == "--failures":  # what went wrong in past runs, grouped by cause (evals/failures.py)
+        import failures
+        return failures.main(argv[1:])
     if argv[0] == "--score":  # score an existing benchmark engagement, without running a model
         if len(argv) < 3 or not argv[2].startswith("bench-"):
             print("usage: --score <benchmark> <bench-engagement>  (benchmark engagements only)")

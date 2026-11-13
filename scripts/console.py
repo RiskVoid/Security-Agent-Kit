@@ -24,6 +24,8 @@ import conversations  # noqa: E402  (OpenHands conversations bound to engagement
 import agent_view  # noqa: E402  (a bound conversation as the Agent section shows it)
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "litellm"))
 import rv_routes  # noqa: E402  (where each model route sends data)
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "evals"))
+import failures  # noqa: E402  (what went wrong in engagements and benchmark runs, grouped by cause)
 
 KIT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 HERE = os.path.join(KIT, "scripts", "console")
@@ -433,6 +435,14 @@ def api_get(path, q):
         raw = (q.get("since") or ["604800"])[0]
         since = min(max(int(raw) if raw.isdigit() else 604800, 60), 30 * 86400)
         return {"events": model_events.recent(since, engagement=eng)[:300]}
+    if path == "/api/failures":  # failure records by cause: engagements (ids and causes only) or benchmark runs
+        bench = (q.get("source") or ["engagements"])[0] == "bench"
+        return failures.overview(failures.load(failures.STORE if bench else failures.ENG_STORE), engagements=not bench)
+    if path == "/api/failures/detail":  # what is behind one cause in one engagement, read from the engagement now
+        eng, cause = (q.get("eng") or [""])[0], (q.get("cause") or [""])[0]
+        if not NAME_RX.match(eng) or not os.path.isdir(eng_path(eng)) or not cause or len(cause) > 300:
+            raise Fail("bad engagement or cause")
+        return failures.engagement_details(eng, cause, ENG_DIR)
     if path == "/api/status":
         return {"text": stack_status()}
     m = re.match(r"^/api/eng/([^/]+)(?:/(\w+))?$", path)
@@ -543,6 +553,15 @@ def digest_field(body):
 
 
 def api_post(path, body):
+    if path == "/api/failures/collect":  # read every engagement again (not a benchmark's): replaces its records
+        notes, done = [], 0
+        for name in failures.engagement_names(ENG_DIR):
+            try:
+                failures.record_engagement(name, ENG_DIR, note=notes.append)
+                done += 1
+            except (SystemExit, OSError, sqlite3.Error, ValueError) as e:
+                notes.append(f"{name} not collected: {str(e)[:120]}")
+        return {"collected": done, **({"warning": "; ".join(notes[:3])} if notes else {})}
     if path == "/api/engagements":  # create
         name = field(body, "name", str, "")
         if not NAME_RX.match(name):

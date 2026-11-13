@@ -577,7 +577,7 @@ cmd_worker() {
 }
 
 # ---------------------------------------------------------------- install / completion
-COMMANDS="setup up down update console status doctor logs connect worker planner budget test key openhands new engagement eng quickstart watch scope show policy finding approvals approve deny halt resume conversation cred identity capture authz vault appmap php task audit report close delete lab bench install completion help"
+COMMANDS="setup up down update console status doctor logs connect worker planner budget test key openhands new engagement eng quickstart watch scope show policy finding approvals approve deny halt resume conversation cred identity capture authz vault appmap php task audit report close delete failures lab bench install completion help"
 ENG_SUB="list new show scope approvals approve deny halt resume audit report close delete"
 cmd_install() {
   local dir="${1:-$HOME/.local/bin}"
@@ -724,11 +724,12 @@ ${B}Engagements${N}  (also as: rvkit eng <command>)
   report <eng>                  new report revision (.html + .docx + .pdf + .xlsx) with its readiness checks
   report <eng> revisions|approve <R-id>|except <check> <why>|verify|rebuild <R-id>|export [--draft]|sent <R-id> <to> <how>
   close <eng>                   close-out: audit extract + SHA-256 manifest + archive, then halt
+  failures [eng|--all]          what went wrong in engagements, grouped by cause (ids and causes only)
   eng delete <eng> [--force]    unregister a closed engagement (frees its slot; folder kept, renamed)
 
 ${B}Practice and tests${N}
   lab up|down|status            vulnerable practice targets on an isolated network
-  bench <name|all> [--repeat N] run a benchmark (evals/benchmarks/); --history, --score
+  bench <name|all> [--repeat N] run a benchmark (evals/benchmarks/); --history, --failures, --score
                                 what is tested and measured per stack: docs/capability-baselines.md
 
 ${B}Shell${N}
@@ -963,11 +964,15 @@ for k, b in p.items(): print("%s: spent $%.4f in the current 24 h period" % (k, 
       *) die "usage: ./rvkit lab up|down|status|reset" ;;
     esac ;;
   bench)
-    need_env; [ $# -ge 1 ] || die "usage: ./rvkit bench <name|all> [--agent riskvoid-planner|riskvoid-local] [--repeat N] [--budget USD] | --history | --score <name> <bench-engagement>   (list: ls evals/benchmarks)"
+    need_env; [ $# -ge 1 ] || die "usage: ./rvkit bench <name|all> [--agent riskvoid-planner|riskvoid-local] [--repeat N] [--budget USD] | --history | --failures [--show <cause>] | --score <name> <bench-engagement>   (list: ls evals/benchmarks)"
     python3 evals/run_benchmark.py "$@" ;;
   finding)    need_env; cmd_finding "$@" ;;
   report)     need_env; cmd_report "$@" ;;
-  close)      need_env; [ $# -ge 1 ] || die "usage: ./rvkit close <engagement>"; kctl close "$1" ;;
+  close)      need_env; [ $# -ge 1 ] || die "usage: ./rvkit close <engagement>"
+              # keep what went wrong before the folder is sealed (ids and causes only; never blocks the close)
+              python3 evals/failures.py engagements "$1" >/dev/null 2>&1 || true
+              kctl close "$1" ;;
+  failures)   need_env; python3 evals/failures.py engagements "$@" ;;
   delete)
     need_env; [ $# -ge 1 ] || die "usage: ./rvkit eng delete <engagement> [--force]   (closed engagements; --force for any)"
     case " $* " in *" --force "*) yesno "Delete $1 without closing it (no archive or manifest)? Its folder is kept, renamed" n || die "not deleted" ;; esac

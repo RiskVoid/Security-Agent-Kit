@@ -36,6 +36,10 @@
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="4" y="4" width="16" height="16" rx="2"/><rect x="9" y="9" width="6" height="6"/><path d="M9 2v2M15 2v2M9 20v2M15 20v2M2 9h2M2 15h2M20 9h2M20 15h2"/></svg>
         <span>Model log</span><span id="model-badge" class="rv-count danger" hidden>0</span>
       </a>
+      <a class="rv-sidebar-item" href="#failures" data-view="failures">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 3v18h18"/><path d="m7 15 4-4 3 3 5-6"/><path d="M19 12V8h-4"/></svg>
+        <span>Failures</span>
+      </a>
     </nav>
 
     <div class="rv-side-label">Agent</div>
@@ -110,6 +114,22 @@
           </div>
           <div class="rv-card-body"><p class="hint">Model calls that failed, and calls another model answered instead, for every engagement. Each entry says what to do.</p></div>
           <div id="models-out"><div class="rv-empty">Loading…</div></div>
+        </div>
+      </section>
+
+      <section id="view-failures" class="rv-stack" hidden>
+        <div class="rv-card">
+          <div class="rv-card-head"><h3>Failures</h3>
+            <span class="rv-model-filters">
+              <span class="rv-chipset" role="group" aria-label="Source">
+                <button class="rv-chip" data-fsrc="engagements">Engagements</button>
+                <button class="rv-chip" data-fsrc="bench">Benchmarks</button>
+              </span>
+              <button id="fail-collect" class="rv-btn">Collect now</button>
+            </span>
+          </div>
+          <div class="rv-card-body"><p class="hint" id="fail-hint"></p></div>
+          <div id="fail-out"><div class="rv-empty">Loading…</div></div>
         </div>
       </section>
 
