@@ -1629,7 +1629,7 @@ class RulesPinned(unittest.TestCase):
         self.assertEqual(asyncio.run(run("id", "nope")), "exit=0 tier=active\nok")  # unknown engagement: unchanged
         with open(os.path.join(KIT, "kali-mcp", "server.py")) as f:
             src = f.read()
-        for name in ("run", "http_request", "analyze_source", "replay_request", "browse", "run_authz_matrix"):
+        for name in ("run", "http_request", "analyze_source", "replay_request", "browse", "run_authz_matrix", "verify"):
             self.assertIn(f"@with_rules\nasync def {name}(", src)
 
     def test_survives_condensation(self):
@@ -1719,6 +1719,116 @@ class QuoteCheck(unittest.TestCase):
     def test_evidence_outside_the_engagement_is_ignored(self):
         p = self.q.problems("acme", "`Internal Server Error`", "", ["/etc/passwd", "../other/evidence/x.txt"])
         self.assertEqual(len(p), 1)
+
+
+class Oracles(unittest.TestCase):
+    """Epic #52, issues #42 and #44: each oracle passes on a vulnerable case, fails on a clean one, and is
+    inconclusive when its control isn't clean. The broker (actions.send) is faked: a small in-memory app."""
+
+    def setUp(self):
+        import oracles
+        self.o = oracles
+        self.tmp = tempfile.TemporaryDirectory()
+        self.saved = (core.WORK, core._audit, core.sha256_file, core.scrub)
+        core.WORK = self.tmp.name
+        os.makedirs(os.path.join(self.tmp.name, "acme"))
+        core._audit = lambda e: self.audit.append(e)
+        core.sha256_file = lambda p: "0" * 64
+        core.scrub = lambda eng, t: t
+        self.audit, self.sent, self.notes = [], [], {1: ["rvfix-alice-1"]}
+        self.o.actions.work_dir = lambda eng, *p: os.makedirs(os.path.join(self.tmp.name, eng, *p), exist_ok=True)
+
+    def tearDown(self):
+        core.WORK, core._audit, core.sha256_file, core.scrub = self.saved
+        self.tmp.cleanup()
+
+    def send(self, eng, method, url, headers, data, approval_id=None, max_tier=None, task=None, identity=None,
+             evidence_kind="http"):
+        import urllib.parse
+        self.sent.append((method, url, identity))
+        u = urllib.parse.urlsplit(url)
+        q = urllib.parse.parse_qs(u.query)
+        if method == "POST" and not approval_id:
+            return {"approval": "ab12cd34", "text": "APPROVAL REQUIRED"}
+        body, status = "", 200
+        if u.path == "/search":
+            body = f"<p>No results for {q.get('q', [''])[0]}</p>"
+        elif u.path == "/escaped":
+            body = "<p>No results for " + q.get("q", [""])[0].replace("<", "&lt;") + "</p>"
+        elif u.path == "/static":
+            body = "<p>welcome rvstatic123</p>"
+        elif u.path in ("/api/parcels/1", "/api/me/parcels/1"):
+            if not identity:
+                body, status = "unauthorised", 401
+            elif u.path.startswith("/api/me") and identity != "alice":
+                body, status = "not yours", 403
+            else:
+                body = json.dumps({"notes": self.notes[1]})
+        elif u.path == "/api/parcels/1/notes" and method == "POST":
+            self.notes[1].append(data.decode())
+            status = 201
+        elif u.path == "/api/parcels/1/notes/fake" and method == "POST":
+            status = 201
+        n = len(self.sent)
+        return {"status": status, "body": body.encode(), "headers": [], "evidence": f"evidence/verify/{n}.txt"}
+
+    def verify(self, *a, **k):
+        return self.o.verify("acme", *a, send=self.send, **k)
+
+    def test_marker(self):
+        r = self.verify("marker", {"url": "http://t/search?q=<b>{{marker}}</b>"}, expect="<b>{{marker}}</b>")
+        self.assertEqual(r["result"], "pass", r["reason"])
+        self.assertTrue(os.path.isfile(r["record"].replace("/work", self.tmp.name)))
+        self.assertEqual(self.audit[-1]["action"], "verify")
+        clean = self.verify("marker", {"url": "http://t/escaped?q=<b>{{marker}}</b>"}, expect="<b>{{marker}}</b>")
+        self.assertEqual(clean["result"], "fail")
+        static = self.verify("marker", {"url": "http://t/static?x=1"}, marker="rvstatic123",
+                             control={"url": "http://t/static?x=2"})
+        self.assertEqual(static["result"], "inconclusive")   # the marker is there without the probe's input
+        with self.assertRaises(ValueError):
+            self.verify("marker", {"url": "http://t/static"}, marker="rvstatic123")   # no control given
+
+    def test_identity_difference(self):
+        r = self.verify("identity_difference", {"url": "http://t/api/parcels/1"}, identities=["bob", "alice"],
+                        marker="rvfix-alice-1")
+        self.assertEqual(r["result"], "pass", r["reason"])
+        self.assertEqual([x[2] for x in self.sent], ["bob", "alice", None])
+        self.assertEqual(len([s for s in r["steps"] if "control" in s["role"]]), 2)
+        clean = self.verify("identity_difference", {"url": "http://t/api/me/parcels/1"}, identities=["bob", "alice"],
+                            marker="rvfix-alice-1")
+        self.assertEqual(clean["result"], "fail")
+        wrong = self.verify("identity_difference", {"url": "http://t/api/me/parcels/1"}, identities=["bob", "carol"],
+                            marker="rvfix-alice-1")
+        self.assertEqual(wrong["result"], "inconclusive")    # the "owner" doesn't get it: the request is wrong
+
+    def test_read_back(self):
+        req = {"method": "POST", "url": "http://t/api/parcels/1/notes", "body": "{{marker}}", "identity": "bob"}
+        check = {"url": "http://t/api/parcels/1", "identity": "alice"}
+        first = self.verify("read_back", req, check=check)
+        self.assertEqual(first["result"], "approval")         # a write: the user approves it first
+        self.assertIn(f"marker='{first['marker']}'", first["text"])
+        r = self.verify("read_back", req, check=check, marker=first["marker"], approval_id="ab12cd34")
+        self.assertEqual(r["result"], "pass", r["reason"])
+        self.assertEqual(r["steps"][0]["role"], "control: check before the proof")
+        clean = self.verify("read_back", {**req, "url": "http://t/api/parcels/1/notes/fake"}, check=check,
+                            approval_id="ab12cd34")
+        self.assertEqual(clean["result"], "fail")
+
+    def test_findings_side(self):
+        import verification
+        saved = db.WORK
+        db.WORK = self.tmp.name
+        try:
+            ok = self.verify("marker", {"url": "http://t/search?q={{marker}}"})
+            bad = self.verify("marker", {"url": "http://t/escaped?q=<{{marker}}>"}, expect="<{{marker}}>")
+            self.assertIsNone(verification.problem("acme", [ok["record"]]))
+            self.assertIn("no cited verification passed", verification.problem("acme", [bad["record"]]))
+            self.assertIn("needs the verification record", verification.problem("acme", ["/work/acme/x.txt"]))
+            s = verification.summary("acme", [ok["record"] + " (reflected)"])
+            self.assertEqual((s[0]["oracle"], s[0]["result"], len(s[0]["controls"])), ("marker", "pass", 1))
+            self.assertIsNone(db.confirm_problem("oracle", [ok["record"]]))
+        finally:
+            db.WORK = saved
 
 
 class ConcurrentOpen(unittest.TestCase):

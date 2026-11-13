@@ -8,7 +8,7 @@ const esc = (v) => String(v ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "
 const enc = encodeURIComponent;
 const SEV = ["critical", "high", "medium", "low", "info"];
 const STATUSES = ["candidate", "confirmed", "false-positive", "duplicate", "fixed", "accepted-risk"];
-const METHODS = ["runtime-reproduction", "replay", "authorization-matrix", "source-review", "tool-output", "retest", "client-confirmation"];
+const METHODS = ["runtime-reproduction", "replay", "authorization-matrix", "source-review", "tool-output", "retest", "client-confirmation", "oracle"];
 const PRIORITIES = ["P1", "P2", "P3", "P4"];
 const COVERAGE = ["planned", "tested", "failed", "blocked", "excluded", "not-applicable"];
 const COV_CLASS = { tested: "ok", failed: "sev-critical", blocked: "warn", planned: "", excluded: "", "not-applicable": "" };

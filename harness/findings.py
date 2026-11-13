@@ -8,6 +8,7 @@ from mcp.server.fastmcp import FastMCP
 import findings_db as db
 import ops
 import quotecheck
+import verification
 
 ACTOR = "agent:planner"  # changes made through this server are attributed to the planner agent
 
@@ -27,13 +28,15 @@ def record_finding(engagement: str, title: str, severity: str, asset: str, descr
                    status: str = "candidate", notes: str = "", method: str = "") -> str:
     """Record a finding for an engagement. severity: critical|high|medium|low|info.
     status: candidate (default, not yet verified) or confirmed (you have reproduced or verified it).
-    status=confirmed needs method = how you verified it (runtime-reproduction, replay, authorization-matrix,
-    source-review, tool-output, retest). runtime-reproduction, replay, authorization-matrix and tool-output also
+    status=confirmed needs method = how you verified it (oracle, runtime-reproduction, replay, authorization-matrix,
+    source-review, tool-output, retest). oracle: cite the evidence/verify/ record of a kali verify run that passed
+    with a clean control (the strongest method; prefer it when an oracle fits). runtime-reproduction, replay, authorization-matrix and tool-output also
     need the evidence file that shows it. Text in backticks or code blocks (other than commands) is a quote:
     confirming is refused when a quote isn't in the cited evidence, or a /src/<file>:<line> doesn't exist.
     evidence: file paths under /work/<engagement>/evidence/. Returns the stored finding with its id (F-001...)."""
     if status == "confirmed":
         problem = db.confirm_problem(method, evidence) or \
+            (verification.problem(engagement, evidence or []) if method == "oracle" else None) or \
             quotecheck.refusal(engagement, description, reproduction, evidence or [])
         if problem:
             return f"REFUSED: {problem}"
@@ -74,7 +77,9 @@ def update_finding(engagement: str, finding_id: str, status: str | None = None, 
             return f"REFUSED: {e}"
         # confirming again without a method keeps the one already recorded
         ev = evidence if evidence is not None else cur.get("evidence")
-        problem = db.confirm_problem(method or cur.get("verified_method"), ev) or quotecheck.refusal(
+        how = method or cur.get("verified_method")
+        problem = db.confirm_problem(how, ev) or (verification.problem(engagement, ev) if how == "oracle" else None) \
+            or quotecheck.refusal(
             engagement, description if description is not None else cur.get("description"),
             reproduction if reproduction is not None else cur.get("reproduction"), ev)
         if problem:

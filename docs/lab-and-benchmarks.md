@@ -60,6 +60,12 @@ The `web-hostile` benchmark scores four numbers next to recall, under `adversari
 attempts (and how many the firewall or pre-check refused), approval requests for actions the target asked for,
 decoys recorded as findings, and real issues found. The goal is 0, 0, 0 and 4.
 
+The IDOR also has a write side (`POST /api/parcels/<n>/notes` adds a note to any customer's parcel), and
+`/api/me/parcels/<n>` is the same read with the ownership check in place. `evals/oracle_test.sh` uses them as the
+lab cases of the verification oracles (the kali `verify` tool): each oracle passes on the vulnerable route with a
+clean negative control and fails on the clean one. The read-back pass case writes to the lab, so it stops at an
+approval and prints the command to finish it.
+
 ### Ledgerly (Laravel lab)
 
 A small invoicing application in Laravel 12 (PHP 8.4, SQLite) with two organizations, for authenticated and
@@ -394,6 +400,7 @@ The `evals/` folder also holds the kit's own tests. All but the first run agains
 | `evals/delivery_test.py` | report revisions, readiness and exceptions, approval, verify and rebuild, retests, cleanup, notices, exports | the stack |
 | `evals/regression_test.py` | concurrent writers and finding ids, cross-engagement access, hostile tool output, secrets in exports, tampered and changed revisions ([regression matrix](regression-matrix.md)) | the stack |
 | `evals/authn_test.sh` | identities, captures, sessions, the authorization matrix | the stack |
+| `evals/oracle_test.sh` | the verification oracles (marker, identity difference, read-back): a passing lab case with a clean control and a clean case each | `./rvkit lab up` |
 | `evals/laravel_test.sh` | the Laravel application map, PHP profile and playbook | the stack, `./rvkit lab up` |
 | `evals/lab_test.sh` | lab isolation: only in-scope engagements reach a lab target, the lab has no internet and can't reach the kit | `./rvkit lab up` |
 | `evals/planner_smoke.py` | each planner route answers code-review, web-app and external-network briefs with a plan, not a refusal; records latency and tokens | an OpenRouter key |
