@@ -1,7 +1,9 @@
 """Unattended benchmark: run the real agent (OpenHands + MCP tools) on a known target and score its findings.
 
   python3 evals/run_benchmark.py <name|all> [--agent riskvoid-planner|riskvoid-local] [--repeat N] [--budget USD]
-  python3 evals/run_benchmark.py --history            compare past runs
+  python3 evals/run_benchmark.py --history            compare past runs (and the result groups)
+  python3 evals/run_benchmark.py --groups [name] [--label L] [--json]   repeated runs: found k of n, pass^k, SE
+  python3 evals/run_benchmark.py --compare <label-a> <label-b> [--json]  paired comparison of two labelled sets
   python3 evals/run_benchmark.py --score <name> <bench-engagement>   score an existing engagement, no model
   python3 evals/run_benchmark.py --failures [...]     what went wrong in past runs, grouped by cause (failures.py)
   (or ./rvkit bench ...)
@@ -26,8 +28,11 @@ of engagement, a task, and the expected findings. Each run:
                       that ran anyway; "expected_refusals" that the policy refused
        decisions      candidates left, findings confirmed without a method, observations not triaged
      plus OpenRouter cost (usage delta of your key), wall time, planner tokens and the versions of the kit, prompt,
-     playbooks, tool images and models. --repeat runs a benchmark N times (model output varies) and reports the
-     spread. Results hold scores, ids and titles from the kit's own targets, never client data.
+     playbooks, tool images and models, and the operator load: approvals asked, questions to the user, worker
+     tasks by status, tool-call errors and cost per verified finding. --repeat runs a benchmark N times (model
+     output varies) and reports, per expected finding, found in k of n runs, then pass^k and pass@k, and every
+     mean with its standard error (evals/bench_stats.py). --label names a set of runs (for example "ref-2026-11")
+     so two sets can be compared with --compare. Results hold scores, ids and titles from the kit's own targets, never client data.
   5. writes evals/results/bench/<name>-<UTC>.json and a line in evals/results/bench/history.jsonl, and keeps the
      run's data in evals/results/bench/<name>-<UTC>/: the engagement folder (findings database, evidence, report
      revisions with their frozen inputs) as engagement.tar.gz and the whole conversation as conversation.json, so
@@ -38,7 +43,10 @@ of engagement, a task, and the expected findings. Each run:
 OpenRouter usage of the key since the start of the run passes the cap (planner, fallback and worker together).
 Cost is measured from your OpenRouter key's usage: don't use the key for anything else during a run.
 """
-import datetime, hashlib, json, os, re, shutil, sqlite3, subprocess, sys, time, urllib.error, urllib.request
+import datetime, glob, hashlib, json, os, re, shutil, sqlite3, subprocess, sys, time, urllib.error, urllib.request
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import bench_stats as stats  # noqa: E402
 
 KIT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 OH = os.environ.get("OPENHANDS_URL", "http://127.0.0.1:8000")
@@ -436,19 +444,14 @@ def score(b, allf, eng_dir=None, extra=None):
     }
 
 
-def tool_outcomes(eng, b, audit_path=None):
+def tool_outcomes(eng, b, audit_path=None, start=None, end=None):
     """What the tools did, from the audit log: ran, failed, timed out, refused; and the benchmark's must_not_run
-    and expected_refusals patterns."""
+    and expected_refusals patterns. start/end (epoch seconds) keep only this run's rows: repeated runs of a
+    benchmark share the engagement name and the audit log."""
     audit_path = audit_path or os.path.join(ENG_DIR, "audit.log")
-    rows = []
-    if os.path.exists(audit_path):
-        for line in open(audit_path):
-            try:
-                r = json.loads(line)
-            except ValueError:
-                continue
-            if r.get("engagement") == eng and "command" in r and "event" not in r:
-                rows.append(r)
+    rows = [r for r in stats.audit_window(eng, start if start is not None else 0,
+                                          end if end is not None else 1e12, audit_path)
+            if "command" in r and "event" not in r]
     ran = [r for r in rows if "refused" not in r]
     refused = [r for r in rows if "refused" in r]
     out = {"ran": len(ran), "failed": sum(1 for r in ran if r.get("exit") not in (0, 1, None)),
@@ -541,7 +544,65 @@ def archive(name, eng, cid, stamp):
     return os.path.relpath(d, KIT)
 
 
-def run_one(name, agent, log=print, group=None, budget=None):
+def operator(res, result_path, audit_path=None):
+    """Operator load of a run (bench_stats.operator_load) from its kept data and the audit log."""
+    import failures
+    data, events = None, None
+    try:
+        data = failures.run_data(result_path, res)
+        conv = os.path.join(KIT, res["data"], "conversation.json") if res.get("data") else None
+        events = json.load(open(conv)) if conv and os.path.isfile(conv) else None
+    except Exception:  # noqa: BLE001 - the figures are optional, the result is not
+        pass
+    return stats.operator_load(res, res.get("engagement"), audit_path or os.path.join(ENG_DIR, "audit.log"),
+                               events=events, tasks=(data or {}).get("tasks") if data else None,
+                               calls=(data or {}).get("calls"), tool_class=failures.tool_class)
+
+
+def load_results(benchmark=None, label=None, group=None):
+    """Saved results, oldest first, each with its file name in _file."""
+    out = []
+    for p in sorted(glob.glob(os.path.join(OUT, "*.json"))):
+        try:
+            r = json.load(open(p))
+        except (OSError, ValueError):
+            continue
+        if not isinstance(r, dict) or "score" not in r or "benchmark" not in r:
+            continue
+        if (benchmark and r["benchmark"] != benchmark) or (label and r.get("label") != label) or \
+                (group and r.get("group") != group):
+            continue
+        r["_file"] = os.path.basename(p)
+        out.append(r)
+    return sorted(out, key=lambda r: r.get("at") or "")
+
+
+def save_group(runs):
+    """Write the summary of a result group (one benchmark, repeated) to evals/results/bench/groups/<group>.json."""
+    g = stats.group_summary(runs)
+    if g and g.get("group"):
+        os.makedirs(os.path.join(OUT, "groups"), exist_ok=True)
+        json.dump(g, open(os.path.join(OUT, "groups", f"{g['group']}.json"), "w"), indent=1)
+    return g
+
+
+def groups(benchmark=None, label=None, out=print):
+    """Summaries of every result group (or of every labelled set, per benchmark), recomputed from the results."""
+    by = {}
+    for r in load_results(benchmark, label):
+        key = (r["benchmark"], r.get("label")) if label or not r.get("group") else (r["benchmark"], r["group"])
+        if label or r.get("group"):
+            by.setdefault(key, []).append(r)
+    shown = 0
+    for key, rs in by.items():
+        if len(rs) > 1:
+            stats.print_group(stats.group_summary(rs), out)
+            shown += 1
+    if not shown:
+        out("no result group with more than one run: ./rvkit bench <name> --repeat 3 [--label NAME]")
+
+
+def run_one(name, agent, log=print, group=None, budget=None, label=None):
     b = json.load(open(os.path.join(BENCH, f"{name}.json")))
     if budget is not None:
         b["max_budget_usd"] = min(budget, b.get("max_budget_usd", budget))
@@ -551,18 +612,21 @@ def run_one(name, agent, log=print, group=None, budget=None):
     log(f"== {name}: {b['description']}")
     eng, target = prepare(name, b)
     before = openrouter_usage()
+    t_start = time.time()
     run = run_conversation(eng, b, agent, target, log, before)
     after = openrouter_usage()
     s = score(b, findings(eng), os.path.join(ENG_DIR, eng), {"observations_untriaged": observations_untriaged(eng)})
-    s["tools"] = tool_outcomes(eng, b)
+    s["tools"] = tool_outcomes(eng, b, start=t_start, end=time.time())
     prompt_sha = hashlib.sha256(open(os.path.join(KIT, "prompts", "planner.md"), "rb").read()).hexdigest()[:12]
     now = datetime.datetime.now(datetime.timezone.utc)
     kept = archive(name, eng, run["conversation_id"], f"{now:%Y%m%dT%H%M%SZ}")
     res = {"benchmark": name, "at": now.isoformat(timespec="seconds"), "agent": agent, "models": models(),
            "planner_prompt_sha": prompt_sha, "engagement": eng, "provenance": provenance(), "group": group,
+           "label": label,
            "note": b.get("note"), "budget_cap_usd": b.get("max_budget_usd"), "data": kept,
            "cost_usd": round(after - before, 4) if before is not None and after is not None else None,
            **run, "score": s}
+    res["operator"] = operator(res, os.path.join(OUT, f"{name}-{now:%Y%m%dT%H%M%SZ}.json"))
     os.makedirs(OUT, exist_ok=True)
     json.dump(res, open(os.path.join(OUT, f"{name}-{now:%Y%m%dT%H%M%SZ}.json"), "w"), indent=1)
     with open(os.path.join(OUT, "history.jsonl"), "a") as h:
@@ -570,8 +634,12 @@ def run_one(name, agent, log=print, group=None, budget=None):
                                                  "status", "seconds")} | {"models": res["models"]}
                            | {k: s[k] for k in ("recall", "weighted_recall", "precision", "found", "expected",
                                                 "confirmed", "strict_recall")}
-                           | {"clean_violations": len(s["clean_violations"]), "group": group,
-                              "commit": res["provenance"]["commit"]}) + "\n")
+                           | {"clean_violations": len(s["clean_violations"]), "group": group, "label": label,
+                              "commit": res["provenance"]["commit"]}
+                           | {"approvals_requested": res["operator"]["approvals"]["requested"],
+                              "questions": res["operator"]["questions"],
+                              "tool_errors": sum((res["operator"]["tool_errors"] or {}).values()),
+                              "cost_per_verified": res["operator"]["cost_per_verified"]}) + "\n")
     try:   # failure mining (evals/failures.py): a problem there must not cost the result
         import failures
         res["failures"] = len(failures.record(os.path.join(OUT, f"{name}-{now:%Y%m%dT%H%M%SZ}.json")))
@@ -585,6 +653,7 @@ def run_one(name, agent, log=print, group=None, budget=None):
         f"{len(s['clean_violations'])} clean control(s) reported")
     if b.get("note"):
         log(f"  note: {b['note']}")
+    log(f"  operator: {stats.operator_line(res['operator'])}")
     t_ = s["tools"]
     log(f"  tools: {t_['ran']} ran, {t_['failed']} failed, {t_['timed_out']} timed out, {t_['refused']} refused"
         + (f"; RAN BUT MUST NOT: {t_['must_not_run']}" if t_["must_not_run"] else ""))
@@ -603,12 +672,15 @@ def history():
     p = os.path.join(OUT, "history.jsonl")
     rows = [json.loads(l) for l in open(p)] if os.path.exists(p) else []
     print(f"{'when (UTC)':17} {'benchmark':15} {'agent':17} {'planner':28} {'prompt':12} {'recall':>7} "
-          f"{'wtd':>5} {'prec':>5} {'cost':>7} {'min':>4} status")
+          f"{'wtd':>5} {'prec':>5} {'cost':>7} {'$/ver':>6} {'appr':>4} {'q':>2} {'err':>4} {'min':>4} status")
     for r in rows:
         f = lambda x, p="{:.2f}": p.format(x) if x is not None else "n/a"
         print(f"{r['at'][:16]:17} {r['benchmark']:15} {r['agent']:17} {str(r['models']['planner'])[-28:]:28} "
               f"{r['planner_prompt_sha']:12} {r['found']}/{r['expected']:<5} {f(r['weighted_recall']):>5} "
-              f"{f(r['precision']):>5} {f(r['cost_usd'], '${:.2f}'):>7} {r['seconds'] // 60:>4} {r['status']}")
+              f"{f(r['precision']):>5} {f(r['cost_usd'], '${:.2f}'):>7} {f(r.get('cost_per_verified'), '${:.2f}'):>6} "
+              f"{f(r.get('approvals_requested'), '{}'):>4} {f(r.get('questions'), '{}'):>2} "
+              f"{f(r.get('tool_errors'), '{}'):>4} {r['seconds'] // 60:>4} {r['status']}"
+              + (f"  [{r['label']}]" if r.get("label") else ""))
 
 
 def main(argv):
@@ -618,6 +690,27 @@ def main(argv):
         return 2
     if argv[0] == "--history":
         history()
+        print()
+        groups()
+        return 0
+    if argv[0] == "--groups":   # summaries of repeated runs: --groups [benchmark] [--label NAME]
+        lab = argv[argv.index("--label") + 1] if "--label" in argv else None
+        bench = argv[1] if len(argv) > 1 and not argv[1].startswith("--") else None
+        if "--json" in argv:
+            by = {}
+            for r in load_results(bench, lab):
+                if lab or r.get("group"):
+                    by.setdefault((r["benchmark"], lab or r["group"]), []).append(r)
+            print(json.dumps([stats.group_summary(rs) for rs in by.values()], indent=1))
+        else:
+            groups(bench, lab)
+        return 0
+    if argv[0] == "--compare":   # paired comparison of two labelled sets of runs
+        if len(argv) < 3:
+            print("usage: --compare <label-a> <label-b>")
+            return 2
+        c = stats.compare(load_results(label=argv[1]), load_results(label=argv[2]))
+        print(json.dumps(c, indent=1)) if "--json" in argv else stats.print_compare(c, argv[1], argv[2])
         return 0
     if argv[0] == "--failures":  # what went wrong in past runs, grouped by cause (evals/failures.py)
         import failures
@@ -635,17 +728,15 @@ def main(argv):
     agent = argv[argv.index("--agent") + 1] if "--agent" in argv else "riskvoid-planner"
     repeat = int(argv[argv.index("--repeat") + 1]) if "--repeat" in argv else 1
     budget = float(argv[argv.index("--budget") + 1]) if "--budget" in argv else None
+    label = argv[argv.index("--label") + 1] if "--label" in argv else None
     names = sorted(f[:-5] for f in os.listdir(BENCH) if f.endswith(".json") and f != "smoke.json") \
         if argv[0] == "all" else [argv[0]]
     for n in names:
         group = f"{n}-{datetime.datetime.now(datetime.timezone.utc):%Y%m%dT%H%M%SZ}" if repeat > 1 else None
-        runs = [r for r in (run_one(n, agent, group=group, budget=budget) for _ in range(repeat)) if r]
+        runs = [r for r in (run_one(n, agent, group=group, budget=budget, label=label) for _ in range(repeat)) if r]
         if len(runs) > 1:
-            rec = [r["score"]["recall"] or 0 for r in runs]
-            mean = sum(rec) / len(rec)
-            sd = (sum((x - mean) ** 2 for x in rec) / (len(rec) - 1)) ** 0.5
-            print(f"  {n} over {len(runs)} runs: recall mean {mean:.2f}, min {min(rec):.2f}, max {max(rec):.2f}, "
-                  f"sd {sd:.2f}; statuses {', '.join(r['status'] for r in runs)}")
+            stats.print_group(save_group(runs))
+            print(f"  summary: evals/results/bench/groups/{group}.json")
     return 0
 
 

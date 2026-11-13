@@ -112,6 +112,26 @@ with that change, same models, capped at $0.90:
   before finished, so this is one bad run in two, not a measure of the rule. It does show a weakness of this
   planner: it can repeat a refused call instead of reading the refusal.
 
+### Repeated runs
+
+The tables above are single runs. From the harness engineering work on, results come from repeated runs
+(`./rvkit bench <name> --repeat 3 --label <set>`), reported per benchmark as:
+
+| Column | Means |
+|---|---|
+| Runs | how many runs the figures cover, and the lookup mode (open, or clean: no write-ups of the target) |
+| Found, mean ± SE | recall over the runs, with the standard error of the mean |
+| With evidence, mean ± SE | strict recall over the runs |
+| pass^n | expected issues found with evidence in every run: what one run can be counted on to find |
+| pass@n | expected issues found with evidence in at least one run |
+| Precision, mean | as above, with known lab issues |
+| Approvals, questions | what the runs asked of a person, per run |
+| Cost per verified finding | cost divided by the issues found with evidence |
+
+`./rvkit bench --groups <name>` prints these figures and the found k of n of each expected issue. No repeated
+set has been published yet: the reference runs are tracked in
+[issue #31](https://github.com/RiskVoid/Security-Agent-Kit/issues/31).
+
 ### Release acceptance run
 
 On 2026-11-10 the kit ran its release acceptance scenario on the Ledgerly lab, with the same models and a person

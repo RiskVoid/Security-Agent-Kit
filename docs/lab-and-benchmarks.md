@@ -122,15 +122,17 @@ The budget is the OpenHands per-conversation limit for the run. The code targets
 ./rvkit bench code-flask
 ./rvkit bench code-node --agent riskvoid-local   # worker model only
 ./rvkit bench all                                # every benchmark except smoke
-./rvkit bench code-flask --repeat 3              # three runs and the spread of their recall
-./rvkit bench --history                          # compare past runs
+./rvkit bench code-flask --repeat 3 --label ref  # three runs: found k of n per issue, pass^k, standard errors
+./rvkit bench --history                          # compare past runs, then the result groups
+./rvkit bench --groups code-flask                # the figures of every repeated set of code-flask runs
+./rvkit bench --compare ref after-change         # paired comparison of two labelled sets of runs
 ./rvkit bench --failures                         # what went wrong in past runs, grouped by cause
 ./rvkit bench --score code-flask bench-code-flask   # score an existing benchmark engagement again, no model
 ```
 
-`--agent` is `riskvoid-planner` (default) or `riskvoid-local`. `--repeat N` runs the benchmark N times in one group
-and prints the mean, minimum, maximum and standard deviation of recall: one run of a model says little, since
-output varies between runs. `--score` re-scores the findings already in a `bench-` engagement, for example after
+`--agent` is `riskvoid-planner` (default) or `riskvoid-local`. `--repeat N` runs the benchmark N times in one group:
+one run of a model says little, since output varies between runs ([below](#repeated-runs)). `--label NAME` names a
+set of runs across benchmarks, for example the reference runs before a change and the runs after it. `--score` re-scores the findings already in a `bench-` engagement, for example after
 you changed the expected list; it never starts a conversation and only reads `bench-` engagements. Lab benchmarks need the lab running
 (`./rvkit lab up`): without it they are skipped with a message, they don't start it themselves.
 
@@ -204,6 +206,32 @@ finding ids and titles from the kit's own targets, never client data.
 **Cost** is the change in your OpenRouter key's total usage between the start and the end of the run. Don't use
 the same key for anything else during a run, or the number will include that too. Without an OpenRouter key, cost
 is `n/a`.
+
+### Repeated runs
+
+A single run swings by several points between runs of the same model, and a mean recall doesn't say which issues
+the kit finds reliably. After `--repeat N`, and in `--groups`, each set of runs of one benchmark shows:
+
+| Figure | Meaning |
+|---|---|
+| found k of n | per expected issue: confirmed in k of the n runs, and confirmed with every requirement met (strict) |
+| pass^k | the chance that k runs in a row all find an issue with its evidence, averaged over the expected issues (the [τ-bench](https://arxiv.org/abs/2406.12045) estimator). pass^n is "found every time": what a user who runs the kit once can count on |
+| pass@k | the chance that at least one of k runs finds it: what running the kit several times would find |
+| every item | runs that found every expected issue with its evidence |
+| ± | the standard error of the mean: two sets of runs that differ by less than about two of them are not a real difference |
+
+The summary of each group is saved to `evals/results/bench/groups/<group>.json`.
+
+`--compare A B` pairs two labelled sets of runs on the benchmarks both have, issue by issue: the difference in the
+share of runs that found each issue with its evidence, its mean, and a standard error clustered by benchmark (the
+issues of one benchmark move together), as in [Adding Error Bars to Evals](https://arxiv.org/abs/2411.00640). A 95%
+interval that includes 0 means the change is within the noise.
+
+Each result also records the **operator load** of the run, shown under `operator` and in `--history`: approvals
+requested, granted, denied and stale (from the audit log, within the run's time window), questions the agent asked
+the user, worker tasks by status, tool-call errors (malformed arguments, refused, failed, timed out), and the cost
+per finding found with its evidence. A change that raises recall by asking for twice as many approvals is not a
+plain improvement.
 
 ### Failures by cause
 

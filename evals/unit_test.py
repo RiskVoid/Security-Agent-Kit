@@ -1356,6 +1356,80 @@ class BenchmarkScore(unittest.TestCase):
         self.assertEqual(t["expected_refusals"], {"hydra": True})
 
 
+class BenchStats(unittest.TestCase):
+    """Epic #52 phase 1: figures over repeated runs, paired comparisons, operator load (evals/bench_stats.py)."""
+
+    @classmethod
+    def setUpClass(cls):
+        spec = importlib.util.spec_from_file_location("rv_bench_stats", os.path.join(KIT, "evals", "bench_stats.py"))
+        cls.st = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(cls.st)
+
+    def run_(self, found, strict=None, cost=1.0, bench="b", label=None):
+        strict = found if strict is None else strict
+        per = [{"id": i, "severity": "high", "found_by": "F-1" if f else None,
+                **({"requirements": {"evidence": bool(s)}} if f else {})} for i, f, s in zip("xyz", found, strict)]
+        return {"benchmark": bench, "group": "g", "label": label, "cost_usd": cost, "seconds": 600, "status": "finished",
+                "score": {"per_expected": per, "recall": sum(found) / 3, "strict_recall": sum(strict) / 3,
+                          "precision": 1.0, "expected": 3}}
+
+    def test_pass_hat_and_at(self):
+        self.assertEqual(self.st.pass_hat(3, 3, 3), 1.0)
+        self.assertAlmostEqual(self.st.pass_hat(2, 4, 2), 1 / 6)
+        self.assertAlmostEqual(self.st.pass_at(1, 4, 2), 0.5)
+        self.assertEqual(self.st.pass_at(0, 3, 3), 0.0)
+        self.assertIsNone(self.st.pass_hat(1, 2, 3))
+
+    def test_group_found_k_of_n(self):
+        runs = [self.run_([1, 1, 0]), self.run_([1, 0, 0]), self.run_([1, 1, 1], strict=[1, 0, 1])]
+        g = self.st.group_summary(runs)
+        self.assertEqual([(i["id"], i["found"], i["strict"]) for i in g["items"]], [("x", 3, 3), ("y", 2, 1), ("z", 1, 1)])
+        self.assertEqual(g["pass_hat_k"]["3"], round(1 / 3, 3))      # only x is found with evidence every time
+        self.assertEqual(g["pass_at_k"]["1"], round(5 / 9, 3))
+        self.assertEqual(g["all_found_strict"], {"runs": 0, "of": 3})
+        self.assertEqual(g["figures"]["cost_usd"], {"mean": 1.0, "se": 0.0, "n": 3})
+        self.assertIsNotNone(g["figures"]["recall"]["se"])
+        json.dumps(g)
+
+    def test_compare_paired(self):
+        a = [self.run_([1, 0, 0], label="a"), self.run_([1, 0, 0], label="a"),
+             self.run_([0, 0, 0], bench="c", label="a")]
+        b = [self.run_([1, 1, 0], label="b"), self.run_([1, 1, 1], label="b"),
+             self.run_([1, 0, 0], bench="c", label="b"), self.run_([0, 0, 0], bench="only-b", label="b")]
+        c = self.st.compare(a, b)
+        self.assertEqual([r["benchmark"] for r in c["benchmarks"]], ["b", "c"])   # only shared benchmarks
+        self.assertEqual(c["items"], 6)
+        self.assertAlmostEqual(c["diff"], (0 + 1 + 0.5 + 1 + 0 + 0) / 6, places=3)
+        self.assertLess(c["ci95"][0], c["diff"])
+
+    def test_operator_load(self):
+        with tempfile.TemporaryDirectory() as d:
+            audit = os.path.join(d, "audit.log")
+            rows = [{"ts": "2026-11-13T10:01:00+00:00", "engagement": "e", "event": "approval-requested"},
+                    {"ts": "2026-11-13T10:02:00+00:00", "engagement": "e", "event": "approval-approved"},
+                    {"ts": "2026-11-13T10:03:00+00:00", "engagement": "e", "event": "approval-requested"},
+                    {"ts": "2026-11-13T10:04:00+00:00", "engagement": "e", "event": "approval-denied"},
+                    {"ts": "2026-11-13T09:00:00+00:00", "engagement": "e", "event": "approval-requested"},  # earlier run
+                    {"ts": "2026-11-13T10:03:00+00:00", "engagement": "other", "event": "approval-requested"}]
+            open(audit, "w").write("\n".join(json.dumps(r) for r in rows))
+            events = [{"kind": "MessageEvent", "source": "agent",
+                       "llm_message": {"content": [{"type": "text", "text": "Done. Should I continue with the API?"}]}},
+                      {"kind": "AgentErrorEvent", "error": "Error validating tool 'x': 2 validation errors"}]
+            calls = [{"tool": "kali_run", "body": "REFUSED: out of scope", "is_error": False},
+                     {"tool": "kali_run", "body": "exit=2", "is_error": False}]
+            cls = lambda t, b, e: "refused: x" if b.startswith("REFUSED") else "command-failed" if "exit=2" in b else None
+            res = {"at": "2026-11-13T10:30:00+00:00", "seconds": 1800, "cost_usd": 1.5, "status": "finished",
+                   "score": {"strict_recall": 2 / 3, "expected": 3}}
+            op = self.st.operator_load(res, "e", audit, events=events, tasks=[{"status": "done"}, {"status": "error"}],
+                                       calls=calls, tool_class=cls)
+            self.assertEqual(op["approvals"], {"requested": 2, "granted": 1, "denied": 1, "stale": 0})
+            self.assertEqual(op["questions"], 1)
+            self.assertEqual(op["tool_errors"], {"malformed": 1, "refused": 1, "failed": 1, "timeout": 0})
+            self.assertEqual(op["worker_tasks"], {"done": 1, "error": 1})
+            self.assertEqual((op["verified_findings"], op["cost_per_verified"]), (2, 0.75))
+            self.assertIn("2 asked", self.st.operator_line(op))
+
+
 class ConcurrentOpen(unittest.TestCase):
     """RW-023: processes that open a new findings.db at the same moment migrate it once, with no lost record."""
 
