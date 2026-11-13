@@ -36,6 +36,7 @@ It runs in the foreground; Ctrl-C stops it. The address is `http://127.0.0.1:810
 | **Approvals** | Every pending intrusive command across engagements, with Approve and Deny. **Enable desktop notifications** alerts you when a new one arrives while the page is open, and when a critical or high finding is recorded or confirmed, or a worker task finishes, fails, is interrupted or waits for an approval. The tab title shows the count. | `./rvkit watch` |
 | **Status** | The output of `./rvkit status`: services, worker, planner, spend, engagements. Below it, where to find what the kit is tested and measured for per stack ([capability-baselines.md](capability-baselines.md)). | `./rvkit status` |
 | **Model log** | Failed model calls and calls another model answered instead, with what to do; filter by period. Per engagement in its **Model log** tab. | `python3 scripts/model_events.py` |
+| **Failures** | What went wrong, grouped by cause: in your engagements (ids, counts and causes only) and in benchmark runs. **Details** shows what is behind a cause: for an engagement, the commands, requests, findings and tasks, read from the engagement when you open it. **Collect now** reads every engagement again. | `./rvkit failures`, `./rvkit bench --failures` |
 
 **Model log** lists model calls that failed, each with what to do (top up credits, raise the budget, restart Colab,
 ...), and calls another model answered instead. Each engagement has its own **Model log** tab. The sidebar page

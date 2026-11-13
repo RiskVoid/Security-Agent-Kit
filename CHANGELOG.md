@@ -11,6 +11,15 @@ settings or the findings database; `./rvkit update` migrates existing installs a
   design: messages, and each tool call as a typed line with its tier and result, refusals and approvals marked,
   and the findings it recorded. Sending a message still happens in the OpenHands UI.
 
+### Benchmarks
+- Every benchmark run keeps its failures (missed and weakly proven findings, unexpected ones, refused and failed
+  tool calls, early stops, worker tasks that didn't finish), each with a cause built from fixed rules.
+  `./rvkit bench --failures` groups them by cause across runs; `--rebuild` derives them from saved runs.
+- `./rvkit failures` does the same for engagements, from what the kit and the operator recorded (decisions a
+  person overruled, denied approvals, refused and failed commands, worker tasks, model calls). It keeps ids, counts
+  and causes only, and `./rvkit close` collects once more before sealing.
+- Console: a **Failures** page shows both, by cause, with what is behind each one.
+
 ## [0.1.0]
 
 First public release.

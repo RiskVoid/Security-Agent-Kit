@@ -124,6 +124,7 @@ The budget is the OpenHands per-conversation limit for the run. The code targets
 ./rvkit bench all                                # every benchmark except smoke
 ./rvkit bench code-flask --repeat 3              # three runs and the spread of their recall
 ./rvkit bench --history                          # compare past runs
+./rvkit bench --failures                         # what went wrong in past runs, grouped by cause
 ./rvkit bench --score code-flask bench-code-flask   # score an existing benchmark engagement again, no model
 ```
 
@@ -149,6 +150,8 @@ What a run does:
 5. **Scores** the engagement's `confirmed`, `fixed` and `accepted-risk` findings against the expected list.
 6. **Saves** the details to `evals/results/bench/<name>-<UTC time>.json` and one line to
    `evals/results/bench/history.jsonl`, and prints a summary with a ✔ or ✘ per expected issue.
+7. **Keeps the failures** in `evals/results/bench/failures.jsonl`, each with its cause
+   ([below](#failures-by-cause)).
 
 The `bench-<name>` engagement stays after the run, so you can open its findings, evidence and audit log. The next
 run of the same benchmark resets its files; its earlier entries stay in the audit log.
@@ -201,6 +204,42 @@ finding ids and titles from the kit's own targets, never client data.
 **Cost** is the change in your OpenRouter key's total usage between the start and the end of the run. Don't use
 the same key for anything else during a run, or the number will include that too. Without an OpenRouter key, cost
 is `n/a`.
+
+### Failures by cause
+
+A score says how much a run found. The failure records say what went wrong, in a form that can be counted across
+runs, so you can see which problems come back and whether a change to a prompt, a playbook or a tool removed one.
+
+```sh
+./rvkit bench --failures                       # causes, most widespread first
+./rvkit bench --failures --show missed         # every record of one cause (a prefix works)
+./rvkit bench --failures --kind tool --benchmark api-vampi --since 2026-11-10
+./rvkit bench --failures --rebuild             # derive the records again from every saved run
+```
+
+Every run adds its records from what it already keeps (the score, the findings database, the worker tasks and the
+conversation). No model is asked. A cause is built from fixed rules, so the same failure gets the same cause in
+every run:
+
+| Cause | Meaning |
+|---|---|
+| `missed/<stage>` | An expected finding was not confirmed. The stage is how far the agent got: `rejected` (marked false-positive), `merged` (marked duplicate), `left-candidate`, `credited-elsewhere` (a confirmed finding has its keywords but counts for another item), `observed` (an imported observation, no finding), `seen-in-output` (its keywords are in the output of a tool the agent ran), `probed` (only in what the agent sent), `not-attempted`, `unknown` (the run's data was not kept) |
+| `weak-proof/<requirement>` | Found, but the finding lacks the asset, evidence, verification or reproduction |
+| `unexpected/<method>` | Confirmed and not in the expected list: a false positive or a real extra, to review |
+| `clean-control/<method>` | A protected control was reported as vulnerable |
+| `policy/<what>` | A `must_not_run` command ran, or an expected refusal did not happen |
+| `run/<status>`, `stopped-early/<why>` | The run ended as `budget`, `timeout`, `stuck`, `error` or `asked-question`; the agent stopped and was sent back to work |
+| `triage/<what>` | Candidates left, findings confirmed without a method, observations not triaged |
+| `tool/<tool>/<class>`, `retry/<tool>/<class>` | A tool call was refused, invalid, timed out or failed; the same call was sent again after it failed the same way. The class is the reason with names, ids, paths and numbers removed |
+| `worker/<what>` | A worker task was interrupted or cancelled, ran out of steps, or ended without calling `finish` |
+
+The list shows, for each cause, how many runs had it and how often. `--show` gives each record with the run, the
+models, the prompt version and what is behind it (finding ids, plan items, the tool call and its message).
+
+The stage of a missed item comes from keyword matches on the expected item's `any` and `cwe`, so treat it as a
+lead and check it with `--show`. Records are derived data: when the rules change, `--rebuild` writes them again
+from the saved runs. They hold ids, titles and commands from the kit's own targets. Engagements have their own
+records, without any of that text: [`./rvkit failures`](cli-reference.md#failures).
 
 ### Writing a benchmark
 

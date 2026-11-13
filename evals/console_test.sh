@@ -17,6 +17,7 @@ check "sign-in sets the session cookie"   "$(curl -s -c "$JAR" -D - -o /dev/null
 check "page loads when signed in"         "$(curl -s -b "$JAR" "$B/")" 'RiskVoid Console'
 check "overview lists engagements"        "$(curl -s -b "$JAR" "$B/api/overview")" '"engagement": "demo-code"'
 check "model log answers"             "$(curl -s -b "$JAR" "$B/api/models?since=3600")" '"events"'
+check "failures page answers"         "$(curl -s -b "$JAR" "$B/api/failures")$(curl -s -b "$JAR" "$B/api/failures?source=bench")" '"source": "engagements".*"source": "bench"'
 check "engagement detail"                 "$(curl -s -b "$JAR" "$B/api/eng/demo-code")" '"scope_text"'
 check "POST without console header refused" "$(code -b "$JAR" -X POST -d '{}' "$B/api/eng/demo-code/halt")" '^401$'
 check "POST without cookie refused"       "$(code -H 'X-RV-Console: 1' -X POST -d '{}' "$B/api/eng/demo-code/halt")" '^401$'

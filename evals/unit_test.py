@@ -1521,5 +1521,223 @@ class AgentViewTests(unittest.TestCase):
                 self.av.view("e", bad)
 
 
+class FailureMining(unittest.TestCase):
+    """Failure records and their causes (evals/failures.py), with no model and no stack."""
+
+    @classmethod
+    def setUpClass(cls):
+        spec = importlib.util.spec_from_file_location("rv_failures", os.path.join(KIT, "evals", "failures.py"))
+        cls.fm = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(cls.fm)
+
+    BENCH = {"expected": [{"id": i, "severity": "high", "any": [kw], "cwe": [cwe]} for i, kw, cwe in (
+        ("sqli", "sql injection", "CWE-89"), ("xss", "xss", "CWE-79"), ("cors", "cors", "CWE-942"),
+        ("metrics", "/metrics", "CWE-200"), ("ssrf", "ssrf", "CWE-918"), ("redos", "redos", "CWE-1333"),
+        ("idor", "idor", "CWE-639"))]}
+
+    def result(self, **kw):
+        per = [{"id": e["id"], "severity": "high", "found_by": None} for e in self.BENCH["expected"]]
+        per[6] = {"id": "idor", "severity": "high", "found_by": "F-9",
+                  "requirements": {"asset": False, "evidence": True}}
+        return {"run": "t-1", "benchmark": "t", "at": "2026-11-12T00:00:00+00:00", "status": "budget",
+                "models": {"planner": "p", "worker": "w"}, "continued": [["there is no test plan: call plan_tests"]],
+                "score": {"per_expected": per, "clean_violations": [{"clean": "fixed-route", "finding": "F-8"}],
+                          "unmatched_findings": [{"id": "F-7", "title": "x", "severity": "low", "cwe": "CWE-1"}],
+                          "decisions": {"candidates_left": 2, "confirmed_without_method": 0},
+                          "tools": {"must_not_run": ["sqlmap -u x"], "expected_refusals": {"evil": False, "ok": True}}},
+                **kw}
+
+    def data(self):
+        call = lambda tool, args, body, err=False: {"tool": tool, "args": json.dumps(args), "body": body, "is_error": err}
+        refused = "REFUSED: evidence/runs/20261111T014514-cd-5faa58.txt (no leaks): no such file"
+        return {
+            "findings": [{"id": "F-1", "title": "SQL injection in login", "status": "false-positive"},
+                         {"id": "F-2", "title": "Reflected XSS", "status": "candidate"},
+                         {"id": "F-3", "title": "Permissive CORS", "status": "duplicate", "cwe": "CWE-942"},
+                         {"id": "F-7", "title": "x", "status": "confirmed", "verified_method": "tool-output"},
+                         {"id": "F-8", "title": "y", "status": "confirmed"},
+                         {"id": "F-9", "title": "IDOR on invoices", "status": "confirmed",
+                          "verified_method": "runtime-reproduction"}],
+            "observations": [], "plan": [{"id": "P-1", "title": "Check /metrics and other exposed files", "state": "tested"}],
+            "tasks": [{"id": "T1", "status": "interrupted", "goal": "g"}, {"id": "T2", "status": "done", "step": 13,
+                                                                           "max_steps": 12, "result": {}}],
+            "calls": [call("kali_run", {"command": "curl http://t/metrics"}, "exit=0 tier=active\nGET /metrics 200"),
+                      call("findings_get_playbook", {"name": "web"}, "check ssrf and redos"),   # a checklist: not a trace
+                      call("kali_http_request", {"url": "http://t/fetch?u=ssrf-canary"}, "GET http://t/fetch 200"),
+                      call("findings_update_coverage", {"id": "P-1"}, refused),
+                      call("findings_update_coverage", {"id": "P-1"}, refused),
+                      call("kali_run", {"command": "nuclei -u t"}, "exit=2 tier=active\nerr"),
+                      call("kali_run", {"command": "sqlmap"}, "APPROVAL REQUIRED (intrusive). Approval id: 1a2b3c4d."),
+                      call("kali_run", {"command": "nmap t"}, "MCP tool 'kali_run' timed out after 300 seconds.")]}
+
+    def test_causes(self):
+        rows = self.fm.collect(self.result(), self.BENCH, self.data())
+        self.assertEqual((rows[0]["kind"], rows[0]["failures"]), ("summary", len(rows) - 1))
+        cause = {(r["cause"], r["subject"]): r for r in rows[1:]}
+        for c in (("missed/rejected", "sqli"), ("missed/left-candidate", "xss"), ("missed/merged", "cors"),
+                  ("missed/seen-in-output", "metrics"), ("missed/probed", "ssrf"), ("missed/not-attempted", "redos"),
+                  ("weak-proof/asset", "idor"), ("unexpected/tool-output", "F-7"), ("clean-control/not-stated", "fixed-route"),
+                  ("policy/must-not-run", None), ("policy/refusal-missing", "evil"), ("run/budget", None),
+                  ("stopped-early/no-plan", None), ("triage/candidates-left", None),
+                  ("tool/findings_update_coverage/refused: no such file", "findings_update_coverage"),
+                  ("retry/findings_update_coverage/refused: no such file", "findings_update_coverage"),
+                  ("tool/kali_run/command-failed", "kali_run"), ("tool/kali_run/timeout", "kali_run"),
+                  ("worker/interrupted", "T1"), ("worker/out-of-steps", "T2")):
+            self.assertIn(c, cause)
+        self.assertEqual(len(cause), 20, sorted(cause))             # nothing else: an approval wait is not a failure
+        self.assertEqual(cause[("missed/seen-in-output", "metrics")]["detail"]["plan"], [{"id": "P-1", "state": "tested"}])
+        self.assertEqual(cause[("tool/findings_update_coverage/refused: no such file", "findings_update_coverage")]["n"], 2)
+        self.assertEqual(cause[("triage/candidates-left", None)]["n"], 2)
+        # a run whose data was not kept still gives its scored failures
+        bare = self.fm.collect(self.result(), self.BENCH, None)
+        self.assertEqual({r["cause"] for r in bare if r["kind"] == "missed"}, {"missed/unknown"})
+
+    def test_reasons_are_stable(self):
+        s = self.fm.slug
+        self.assertEqual(s("targets not in scope for bench-api-vampi: ['evil.example']"), "targets not in scope")
+        self.assertEqual(s("PLAN.md inventory table (14 operations): no such file"), "no such file")
+        self.assertEqual(s("ffuf -rate 20 exceeds the engagement max rate (10/s)"), s("ffuf -rate 5 exceeds the engagement max rate (2/s)"))
+        self.assertEqual(s("changing the severity of F-012 needs a reason"), "changing the severity of <id> needs a reason")
+        self.assertEqual(s("no plan item Baseline: rv-llm ask <target>"), "no plan item")
+        self.assertEqual(s("tested needs evidence (the files that show the test and its result)"), "tested needs evidence")
+        tc = self.fm.tool_class
+        self.assertIsNone(tc("kali_run", "exit=1 tier=passive\n"))            # grep found nothing: not a failure
+        self.assertEqual(tc("kali_run", "exit=124 tier=active"), "command-timeout")
+        self.assertEqual(tc("kali_http_request", "REFUSED: PATCH is tier 'intrusive', RULES.md allows only ['passive']"),
+                         tc("kali_http_request", "REFUSED: POST is tier 'intrusive', RULES.md allows only ['passive', 'active']"))
+
+    def test_engagement_records_have_no_client_text(self):
+        fm = self.fm
+        d = lambda fid, kind, was, now, actor: {"finding_id": fid, "kind": kind, "from_value": was, "to_value": now, "actor": actor}
+        data = {
+            "decisions": [d("F-1", "recorded", None, "confirmed", "agent:planner"),
+                          d("F-1", "status", "confirmed", "false-positive", "console:ana"),      # the agent's false positive
+                          d("F-1", "status", "false-positive", "confirmed", "console:ana"),      # a person correcting a person
+                          d("F-2", "recorded", None, "candidate", "agent:worker"),
+                          d("F-2", "severity", "critical", "low", "cli:ana"),
+                          d("F-3", "recorded", None, "candidate", "agent:worker"),
+                          d("F-3", "status", "candidate", "false-positive", "agent:planner"),
+                          d("F-3", "status", "false-positive", "confirmed", "console:ana"),
+                          d("F-4", "recorded", None, "confirmed", "console:ana"),
+                          d("F-4", "status", "confirmed", "false-positive", "console:ana")],     # never the agent's
+            "findings": [{"id": "F-5", "status": "candidate"}, {"id": "F-6", "status": "confirmed"}],
+            "plan": [{"id": "P-1", "state": "planned"}, {"id": "P-2", "state": "blocked"}, {"id": "P-3", "state": "tested"}],
+            "observations": [{"id": "O-1", "status": "new"}],
+            "audit": [{"engagement": "acme-2026", "command": "nmap secret.acme.example", "refused":
+                       "targets not in scope for acme-2026: ['secret.acme.example']"},
+                      {"engagement": "acme-2026", "command": "nuclei -u https://acme.example", "exit": 2},
+                      {"engagement": "acme-2026", "command": "grep x", "exit": 1},
+                      {"engagement": "acme-2026", "action": "http", "method": "POST", "url": "https://acme.example/login",
+                       "refused": "POST is tier 'intrusive', RULES.md allows only ['passive']"},
+                      {"engagement": "acme-2026", "event": "approval-denied", "approval": "7b11ef89",
+                       "command": "sqlmap -u https://acme.example"}],
+            "calls": [{"tool": "kali_run", "args": "{}", "is_error": False,
+                       "body": "REFUSED: targets not in scope for acme-2026: ['secret.acme.example']"},   # in the audit log
+                      {"tool": "findings_record_finding", "args": "a", "is_error": False,
+                       "body": "REFUSED: a finding confirmed by runtime-reproduction needs evidence: acme.example"},
+                      {"tool": "findings_record_finding", "args": "a", "is_error": False,
+                       "body": "REFUSED: a finding confirmed by runtime-reproduction needs evidence: acme.example"}],
+            "model_events": [{"kind": "refusal", "model": "planner", "message": "about acme.example"},
+                             {"kind": "context", "model": "planner"}],
+            "tasks": [{"id": "T-1", "status": "interrupted", "goal": "scan acme.example"}, {"id": "T-2", "status": "running"}]}
+        rows = fm.collect_engagement("acme-2026", data, "2026-11-12T00:00:00+00:00")
+        got = {(r["cause"], r["subject"], r["n"]) for r in rows[1:]}
+        self.assertEqual(got, {
+            ("overruled/confirmed-rejected", "F-1", 1), ("overruled/severity-lowered", "F-2", 1),
+            ("overruled/rejected-confirmed", "F-3", 1), ("approval/denied", "7b11ef89", 1),
+            ("command/refused: targets not in scope", None, 1), ("command/failed", None, 1),
+            ("request/refused: <METHOD> is tier 'intrusive', RULES.md allows only", None, 1),
+            ("tool/findings_record_finding/refused: a finding confirmed by runtime-reproduction needs evidence", None, 2),
+            ("retry/findings_record_finding/refused: a finding confirmed by runtime-reproduction needs evidence", None, 1),
+            ("model/refusal/planner", None, 1), ("triage/candidates-left", None, 1),
+            ("triage/confirmed-without-method", None, 1), ("triage/observations-untriaged", None, 1),
+            ("coverage/not-run", None, 1), ("coverage/blocked", None, 1), ("worker/interrupted", "T-1", 1)})
+        text = json.dumps(rows)
+        for secret in ("acme.example", "nmap", "sqlmap", "login", "scan"):
+            self.assertNotIn(secret, text)
+        # the details the console loads when a cause is opened do show the operator what happened; they are not stored
+        show = {(f"{i['kind']}/{i['stage']}"): i["show"] for i in fm.engagement_items("acme-2026", data)}
+        self.assertEqual(show["command/refused: targets not in scope"]["what"], "nmap secret.acme.example")
+        self.assertIn("secret.acme.example", show["command/refused: targets not in scope"]["why"])
+        self.assertEqual(show["command/failed"], {"what": "nuclei -u https://acme.example", "why": "exit code 2"})
+        self.assertEqual(show["overruled/confirmed-rejected"]["why"], "confirmed → false-positive by console:ana")
+        self.assertEqual(show["approval/denied"]["what"], "sqlmap -u https://acme.example")
+        self.assertIn("scan acme.example", show["worker/interrupted"]["what"])
+        self.assertEqual({k for r in rows for k in r} - {"v", "source", "run", "engagement", "at", "ended", "kind",
+                                                          "cause", "subject", "n", "failures"}, set())
+
+    def test_engagement_store(self):
+        with tempfile.TemporaryDirectory() as d:
+            import sqlite3
+            os.makedirs(os.path.join(d, "acme", ".rv"))
+            os.makedirs(os.path.join(d, "bench-x", ".rv"))
+            con = sqlite3.connect(os.path.join(d, "acme", ".rv", "findings.db"))
+            con.execute("CREATE TABLE findings (id TEXT, status TEXT, verified_method TEXT)")
+            con.execute("INSERT INTO findings VALUES ('F-1', 'candidate', NULL)")
+            con.commit()
+            con.close()
+            row = lambda **kw: json.dumps({"engagement": "acme", "ts": "2026-11-12T10:00:00+00:00", **kw}) + "\n"
+            open(os.path.join(d, "audit.log"), "w").write(
+                row(command="a", refused="engagement is halted") + row(event="deleted")       # an earlier engagement, same name
+                + row(command="b", exit=3) + json.dumps({"engagement": "other", "command": "c", "exit": 3}) + "\n")
+            fm, saved = self.fm, self.fm.bound_calls
+            fm.bound_calls = lambda eng, note=None: []           # no stack in a unit test
+            try:
+                store = os.path.join(d, "s", "engagements.jsonl")
+                self.assertEqual(fm.engagement_names(d), ["acme"])   # a benchmark's engagement is not collected here
+                for _ in range(2):                                   # collecting again replaces the engagement's lines
+                    got = fm.record_engagement("acme", d, store)
+                self.assertEqual({(r["cause"], r["n"]) for r in got}, {("command/failed", 1), ("triage/candidates-left", 1)})
+                self.assertEqual(len(fm.load(store)), 3)
+                det = fm.engagement_details("acme", "command/failed", d)
+                self.assertEqual((det["items"], det["cut"]), ([{"at": "2026-11-12T10:00:00+00:00", "what": "b", "why": "exit code 3"}], 0))
+            finally:
+                fm.bound_calls = saved
+
+    def test_store_and_groups(self):
+        import io, sqlite3, tarfile
+        with tempfile.TemporaryDirectory() as d:
+            fm, saved = self.fm, (self.fm.KIT, self.fm.BENCH)
+            fm.KIT, fm.BENCH = d, d
+            try:
+                json.dump(self.BENCH, open(os.path.join(d, "t.json"), "w"))
+                con = sqlite3.connect(os.path.join(d, "f.db"))
+                con.execute("CREATE TABLE findings (id TEXT, title TEXT, status TEXT, cwe TEXT, verified_method TEXT)")
+                con.execute("INSERT INTO findings VALUES ('F-1', 'SQL injection in login', 'false-positive', '', '')")
+                con.commit()
+                con.close()
+                store = os.path.join(d, "failures.jsonl")
+                for run in ("t-1", "t-2"):
+                    os.makedirs(os.path.join(d, run))
+                    with tarfile.open(os.path.join(d, run, "engagement.tar.gz"), "w:gz") as tar:
+                        tar.add(os.path.join(d, "f.db"), arcname="./.rv/findings.db")
+                    json.dump([], open(os.path.join(d, run, "conversation.json"), "w"))
+                    res = {k: v for k, v in self.result(status="finished", continued=[]).items() if k != "run"}
+                    json.dump({**res, "data": run}, open(os.path.join(d, run + ".json"), "w"))
+                    fm.record(os.path.join(d, run + ".json"), store)
+                n = len(fm.load(store))
+                fm.record(os.path.join(d, "t-2.json"), store)          # recording a run again replaces its lines
+                self.assertEqual(len(fm.load(store)), n)
+                g = {x["cause"]: x for x in fm.groups(fm.load(store))}
+                self.assertEqual((len(g["missed/rejected"]["runs"]), g["missed/rejected"]["count"]), (2, 2))
+                self.assertEqual(g["missed/not-attempted"]["count"], 10)   # no trace of the other five, twice
+                self.assertNotIn("summary", g)
+                self.assertEqual(fm.rebuild(d, store), (2, n - 2))
+                rows = fm.load(store)                                     # what the console's Failures page shows
+                later = [{**r, "run": "t-3", "prompt": "p2", "at": "2026-11-13T00:00:00+00:00"} for r in rows
+                         if r["run"] == "t-1" and r["cause"] != "missed/rejected"]
+                ov = fm.overview(rows + later + [{**later[1], "cause": "missed/merged"}])
+                self.assertEqual((ov["source"], ov["runs"], ov["clean"]), ("bench", 3, 0))
+                top = next(g for g in ov["groups"] if g["cause"] == "missed/not-attempted")
+                self.assertEqual((top["runs"], top["last"][:10], top["records"][0]["run"]), (3, "2026-11-13", "t-3"))
+                json.dumps(ov)                                            # goes to the page as JSON
+                out = io.StringIO()
+                fm.report(fm.select(fm.load(store), kind="missed"), out=lambda x: out.write(x + "\n"))
+                self.assertIn("in 2 runs of 1 benchmarks", out.getvalue())
+                self.assertNotIn("weak-proof", out.getvalue())
+            finally:
+                fm.KIT, fm.BENCH = saved
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=1)

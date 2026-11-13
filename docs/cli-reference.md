@@ -17,7 +17,7 @@ without a terminal.
 |---|---|
 | Start and check | [`setup`](#setup), [`up`](#up), [`down`](#down), [`update`](#update), [`status`](#status), [`doctor`](#doctor), [`quickstart`](#quickstart), [`logs`](#logs) |
 | Models | [`connect`](#connect), [`worker`](#worker), [`planner`](#planner), [`budget`](#budget), [`test`](#test), [`key`](#key), [`openhands`](#openhands) |
-| Engagements | [`new`](#new), [`engagement`](#engagement), [`eng`](#eng), [`console`](#console), [`watch`](#watch), [`approvals`](#approvals), [`approve` / `deny`](#approve--deny), [`scope`](#scope), [`show`](#show), [`halt` / `resume`](#halt--resume), [`audit`](#audit), [`report`](#report), [`close`](#close), [`delete`](#delete) |
+| Engagements | [`new`](#new), [`engagement`](#engagement), [`eng`](#eng), [`console`](#console), [`watch`](#watch), [`approvals`](#approvals), [`approve` / `deny`](#approve--deny), [`scope`](#scope), [`show`](#show), [`halt` / `resume`](#halt--resume), [`audit`](#audit), [`report`](#report), [`close`](#close), [`failures`](#failures), [`delete`](#delete) |
 | Practice and tests | [`lab`](#lab), [`bench`](#bench) |
 | Shell | [`install`](#install), [`completion`](#completion), [`help`](#help) |
 
@@ -524,6 +524,38 @@ See [findings-and-reports.md](findings-and-reports.md).
 Close-out: writes `audit.jsonl` (this engagement's audit entries) and copies the active `SCOPE.md` / `RULES.md`
 into the folder, writes `MANIFEST.sha256` of every file, archives the folder to
 `<ENGAGEMENTS_DIR>/_archive/<engagement>-<UTC time>.tar.gz` with a `.sha256` next to it, and halts the engagement.
+Before that it collects the engagement's [failures](#failures).
+
+### failures
+
+```sh
+./rvkit failures                      # causes over the engagements collected so far
+./rvkit failures <engagement>         # collect one engagement, then list its records
+./rvkit failures --all                # collect every engagement (benchmark engagements are left out)
+./rvkit failures [--show <cause>] [--kind <kind>] [--engagement <name>] [--since <YYYY-MM-DD>] [--json]
+```
+
+What went wrong while the agent worked on engagements, grouped by cause, so you can see which problems come back.
+An engagement has no list of expected findings, so its failures are what the kit and you recorded:
+
+| Cause | Meaning |
+|---|---|
+| `overruled/<what>` | You changed what the agent decided: `confirmed-rejected` (a finding it confirmed was a false positive), `candidate-rejected`, `rejected-confirmed`, `merged-confirmed`, `severity-lowered`, `severity-raised` |
+| `approval/denied` | You denied a command or request the agent asked for |
+| `command/<class>`, `request/<class>` | A sandboxed command or a request was refused, failed or timed out (planner and worker, from the audit log) |
+| `tool/<tool>/<class>`, `retry/<tool>/<class>` | Other tool calls that were refused, invalid or timed out, and calls repeated after the same failure, from the engagement's bound conversations |
+| `worker/<what>` | A worker task was interrupted or cancelled, ran out of steps, or ended without calling `finish` |
+| `model/<kind>/<model>` | A model call failed, was refused by the provider, or was answered by the fallback |
+| `triage/<what>`, `coverage/<state>` | Candidates left, findings confirmed without a method, observations not triaged; planned tests with no outcome, or blocked |
+
+Collecting an engagement replaces what was kept for it, so run it again as the work goes on; `./rvkit close`
+does it once more before sealing. The records are in `.rvkit/failures/engagements.jsonl` on your machine. They
+hold the engagement's name, ids (findings, tasks, approvals), counts and causes, and no titles, commands, hosts,
+requests or output. A cause keeps the wording of a refusal with names, ids, paths and numbers removed.
+Conversations are read only while the stack is up; without it the `tool/` and `retry/` causes are left out.
+Benchmark runs have richer records, scored against known findings:
+[failures by cause](lab-and-benchmarks.md#failures-by-cause). The console's **Failures** page shows both; when
+you open a cause there, it reads the commands, findings and tasks behind it from the engagement itself.
 
 ### delete
 
@@ -559,12 +591,16 @@ practice and test engagements.
 ```sh
 ./rvkit bench <name|all> [--agent riskvoid-planner|riskvoid-local] [--repeat N]
 ./rvkit bench --history
+./rvkit bench --failures [--show <cause>] [--kind <kind>] [--benchmark <name>] [--model <text>]
+                         [--since <YYYY-MM-DD>] [--json] [--rebuild]
 ./rvkit bench --score <name> <bench-engagement>
 ```
 
 Runs the real agent unattended against a known target and scores it. Names are the files in `evals/benchmarks/`.
 `--repeat N` runs it N times and prints the spread; `--score` re-scores an existing `bench-` engagement without a
-model.
+model. `--failures` lists what went wrong in past runs, grouped by cause; `--show` gives the records of one cause
+and `--rebuild` derives them again from the saved runs
+([failures by cause](lab-and-benchmarks.md#failures-by-cause)).
 Details: [lab-and-benchmarks.md](lab-and-benchmarks.md#benchmarks).
 
 ---
