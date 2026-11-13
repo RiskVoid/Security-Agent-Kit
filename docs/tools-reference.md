@@ -128,6 +128,17 @@ the L4 profile.
 |---|---|---|
 | `record_finding` | `engagement`, `title`, `severity`, `asset`, `description`, and optional `impact`, `reproduction`, `remediation`, `evidence` (list of paths), `cvss_vector`, `cvss_score`, `cwe`, `status` (`candidate` by default; any of the five statuses is accepted), `notes` | Stores a finding and returns it with its id (`F-001`, `F-002`, …). Severity: `critical`, `high`, `medium`, `low`, `info`. |
 | `update_finding` | `engagement`, `finding_id`, then any field to change, including `status`, `priority` (`P1`-`P4`), `prerequisites`, `root_cause`; `reason`; `method` | Changes only the fields given. Statuses: `candidate`, `confirmed` (with `method`: how it was verified), `false-positive`, `duplicate` (needs `duplicate_of`: the finding to keep), `fixed`, `accepted-risk`. `reason` is required for `false-positive`, `accepted-risk`, a severity change and a change of a set priority; refused without it (`REFUSED: ...`). |
+
+**Quotes must be in the evidence.** When the planner confirms a finding (`record_finding` or `update_finding`
+with `status=confirmed`), text in backticks and code-block lines of its description and reproduction counts as
+quoted and must be found in the cited evidence files or the `/src` files it cites. Each `/src/<file>:<line>` must
+point at a line that exists. Otherwise the confirmation is refused, naming the missing quotes. Not counted as
+quotes: commands and scripts, names, paths and URLs on their own, `file:line` references, placeholders
+(`<id>`, `...`) and spans under 6 characters. Matching ignores whitespace, HTML entities and URL encoding. A
+quote of several words also passes when its words appear in order close together; a single token (a hash, a
+flag) must match exactly. `[REDACTED ...]` and `{{cred:NAME}}` match any value. People confirming in the console
+or with `./rvkit` are not checked. `python3 harness/quotecheck.py <engagements dir>` replays the check over
+past confirmations.
 | `list_findings` | `engagement`, optional `status`, `severity` | Findings, most severe first: id, title, severity, status, asset, source. |
 | `get_finding` | `engagement`, `finding_id`, `history` (default false) | One finding with every field; with `history`, every revision and decision with its reason. |
 | `import_observations` | `engagement`, `path` (a file of the engagement, such as `semgrep.json` or `evidence/authz/...`), optional `tool` | Turns a Semgrep, osv-scanner, pip-audit, bandit or gitleaks JSON, an authorization-matrix run, an app map or an HTTP exchange into observations. Re-importing doesn't duplicate; parser errors and limitations are returned. |

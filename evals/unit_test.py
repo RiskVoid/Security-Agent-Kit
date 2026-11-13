@@ -1649,6 +1649,78 @@ class RulesPinned(unittest.TestCase):
         self.assertIn("stop condition (stop and tell the user when it happens): any production customer data", last)
 
 
+class QuoteCheck(unittest.TestCase):
+    """Epic #52, issue #41: what a confirmed finding quotes must be in its cited evidence."""
+
+    def setUp(self):
+        import quotecheck
+        self.q = quotecheck
+        self.tmp = tempfile.TemporaryDirectory()
+        self.saved = (quotecheck.WORK, quotecheck.SRC)
+        quotecheck.WORK = os.path.join(self.tmp.name, "work")
+        quotecheck.SRC = os.path.join(self.tmp.name, "src")
+        os.makedirs(os.path.join(quotecheck.WORK, "acme", "evidence", "runs"))
+        os.makedirs(os.path.join(quotecheck.SRC, "app"))
+        with open(os.path.join(quotecheck.WORK, "acme", "evidence", "runs", "r1.txt"), "w") as f:
+            f.write("HTTP/1.1 500 Internal Server Error\nX-Debug-Note: hi\n\n{\"error\": \"database error: "
+                    "unrecognized   token: \\\"1'\\\"\"}\n<p>No results for &lt;script&gt;alert(1)&lt;/script&gt;</p>\n"
+                    "Authorization: Bearer {{cred:API}}\n")
+        with open(os.path.join(quotecheck.SRC, "app", "views.py"), "w") as f:
+            f.write("def track(pid):\n    q = f\"SELECT * FROM parcels WHERE id = {pid}\"\n    return db.execute(q)\n")
+        self.ev = ["/work/acme/evidence/runs/r1.txt"]
+
+    def tearDown(self):
+        self.q.WORK, self.q.SRC = self.saved
+        self.tmp.cleanup()
+
+    def test_quotes_in_evidence_pass(self):
+        desc = ("The id parameter breaks the query: `database error: unrecognized token` comes back, and the "
+                "search page reflects `<script>alert(1)</script>` (an HTML-escaped copy in the file). Code: "
+                "/src/app/views.py:2 builds the query.\n```\nHTTP/1.1 500 Internal Server Error\n"
+                "$ curl -s 'http://x/api/track?id=1'\n```")
+        self.assertEqual(self.q.problems("acme", desc, "1. `curl -s 'http://x/api/track?id=1%27'`", self.ev), [])
+
+    def test_invented_quote_is_named(self):
+        p = self.q.problems("acme", "The response shows `FLAG{rvlab-real-flag}` and `uid=0(root)`.", "", self.ev)
+        self.assertEqual(len(p), 2)
+        self.assertIn("FLAG{rvlab-real-flag}", p[0])
+        msg = self.q.refusal("acme", "The response shows `FLAG{rvlab-real-flag}`.", "", self.ev)
+        self.assertTrue(msg.startswith("status=confirmed refused"))
+
+    def test_source_lines(self):
+        self.assertEqual(self.q.problems("acme", "See /src/app/views.py:2-3.", "", []), [])
+        p = self.q.problems("acme", "See /src/app/views.py:40 and /src/app/nope.py:1.", "", [])
+        self.assertEqual(len(p), 2)
+        self.assertIn("the file has", p[0])
+        self.assertIn("no such file", p[1])
+        # a quote of the code passes when the code is cited, not otherwise
+        self.assertEqual(self.q.problems("acme", "`SELECT * FROM parcels WHERE id = {pid}` at /src/app/views.py:2",
+                                         "", []), [])
+
+    def test_paraphrase_and_encoding(self):
+        with open(os.path.join(self.q.WORK, "acme", "evidence", "runs", "r2.txt"), "w") as f:
+            f.write('curl "http://x/sqli/?id=1%27%20UNION%20SELECT%20user()--%20-"\n{"role": "admin", "id": 1}\n'
+                    'code: path.join(UPLOAD_DIR, req.query.name)\n')
+        ev = ["/work/acme/evidence/runs/r2.txt (what it shows)"]          # a note after the path is allowed
+        for ok in ("`id=1' UNION SELECT user()-- -`", '`"role":"admin"`', "`path.join(UPLOAD_DIR, name)`"):
+            self.assertEqual(self.q.problems("acme", ok, "", ev), [], ok)
+        for bad in ("`0192023a7bbd73250516f069df18b500`", "`Access-Control-Allow-Credentials: true`"):
+            self.assertEqual(len(self.q.problems("acme", bad, "", ev)), 1, bad)
+
+    def test_not_quotes(self):
+        self.assertEqual(self.q.quotes("Use `id` and `<parcel-id>` and `sqlmap -u http://x --batch`, "
+                                       "`/api/parcels/...`, `settings.py:4`, `Location`\n```bash\nH=$(printf x)\n```"
+                                       "\n```\ncurl -s http://x/ \\\n  -H 'X-A: b'\n```"), [])
+
+    def test_redaction_and_credential_references_match(self):
+        self.assertEqual(self.q.problems("acme", "Header `Authorization: Bearer [REDACTED JWT]` was accepted.", "",
+                                         self.ev), [])
+
+    def test_evidence_outside_the_engagement_is_ignored(self):
+        p = self.q.problems("acme", "`Internal Server Error`", "", ["/etc/passwd", "../other/evidence/x.txt"])
+        self.assertEqual(len(p), 1)
+
+
 class ConcurrentOpen(unittest.TestCase):
     """RW-023: processes that open a new findings.db at the same moment migrate it once, with no lost record."""
 

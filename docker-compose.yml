@@ -164,6 +164,7 @@ services:
       ORG_NAME: ${ORG_NAME:-}                   # "Prepared by" default; plain/custom: the name in the report
     volumes:
       - ${ENGAGEMENTS_DIR:-~/riskvoid/engagements}:/work
+      - ${PROJECTS_DIR:-~/riskvoid/projects}:/src:ro   # checks the /src file:line a confirmed finding cites
       - ${REPORT_BRAND_FOLDER:-./harness/brands/example}:/brand-custom:ro   # used when REPORT_BRAND=custom
     networks: [default, rvagent]
     restart: unless-stopped

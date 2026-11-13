@@ -7,6 +7,7 @@ import json, os
 from mcp.server.fastmcp import FastMCP
 import findings_db as db
 import ops
+import quotecheck
 
 ACTOR = "agent:planner"  # changes made through this server are attributed to the planner agent
 
@@ -28,10 +29,12 @@ def record_finding(engagement: str, title: str, severity: str, asset: str, descr
     status: candidate (default, not yet verified) or confirmed (you have reproduced or verified it).
     status=confirmed needs method = how you verified it (runtime-reproduction, replay, authorization-matrix,
     source-review, tool-output, retest). runtime-reproduction, replay, authorization-matrix and tool-output also
-    need the evidence file that shows it.
+    need the evidence file that shows it. Text in backticks or code blocks (other than commands) is a quote:
+    confirming is refused when a quote isn't in the cited evidence, or a /src/<file>:<line> doesn't exist.
     evidence: file paths under /work/<engagement>/evidence/. Returns the stored finding with its id (F-001...)."""
     if status == "confirmed":
-        problem = db.confirm_problem(method, evidence)
+        problem = db.confirm_problem(method, evidence) or \
+            quotecheck.refusal(engagement, description, reproduction, evidence or [])
         if problem:
             return f"REFUSED: {problem}"
     row, _ = ops.call("finding.record", {"engagement": engagement, "actor": ACTOR, "method": method or None, "fields": dict(
@@ -52,7 +55,7 @@ def update_finding(engagement: str, finding_id: str, status: str | None = None, 
     """Update a finding. Use status=confirmed after verifying a candidate, with method = how you verified it
     (runtime-reproduction, replay, authorization-matrix, source-review, tool-output, retest; required, and
     runtime-reproduction, replay, authorization-matrix and tool-output also need the evidence file that shows
-    it); status=false-positive
+    it; quotes in backticks must be in the cited evidence, as for record_finding); status=false-positive
     when it doesn't hold; status=duplicate with duplicate_of=<id of the finding to keep>; fixed or accepted-risk
     after client feedback. reason is required for false-positive, accepted-risk and any severity or priority
     change. Severity is the technical severity; priority (P1-P4) is the remediation order, set separately; the
@@ -70,7 +73,10 @@ def update_finding(engagement: str, finding_id: str, status: str | None = None, 
         except ValueError as e:
             return f"REFUSED: {e}"
         # confirming again without a method keeps the one already recorded
-        problem = db.confirm_problem(method or cur.get("verified_method"), evidence if evidence is not None else cur.get("evidence"))
+        ev = evidence if evidence is not None else cur.get("evidence")
+        problem = db.confirm_problem(method or cur.get("verified_method"), ev) or quotecheck.refusal(
+            engagement, description if description is not None else cur.get("description"),
+            reproduction if reproduction is not None else cur.get("reproduction"), ev)
         if problem:
             return f"REFUSED: {problem}"
     try:
