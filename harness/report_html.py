@@ -601,6 +601,14 @@ def render(c):
             [f'<code>{e(i["path"])}</code>' + (f' <span class="m">{e(i["note"])}</span>' if i.get("note") else ""),
              f'<span class="m">{e((i.get("sha256") or "")[:16])}{"…" if i.get("sha256") else "n/a"}</span>',
              integrity(i.get("status"))] for i in lst]) if lst else "<p>No evidence recorded.</p>"))
+        checks = (c.get("verification") or {}).get(f["id"]) or []
+        if checks:   # the oracle that decided the finding and its negative control (#44)
+            parts.append('<div class="sub">Verification</div>' + table(["Oracle", "Result", "Negative control"], [
+                [e(x["oracle"].replace("_", " ")), f'<b>{e(x["result"])}</b>: {e(x.get("reason") or "")}<br>'
+                 f'<span class="m">{e(x["record"])}</span>',
+                 "<br>".join(f'{e(k["role"])}: status {e(k.get("status"))}'
+                             + (f' <span class="m">{e(k.get("evidence"))}</span>' if k.get("evidence") else "")
+                             for k in x["controls"]) or "none"] for x in checks]))
         cards.append("".join(parts) + "</article>")
 
     secs = [section("01", "Executive summary", "What we found", exec_body),

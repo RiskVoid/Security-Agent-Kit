@@ -49,7 +49,23 @@ if [ -z "$RV_ORACLE_APPROVAL" ]; then
   rec="$(echo "$r" | tail -1)"
   check "marker: verification record saved" "$(docker compose exec -T kali-mcp cat "$rec" </dev/null)" '"control_clean": true'
   check "marker: audited" "$(docker compose exec -T kali-mcp sh -c "grep -h '\"action\": \"verify\", \"oracle\": \"marker\"' /control/audit.log | tail -1" </dev/null)" '"oracle": "marker"'
-  check "marker: clean case fails" "$(v "'marker', {'url': '$L/api/docs?q={{marker}}'}")" '^fail'
+  r2="$(v "'marker', {'url': '$L/api/docs?q={{marker}}'}")"
+  check "marker: clean case fails" "$r2" '^fail'
+  rec2="$(echo "$r2" | tail -1)"
+
+  # ---------------------------------------------------------------- the finding side (#44)
+  fpy() { docker compose exec -T findings-mcp python3 -c "import findings; $1" </dev/null; }
+  check "a finding can't be confirmed by oracle with the clean case's record" \
+        "$(fpy "print(findings.record_finding('$ENG', 'XSS in /api/docs', 'medium', '$L/api/docs', 'Reflected input.', evidence=['$rec2'], status='confirmed', method='oracle'))")" \
+        'REFUSED: no cited verification passed'
+  check "a finding confirmed by oracle with the passing record" \
+        "$(fpy "print(findings.record_finding('$ENG', 'Reflected XSS in /search', 'medium', '$L/search?q=', 'The q parameter is reflected without escaping.', evidence=['$rec'], status='confirmed', method='oracle'))")" \
+        '"verified_method": "oracle"'
+  printf 'Test report for the verification oracles.\n' | docker compose exec -T findings-mcp sh -c "mkdir -p /work/$ENG/report && cat > /work/$ENG/report/executive-summary.md"
+  fpy "import ops; ops.call('report.build', {'engagement': '$ENG', 'actor': 'test:oracle'})" >/dev/null 2>&1
+  html="$(docker compose exec -T findings-mcp sh -c "cat /work/$ENG/report/*.html" </dev/null)"
+  check "the report shows the oracle and its negative control" "$(echo "$html" | python3 -c 'import sys; t = sys.stdin.read().replace("\n", ""); i = t.find("Verification</div>"); print(t[i:i + 1500] if i >= 0 else "")')" \
+        'marker.*pass.*control: status 200'
 
   # ---------------------------------------------------------------- identity difference
   check "identity_difference: bob reads alice's parcel (IDOR) passes" \
