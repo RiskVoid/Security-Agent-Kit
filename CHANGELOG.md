@@ -9,7 +9,9 @@ settings or the findings database; `./rvkit update` migrates existing installs a
 ### Console and operation
 - Console: an **Agent** section shows a conversation bound to the engagement, read-only, in the console's own
   design: messages, and each tool call as a typed line with its tier and result, refusals and approvals marked,
-  and the findings it recorded. Sending a message still happens in the OpenHands UI.
+  and the findings it recorded.
+- Console: message the planner from the **Agent** section, and pause or resume the conversation. A halted
+  engagement takes no message. Each one is in the audit log with who did it.
 
 ## [0.1.0]
 

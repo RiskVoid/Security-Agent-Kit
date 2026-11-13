@@ -123,6 +123,13 @@ def run_checks():
     check("agent view: conversation id checked", req("GET", f"/api/eng/{ENG}/agent?id=../x")[0] == 400)
     check("agent view: a conversation that isn't bound to the engagement is not shown",
           req("GET", f"/api/eng/{ENG}/agent?id=00000000-0000-0000-0000-000000000000")[0] == 404)
+    nobody = "00000000-0000-0000-0000-000000000000"
+    check("agent: an empty message refused", post(f"/api/eng/{ENG}/agent", {"id": nobody, "do": "message", "text": " "})[0] == 400)
+    check("agent: unknown action refused", post(f"/api/eng/{ENG}/agent", {"id": nobody, "do": "delete"})[0] == 400)
+    check("agent: no message to a conversation that isn't bound to the engagement",
+          post(f"/api/eng/{ENG}/agent", {"id": nobody, "do": "message", "text": "hi"})[0] == 404)
+    check("agent: no pause for a conversation that isn't bound to the engagement",
+          post(f"/api/eng/{ENG}/agent", {"id": nobody, "do": "pause"})[0] == 404)
 
     print("== conflicts and attribution")
     d = req("GET", f"/api/eng/{ENG}")[1]
