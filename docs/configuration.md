@@ -47,7 +47,8 @@ Set these with `./rvkit connect` and `./rvkit worker` ([models.md](models.md)), 
 | `WORKER_PARALLEL_TASKS` | `1` | Delegated tasks the worker runs at once. Keep 1 for Colab; raise it for an API endpoint or a local server with parallel slots. |
 | `WORKER_ADVISOR` | `1` | A worker task that stalls (the same call or error three times, or `WORKER_STALL_CALLS` calls with nothing new) first gets a nudge, then asks the planner model for advice, at most twice, before it stops as `stalled`. Only the goal and one line per recent step are sent, through the model gateway, which applies the engagement's client data rule; a private worker never asks. `0` turns the advice off. |
 | `WORKER_STALL_CALLS` | `8` | Worker calls with no new output and no candidate before a task counts as stalled. |
-| `WORKER_CONTEXT_CHARS` | `90000` | Characters of task context the worker keeps (about 25K tokens, for a 32K-context model). Raise it for a model with a longer context. |
+| `WORKER_CONTEXT_CHARS` | `90000` | Characters of task context the worker keeps (about 25K tokens, for a 32K-context model). Raise it for a model with a longer context. Past it, the oldest tool results shrink to one line each (tool, command, exit status, digest summary, evidence path). |
+| `WORKER_KEEP_RESULTS` | `5` | The latest tool results a worker task always keeps whole. |
 
 ### Planner model and spend
 

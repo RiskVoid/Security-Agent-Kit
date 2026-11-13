@@ -239,6 +239,45 @@ class Advisor(unittest.TestCase):
         self.assertEqual(len(self.sent), worker.ADVISOR_MAX)
 
 
+class Compact(unittest.TestCase):
+    """#35: the latest results stay whole, older ones shrink to one line, once."""
+
+    def conv(self, n, size=20000):
+        msgs = [{"role": "system", "content": "RULES " + "r" * 5000}, {"role": "user", "content": "GOAL " + "g" * 5000}]
+        lines = {}
+        for i in range(n):
+            msgs.append({"role": "assistant", "content": None, "tool_calls": [call("kali_run", {"command": f"c{i}"},
+                                                                                 cid=f"id{i}")]})
+            msgs.append({"role": "tool", "tool_call_id": f"id{i}", "content": f"out{i} " + "x" * size})
+            lines[f"id{i}"] = f"[shrunk] kali_run c{i} | exit=0 | full output: /work/e/{i}.txt"
+        return msgs, lines
+
+    def test_keeps_recent_and_shrinks_old_to_one_line(self):
+        msgs, lines = self.conv(8)
+        worker.compact(msgs, lines)
+        tools = [m["content"] for m in msgs if m["role"] == "tool"]
+        self.assertEqual(tools[:3], [lines["id0"], lines["id1"], lines["id2"]])
+        self.assertTrue(all(t.startswith(f"out{i + 3} ") and len(t) > 20000 for i, t in enumerate(tools[3:])))
+        self.assertTrue(msgs[0]["content"].startswith("RULES") and len(msgs[0]["content"]) > 5000)
+        self.assertTrue(msgs[1]["content"].startswith("GOAL") and len(msgs[1]["content"]) > 5000)
+
+    def test_only_as_much_as_needed_and_never_twice(self):
+        msgs, lines = self.conv(8, size=10500)
+        worker.compact(msgs, lines)
+        tools = [m["content"] for m in msgs if m["role"] == "tool"]
+        self.assertEqual(sum(t.startswith("[shrunk]") for t in tools), 1)    # one old result was enough
+        lines["id0"] = "[shrunk] SOMETHING ELSE"
+        worker.compact(msgs + [{"role": "user", "content": "y" * 20000}], lines)
+        self.assertNotEqual(tools[0], "[shrunk] SOMETHING ELSE")
+        self.assertEqual([m["content"] for m in msgs if m["role"] == "tool"][0], tools[0])
+
+    def test_under_budget_nothing_changes(self):
+        msgs, lines = self.conv(3, size=1000)
+        before = json.dumps(msgs)
+        worker.compact(msgs, lines)
+        self.assertEqual(json.dumps(msgs), before)
+
+
 SQLMAP_OUT = "exit=0 tier=intrusive\n" + "[INFO] testing 'AND boolean-based blind'\n" * 400 + """\
 sqlmap identified the following injection point(s) with a total of 46 HTTP(s) requests:
 ---

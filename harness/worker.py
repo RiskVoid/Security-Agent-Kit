@@ -37,6 +37,7 @@ KALI_MCP = os.environ.get("KALI_MCP_URL", "http://kali-mcp:8090/mcp")
 WEB_MCP = os.environ.get("WEB_MCP_URL", "http://web-mcp:8094/mcp")  # search + fetch (the worker has no internet)
 INTEL_MCP = os.environ.get("INTEL_MCP_URL", "http://intel-mcp:8093/mcp")
 CTX_CHARS = int(os.environ.get("WORKER_CONTEXT_CHARS", "90000"))  # ~25k tokens: fits the 32K L4 profile
+KEEP_RESULTS = int(os.environ.get("WORKER_KEEP_RESULTS", "5") or 5)  # the latest tool results are never shrunk
 # What the model sees of a tool result: a digest for outputs the kit can read, else the head and the tail
 # (digest.py; 4,000 + 2,000 characters). The full output is always in the evidence file and the step file.
 TIERS = ("passive", "active", "intrusive")
@@ -301,16 +302,24 @@ class ModelRefused(Exception):
         self.code, self.detail = code, detail
 
 
-def compact(messages):
-    """Keep the conversation under CTX_CHARS by shrinking the oldest tool outputs (full copies are on disk)."""
+def compact(messages, lines=None):
+    """Keep the conversation under CTX_CHARS by shrinking the oldest tool results to one line each: the tool, what it
+    ran, the exit status, the digest's summary and the evidence path (digest.one_line; the full output is on disk).
+    The latest KEEP_RESULTS results stay whole; the system prompt and the goal are never shrunk; nothing is shrunk
+    twice."""
     total = sum(len(json.dumps(m)) for m in messages)
-    for m in messages[2:]:
+    if total <= CTX_CHARS:
+        return
+    results = [m for m in messages[2:] if m.get("role") == "tool"]
+    for m in results[:-KEEP_RESULTS] if KEEP_RESULTS else results:
         if total <= CTX_CHARS:
             break
-        if m.get("role") == "tool" and not m["content"].startswith("[shrunk]"):
-            before = len(m["content"])
-            m["content"] = "[shrunk] " + m["content"][:400] + " …(full output in the step file)"
-            total -= before - len(m["content"])
+        if m["content"].startswith("[shrunk]"):
+            continue
+        before = len(m["content"])
+        line = (lines or {}).get(m.get("tool_call_id"))
+        m["content"] = line or "[shrunk] " + re.sub(r"\s+", " ", m["content"][:200]) + " …(full output in the step file)"
+        total -= before - len(m["content"])
 
 
 def task_dir(task):
@@ -604,7 +613,7 @@ def _loop(task, log):
         if task["step"] > task["max_steps"] + 1:
             task["result"] = {"summary": "Stopped without calling finish.", "confidence": "low"}
             return "done"
-        compact(messages)
+        compact(messages, task.get("lines"))
         if task["step"] > task["max_steps"]:  # out of tool budget: force a final answer
             messages.append({"role": "user", "content": "Tool budget used up. Call finish now."})
         msg = chat(messages, model, task)
