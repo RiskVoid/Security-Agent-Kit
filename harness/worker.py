@@ -28,6 +28,7 @@ from mcp import ClientSession
 from mcp.client.streamable_http import streamablehttp_client
 from mcp.server.fastmcp import FastMCP
 import findings_db as db
+import digest
 
 LITELLM = os.environ.get("LITELLM_URL", "http://litellm:4000/v1")
 LITELLM_KEY = os.environ.get("LITELLM_MASTER_KEY", "")
@@ -36,7 +37,8 @@ KALI_MCP = os.environ.get("KALI_MCP_URL", "http://kali-mcp:8090/mcp")
 WEB_MCP = os.environ.get("WEB_MCP_URL", "http://web-mcp:8094/mcp")  # search + fetch (the worker has no internet)
 INTEL_MCP = os.environ.get("INTEL_MCP_URL", "http://intel-mcp:8093/mcp")
 CTX_CHARS = int(os.environ.get("WORKER_CONTEXT_CHARS", "90000"))  # ~25k tokens: fits the 32K L4 profile
-TOOL_CHARS = 6000          # tool output kept in context per call; full output goes to a file
+# What the model sees of a tool result: a digest for outputs the kit can read, else the head and the tail
+# (digest.py; 4,000 + 2,000 characters). The full output is always in the evidence file and the step file.
 TIERS = ("passive", "active", "intrusive")
 
 # Stateless: no per-client session, so a conversation that was open when this server restarted keeps working
@@ -469,8 +471,9 @@ def _do_call(task, c, messages):
     if ap:
         task["approval"] = None
     path = _step_file(task, task["step"], name, args, out)
-    shown = out if len(out) <= TOOL_CHARS else out[:TOOL_CHARS] + f"\n…truncated, full output: {path}"
+    shown = digest.shown(name, args, out, path)
     messages.append({"role": "tool", "tool_call_id": c.get("id", name), "content": shown})
+    task.setdefault("lines", {})[c.get("id", name)] = digest.one_line(name, args, out)   # what it shrinks to
     save(task, messages)
     return "ok"
 

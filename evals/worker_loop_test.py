@@ -37,6 +37,7 @@ def _stub_mcp():
 
 _stub_mcp()
 import worker  # noqa: E402
+import digest  # noqa: E402
 
 
 def call(name, args, raw=None, cid=None):
@@ -139,6 +140,96 @@ class MalformedCalls(Loop):
         self.assertEqual(task["malformed"], 3)
 
 
+SQLMAP_OUT = "exit=0 tier=intrusive\n" + "[INFO] testing 'AND boolean-based blind'\n" * 400 + """\
+sqlmap identified the following injection point(s) with a total of 46 HTTP(s) requests:
+---
+Parameter: id (GET)
+    Type: boolean-based blind
+    Title: AND boolean-based blind - WHERE or HAVING clause
+    Payload: id=1 AND 5523=5523
+---
+[INFO] the back-end DBMS is SQLite
+back-end DBMS: SQLite
+[INFO] fetched data logged to text files under '/work/eng/sqlmap'
+[output saved as verified evidence: /work/eng/evidence/runs/sqlmap.txt]"""
+
+
+class Digests(unittest.TestCase):
+    """#32: head and tail with the cut marked, and digests for tools the kit can read."""
+
+    def test_head_and_tail(self):
+        text = "A" * 5000 + "MIDDLE" + "Z" * 5000
+        out = digest.clip(text, 4000, 2000, "/work/x.txt")
+        self.assertTrue(out.startswith("A" * 4000))
+        self.assertTrue(out.endswith("Z" * 2000))
+        self.assertNotIn("MIDDLE", out)
+        self.assertIn("characters cut: full output in /work/x.txt", out)
+        self.assertEqual(digest.clip("short"), "short")
+
+    def test_sqlmap_verdict_survives(self):
+        shown = digest.shown("kali_run", {"command": "sqlmap -u http://x/?id=1 --batch"}, SQLMAP_OUT)
+        self.assertTrue(shown.startswith("DIGEST (sqlmap): injection point(s) found"))
+        self.assertIn("Parameter: id (GET)", shown)
+        self.assertIn("back-end DBMS: SQLite", shown)
+        self.assertLess(len(shown), 6000)
+        none = digest.shown("kali_run", {"command": "sqlmap -u x"},
+                            "exit=0\n[CRITICAL] all tested parameters do not appear to be injectable.")
+        self.assertIn("no injection found", none)
+
+    def test_nmap_and_nuclei(self):
+        nmap = ("exit=0 tier=active\nStarting Nmap 7.95\nNmap scan report for 10.250.0.18\nHost is up.\n"
+                "PORT     STATE SERVICE VERSION\n22/tcp   closed ssh\n8000/tcp open   http    nginx 1.14.0\n"
+                "Nmap done: 1 IP address (1 host up) scanned in 3.1 seconds\n")
+        d = digest.shown("kali_run", {"command": "nmap -sV 10.250.0.18"}, nmap)
+        self.assertIn("DIGEST (nmap): 1 host(s), 1 open port(s)", d)
+        self.assertIn("8000/tcp open http nginx 1.14.0", d)
+        nuc = ("exit=0\n[git-config] [http] [medium] http://x/.git/config\n"
+               "[tech-detect:nginx] [http] [info] http://x/\n[CVE-2021-1] [http] [critical] http://x/a [\"v\"]\n")
+        d = digest.shown("kali_run", {"command": "nuclei -u http://x"}, nuc)
+        self.assertIn("3 match(es): 1 critical, 1 medium, 1 info", d)
+        self.assertLess(d.index("CVE-2021-1"), d.index("git-config"))       # most severe first
+        failed = "exit=126 tier=active\n[stderr]\n/usr/bin/nmap: exec: Operation not permitted"
+        self.assertNotIn("DIGEST", digest.shown("kali_run", {"command": "nmap -sV x"}, failed))   # not "0 hosts"
+
+    def test_json_outputs_are_parsed(self):
+        sg = {"version": "1.0", "errors": [], "paths": {"scanned": ["a.py"]}, "results": [
+            {"check_id": "python.sqli", "path": "/src/a.py", "start": {"line": 3}, "end": {"line": 3},
+             "extra": {"severity": "ERROR", "message": "SQL built from input", "lines": "q = 'x' + y"}},
+            {"check_id": "python.debug", "path": "/src/a.py", "start": {"line": 9}, "end": {"line": 9},
+             "extra": {"severity": "INFO", "message": "debug on", "lines": "app.run(debug=True)"}}]}
+        out = "exit=1 tier=passive\n" + json.dumps(sg) + "\n[output saved as verified evidence: /work/eng/e/sg.json]"
+        d = digest.shown("kali_run", {"command": "semgrep --json"}, out)
+        self.assertIn("DIGEST (semgrep): 2 result(s): 1 high, 1 low", d)
+        self.assertIn("python.sqli at /src/a.py:3", d)
+        self.assertIn("(full output: /work/eng/e/sg.json)", d)
+        self.assertNotIn('"check_id"', d)
+        gl = [{"RuleID": "aws-key", "File": "/src/.env", "StartLine": 2, "Description": "AWS key", "Secret": "x",
+               "Match": "AKIA", "Fingerprint": "f"}]
+        self.assertIn("DIGEST (gitleaks): 1 result(s)", digest.shown("kali_run", {"command": "gitleaks"},
+                                                                     "exit=1\n" + json.dumps(gl)))
+
+    def test_unknown_output_is_clipped(self):
+        out = "exit=0\n" + "x" * 9000 + "THE-END"
+        shown = digest.shown("kali_run", {"command": "curl -s http://x/"}, out, "/work/s.txt")
+        self.assertTrue(shown.endswith("THE-END"))
+        self.assertIn("characters cut", shown)
+
+    def test_one_line(self):
+        line = digest.one_line("kali_run", {"command": "sqlmap -u http://x/?id=1 --batch"}, SQLMAP_OUT)
+        self.assertEqual(line, "[shrunk] kali_run sqlmap -u http://x/?id=1 --batch | exit=0 | DIGEST (sqlmap): "
+                               "injection point(s) found | full output: /work/eng/evidence/runs/sqlmap.txt")
+
+
+class ToolOutputInTheLoop(Loop):
+    def test_worker_sees_the_sqlmap_verdict(self):
+        self.outputs["sqlmap -u http://x/?id=1 --batch"] = SQLMAP_OUT.rsplit("\n", 1)[0]
+        task, msgs = self.run_script([[call("kali_run", {"command": "sqlmap -u http://x/?id=1 --batch"})]])
+        shown = self.tool_texts(msgs)[0]
+        self.assertIn("injection point(s) found", shown)
+        self.assertIn("back-end DBMS: SQLite", shown)
+        self.assertTrue(task["lines"])
+
+
 if __name__ == "__main__":
     warnings.simplefilter("ignore", ResourceWarning)
-    unittest.main(verbosity=1)
+    unittest.main(verbosity=1, warnings="ignore")
