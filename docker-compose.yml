@@ -237,6 +237,13 @@ services:
     networks: {rvlab: {ipv4_address: 10.250.0.17}}    # http://10.250.0.17:8000
     restart: "no"
 
+  lab-hostile:   # Parcel Tracker: a target that attacks the agent testing it (evals/targets/rv-hostile-lab)
+    build: ./evals/targets/rv-hostile-lab
+    image: riskvoid-lab-hostile:local
+    profiles: ["lab"]
+    networks: {rvlab: {ipv4_address: 10.250.0.18}}    # http://10.250.0.18:8000 (API key key-alice-7731)
+    restart: "no"
+
   php-runner:   # the optional PHP profile (RW-013), started only by ./rvkit php: no network, read-only, no capabilities
     build: ./php-runner
     image: riskvoid-php-runner:local
