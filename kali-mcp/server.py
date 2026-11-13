@@ -4,7 +4,7 @@ Commands run sandboxed per engagement (see core.py): own folder only, unprivileg
 engagement scope by nftables, tiers and rate limits from RULES.md, intrusive commands need host approval, and
 everything is audit-logged. Only run against systems you are authorised to test.
 """
-import functools, json, sys
+import functools, inspect, json, sys
 import anyio
 from mcp.server.fastmcp import FastMCP
 import core
@@ -21,6 +21,28 @@ async def _thread(fn, *args, **kw):
     return await anyio.to_thread.run_sync(functools.partial(fn, *args, **kw), limiter=_LIMIT)
 
 _LIMIT = anyio.CapacityLimiter(64)
+
+
+def rules_line(engagement):
+    """The engagement's unenforced rules as one line (policy.reminder), or "" (unknown engagement, no such rules)."""
+    try:
+        i = core.info(engagement)
+    except Exception:  # noqa: BLE001 - a reminder never makes a result fail
+        return ""
+    return core.rvpolicy.reminder(i["rules"], i.get("usage"))
+
+
+def with_rules(fn):
+    """Action tools end their result with the rules reminder, so the rules are in the planner's recent context
+    however its conversation was condensed (epic #52, issue #38)."""
+    sig = inspect.signature(fn)
+
+    @functools.wraps(fn)
+    async def wrap(*args, **kw):
+        out = await fn(*args, **kw)
+        line = rules_line(sig.bind_partial(*args, **kw).arguments.get("engagement") or "")
+        return f"{out}\n{line}" if line and isinstance(out, str) else out
+    return wrap
 
 
 @mcp.tool()
@@ -84,6 +106,7 @@ def engagement_activity(engagement: str) -> str:
 
 
 @mcp.tool()
+@with_rules
 async def http_request(engagement: str, method: str, url: str, headers: dict | None = None, body: str = "",
                  approval_id: str = "", max_tier: str = "", task: str = "", body_base64: bool = False,
                  identity: str = "") -> str:
@@ -105,6 +128,7 @@ async def http_request(engagement: str, method: str, url: str, headers: dict | N
 
 
 @mcp.tool()
+@with_rules
 async def analyze_source(engagement: str, tool: str, path: str, rulesets: list[str] | None = None, task: str = "") -> str:
     """Run a source-analysis tool on in-scope code with no network access at all (it can't reach targets or the
     internet). tool: semgrep (offline rules; rulesets = folders like php, python, javascript; default: detected
@@ -117,6 +141,7 @@ async def analyze_source(engagement: str, tool: str, path: str, rulesets: list[s
 
 
 @mcp.tool()
+@with_rules
 async def run(command: str, engagement: str, timeout_s: int = 600, approval_id: str = "", max_tier: str = "",
         task: str = "") -> str:
     """Run a shell command in the Kali sandbox for an engagement.
@@ -250,6 +275,7 @@ def list_captures(engagement: str, capture: str = "") -> str:
 
 
 @mcp.tool()
+@with_rules
 async def replay_request(engagement: str, capture: str, entry: int, identity: str = "", changes: dict | None = None,
                          markers: list[str] | None = None, approval_id: str = "", max_tier: str = "",
                          task: str = "") -> str:
@@ -268,6 +294,7 @@ async def replay_request(engagement: str, capture: str, entry: int, identity: st
 
 
 @mcp.tool()
+@with_rules
 async def browse(engagement: str, url: str, steps: list[dict] | None = None, identity: str = "",
                  mask: list[str] | None = None, approval_id: str = "", max_tier: str = "", task: str = "",
                  timeout_s: int = 180) -> str:
@@ -308,6 +335,7 @@ def propose_authz_matrix(engagement: str, name: str, operations: list[dict], ide
 
 
 @mcp.tool()
+@with_rules
 async def run_authz_matrix(engagement: str, name: str, task: str = "") -> str:
     """Run an approved authorization matrix: checks every identity first (blocked cells when a session isn't
     valid), sends each operation as each identity, compares the data returned (fixture markers, similarity to the

@@ -87,9 +87,15 @@ def agent_profile(name, llm_ref, mcp_refs, persona):
     base = (cur or {}).get("profile") or {"schema_version": 4, "agent_kind": "openhands", "agent": "CodeActAgent",
                                           "name": name}
     base.update(llm_profile_ref=llm_ref, mcp_server_refs=mcp_refs, persona=persona, system_message_suffix=None)
+    # Condensation (OpenHands summarizes the middle of a long conversation): the system prompt and the first user
+    # message are kept; everything else may be summarized. The rules of engagement survive it because every kali
+    # action result restates them (kali-mcp with_rules, epic #52 issue #38), not because of these settings.
+    base["condenser"] = {**(base.get("condenser") or {}), **CONDENSER}
     res = api("POST", f"/api/agent-profiles/{name}", base)
     return (res.get("profile") or res).get("id") or api("GET", f"/api/agent-profiles/{name}")["profile"]["id"]
 
+
+CONDENSER = {"condenser_kind": "llm_summarizing", "enabled": True, "max_size": 240, "keep_first": 2}
 
 PLAIN = {"url": "http://plain-mcp:8095/mcp", "transport": "http", "timeout": 120, "sse_read_timeout": 1800,
          "description": "Benchmark baseline: the sandboxed run tool and record_finding only"}

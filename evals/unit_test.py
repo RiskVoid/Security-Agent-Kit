@@ -1567,6 +1567,88 @@ class BenchStats(unittest.TestCase):
             self.assertIn("2 asked", self.st.operator_line(op))
 
 
+class RulesPinned(unittest.TestCase):
+    """Epic #52, issue #38: the rules the kit can't enforce (stop conditions, window, budgets, client data) end every
+    kali action result, so they survive the planner's conversation being condensed."""
+    RULES = "- Stop conditions: any production customer data appears in a response\n- Max requests: 500\n" \
+            "- Client data: local, colab\n- Window: 00:00-23:59 UTC\n"
+
+    def rules(self, text=None):
+        r, err = policy.parse_rules(self.RULES if text is None else text)
+        self.assertEqual(err, [])
+        return r
+
+    def test_reminder(self):
+        line = policy.reminder(self.rules(), {"requests": 12, "commands": 3})
+        self.assertTrue(line.startswith("[engagement rules: "), line)
+        for part in ("production customer data", "budget 12/500 requests", "local, colab", "window 00:00-23:59"):
+            self.assertIn(part, line)
+        self.assertEqual(policy.reminder(self.rules("")), "")
+
+    def test_not_now(self):
+        import datetime
+        r = self.rules("- Dates: 2020-01-01 to 2020-01-02\n")
+        self.assertIn("NOT NOW: testing ended on 2020-01-02", policy.reminder(r, now=datetime.datetime(
+            2026, 1, 1, tzinfo=datetime.timezone.utc)))
+
+    def server(self):
+        """kali-mcp/server.py with its MCP and thread libraries stubbed (only with_rules is exercised)."""
+        import types
+        stubs = {"anyio": types.SimpleNamespace(CapacityLimiter=lambda n: None, to_thread=None),
+                 "mcp": types.ModuleType("mcp"), "mcp.server": types.ModuleType("mcp.server"),
+                 "mcp.server.fastmcp": types.SimpleNamespace(FastMCP=lambda *a, **k: types.SimpleNamespace(
+                     tool=lambda: (lambda f: f))), "actions": types.ModuleType("actions")}
+        saved = {k: sys.modules.get(k) for k in stubs}
+        sys.modules.update(stubs)
+        try:
+            spec = importlib.util.spec_from_file_location("rv_kali_server", os.path.join(KIT, "kali-mcp", "server.py"))
+            mod = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(mod)
+        finally:
+            for k, v in saved.items():
+                if v is None:
+                    sys.modules.pop(k, None)
+                else:
+                    sys.modules[k] = v
+        return mod
+
+    def test_action_results_carry_rules(self):
+        import asyncio
+        srv = self.server()
+        rules = self.rules()
+        srv.core = type("C", (), {"info": staticmethod(lambda e: {"rules": rules, "usage": {"requests": 1}}
+                                                       if e == "acme" else (_ for _ in ()).throw(ValueError(e))),
+                                  "rvpolicy": policy})
+
+        @srv.with_rules
+        async def run(command: str, engagement: str, timeout_s: int = 600) -> str:
+            return "exit=0 tier=active\nok"
+        out = asyncio.run(run("id", engagement="acme"))
+        self.assertTrue(out.startswith("exit=0 tier=active\nok\n[engagement rules: "), out)
+        self.assertIn("production customer data", out)
+        self.assertEqual(asyncio.run(run("id", "nope")), "exit=0 tier=active\nok")  # unknown engagement: unchanged
+        with open(os.path.join(KIT, "kali-mcp", "server.py")) as f:
+            src = f.read()
+        for name in ("run", "http_request", "analyze_source", "replay_request", "browse", "run_authz_matrix"):
+            self.assertIn(f"@with_rules\nasync def {name}(", src)
+
+    def test_survives_condensation(self):
+        """A long run condensed the way OpenHands' summarizing condenser does it (keep the first 2 events, a summary
+        of the middle, the newest half of max_size): the list_engagements output and its stop condition are gone
+        from the view, and a summary that kept only facts doesn't restore them, but each kept result restates it."""
+        line = policy.reminder(self.rules(), {"requests": 0})
+        events = [("system", "planner prompt"), ("user", "test acme"),
+                  ("tool", "## acme\nstop condition (stop and tell the user when it happens): any production "
+                           "customer data appears in a response")]
+        events += [("tool", f"exit=0 tier=active\nresult {i}\n{line}") for i in range(300)]
+        max_size, keep_first = 240, 2
+        tail = events[-(max_size // 2 - keep_first - 1):]
+        view = events[:keep_first] + [("summary", "USER_CONTEXT: test acme. COMPLETED: 180 scans.")] + tail
+        self.assertNotIn("## acme", " ".join(t for _, t in view))
+        last = view[-1][1]
+        self.assertIn("stop condition (stop and tell the user when it happens): any production customer data", last)
+
+
 class ConcurrentOpen(unittest.TestCase):
     """RW-023: processes that open a new findings.db at the same moment migrate it once, with no lost record."""
 

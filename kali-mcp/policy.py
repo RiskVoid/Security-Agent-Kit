@@ -482,6 +482,30 @@ def time_refusal(rules, now=None):
     return None
 
 
+def reminder(rules, usage=None, now=None):
+    """The rules the kit can't enforce mechanically, as one line for the end of every action result (epic #52,
+    issue #38). The planner's conversation is condensed when it grows: a summary can drop the list_engagements
+    output, and with it the stop conditions and budgets. A rule repeated in each recent result survives any
+    condensation. Empty when the engagement has none of these rules."""
+    parts = []
+    late = time_refusal(rules, now)
+    if late:
+        parts.append(f"NOT NOW: {late}, stop and wait")
+    elif rules.get("window"):
+        h1, m1, h2, m2 = rules["window"]
+        parts.append(f"window {h1:02d}:{m1:02d}-{h2:02d}:{m2:02d} {rules.get('timezone') or 'UTC'}")
+    for s in rules.get("stop_conditions") or []:
+        parts.append("stop condition (stop and tell the user when it happens): " + (s if len(s) <= 160 else s[:157] + "..."))
+    u = usage or {}
+    for key, word in (("max_requests", "requests"), ("max_commands", "commands")):
+        if rules.get(key) is not None:
+            used = u.get(word)
+            parts.append(f"budget {used}/{rules[key]} {word}" if used is not None else f"budget {rules[key]} {word}")
+    if rules.get("client_data"):
+        parts.append("client data may go only to " + ", ".join(rules["client_data"]))
+    return ("[engagement rules: " + "; ".join(parts) + "]") if parts else ""
+
+
 # ---------------------------------------------------------------- effective policy
 def limits(pol, rules):
     """What the kit does not enforce, in words: shown before activation and kept with every revision."""
