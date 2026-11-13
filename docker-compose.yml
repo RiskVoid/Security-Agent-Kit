@@ -144,6 +144,8 @@ services:
       WORKER_MODEL: colab-qwen
       WORKER_CONTEXT_CHARS: ${WORKER_CONTEXT_CHARS:-90000}   # task context budget; raise for bigger model contexts
       WORKER_PARALLEL_TASKS: ${WORKER_PARALLEL_TASKS:-1}     # tasks at once; raise only if the endpoint serves parallel requests
+      WORKER_ADVISOR: ${WORKER_ADVISOR:-1}         # a stalled task asks the planner model for advice (at most twice); 0: off
+      WORKER_STALL_CALLS: ${WORKER_STALL_CALLS:-8} # calls with nothing new before a task counts as stalled
     volumes:
       - ${ENGAGEMENTS_DIR:-~/riskvoid/engagements}:/work
       - ${PROJECTS_DIR:-~/riskvoid/projects}:/src:ro

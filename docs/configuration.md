@@ -45,6 +45,8 @@ Set these with `./rvkit connect` and `./rvkit worker` ([models.md](models.md)), 
 | `WORKER_FALLBACK_MODEL` | `openrouter/deepseek/deepseek-v4.1-flash` | The fallback model (OpenRouter). |
 | `COLAB_API_BASE`, `COLAB_MODEL` | | The last Colab URL and model, so `./rvkit worker colab` can switch back. |
 | `WORKER_PARALLEL_TASKS` | `1` | Delegated tasks the worker runs at once. Keep 1 for Colab; raise it for an API endpoint or a local server with parallel slots. |
+| `WORKER_ADVISOR` | `1` | A worker task that stalls (the same call or error three times, or `WORKER_STALL_CALLS` calls with nothing new) first gets a nudge, then asks the planner model for advice, at most twice, before it stops as `stalled`. Only the goal and one line per recent step are sent, through the model gateway, which applies the engagement's client data rule; a private worker never asks. `0` turns the advice off. |
+| `WORKER_STALL_CALLS` | `8` | Worker calls with no new output and no candidate before a task counts as stalled. |
 | `WORKER_CONTEXT_CHARS` | `90000` | Characters of task context the worker keeps (about 25K tokens, for a 32K-context model). Raise it for a model with a longer context. |
 
 ### Planner model and spend

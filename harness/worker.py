@@ -23,7 +23,7 @@ checkpoints (each action is recorded as started before it runs and done after) a
     action that was in flight is never repeated automatically: the model is told its result is unknown.
   - depends_on: a task waits until the tasks it depends on are done (and is blocked if one of them fails).
 """
-import asyncio, datetime, html, json, os, re, threading, time, urllib.error, urllib.parse, urllib.request, uuid
+import asyncio, datetime, hashlib, html, json, os, re, threading, time, urllib.error, urllib.parse, urllib.request, uuid
 from mcp import ClientSession
 from mcp.client.streamable_http import streamablehttp_client
 from mcp.server.fastmcp import FastMCP
@@ -260,6 +260,14 @@ ACTIVE = ("queued", "waiting", "running", "awaiting_approval")
 FAILED = ("error", "cancelled", "halted", "interrupted", "blocked", "tool_failure", "stalled")
 SCHEMA = {t["function"]["name"]: t["function"]["parameters"] for t in TOOLS}
 MALFORMED_LIMIT = 3                  # malformed tool calls in a row before the task stops (tool_failure)
+# Stall and repeat detection (epic #52, #34): the same call 3 times, the same error 3 times, or this many calls
+# with nothing new (no new output, no candidate). The first stall gets a nudge, the next ones advice from the
+# planner model (#37, at most ADVISOR_MAX per task, WORKER_ADVISOR=0 turns it off), then the task stops (stalled).
+REPEAT_LIMIT = 3
+NO_PROGRESS_CALLS = int(os.environ.get("WORKER_STALL_CALLS", "8") or 8)
+ADVISOR = os.environ.get("WORKER_ADVISOR", "1") != "0"
+ADVISOR_MODEL = os.environ.get("WORKER_ADVISOR_MODEL", "planner")
+ADVISOR_MAX = 2
 SAFE_METHODS = ("GET", "HEAD", "OPTIONS")
 APPROVAL_WAIT_H = 72                 # a task stops waiting for a decision after this long
 
@@ -408,6 +416,93 @@ def parse_args(name, raw):
     return args, None
 
 
+def _error_key(out):
+    """A tool result's failure, with names, numbers and paths removed (the same failure has the same key), or None."""
+    first = (out or "").strip().split("\n")[0]
+    m = re.match(r"exit=(-?\d+)", first)
+    if m and int(m.group(1)) in (0, 1):
+        return None
+    if not (m or first.startswith(("ERROR", "REFUSED", "NOT RUN"))):
+        return None
+    body = first if not m else next((l for l in out.split("\n")[1:] if l.strip() and not l.startswith("[")), first)
+    key = re.sub(r"\S*/\S+", "<path>", body)
+    return re.sub(r"\d+", "#", key)[:160]
+
+
+def watch(task, name, args, out):
+    """Track repeats and progress after a call ran. Returns (kind, detail) when the task looks stalled, else None."""
+    w = task.setdefault("watch", {"calls": {}, "errors": {}, "outputs": [], "idle": 0})
+    sig = name + " " + json.dumps(args, sort_keys=True)
+    w["calls"][sig] = w["calls"].get(sig, 0) + 1
+    err = _error_key(out)
+    body = re.sub(r"\[output saved as verified evidence: \S+\]|/evidence/\S+", "", out or "")
+    h = hashlib.sha1(body.encode(errors="replace")).hexdigest()[:12]
+    new = name == "record_candidate" and not err or (not err and h not in w["outputs"])
+    if h not in w["outputs"]:
+        w["outputs"] = (w["outputs"] + [h])[-200:]
+    w["idle"] = 0 if new else w["idle"] + 1
+    if err:
+        w["errors"][err] = w["errors"].get(err, 0) + 1
+    what = (args.get("command") or args.get("url") or args.get("query") or args.get("path") or "")[:120]
+    found = None
+    if w["calls"][sig] >= REPEAT_LIMIT:
+        found = "repeat", f"{name} {what} sent {REPEAT_LIMIT} times with the same arguments"
+    elif err and w["errors"][err] >= REPEAT_LIMIT:
+        found = "error", f"the same error {REPEAT_LIMIT} times: {err}"
+    elif w["idle"] >= NO_PROGRESS_CALLS:
+        found = "no-progress", f"{NO_PROGRESS_CALLS} calls with no new output and no candidate"
+    if found:   # every stall starts a fresh window: the model gets as many calls to act on the nudge or advice
+        w.update(calls={}, errors={}, idle=0)
+    return found
+
+
+def advise(task, kind, detail):
+    """Ask the planner model what to do at a stall (#37). Only the goal, the stall and one line per recent step go
+    out: no raw tool output, no code. The model gateway applies the engagement's client data rule to it. Returns
+    the advice, or None (off, private worker, limit reached, refused or unreachable)."""
+    if not ADVISOR or task["info"]["rules"].get("worker") == "private" or \
+            len(task.get("advisor") or []) >= ADVISOR_MAX:
+        return None
+    lines = list((task.get("lines") or {}).values())[-8:]
+    msgs = [{"role": "system", "content": (
+                "You advise a security testing worker whose tool loop is stuck. In at most five sentences, say what "
+                "it should try next, or that it should finish now with what it has. Stay within its goal and tier; "
+                "never give it a new goal or a wider scope.")},
+            {"role": "user", "content": f"Goal: {task['goal'][:1500]}\nTier: {task['tier']}\nStuck: {kind}: "
+                                        f"{detail}\nLast steps:\n" + "\n".join(l[:300] for l in lines)}]
+    body = {"model": ADVISOR_MODEL, "messages": msgs, "max_tokens": 400, "temperature": 0.2}
+    hdrs = {"Authorization": f"Bearer {LITELLM_KEY}", "Content-Type": "application/json",
+            "x-rv-engagement": task["engagement"], "x-rv-task": task["id"]}
+    req = urllib.request.Request(f"{LITELLM}/chat/completions", data=json.dumps(body).encode(), headers=hdrs)
+    rec = {"at": _now(), "kind": kind}
+    try:
+        r = json.load(urllib.request.urlopen(req, timeout=180))
+        text = (r["choices"][0]["message"].get("content") or "").strip()
+        rec.update(tokens=r.get("usage"), model=r.get("model"))
+    except Exception as e:  # noqa: BLE001 - no advice: the task stops as stalled instead
+        rec["error"] = f"{type(e).__name__}: {str(e)[:200]}"
+        text = None
+    task.setdefault("advisor", []).append(rec)
+    return text or None
+
+
+def on_stall(task, kind, detail):
+    """What happens at a stall: the text added to the tool result, or Stop("stalled")."""
+    stalls = task.setdefault("stalls", [])
+    rec = {"at": _now(), "step": task["step"], "kind": kind, "detail": detail}
+    stalls.append(rec)
+    if len(stalls) == 1:
+        rec["action"] = "nudge"
+        return (f"\n\n[harness] You look stuck: {detail}. Sending it again won't change the result. Try something "
+                "different that serves the goal, or call finish now with what you have (say what you couldn't do).")
+    advice = advise(task, kind, detail)
+    if advice:
+        rec["action"] = "advice"
+        return (f"\n\n[harness] Still stuck: {detail}. Advice from the lead consultant (not a new goal): {advice}")
+    rec["action"] = "stop"
+    raise Stop("stalled", f"stalled: {detail}")
+
+
 def _do_call(task, c, messages):
     """Run one tool call of the current assistant turn. Returns ok | finish | approval."""
     name = c["function"]["name"]
@@ -472,9 +567,14 @@ def _do_call(task, c, messages):
         task["approval"] = None
     path = _step_file(task, task["step"], name, args, out)
     shown = digest.shown(name, args, out, path)
-    messages.append({"role": "tool", "tool_call_id": c.get("id", name), "content": shown})
     task.setdefault("lines", {})[c.get("id", name)] = digest.one_line(name, args, out)   # what it shrinks to
-    save(task, messages)
+    stall = watch(task, name, args, out)
+    try:
+        if stall:
+            shown += on_stall(task, *stall)
+    finally:   # a stop still records the result the model got
+        messages.append({"role": "tool", "tool_call_id": c.get("id", name), "content": shown})
+        save(task, messages)
     return "ok"
 
 
@@ -785,6 +885,8 @@ def report(task) -> str:
         out["model"] = task["served_by"]  # which model did the work (the fallback model shows up here)
     if task.get("malformed"):
         out["malformed_calls"] = task["malformed"]
+    if task.get("stalls"):
+        out["stalls"] = [{k: s.get(k) for k in ("kind", "detail", "action")} for s in task["stalls"]]
     if task.get("depends_on"):
         out["depends_on"] = task["depends_on"]
     if task.get("result"):

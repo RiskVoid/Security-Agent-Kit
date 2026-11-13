@@ -140,6 +140,105 @@ class MalformedCalls(Loop):
         self.assertEqual(task["malformed"], 3)
 
 
+class Stalls(Loop):
+    """#34 and #37: repeats, repeated errors and no progress get a nudge, then advice, then a stop."""
+
+    def setUp(self):
+        super().setUp()
+        self.asked = []
+        worker.advise = lambda task, kind, detail: (self.asked.append((kind, detail)),
+                                                    task.setdefault("advisor", []).append({"kind": kind}),
+                                                    self.advice)[2] if len(task.get("advisor") or []) < 2 else None
+        self.advice = "Try the /api path instead, or finish."
+
+    def same(self, n, cmd="curl -s http://x/"):
+        return [[call("kali_run", {"command": cmd})] for _ in range(n)]
+
+    def test_repeat_nudge_then_advice_then_stop(self):
+        task, msgs = self.run_script(self.same(12))
+        texts = self.tool_texts(msgs)
+        self.assertIn("[harness] You look stuck", texts[2])           # third identical call: nudge
+        self.assertIn("Advice from the lead consultant", texts[5])    # sixth: first consult
+        self.assertIn("Advice from the lead consultant", texts[8])    # ninth: second consult
+        self.assertEqual(task["status"], "stalled")                  # twelfth: no more consults, stop
+        self.assertEqual(len(texts), 12)
+        self.assertEqual([s["action"] for s in task["stalls"]], ["nudge", "advice", "advice", "stop"])
+        self.assertEqual(self.asked[0][0], "repeat")
+        self.assertIn("stalled", task["error"])
+
+    def test_without_advisor_the_second_stall_stops(self):
+        worker.advise = lambda task, kind, detail: None
+        task, _ = self.run_script(self.same(10))
+        self.assertEqual(task["status"], "stalled")
+        self.assertEqual([s["action"] for s in task["stalls"]], ["nudge", "stop"])
+        self.assertEqual(len(self.ran), 6)
+
+    def test_same_error_with_different_commands(self):
+        for i in range(4):
+            self.outputs[f"cat /nope{i}"] = f"exit=2 tier=passive\n[stderr]\ncat: /nope{i}: No such file or directory"
+        task, msgs = self.run_script([[call("kali_run", {"command": f"cat /nope{i}"})] for i in range(4)])
+        self.assertEqual(task["stalls"][0]["kind"], "error")
+        self.assertIn("You look stuck", self.tool_texts(msgs)[2])
+
+    def test_no_progress(self):
+        for i in range(10):
+            self.outputs[f"echo {i}"] = "exit=0 tier=passive\nsame output"
+        task, _ = self.run_script([[call("kali_run", {"command": f"echo {i}"})] for i in range(10)])
+        self.assertEqual(task["stalls"][0]["kind"], "no-progress")
+        self.assertEqual(task["stalls"][0]["step"], 9)       # the first output was new; 8 idle calls after it
+
+    def test_progress_resets(self):
+        task, _ = self.run_script([[call("kali_run", {"command": f"echo {i}"})] for i in range(12)])
+        self.assertFalse(task.get("stalls"))
+        self.assertEqual(task["status"], "done")
+
+
+class Advisor(unittest.TestCase):
+    """#37: what goes to the planner model, and when it isn't asked."""
+
+    def setUp(self):
+        self.saved = worker.urllib.request.urlopen
+        self.sent = []
+
+        class R:
+            def __init__(s, body):
+                s.body = body
+
+            def read(s):
+                return json.dumps({"model": "planner", "usage": {"total_tokens": 99},
+                                   "choices": [{"message": {"content": "Finish now."}}]}).encode()
+        def fake(req, timeout=None):
+            self.sent.append((req.full_url, dict(req.header_items()), json.loads(req.data)))
+            return R(None)
+        worker.urllib.request.urlopen = fake
+
+    def tearDown(self):
+        worker.urllib.request.urlopen = self.saved
+
+    def task(self, **rules):
+        return {"id": "t", "engagement": "eng", "goal": "Find SQLi in /src/x", "tier": "passive", "step": 4,
+                "info": {"rules": rules}, "lines": {"c1": "[shrunk] kali_run grep -r SELECT /src/x | exit=0 | 3 hits"}}
+
+    def test_sends_the_digest_not_the_output(self):
+        t = self.task()
+        self.assertEqual(worker.advise(t, "repeat", "kali_run x sent 3 times"), "Finish now.")
+        url, headers, body = self.sent[0]
+        self.assertTrue(url.endswith("/chat/completions"))
+        self.assertEqual(body["model"], worker.ADVISOR_MODEL)
+        self.assertEqual({k.lower(): v for k, v in headers.items()}["x-rv-engagement"], "eng")
+        text = json.dumps(body["messages"])
+        self.assertIn("[shrunk] kali_run grep", text)
+        self.assertEqual(t["advisor"][0]["tokens"], {"total_tokens": 99})
+
+    def test_limits(self):
+        t = self.task()
+        for _ in range(3):
+            worker.advise(t, "repeat", "x")
+        self.assertEqual(len(self.sent), worker.ADVISOR_MAX)
+        self.assertIsNone(worker.advise(self.task(worker="private"), "repeat", "x"))   # no egress for a private worker
+        self.assertEqual(len(self.sent), worker.ADVISOR_MAX)
+
+
 SQLMAP_OUT = "exit=0 tier=intrusive\n" + "[INFO] testing 'AND boolean-based blind'\n" * 400 + """\
 sqlmap identified the following injection point(s) with a total of 46 HTTP(s) requests:
 ---
