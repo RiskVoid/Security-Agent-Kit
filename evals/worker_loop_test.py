@@ -479,6 +479,57 @@ class TypedFinish(Loop):
         self.assertEqual((r["outcome"], r["candidates"], r["result"]),
                          ("completed", [], {"observations": ["o"], "confidence": "high"}))
 
+
+class Traces(Loop):
+    """#51: spans for the task and its tool calls; content only when the engagement allows it, never offline."""
+
+    def traced(self, rules):
+        import tracing
+        saved = (tracing.ENABLED, tracing.CONTENT, tracing.ENDPOINT)
+        tracing.ENABLED, tracing.CONTENT, tracing.ENDPOINT = True, True, "http://127.0.0.1:9"   # nothing listens
+        os.environ["RV_TRACE_KEEP"] = "1"
+        tracing.sent.clear()
+        try:
+            with tracing.span("invoke_agent riskvoid-worker", {"gen_ai.operation.name": "invoke_agent"},
+                              trace_key="t1", content=tracing.content_allowed(rules)):
+                self.run_script([[call("kali_run", {"command": "cat /src/x/settings.py"})]], max_steps=4)
+            tracing.flush()
+            time.sleep(0.8)
+        finally:
+            tracing.ENABLED, tracing.CONTENT, tracing.ENDPOINT = saved
+            os.environ.pop("RV_TRACE_KEEP", None)
+        return [s for b in tracing.sent for rs in b["resourceSpans"] for ss in rs["scopeSpans"] for s in ss["spans"]]
+
+    def attrs(self, s):
+        return {a["key"]: list(a["value"].values())[0] for a in s["attributes"]}
+
+    def test_spans_and_content(self):
+        spans = self.traced({"client_data": None, "network": "online"})
+        names = [s["name"] for s in spans]
+        self.assertIn("invoke_agent riskvoid-worker", names)
+        tool = next(s for s in spans if s["name"] == "execute_tool kali_run")
+        root = next(s for s in spans if s["name"].startswith("invoke_agent"))
+        self.assertEqual((tool["traceId"], tool["parentSpanId"]), (root["traceId"], root["spanId"]))
+        a = self.attrs(tool)
+        self.assertEqual((a["gen_ai.operation.name"], a["gen_ai.tool.name"]), ("execute_tool", "kali_run"))
+        self.assertIn("settings.py", a["gen_ai.tool.call.arguments"])
+        self.assertIn("gen_ai.tool.call.result", a)
+
+    def test_offline_and_disallowed_engagements_export_no_content(self):
+        for rules in ({"client_data": None, "network": "offline"}, {"client_data": ["colab"], "network": "online"}):
+            with self.subTest(rules=rules):
+                spans = self.traced(rules)
+                self.assertTrue(spans)
+                for s in spans:
+                    keys = set(self.attrs(s))
+                    self.assertFalse(keys & {"gen_ai.tool.call.arguments", "gen_ai.tool.call.result",
+                                             "gen_ai.input.messages", "gen_ai.output.messages", "rv.task.goal"}, s["name"])
+                    self.assertNotIn("settings.py", json.dumps(s))
+
+    def test_off_by_default(self):
+        import tracing
+        self.assertIs(tracing.span("x"), tracing.NOSPAN)
+
 if __name__ == "__main__":
     warnings.simplefilter("ignore", ResourceWarning)
     unittest.main(verbosity=1, warnings="ignore")

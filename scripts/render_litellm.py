@@ -32,6 +32,19 @@ def env():
     return out
 
 
+def tracing(t, e):
+    """./rvkit tracing on (#51): LiteLLM exports a span per model call over OTLP, without messages."""
+    if (e.get("RV_TRACING") or "off").lower() not in ("on", "1", "true", "yes"):
+        return t
+    t, n = re.subn(r'callbacks: \["rv_events.handler"\]', 'callbacks: ["rv_events.handler", "otel"]\n'
+                   '  # a model call can carry client data, and LiteLLM can\'t apply the Client data rule per engagement:\n'
+                   '  # its spans never carry messages\n'
+                   '  turn_off_message_logging: true', t)
+    if n != 1:
+        sys.exit("litellm/config.yaml: the callbacks line was not found")
+    return t
+
+
 def main():
     e = env()
     t = open(os.path.join(KIT, "litellm", "config.yaml")).read()
@@ -48,6 +61,7 @@ def main():
     if not e.get("VALIDATOR_MODEL"):   # an older .env: the validator uses the planner's fallback model
         e["VALIDATOR_MODEL"] = e.get("PLANNER_FALLBACK_MODEL") or ""
         t = t.replace("model: os.environ/VALIDATOR_MODEL", "model: os.environ/PLANNER_FALLBACK_MODEL")
+    t = tracing(t, e)
     t = planners(t, e, budget)
     t = worker(t, e)
     out = os.path.join(KIT, ".rvkit", "litellm.yaml")

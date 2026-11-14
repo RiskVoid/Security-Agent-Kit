@@ -142,6 +142,10 @@ start_stack() { # pulls the published images for this version; builds any that a
     docker compose pull --ignore-pull-failures -q >/dev/null 2>&1 || true
     docker compose up -d
   fi
+  # ./rvkit tracing on: start the bundled collector too (it's in a profile, off otherwise)
+  if [ -f .env ] && [[ "$(envget RV_TRACING || true)" =~ ^(on|1|true|yes)$ ]]; then
+    docker compose --profile tracing up -d otel-collector >/dev/null 2>&1 || warn "the trace collector didn't start"
+  fi
 }
 
 open_url() { if command -v open >/dev/null; then open "$1"; elif command -v xdg-open >/dev/null; then xdg-open "$1" >/dev/null 2>&1; fi; }
@@ -595,7 +599,7 @@ cmd_worker() {
 }
 
 # ---------------------------------------------------------------- install / completion
-COMMANDS="setup up down update console status doctor logs connect worker planner budget test key openhands new engagement eng quickstart watch scope show policy finding approvals approve deny halt resume conversation cred identity capture authz vault appmap php task audit report close delete failures lab bench install completion help"
+COMMANDS="setup up down update console status doctor logs connect worker planner budget tracing test key openhands new engagement eng quickstart watch scope show policy finding approvals approve deny halt resume conversation cred identity capture authz vault appmap php task audit report close delete failures lab bench install completion help"
 ENG_SUB="list new show scope approvals approve deny halt resume audit report close delete"
 cmd_install() {
   local dir="${1:-$HOME/.local/bin}"
@@ -712,6 +716,7 @@ ${B}Models${N}
   planner [<model> [fallback]]  show / set the planner models (OpenRouter ids)
   planner --direct <provider/model> [fallback]   use Anthropic or OpenAI directly (asks for the key once)
   budget [usd]                  today's model spend / set the daily budget (per provider)
+  tracing on|off|content on|off  export traces of worker tasks, model and tool calls (OpenTelemetry)
   test [planner]                send a test prompt to the worker (or the planner)
   key [colab|litellm|openhands] print a key (colab = paste into the notebook)
   openhands                     re-apply the OpenHands configuration
@@ -792,6 +797,25 @@ case "$cmd" in
     ok "Worker now points at Colab: $url ($(envget COLAB_MODEL))"
     test_model ;;
   worker)     cmd_worker "$@" ;;
+  tracing)   # trace export (epic #52, #51): ./rvkit tracing on|off|content on|off|status
+    need_env
+    tep="the bundled Jaeger (UI: http://127.0.0.1:16686)"
+    [ -z "$(envget RV_TRACE_ENDPOINT || true)" ] || tep="worker spans to $tep, LiteLLM spans to $(envget RV_TRACE_ENDPOINT)"
+    case "${1:-status}" in
+      on)  envset RV_TRACING on
+           docker compose --profile tracing up -d otel-collector >/dev/null
+           recreate_litellm; docker compose up -d --force-recreate worker-mcp >/dev/null 2>&1
+           ok "tracing on: worker tasks, model and tool calls go to $tep" ;;
+      off) envset RV_TRACING off; recreate_litellm; docker compose up -d --force-recreate worker-mcp >/dev/null 2>&1
+           docker compose --profile tracing stop otel-collector >/dev/null 2>&1 || true; ok "tracing off" ;;
+      content)
+           [[ "${2:-}" =~ ^(on|off)$ ]] || die "usage: ./rvkit tracing content on|off"
+           envset RV_TRACE_CONTENT "$2"; docker compose up -d --force-recreate worker-mcp >/dev/null 2>&1
+           ok "trace content $2 (only for engagements whose Client data rule allows $(envget RV_TRACE_DESTINATION || echo local), never offline ones)" ;;
+      status) a="$(envget RV_TRACING || true)"; c="$(envget RV_TRACE_CONTENT || true)"
+              echo "tracing: ${a:-off}   content: ${c:-off}   endpoint: $tep" ;;
+      *) die "usage: ./rvkit tracing on|off|content on|off|status" ;;
+    esac ;;
   budget)
     need_env
     if [ $# -eq 0 ]; then

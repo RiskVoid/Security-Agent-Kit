@@ -104,6 +104,30 @@ setting.
 | `RVKIT_VERSION` | `0.1.0` | Which published version of the kit's images to pull. Normally matches the `VERSION` file. |
 | `SEMGREP_RULES_COMMIT` | pinned in `docker-compose.yml` | Commit of the Semgrep community rules downloaded into the `semgrep-rules` volume on first start. |
 
+### Tracing
+
+Off by default. `./rvkit tracing on` starts a bundled Jaeger (UI at http://127.0.0.1:16686) and exports OpenTelemetry
+traces of worker tasks, model calls and tool calls to it. Jaeger sits on its own internal network with the worker and
+LiteLLM, so the agent's sandbox can't read traces. Each
+task is one trace: an `invoke_agent riskvoid-worker` span, with a `chat <model>` span per model call and an
+`execute_tool <tool>` span per tool call. Span names and attributes follow the OpenTelemetry GenAI conventions. LiteLLM
+adds a span for each model call it routes, planner calls included.
+
+| Setting | Default | Meaning |
+|---|---|---|
+| `RV_TRACING` | `off` | `on` exports traces (`./rvkit tracing on` or `off`). |
+| `RV_TRACE_ENDPOINT` | the bundled Jaeger | Where LiteLLM sends its model-call spans: an OTLP/HTTP endpoint, without `/v1/traces`. Langfuse takes OTLP: its `/api/public/otel` endpoint. The worker's spans always go to the bundled Jaeger, because the worker has no network route out. |
+| `RV_TRACE_HEADERS` | empty | Headers for `RV_TRACE_ENDPOINT`, as `Name=value,Name2=value2`. Langfuse: `Authorization=Basic <base64 of public-key:secret-key>`. Set it in `.env` yourself; it is a secret. |
+| `RV_TRACE_CONTENT` | `off` | `on` puts content into the worker's spans: messages, tool arguments and tool results (`./rvkit tracing content on` or `off`). |
+| `RV_TRACE_DESTINATION` | `local` | The name the trace collector has in an engagement's Client data rule. |
+
+Without content, spans carry names, timings, models, token counts, tool names and statuses: no client code, no tool
+output. With `RV_TRACE_CONTENT=on`, content goes into a task's spans only when its engagement's **Client data** rule
+allows `RV_TRACE_DESTINATION` (or has no Client data rule) and its **Network** rule isn't `offline`. LiteLLM's own
+spans never carry messages, because LiteLLM can't apply that rule per engagement. A collector outside your machine is
+a place client data goes: name it in `RV_TRACE_DESTINATION`, and allow it only in the engagements that may send data
+there.
+
 ## Other files you can change
 
 | File | What it controls | After changing |

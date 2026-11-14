@@ -186,6 +186,15 @@ class LiteLLMConfig(unittest.TestCase):
             self.assertNotIn("WORKER_API_BASE", block)
             self.assertIn("zdr: true", block)
 
+    def test_tracing(self):  # ./rvkit tracing on (#51): spans, never messages
+        import render_litellm as r
+        t = open(os.path.join(KIT, "litellm", "config.yaml")).read()
+        self.assertEqual(r.tracing(t, {}), t)
+        self.assertEqual(r.tracing(t, {"RV_TRACING": "off"}), t)
+        out = r.tracing(t, {"RV_TRACING": "on"})
+        self.assertIn('callbacks: ["rv_events.handler", "otel"]', out)
+        self.assertIn("turn_off_message_logging: true", out)
+
 
 class Scope(unittest.TestCase):
     def test_parse_scope(self):

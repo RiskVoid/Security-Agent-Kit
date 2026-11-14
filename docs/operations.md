@@ -53,6 +53,7 @@ Everything listens on `127.0.0.1` only; nothing is reachable from your network.
 | 8000 | The UI (gateway in front of OpenHands) |
 | 4000 | LiteLLM model gateway (needs `./rvkit key litellm`) |
 | 8888 | SearXNG search |
+| 16686 | Jaeger trace UI, only with `./rvkit tracing on` and the bundled collector |
 
 If a port is taken, set another one in `.env` and run `./rvkit up`: `GATEWAY_PORT` (UI), `LITELLM_PORT` or
 `SEARXNG_PORT`. `rvkit` follows the setting, and the UI is then at `http://localhost:<GATEWAY_PORT>/`.

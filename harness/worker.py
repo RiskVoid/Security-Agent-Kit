@@ -29,6 +29,7 @@ from mcp.client.streamable_http import streamablehttp_client
 from mcp.server.fastmcp import FastMCP
 import findings_db as db
 import digest
+import tracing
 
 LITELLM = os.environ.get("LITELLM_URL", "http://litellm:4000/v1")
 LITELLM_KEY = os.environ.get("LITELLM_MASTER_KEY", "")
@@ -299,16 +300,31 @@ def chat(messages, model=WORKER_MODEL, task=None):
     if task:  # the model gateway ties the call to the engagement: Client data rule, halt (litellm/rv_routes.py)
         hdrs.update({"x-rv-engagement": task["engagement"], "x-rv-task": task["id"]})
     req = urllib.request.Request(f"{LITELLM}/chat/completions", data=json.dumps(body).encode(), headers=hdrs)
-    try:
-        r = json.load(urllib.request.urlopen(req, timeout=900))
-    except urllib.error.HTTPError as e:
-        detail = e.read()[:2000].decode("utf-8", "replace")
+    with tracing.span(f"chat {model}", {"gen_ai.operation.name": "chat", "gen_ai.request.model": model,
+                                        "gen_ai.request.max_tokens": body["max_tokens"],
+                                        "gen_ai.request.temperature": body["temperature"],
+                                        "rv.engagement": task and task["engagement"], "rv.task": task and task["id"],
+                                        "rv.messages": len(messages)}, kind=3) as sp:
         try:
-            detail = json.loads(detail).get("error", {}).get("message") or detail
-        except (ValueError, AttributeError):
-            pass
-        raise ModelRefused(e.code, str(detail)) from None
-    return {**r["choices"][0]["message"], "_served_by": r.get("model")}
+            r = json.load(urllib.request.urlopen(req, timeout=900))
+        except urllib.error.HTTPError as e:
+            detail = e.read()[:2000].decode("utf-8", "replace")
+            try:
+                detail = json.loads(detail).get("error", {}).get("message") or detail
+            except (ValueError, AttributeError):
+                pass
+            sp.error(f"HTTP {e.code}: {detail}")
+            raise ModelRefused(e.code, str(detail)) from None
+        msg = r["choices"][0]["message"]
+        u = r.get("usage") or {}
+        sp.set("gen_ai.response.model", r.get("model")).set("gen_ai.usage.input_tokens", u.get("prompt_tokens")) \
+          .set("gen_ai.usage.output_tokens", u.get("completion_tokens")) \
+          .set("gen_ai.response.finish_reasons", [str(r["choices"][0].get("finish_reason") or "")]) \
+          .set("rv.tool_calls", len(msg.get("tool_calls") or []))
+        sp.content_attr("gen_ai.output.messages", [{"role": "assistant", "content": msg.get("content"),
+                                                     "tool_calls": msg.get("tool_calls")}])
+        sp.content_attr("gen_ai.input.messages", messages[-1:])   # the newest message: the rest was in earlier spans
+    return {**msg, "_served_by": r.get("model")}
 
 
 class ModelRefused(Exception):
@@ -597,6 +613,23 @@ def outcome(task):
 
 
 def _do_call(task, c, messages):
+    """Run one tool call of the current assistant turn, in an execute_tool span (#51). Returns ok | finish | approval."""
+    name = (c.get("function") or {}).get("name") or "?"
+    with tracing.span(f"execute_tool {name}", {"gen_ai.operation.name": "execute_tool", "gen_ai.tool.name": name,
+                                                "gen_ai.tool.call.id": c.get("id"), "rv.engagement": task["engagement"],
+                                                "rv.task": task["id"], "rv.step": task.get("step")}) as sp:
+        n = len(messages)
+        r = _do_call_inner(task, c, messages)
+        sp.set("rv.result", r)
+        sp.content_attr("gen_ai.tool.call.arguments", (c.get("function") or {}).get("arguments"))
+        out = next((m for m in messages[n:] if m.get("role") == "tool"), None)
+        if out:
+            sp.set("rv.result_chars", len(str(out.get("content") or "")))
+            sp.content_attr("gen_ai.tool.call.result", out.get("content"))
+        return r
+
+
+def _do_call_inner(task, c, messages):
     """Run one tool call of the current assistant turn. Returns ok | finish | approval."""
     name = c["function"]["name"]
     args, problem = parse_args(name, c["function"].get("arguments"))
@@ -735,7 +768,13 @@ def run_task(task):
     _defaults(task)
     os.makedirs(task_dir(task), exist_ok=True)
     TASKS[task["id"]] = task
-    with MODEL_LOCK, open(os.path.join(task_dir(task), "transcript.jsonl"), "a") as log:
+    sp = tracing.span("invoke_agent riskvoid-worker", {
+        "gen_ai.operation.name": "invoke_agent", "gen_ai.agent.name": "riskvoid-worker", "gen_ai.agent.id": task["id"],
+        "rv.engagement": task["engagement"], "rv.task": task["id"], "rv.tier": task["tier"],
+        "rv.max_steps": task["max_steps"]}, trace_key=task["id"],
+        content=tracing.content_allowed((task.get("info") or {}).get("rules")))
+    sp.content_attr("rv.task.goal", task.get("goal"))
+    with sp, MODEL_LOCK, open(os.path.join(task_dir(task), "transcript.jsonl"), "a") as log:
         status, err = None, None
         task.pop("outcome", None)
         try:
@@ -763,6 +802,9 @@ def run_task(task):
         task["status"] = status
         if err:
             task["error"] = err
+        sp.set("rv.status", status).set("rv.outcome", task.get("outcome")).set("rv.steps", task.get("step"))
+        if err:
+            sp.error(err)
         if status != "awaiting_approval":
             task["finished"] = time.time()
             task.pop("lease", None)
