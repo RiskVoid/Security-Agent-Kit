@@ -352,6 +352,10 @@ a.rv-dl-row:focus-visible { outline-offset: -2px; }
 /* approvals + worker tasks */
 .rv-approval { border-left: 3px solid var(--rv-sev-critical); border-radius: 0 var(--rv-radius-md) var(--rv-radius-md) 0; }
 .rv-approval .rv-card-body { gap: 12px; }
+.rv-flags, .rv-origins { margin: 0; padding-left: 18px; font-size: 13px; display: grid; gap: 2px; }
+.rv-origin-target { color: var(--rv-sev-critical); }
+.rv-origin-target code { background: color-mix(in srgb, var(--rv-sev-critical) 14%, transparent); }
+.rv-origin-warn { margin: 0; font-size: 13px; font-weight: 600; color: var(--rv-sev-critical); }
 .rv-stack { display: grid; gap: 12px; }
 
 /* status page */

@@ -138,6 +138,12 @@ def main(a):
             print(json.dumps(rows)); return 0
         for r in rows:
             print(f"{r['engagement']}  {r['id']}  [{r['tier']}]  {r['command']}")
+            for f in r.get("flags") or []:
+                print(f"    flagged: {f}")
+            for o in r.get("origins") or []:   # where its arguments came from (#48); target content is marked !!
+                mark = "!!" if o["origin"] == "target" else "  "
+                print(f"  {mark} {o['kind']} {o['arg'][:100]!r} from {o['origin']}"
+                      + (f" ({o['source']})" if o.get("source") and o["origin"] == "target" else ""))
         print(f"{len(rows)} pending"); return 0
     if cmd == "list":  # list [--json]: engagements with scope summary, halt state and pending approvals
         rows = []

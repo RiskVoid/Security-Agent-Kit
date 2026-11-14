@@ -418,13 +418,16 @@ cmd_watch() {
 for e in json.load(sys.stdin): print(("problem" if e["problem"] else "info") + "\t" + e.get("message","").replace("\t"," "))')"
     fi
     rows="$(kctl approvals --json 2>/dev/null | python3 -c 'import sys,json
-for r in json.load(sys.stdin): print("\t".join([r["id"], r["engagement"], r["tier"], r["command"].replace("\t"," ").replace("\n"," ")]))' 2>/dev/null || true)"
-    while IFS=$'\t' read -r id eng tier command; do
+for r in json.load(sys.stdin):
+    why = list(r.get("flags") or []) + ["from target content: %s %r (%s)" % (o["kind"], o["arg"][:60], o.get("source")) for o in r.get("origins") or [] if o["origin"] == "target"]
+    print("\t".join([r["id"], r["engagement"], r["tier"], r["command"].replace("\t"," ").replace("\n"," "), " | ".join(why).replace("\t"," ").replace("\n"," ")]))' 2>/dev/null || true)"
+    while IFS=$'\t' read -r id eng tier command why; do
       [ -n "$id" ] || continue
       case "$seen" in *" $id "*) continue ;; esac
       seen="$seen$id "
       notify "RiskVoid: approval needed" "$eng: ${command:0:80}"
       printf '\n%s%s%s  %s  [%s]\n  %s\n' "$B" "$eng" "$N" "$id" "$tier" "$command"
+      [ -z "$why" ] || printf '  %s!! %s%s\n' "$Y" "$why" "$N"   # pattern flags (#49), arguments a target wrote (#48)
       a="$(ask "Approve this command? a=approve, d=deny, s=skip for now" "s")"
       case "$a" in
         a|A|y|Y) kctl approve "$eng" "$id" && ok "approved: tell the agent to run it again" ;;

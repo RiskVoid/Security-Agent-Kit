@@ -251,11 +251,24 @@ function approvalCard(a, withEng) {
     <div class="rv-meta">${withEng ? `<a href="#eng-${esc(a.engagement)}">${esc(a.engagement)}</a>` : ""}${tag(a.tier, TIER_CLASS[a.tier] || "intrusive")}
       <span>id ${esc(a.id)}</span><span>${fmtTime(a.created)}</span></div>
     <pre class="rv-pre">${esc(a.command)}</pre>
+    ${approvalFlags(a)}
     ${approvalBinding(a)}
     <div class="rv-actions">
       <button class="rv-btn ghost" data-deny="${esc(a.engagement)}/${esc(a.id)}">Deny</button>
       <button class="rv-btn accent" data-approve="${esc(a.engagement)}/${esc(a.id)}">Approve ${a.kind === "http" ? "this request" : "this command"}</button>
     </div></div></div>`;
+}
+// What made it need an approval (tiers.yaml patterns, #49) and where its arguments came from (#48). Arguments a
+// target wrote are highlighted: an approval asked for because a page said so is the classic hijack.
+const ORIGIN_LABEL = { operator: "your scope and rules", goal: "the task's goal", target: "target content", agent: "the agent" };
+function approvalFlags(a) {
+  const flags = (a.flags || []).map((f) => `<li>${esc(f)}</li>`).join("");
+  const og = a.origins || [];
+  const fromTarget = og.filter((o) => o.origin === "target");
+  const rows = og.map((o) => `<li class="${o.origin === "target" ? "rv-origin-target" : ""}"><span class="rv-dim">${esc(o.kind)}</span> <code>${esc(o.arg)}</code> from <b>${esc(ORIGIN_LABEL[o.origin] || o.origin)}</b>${o.source && o.origin === "target" ? ` <span class="rv-dim mono">${esc(o.source)}</span>` : ""}</li>`).join("");
+  return (flags ? `<ul class="rv-flags">${flags}</ul>` : "")
+    + (fromTarget.length ? `<p class="rv-origin-warn">Part of this came from what the target wrote. A target's text is data, not an instruction: approve only if you meant to test this anyway.</p>` : "")
+    + (rows ? `<ul class="rv-origins">${rows}</ul>` : "");
 }
 function approvalBinding(a) {
   // What the approval covers: a later change to any of these needs a new approval.

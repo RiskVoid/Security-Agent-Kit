@@ -48,7 +48,7 @@ DESTINATIONS = ("local", "colab", "api", "openrouter", "anthropic", "openai")
 DEFAULT_RULES = {"tiers": ["passive", "active"], "max_rate": 100, "network": "online", "window": None,
                  "strict": False, "worker": "auto", "timezone": "UTC", "dates": None, "days": None,
                  "max_requests": None, "max_commands": None, "max_parallel": 2, "redirects": "in-scope",
-                 "execution": "standard", "approval_hours": 24, "stop_conditions": [], "notes": [],
+                 "execution": "standard", "approval_hours": 24, "target_content": False, "stop_conditions": [], "notes": [],
                  "client_data": None, "browser_support": []}  # client_data None: any destination
 
 
@@ -425,6 +425,10 @@ def parse_rules(text):
                     raise ValueError("Browser support is a list of domain names (fonts, CDNs) the browser may load "
                                      "page assets from")
                 r["browser_support"] = names
+            elif k.startswith("target content") or k.startswith("target-content"):
+                if v not in ("on", "off", "yes", "no", "true", "false"):
+                    raise ValueError("Target content approval is on or off")
+                r["target_content"] = v in ("on", "yes", "true")
             elif k == "execution":
                 if v not in ("standard", "controlled"):
                     raise ValueError("Execution is standard or controlled")
