@@ -1810,6 +1810,116 @@ class Validator(unittest.TestCase):
         self.assertEqual(self.calls, [])
 
 
+class ReconMap(unittest.TestCase):
+    """Epic #52, issues #46 and #47: the recon map is merged from evidence with stable entry ids; plan items
+    reference its entries; the coverage matrix shows the cells no plan item covers; a worker task is one cell."""
+
+    def setUp(self):
+        import reconmap, workspace
+        self.m, self.ws = reconmap, workspace
+        self.tmp = tempfile.TemporaryDirectory()
+        self.saved = db.WORK
+        db.WORK = self.tmp.name
+        e = os.path.join(self.tmp.name, "acme")
+        for d in ("evidence/map", "evidence/appmap", "evidence/http", "captures"):
+            os.makedirs(os.path.join(e, d))
+        json.dump({"base": "http://lab", "tech": ["server: nginx"], "schemas": [{"kind": "openapi", "url": "x"}],
+                   "observations": [
+                       {"method": "GET", "url": "http://lab/api/parcels/12", "source": "crawl", "status": 401,
+                        "auth": "required", "auth_basis": "status 401 without credentials"},
+                       {"method": "GET", "url": "http://lab/api/parcels/{id}", "source": "openapi",
+                        "params": {"path": ["id"]}, "auth": "unknown"},
+                       {"method": "GET", "url": "http://lab/search?q=x", "source": "crawl", "status": 200,
+                        "auth": "none"},
+                       {"method": "POST", "url": "http://lab/api/fetch", "source": "openapi",
+                        "params": {"body": ["callback_url", "role"]}, "auth": "unknown"}]},
+                  open(os.path.join(e, "evidence/map/map-1.json"), "w"))
+        json.dump({"routes": [{"methods": ["GET", "HEAD"], "uri": "api/parcels/{parcel}", "params": ["parcel"],
+                               "authenticated": True, "middleware": ["auth"], "file": "routes/api.php", "line": 7},
+                              {"methods": ["POST"], "uri": "admin/upload", "params": [], "authenticated": False,
+                               "middleware": [], "file": "routes/web.php", "line": 3}]},
+                  open(os.path.join(e, "evidence/appmap/laravel-1.json"), "w"))
+        open(os.path.join(e, "evidence/http/r1.txt"), "w").write(
+            "# rvkit http_request x tier=intrusive\n> POST http://lab/api/login\n> Content-Type: application/json"
+            "\n>\n{\"email\": \"a\", \"password\": \"b\"}\n\n# POST http://lab/api/login (1.2.3.4)\n< 200 OK\n")
+
+    def tearDown(self):
+        db.WORK = self.saved
+        self.tmp.cleanup()
+
+    def test_template(self):
+        for a, b in (("/api/parcels/12/notes", "/api/parcels/{}/notes"), ("/users/v1/{username}", "/users/v1/{}"),
+                     ("/x/:id/", "/x/{}"), ("/a/0f8fad5b-d9cb-469f-a165-70867728950e", "/a/{}"), ("", "/")):
+            self.assertEqual(self.m.template(a), b)
+
+    def test_merge(self):
+        m = self.m.build("acme")
+        by = {(e["method"], e["path"]): e for e in m["entries"]}
+        p = by[("GET", "/api/parcels/{}")]
+        self.assertEqual(sorted(p["sources"]), ["crawl", "laravel", "openapi"])   # the hostless route joined it
+        self.assertEqual((p["auth"], p["code"]), ("required", "routes/api.php:7"))
+        self.assertEqual(by[("GET", "/search")]["params"], {"query": ["q"]})
+        self.assertEqual(by[("POST", "/api/login")]["params"], {"body": ["email", "password"]})
+        self.assertIn(("POST", "/admin/upload"), by)   # a source route with no twin stands alone
+        self.assertEqual(p["id"], self.m.build("acme")["entries"][[e["id"] for e in m["entries"]].index(p["id"])]["id"])
+        self.assertTrue(self.m.ENTRY_RX.match(p["id"]))
+        self.assertIn("ssrf", by[("POST", "/api/fetch")]["classes"])
+        self.assertIn("mass-assignment", by[("POST", "/api/fetch")]["classes"])
+        self.assertIn("file-upload", by[("POST", "/admin/upload")]["classes"])
+        self.assertIn("xss", by[("GET", "/search")]["classes"])
+        self.assertEqual(m["tech"], ["server: nginx"])
+
+    def test_plan_refs_and_matrix(self):
+        ents = {(e["method"], e["path"]): e["id"] for e in self.m.build("acme")["entries"]}
+        parcel = ents[("GET", "/api/parcels/{}")]
+        with self.assertRaisesRegex(ValueError, "not entries of the recon map"):
+            self.ws.plan_add("acme", "agent:planner", [{"title": "x", "refs": ["E-000000"]}])
+        pid = self.ws.plan_add("acme", "agent:planner", [{"title": "IDOR on parcels", "area": "access-control",
+                                                          "refs": [parcel, "API1:2023"]}])[0]
+        mx = self.m.matrix("acme")
+        cell = next(c for c in mx["cells"] if c["entry"] == parcel and c["class"] == "access-control")
+        self.assertEqual((cell["state"], cell["items"]), ("planned", [pid]))
+        self.assertTrue(any(c["entry"] == parcel and c["class"] == "authentication" for c in mx["gaps"]))
+        self.assertEqual(mx["complete"], 0.0)
+        # a title naming another class doesn't count when the area names one: "SQLi in login" is injection only
+        self.assertEqual(self.m._class_of({"title": "SQLi in login", "area": "injection", "refs": []}), ["injection"])
+
+    def test_one_cell_per_worker_task(self):
+        ents = {(e["method"], e["path"]): e["id"] for e in self.m.build("acme")["entries"]}
+        ok, broad, two = self.ws.plan_add("acme", "agent:planner", [
+            {"title": "IDOR", "area": "access-control", "refs": [ents[("GET", "/api/parcels/{}")]]},
+            {"title": "everything", "area": "injection xss", "refs": [ents[("GET", "/search")]]},
+            {"title": "SQLi", "area": "injection", "refs": [ents[("GET", "/search")], ents[("POST", "/api/fetch")]]}])
+        cell = self.m.narrow_cell("acme", ok)
+        self.assertEqual((cell["class"], cell["plan_item"]), ("access-control", ok))
+        with self.assertRaisesRegex(ValueError, "one vulnerability class"):
+            self.m.narrow_cell("acme", broad)
+        with self.assertRaisesRegex(ValueError, "more than one endpoint group"):
+            self.m.narrow_cell("acme", two)
+
+    def test_recon_parsers(self):
+        sys.path.insert(0, os.path.join(KIT, "kali-mcp"))
+        import recon
+        self.assertEqual(recon.auth_from(401), "required")
+        self.assertEqual(recon.auth_from(302, "/login?next=/x"), "required")
+        self.assertEqual(recon.auth_from(200), "none")
+        self.assertEqual(recon.auth_from(500), "unknown")
+        doc = {"openapi": "3.0.0", "servers": [{"url": "/v1"}], "security": [{"key": []}], "paths": {
+            "/users/{id}": {"parameters": [{"name": "id", "in": "path"}],
+                            "get": {"parameters": [{"name": "fields", "in": "query"}]},
+                            "patch": {"requestBody": {"content": {"application/json": {"schema": {
+                                "properties": {"email": {}, "role": {}}}}}}}},
+            "/health": {"get": {"security": []}}}}
+        ops = {(o["method"], o["url"]): o for o in recon.openapi_entries(doc, "http://lab")}
+        self.assertEqual(ops[("GET", "http://lab/v1/users/{id}")]["params"], {"query": ["fields"], "path": ["id"]})
+        self.assertEqual(ops[("PATCH", "http://lab/v1/users/{id}")]["params"]["body"], ["email", "role"])
+        self.assertEqual(ops[("GET", "http://lab/v1/users/{id}")]["auth"], "required")
+        self.assertEqual(ops[("GET", "http://lab/v1/health")]["auth"], "none")
+        js = 'a.get(this.host+"/api/Products/"+id);fetch("/rest/user/login");x="/assets/logo.png";y="/about"'
+        self.assertEqual(recon.JS_PATH.findall(js), ["/api/Products/", "/rest/user/login"])
+        self.assertIn("cookie laravel_session: Laravel", recon.tech_of([("Set-Cookie", "laravel_session=x")]))
+
+
 class Oracles(unittest.TestCase):
     """Epic #52, issues #42 and #44: each oracle passes on a vulnerable case, fails on a clean one, and is
     inconclusive when its control isn't clean. The broker (actions.send) is faked: a small in-memory app."""

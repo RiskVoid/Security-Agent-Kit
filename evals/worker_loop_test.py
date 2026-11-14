@@ -383,6 +383,13 @@ class Contract(Loop):
         self.assertTrue(self.tool_texts(msgs)[0].endswith(
             "[steps left: 5 of 6; done when: injection in id is confirmed or ruled out]"))
 
+    def test_one_cell(self):   # #47: a task tied to one coverage-matrix cell is told to test only that
+        cell = {"plan_item": "P-004", "class": "injection", "entries": ["E-1a2b3c"],
+                "endpoints": ["GET lab/search (E-1a2b3c)"]}
+        task, msgs = self.run_script([[call("kali_run", {"command": "ls /src/x"})]], max_steps=6,
+                                     contract={"cell": cell})
+        self.assertIn("Scope: test only injection on GET lab/search (E-1a2b3c) (plan item P-004)", msgs[0]["content"])
+
     def test_without_a_contract(self):
         task, msgs = self.run_script([[call("kali_run", {"command": "ls /src/x"})]], max_steps=6)
         self.assertNotIn("Task contract", msgs[0]["content"])

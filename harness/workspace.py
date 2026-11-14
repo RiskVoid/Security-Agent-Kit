@@ -257,9 +257,18 @@ def _refs(refs):
     return refs[:20]
 
 
+def _map_refs(eng, refs):
+    """Map entry ids (E-xxxxxx) in a plan item's refs must be entries of the recon map (reconmap.py, #46)."""
+    import reconmap
+    bad = reconmap.check_refs(eng, refs)
+    if bad:
+        raise ValueError(f"not entries of the recon map: {', '.join(bad)} (get_map lists them; recon_map builds it)")
+
+
 def plan_add(eng, actor, items):
     if not isinstance(items, list) or not items or len(items) > 300:
         raise ValueError("items: 1 to 300 planned tests")
+    _map_refs(eng, [r for it in items if isinstance(it, dict) for r in it.get("refs") or []])
     ids = []
     with db._db(eng) as con:
         con.execute("BEGIN IMMEDIATE")
@@ -301,6 +310,7 @@ def plan_update(eng, actor, pid, expected_revision=None, **f):
             new["evidence"] = [_rel(eng, p)[0] for p in f["evidence"] or []]
         if "refs" in f:
             new["refs"] = _refs(f["refs"])
+            _map_refs(eng, new["refs"])
         if st == "tested" and not new["evidence"]:
             raise ValueError("tested needs evidence (the files that show the test and its result)")
         if st == "failed":

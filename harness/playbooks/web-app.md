@@ -1,5 +1,5 @@
 ---
-version: 1
+version: 2
 title: Web application test
 standard: OWASP WSTG 4.2
 tiers: passive, active; intrusive steps need approval
@@ -7,6 +7,8 @@ tiers: passive, active; intrusive steps need approval
 # Web application test
 
 ## 1. Information gathering (passive, then active)
+- [ ] Recon map first: kali `recon_map` on each web target (crawl, script API paths, OpenAPI/GraphQL schema,
+      which paths need authentication); `get_map` gives the entries (E-xxxxxx) the rest of the plan references
 - [ ] WSTG-INFO: `whatweb <url>`, `httpx-toolkit -u <url> -title -tech-detect -status-code -json -o httpx.json`
 - [ ] WAF/CDN in front: `wafw00f <url>` (explains blocked payloads later; never try to evade a WAF unless the RoE
       says so)
@@ -53,5 +55,6 @@ tiers: passive, active; intrusive steps need approval
 - Never include session cookies or credentials in findings; reference the evidence file.
 
 ## Done when
-Every WSTG area above is covered or explicitly out of scope in PLAN.md, all intrusive steps were approved or
-skipped with a reason, and every candidate is triaged.
+Every WSTG area above is covered or explicitly out of scope in PLAN.md, the coverage matrix
+(`get_coverage matrix=true`) has no gaps, all intrusive steps were approved or skipped with a reason, and every
+candidate is triaged.

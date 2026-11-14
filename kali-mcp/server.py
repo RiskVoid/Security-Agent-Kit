@@ -247,6 +247,24 @@ def cancel_task(engagement: str, task: str) -> str:
 
 
 @mcp.tool()
+@with_rules
+async def recon_map(engagement: str, url: str, depth: int = 2, crawl_seconds: int = 120, probe: bool = True,
+                    max_tier: str = "", task: str = "") -> str:
+    """Map a web target before testing it (epic #52, #46): crawl it (katana: links, JavaScript, robots, sitemap),
+    read the API paths its scripts name, fetch its OpenAPI / Swagger schema and GraphQL schema (a read-only
+    introspection by GET), and send one GET without credentials to each path not yet fetched, to see which need
+    authentication. Only in-scope URLs are kept; every request is audited. Saves evidence/map/map-<time>.json.
+    Run it once per web target before planning tests; then get_map (findings) gives the merged map with entry
+    ids to reference in plan_tests. depth: crawl depth (1-5). probe=false: no unauthenticated GETs."""
+    import recon
+    try:
+        return await _thread(recon.build, engagement, url, depth, crawl_seconds, probe, max_tier or None,
+                             task or None)
+    except ValueError as e:
+        return f"REFUSED: {e}"
+
+
+@mcp.tool()
 async def laravel_map(engagement: str, path: str, build_url: str = "", routes_file: str = "", max_tier: str = "",
                       task: str = "") -> str:
     """Map a Laravel application from its source (RW-012) without running any of it: framework and PHP versions,

@@ -221,13 +221,76 @@ def update_coverage(engagement: str, item: str, state: str, rationale: str = "",
 
 
 @mcp.tool()
-def get_coverage(engagement: str, state: str = "") -> str:
+def get_coverage(engagement: str, state: str = "", matrix: bool = False) -> str:
     """Planned tests and their outcomes, counts per state and per standard, stale items (the build or policy
-    changed since they ran), blocked items with the reason."""
+    changed since they ran), blocked items with the reason. matrix=true: the coverage matrix instead: each recon
+    map entry x each vulnerability class that applies to it, with the plan items that cover it; "gaps" are cells
+    no plan item covers (plan them, delegate them, or record why they're skipped)."""
+    if matrix:
+        try:
+            m = ops.call("coverage.matrix", {"engagement": engagement})[0]
+        except ValueError as e:
+            return f"REFUSED: {e}"
+        open_ = [c for c in m["cells"] if c["state"] in ("gap", "planned", "blocked")]
+        return _out({"entries": m["entries"], "counts": m["counts"], "complete": m["complete"],
+                     "gaps": [{k: c[k] for k in ("entry", "method", "path", "class")} for c in m["gaps"][:150]],
+                     "open": [{k: c[k] for k in ("entry", "method", "path", "class", "state", "items")}
+                              for c in open_ if c["state"] != "gap"][:150],
+                     "more": max(0, len(m["gaps"]) - 150), "plan_items_without_map_refs": m["unmapped_items"][:50]})
     r = ops.call("plan.list", {"engagement": engagement, "state": state or None})[0]
     r["items"] = [{k: i[k] for k in ("id", "title", "area", "refs", "state", "rationale", "finding_id", "stale")}
                   for i in r["items"]]
     return _out(r)
+
+
+@mcp.tool()
+def skip_coverage_cells(engagement: str, cells: list[dict], state: str, rationale: str) -> str:
+    """Record coverage-matrix cells you won't test, in one call (the gap-fill pass, #47). cells: [{"entry":
+    "E-1a2b3c", "class": "ssrf"}] from get_coverage(matrix=true) gaps. state: not-applicable (the class can't apply
+    here: say why) or excluded (out of scope or agreed not to test). rationale is required and shown in the
+    report. Each cell becomes a plan item with that outcome."""
+    import reconmap
+    if state not in ("not-applicable", "excluded"):
+        return "REFUSED: state must be not-applicable or excluded (plan and delegate the cells you will test)"
+    if not (rationale or "").strip():
+        return "REFUSED: a rationale is required"
+    bad = [c for c in cells or [] if not isinstance(c, dict) or c.get("class") not in reconmap.CLASSES
+           or not reconmap.ENTRY_RX.match(str(c.get("entry")))]
+    if bad or not cells:
+        return f"REFUSED: cells: [{{entry: E-xxxxxx, class: one of {', '.join(reconmap.CLASSES)}}}]"
+    try:
+        ids = ops.call("plan.add", {"engagement": engagement, "actor": ACTOR, "items": [
+            {"title": f"{c['class']} on {c['entry']}", "area": c["class"], "refs": [c["entry"]]} for c in cells]})[0]
+        ids = ids.get("ids", ids) if isinstance(ids, dict) else ids
+        for pid in ids:
+            ops.call("plan.update", {"engagement": engagement, "actor": ACTOR, "id": pid,
+                                     "fields": {"state": state, "rationale": rationale.strip()}})
+    except ValueError as e:
+        return f"REFUSED: {e}"
+    return _out({"recorded": ids, "state": state})
+
+
+@mcp.tool()
+def get_map(engagement: str, host: str = "", path: str = "", auth: str = "", limit: int = 200) -> str:
+    """The recon map (built from recon_map, laravel_map, imported captures and your own requests): each entry is a
+    method and path template with its parameters, whether it needs authentication (required | none | unknown, and
+    why), the sources that saw it, evidence, and the vulnerability classes that apply to it. Reference entries
+    in plan_tests by id (refs: ["E-1a2b3c", "WSTG-ATHZ-04"]): one class on one entry (or a few of one route group)
+    per item. Filters: host, path (substring), auth."""
+    try:
+        m = ops.call("map.get", {"engagement": engagement})[0]
+    except ValueError as e:
+        return f"REFUSED: {e}"
+    ents = [e for e in m["entries"] if (not host or host in (e["host"] or "")) and (not path or path in e["path"])
+            and (not auth or e["auth"] == auth)]
+    keep = ("id", "method", "host", "path", "params", "auth", "auth_basis", "status", "sources", "classes", "code")
+    out = {"entries": [{k: e[k] for k in keep if e.get(k) not in (None, [], {})} for e in ents[:max(1, min(limit, 500))]],
+           "total": len(m["entries"]), "shown": min(len(ents), limit), "hosts": m["hosts"], "tech": m["tech"],
+           "schemas": [{k: s.get(k) for k in ("kind", "url", "operations", "title", "note")} for s in m["schemas"]],
+           "sources": m["sources"]}
+    if not m["entries"]:
+        out["note"] = "no map yet: run kali recon_map on each web target (and laravel_map on source) first"
+    return _out(out)
 
 
 @mcp.tool()

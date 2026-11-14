@@ -33,7 +33,7 @@ OB_STATES = ("open", "done", "waived")
 HUMAN_RX = re.compile(r"^(console|cli):")
 # Readiness checks a person may except, with the rationale: methodology choices. The others are facts about the
 # record (no summary, untriaged candidates, broken evidence, no client name) and have to be fixed.
-EXCEPTABLE = ("coverage-plan", "coverage-open", "coverage-stale", "fields", "verification", "retest")
+EXCEPTABLE = ("coverage-plan", "coverage-open", "coverage-stale", "coverage-gaps", "fields", "verification", "retest")
 MATERIAL = ("critical", "high")
 REQUIRED_FIELDS = ("asset", "description", "impact", "reproduction", "remediation")
 
@@ -138,6 +138,17 @@ def readiness(eng, inp=None):
     if open_:
         checks.append(("coverage-open", f"{len(open_)} planned test(s) without an outcome: {', '.join(open_[:15])}"
                        + (" ..." if len(open_) > 15 else "")))
+    try:   # the coverage matrix (#47): map entries x the classes that apply, with no plan item
+        import reconmap
+        mx = reconmap.matrix(eng, plan) if plan else None
+    except Exception:  # noqa: BLE001  a broken map file must not stop the report
+        mx = None
+    if mx and mx["gaps"]:
+        g = mx["gaps"]
+        checks.append(("coverage-gaps", f"{len(g)} cell(s) of the coverage matrix have no plan item (map entry x "
+                       f"vulnerability class): " + ", ".join(f"{c['entry']} {c['method']} {c['path']} {c['class']}"
+                                                            for c in g[:8]) + (" ..." if len(g) > 8 else "")
+                       + ". Delegate them or record why they're skipped (get_coverage matrix=true)."))
     stale = [i["id"] for i in plan if i["stale"]]
     if stale:
         checks.append(("coverage-stale", f"{len(stale)} outcome(s) recorded on another build or policy: "

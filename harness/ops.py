@@ -218,6 +218,18 @@ def plan_update(engagement, actor, id, fields, expected_revision=None):
     return r, _event("coverage-updated", actor, id, None, r["revision"], state=r["state"])
 
 
+@op("map.get", mutates=False)
+def map_get(engagement, actor=None):
+    import reconmap
+    return reconmap.build(engagement), None
+
+
+@op("coverage.matrix", mutates=False)
+def coverage_matrix(engagement, actor=None):
+    import reconmap
+    return reconmap.matrix(engagement), None
+
+
 @op("plan.list", mutates=False)
 def plan_list(engagement, actor=None, state=None):
     return {"items": ws.plan_list(engagement, state), "coverage": ws.coverage(engagement)}, None
