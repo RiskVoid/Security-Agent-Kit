@@ -12,6 +12,13 @@
 # and evals/phase3_policy_test.sh. CONTRIBUTING.md ("Adding a tool to the Kali image") has the whole checklist.
 
 intrusive:
+  # file transfer to or from a host: planting or taking files is a change of state (issue #49)
+  - scp
+  - sftp
+  - tftp
+  - ftp
+  - lftp
+  - rsync
   - sqlmap
   - hydra
   - medusa
@@ -121,6 +128,48 @@ subcommands:
     tier: intrusive
   - program: nmap
     match: '(?i)--script[= ]\S*(brute|dos|exploit|intrusive|vuln)'
+    tier: intrusive
+
+# Whole-command patterns (issue #49), checked in every mode, strict or not: what a target's content most often
+# talks an agent into. Each is a regex over the whole command line (pipes and all); the command gets at least
+# that tier, and the approval request names what matched. A listener or a reverse shell opened because a target
+# said so is the classic hijack of an AI pentester.
+patterns:
+  - what: 'a listener (nc / ncat / netcat -l)'
+    match: '(^|[\s;&|(`])(nc|ncat|netcat)(\s[^|;&]*)?\s(-[A-Za-z]*l[A-Za-z]*|--listen)(\s|$)'
+    tier: intrusive
+  - what: 'a socat listener or command execution'
+    match: '(?i)(^|[\s;&|(`])socat\s[^|;&]*(listen|exec:|system:)'
+    tier: intrusive
+  - what: 'a netcat that runs a program (-e / -c / --exec)'
+    match: '(^|[\s;&|(`])(nc|ncat|netcat)(\s[^|;&]*)?\s(-[A-Za-z]*[ec]|--(sh-|lua-)?exec)(\s|=|$)'
+    tier: intrusive
+  - what: 'a reverse shell (/dev/tcp or /dev/udp)'
+    match: '/dev/(tcp|udp)/'
+    tier: intrusive
+  - what: 'an interactive shell (sh -i)'
+    match: '(^|[\s;&|(`"''])(/\S*/)?(ba|z|k|da)?sh\s+(-[A-Za-z]+\s+)*-[A-Za-z]*i'
+    tier: intrusive
+  - what: 'a named pipe for a shell (mkfifo with a socket tool)'
+    match: 'mk(fifo|nod)\b.*\b(nc|ncat|netcat|telnet|openssl|socat)\b'
+    tier: intrusive
+  - what: 'a reverse shell in a script (a socket handed to a shell)'
+    match: '(?is)(socket|fsockopen|TCPSocket|IO::Socket|net\.connect|net\.Socket)\b.*(pty\.spawn|os\.dup2|subprocess|/bin/(ba|z)?sh|cmd\.exe|proc_open|popen)'
+    tier: intrusive
+  - what: 'a piped download (curl / wget into a shell or interpreter)'
+    match: '(^|[\s;&|(`])(curl|wget)\s[^;&]*\|\s*(sudo\s+(-\S+\s+)*)?((/\S*/)?(ba|z|k|da)?sh|python[0-9.]*|perl|ruby|node|php|pwsh|iex)(?!\s+-[cmeEr]\b)(\s|$|;|\))'
+    tier: intrusive
+  - what: 'a downloaded script run in place (sh <(curl ...), bash -c "$(curl ...)")'
+    match: '(<\(\s*(curl|wget)\b)|((ba|z|k|da)?sh|eval|source)\s+(-[A-Za-z]+\s+)*["'']?\$\(\s*(curl|wget)\b'
+    tier: intrusive
+  - what: 'a download that is then run (curl -o x && sh x)'
+    match: '(^|[\s;&|(`])(curl|wget)\s.*(&&|;|\n)\s*(chmod\s+[+0-7]*x|(/\S*/)?(ba|z|k|da)?sh\s+\S|\./\S)'
+    tier: intrusive
+  - what: 'an upload of a local file (curl -T / -F name=@file / --data @file, wget --post-file)'
+    match: '(^|[\s;&|(`])curl(\s[^|;&]*)?\s(-T|--upload-file|(-F|--form)\s*["'']?[^=\s]+=@|(-d|--data(-binary|-raw|-urlencode)?)[\s=]*["'']?@)|(^|[\s;&|(`])wget\s[^|;&]*--(post|body)-file'
+    tier: intrusive
+  - what: 'files sent through a socket (cat / tar / base64 ... | nc, nc < file)'
+    match: '(^|[\s;&|(`])(cat|tar|zip|gzip|base64|xxd|dd|find)\s[^;&]*\|\s*(nc|ncat|netcat|socat|telnet)\b|(^|[\s;&|(`])(nc|ncat|netcat)\s[^|;&]*<\s*[^<\s]'
     tier: intrusive
 
 # Flags that cap a tool's rate. When RULES.md sets a max rate, the first flag is added to the command (or a higher
