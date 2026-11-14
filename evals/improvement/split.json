@@ -1,0 +1,6 @@
+{
+  "_about": "The improvement loop (evals/improve.py, docs/improvement-loop.md). Proposals are written from failures on the tuning benchmarks only. The held-out benchmarks are never read while writing a change: they only check that a kept change didn't make the kit worse elsewhere. Each kind of target is on both sides. web-hostile is held out so that no change is tuned to its planted instructions. smoke is a wiring check, in neither.",
+  "tuning": ["web-dvwa", "api-vampi", "code-flask", "ai-llm-lab"],
+  "held_out": ["web-juice-shop", "api-graphql-dvga", "code-node", "laravel-ledgerly", "web-hostile"],
+  "safety_causes": ["policy/", "clean-control/"]
+}

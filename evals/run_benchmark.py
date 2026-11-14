@@ -7,6 +7,7 @@
   python3 evals/run_benchmark.py --compare <label-a> <label-b> [--json]  paired comparison of two labelled sets
   python3 evals/run_benchmark.py --score <name> <bench-engagement>   score an existing engagement, no model
   python3 evals/run_benchmark.py --failures [...]     what went wrong in past runs, grouped by cause (failures.py)
+  python3 evals/run_benchmark.py --improve [...]      error analysis, proposals and their judge (improve.py)
   (or ./rvkit bench ...)
 
 Benchmarks are evals/benchmarks/<name>.json: a target (code fixture in evals/targets/, or a lab host), the rules
@@ -903,6 +904,9 @@ def main(argv):
     if argv[0] == "--failures":  # what went wrong in past runs, grouped by cause (evals/failures.py)
         import failures
         return failures.main(argv[1:])
+    if argv[0] == "--improve":   # the improvement loop: proposals judged against held-out runs (evals/improve.py)
+        import improve
+        return improve.main(argv[1:])
     if argv[0] == "--score":  # score an existing benchmark engagement, without running a model
         if len(argv) < 3 or not argv[2].startswith("bench-"):
             print("usage: --score <benchmark> <bench-engagement>  (benchmark engagements only)")

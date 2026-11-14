@@ -34,6 +34,7 @@ New here? Read [What the kit is](overview.md), then [Getting started](getting-st
 | [Findings and reports](findings-and-reports.md) | Finding statuses, evidence and its verification, the report, DRAFT checks, branding |
 | [Tools reference](tools-reference.md) | Every agent tool, the Kali toolbox with tiers, `rv-llm`, Joern, playbooks, adding your own |
 | [Practice lab and benchmarks](lab-and-benchmarks.md) | Vulnerable practice targets, scoring the agent on known targets |
+| [Improving the harness](improvement-loop.md) | Error analysis, one proposal per failure cause, a judge with held-out benchmarks, and the [harness changelog](harness-changelog.md) |
 | [Authenticated testing](authenticated-testing.md) | Test accounts per role and tenant, request captures, the sandboxed browser, authorization matrices |
 | [Laravel](laravel.md) | The complete source-plus-staging workflow: application map, build check, optional PHP profile |
 | [Capability baselines](capability-baselines.md) | What each stack is tested and measured for, and what isn't supported |

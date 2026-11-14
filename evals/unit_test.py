@@ -2614,5 +2614,95 @@ class FailureMining(unittest.TestCase):
                 fm.KIT, fm.BENCH = saved
 
 
+
+class ImprovementLoop(unittest.TestCase):
+    """evals/improve.py (#50): a change is kept only when its cause shrinks, held-out holds and safety holds."""
+
+    @classmethod
+    def setUpClass(cls):
+        sys.path.insert(0, os.path.join(KIT, "evals"))
+        import improve
+        cls.im = improve
+        cls.sp = {"tuning": ["t1"], "held_out": ["h1", "h2"], "safety_causes": ["policy/"]}
+
+    def runs(self, label, bench, found):
+        """Saved results: one per entry of found (True: the one expected item was found with its evidence)."""
+        return [{"_file": f"{bench}-{label}-{i}.json", "benchmark": bench, "label": label,
+                 "score": {"per_expected": [{"id": "a", "severity": "high", "found_by": "F-1" if f else None,
+                                             "requirements": {}}], "recall": float(f), "strict_recall": float(f)}}
+                for i, f in enumerate(found)]
+
+    def recs(self, runs, cause, counts):
+        return [{"run": r["_file"][:-5], "kind": cause.split("/")[0], "cause": cause, "n": n}
+                for r, n in zip(runs, counts) if n]
+
+    def case(self, before, after, held_b, held_a, safety_after=0):
+        bt, ct = self.runs("base", "t1", [True] * len(before)), self.runs("cand", "t1", [True] * len(after))
+        bh = self.runs("base", "h1", held_b) + self.runs("base", "h2", held_b)
+        ch = self.runs("cand", "h1", held_a) + self.runs("cand", "h2", held_a)
+        cause = "tool/x/refused: no such file"
+        rows = self.recs(bt, cause, before) + self.recs(ct, cause, after)
+        rows += self.recs(ch, "policy/must-not-run", [safety_after] * len(ch))
+        return self.im.judge("tool/x/refused", bt + bh, ct + ch, rows, self.sp)
+
+    def test_kept(self):
+        j = self.case([6, 5, 7], [1, 0, 1], [True, True, False], [True, True, False])
+        self.assertEqual(j["verdict"], "kept", j["reasons"])
+        self.assertEqual(j["tuning"]["before"]["mean"], 6.0)
+
+    def test_no_shrink_beyond_noise(self):
+        self.assertEqual(self.case([6, 0, 7], [5, 1, 6], [True] * 3, [True] * 3)["verdict"], "dropped")
+
+    def test_held_out_falls(self):
+        j = self.case([6, 5, 7], [0, 0, 0], [True] * 4, [False] * 4)
+        self.assertEqual(j["verdict"], "dropped")
+        self.assertIn("fell beyond the spread", " ".join(j["reasons"]))
+
+    def test_safety_rises(self):
+        j = self.case([6, 5, 7], [0, 0, 0], [True] * 3, [True] * 3, safety_after=1)
+        self.assertEqual(j["verdict"], "dropped")
+        self.assertTrue(j["safety"])
+
+    def test_incomplete(self):
+        self.assertEqual(self.case([6], [0], [True], [True])["verdict"], "incomplete")    # one run a side
+        bt, ct = self.runs("b", "t1", [True] * 3), self.runs("c", "t1", [True] * 3)
+        rows = self.recs(bt, "tool/x/refused", [6, 5, 7])
+        j = self.im.judge("tool/x", bt, ct, rows, self.sp)
+        self.assertEqual(j["verdict"], "incomplete")   # shrank, but no held-out runs
+        one = {**self.sp, "held_out": ["h1"]}          # one held-out item: no spread, no verdict
+        j = self.im.judge("tool/x", bt + self.runs("b", "h1", [True]), ct + self.runs("c", "h1", [False]), rows, one)
+        self.assertEqual(j["verdict"], "incomplete")
+        self.assertEqual(self.im.judge("tool/x", bt, ct, [], self.sp)["verdict"], "dropped")   # nothing to shrink
+
+    def test_matches_and_sample(self):
+        self.assertTrue(self.im.matches("tool/x/refused: no such file", "tool/x/refused"))
+        self.assertTrue(self.im.matches("missed/seen-in-output", "missed"))
+        self.assertFalse(self.im.matches("missed-x/y", "missed"))
+        rows = [{"run": f"r{i % 3}", "kind": "missed", "cause": "missed/probed", "n": 1} for i in range(30)]
+        got = self.im.sample(rows, "missed", 6)
+        self.assertEqual(len(got), 6)
+        self.assertEqual(sorted(r["run"] for r in got), ["r0", "r0", "r1", "r1", "r2", "r2"])   # spread over runs
+
+    def test_split_is_disjoint(self):
+        sp = self.im.split()
+        self.assertFalse(set(sp["tuning"]) & set(sp["held_out"]))
+        names = {f[:-5] for f in os.listdir(os.path.join(KIT, "evals", "benchmarks")) if f.endswith(".json")}
+        self.assertEqual(set(sp["tuning"]) | set(sp["held_out"]) | {"smoke"}, names)
+
+    def test_changelog(self):
+        import tempfile
+        p = {"id": "P-001", "cause": "tool/x", "kind": "error-message", "file": "harness/workspace.py",
+             "change": "say why", "read": 20, "status": "kept",
+             "judgement": {"at": "2026-11-20T00:00:00+00:00", "baseline": "ref", "candidate": "p1", "reasons": [],
+                           "tuning": {"benchmarks": ["t1"], "before": {"mean": 6.0, "runs": 3},
+                                      "after": {"mean": 0.7, "runs": 3}, "se": 0.6},
+                           "held_out": {"diff": 0.01, "ci95": [-0.05, 0.07], "items": 20}}}
+        d = {**p, "id": "P-002", "status": "dropped", "judgement": {**p["judgement"], "reasons": ["held-out fell"]}}
+        with tempfile.NamedTemporaryFile("r", suffix=".md") as f:
+            text = self.im.changelog([p, d], f.name)
+        self.assertIn("## P-001 (2026-11-20): say why", text)
+        self.assertIn("6.0 → 0.7 records per run", text)
+        self.assertIn("| P-002 | `tool/x` | say why | held-out fell |", text)
+
 if __name__ == "__main__":
     unittest.main(verbosity=1)

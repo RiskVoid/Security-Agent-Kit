@@ -329,6 +329,10 @@ lead and check it with `--show`. Records are derived data: when the rules change
 from the saved runs. They hold ids, titles and commands from the kit's own targets. Engagements have their own
 records, without any of that text: [`./rvkit failures`](cli-reference.md#failures).
 
+The failure records feed the improvement loop: read the top causes on the tuning benchmarks, propose one change
+per cause, and keep it only when the cause shrinks and the held-out benchmarks hold
+([improvement-loop.md](improvement-loop.md), `./rvkit bench --improve`).
+
 ### Writing a benchmark
 
 A benchmark is a JSON file in `evals/benchmarks/`. Its file name is the benchmark name.
