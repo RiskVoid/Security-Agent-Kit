@@ -27,6 +27,9 @@ def _db():
     return con
 
 
+_MISSING = object()
+
+
 def _get(url, key=None, ttl=TTL, data=None, headers=None):
     key = key or url + (json.dumps(data) if data else "")
     with _lock, _db() as con:
@@ -36,13 +39,26 @@ def _get(url, key=None, ttl=TTL, data=None, headers=None):
     req = urllib.request.Request(url, data=json.dumps(data).encode() if data else None,
                                  headers={"User-Agent": "rvkit-intel", "Content-Type": "application/json",
                                           **(headers or {})})
-    try:
-        v = json.load(urllib.request.urlopen(req, timeout=60))
-    except urllib.error.HTTPError as e:
-        if e.code == 404:
-            v = None
-        else:
-            raise
+    v, err = _MISSING, None
+    for attempt in range(3):   # public APIs rate-limit and fail now and then: retry, then use a stale copy
+        try:
+            v = json.load(urllib.request.urlopen(req, timeout=60))
+            break
+        except urllib.error.HTTPError as e:
+            if e.code == 404:
+                v = None
+                break
+            err = e
+            if e.code not in (408, 429) and e.code < 500:
+                break   # a client error won't change on retry
+        except (urllib.error.URLError, TimeoutError, OSError, ValueError) as e:
+            err = e
+        if attempt < 2:
+            time.sleep(2 + 4 * attempt)
+    if v is _MISSING:
+        if row:
+            return json.loads(row[0])
+        raise err
     with _lock, _db() as con:
         con.execute("REPLACE INTO cache VALUES (?,?,?)", (key, json.dumps(v), time.time()))
     return v
@@ -111,27 +127,35 @@ def _fixed(o):
 
 def enrich(ids):
     ids = [i.strip() for i in ids if i and i.strip()]
-    rows, cve_of = [], {}
+    rows, cve_of, down = [], {}, []
+
+    def safe(name, fn, default):
+        """A source that doesn't answer leaves its fields empty and is named, instead of failing the call."""
+        try:
+            return fn()
+        except Exception as e:  # noqa: BLE001
+            down.append(f"{name}: {type(e).__name__}: {str(e)[:120]}")
+            return default
     for vid in ids:
-        o = osv(vid) if not vid.upper().startswith("CVE-") else (osv(vid) or {})
+        o = safe("osv", lambda: osv(vid), None) or {}
         aliases = sorted(set((o or {}).get("aliases", []) + [vid]))
         cves = [a for a in aliases if a.upper().startswith("CVE-")]
         cve_of[vid] = cves[0] if cves else None
         fixed = _fixed(o)
         for alias in (a for a in aliases if a.startswith("GHSA-") and not fixed):  # CVE records often lack versions
-            ghsa = osv(alias)
+            ghsa = safe("osv", lambda: osv(alias), None)
             fixed = _fixed(ghsa)
             o = o if (o or {}).get("summary") else ghsa
         rows.append({"id": vid, "aliases": [a for a in aliases if a != vid],
                      "summary": (o or {}).get("summary") or ((o or {}).get("details") or "")[:200],
                      "fixed_in": fixed})
     all_cves = {c for c in cve_of.values() if c}
-    ep, kv = epss(all_cves), kev()
+    ep, kv = safe("epss", lambda: epss(all_cves), {}), safe("kev", kev, {})
     for r in rows:
         c = cve_of[r["id"]]
         r["cve"] = c
         if c:
-            r.update(_cvss(nvd(c)))
+            r.update(safe("nvd", lambda: _cvss(nvd(c)), {}))
             r["epss"] = ep.get(c, {}).get("epss")
             r["epss_percentile"] = ep.get(c, {}).get("percentile")
             k = kv.get(c)
@@ -140,6 +164,9 @@ def enrich(ids):
                 r["kev_added"] = k.get("dateAdded")
                 r["kev_ransomware"] = k.get("knownRansomwareCampaignUse")
                 r["kev_action"] = k.get("requiredAction")
+    if down:
+        for r in rows:
+            r["sources_unavailable"] = sorted(set(down))
     return rows
 
 
@@ -169,8 +196,10 @@ def prioritize(ids: list[str]) -> str:
         seen.add(key)
         rows.append(r)
     rows.sort(key=_priority)
-    return json.dumps([{k: r.get(k) for k in ("id", "cve", "kev", "kev_ransomware", "epss", "epss_percentile",
-                                              "cvss_score", "cvss_severity", "cwe", "fixed_in", "summary")}
+    keys = ("id", "cve", "kev", "kev_ransomware", "epss", "epss_percentile", "cvss_score", "cvss_severity", "cwe",
+            "fixed_in", "summary")
+    return json.dumps([{**{k: r.get(k) for k in keys},
+                        **({"sources_unavailable": r["sources_unavailable"]} if r.get("sources_unavailable") else {})}
                        for r in rows], indent=1)
 
 
