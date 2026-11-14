@@ -162,6 +162,8 @@ services:
     environment:
       REPORT_BRAND: ${REPORT_BRAND:-riskvoid}   # riskvoid | plain | custom (harness/brands/example/README.md)
       ORG_NAME: ${ORG_NAME:-}                   # "Prepared by" default; plain/custom: the name in the report
+      LITELLM_MASTER_KEY: ${LITELLM_MASTER_KEY}   # the disprove-only validator (validator.py) calls the gateway
+      VALIDATOR: ${VALIDATOR:-1}                # 0: confirmed findings are not sent to the validator
     volumes:
       - ${ENGAGEMENTS_DIR:-~/riskvoid/engagements}:/work
       - ${PROJECTS_DIR:-~/riskvoid/projects}:/src:ro   # checks the /src file:line a confirmed finding cites

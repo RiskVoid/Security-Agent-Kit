@@ -13,6 +13,7 @@ routes each model name to the right place:
 |---|---|---|---|
 | `planner` | `PLANNER_MODEL` on OpenRouter (default `z-ai/glm-5.3`) | the `riskvoid-planner` agent | `planner-fallback` on errors, outages, refusals and empty replies |
 | `planner-fallback` | `PLANNER_FALLBACK_MODEL` on OpenRouter (default `deepseek/deepseek-v4-pro`) | | |
+| `validator` | `VALIDATOR_MODEL` on OpenRouter (default: the planner's fallback model) | the disprove-only validator in findings-mcp, on each finding the planner confirms | none: when the Client data rule refuses it, the validator calls `planner` in a fresh context |
 | `colab-qwen` | the worker endpoint (`WORKER_API_BASE`, `WORKER_MODEL_ID`) | `delegate_task` in the worker MCP server | `colab-qwen-fallback`, **only** when the fallback is on |
 | `colab-qwen-fallback` | `WORKER_FALLBACK_MODEL` on OpenRouter (default `deepseek/deepseek-v4.1-flash`) | | |
 | `private-llm` | the same worker endpoint as `colab-qwen` | the `riskvoid-local` agent, and `delegate_task` for engagements with `Worker model: private` | never |

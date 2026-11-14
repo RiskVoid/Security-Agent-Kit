@@ -140,6 +140,19 @@ quote of several words also passes when its words appear in order close together
 flag) must match exactly. `[REDACTED ...]` and `{{cred:NAME}}` match any value. People confirming in the console
 or with `./rvkit` are not checked. `python3 harness/quotecheck.py <engagements dir>` replays the check over
 past confirmations.
+
+<a id="the-validator"></a>**The validator tries to disprove each confirmation.** When the planner confirms a finding,
+a separate model call (`validator`: `VALIDATOR_MODEL`, a different model from the planner) gets only the finding,
+its cited evidence files, its oracle records with the responses they judged, and how each oracle works: not the
+conversation. Its only job is to disprove the finding. It answers `stands` or `disproved` with a reason tied to one
+of the cited files; a disproval that names no cited file counts as `unclear`. `disproved` sends the finding back to
+`candidate` with the reason (a decision by `agent:validator` in its history), and the tool result says so. When the
+engagement's Client data rule refuses the validator's model, the same call goes to `planner` in a fresh context;
+when no model can be used, the verdict is `not_run` and the confirmation stands. Evidence is given as data, never
+as instructions. The console shows the verdict on the finding and in its history, the report shows it as
+"Independent review", and benchmarks count what survived and what was caught. `VALIDATOR=0` turns it off.
+People confirming in the console or with `./rvkit` are not sent to it.
+| `validate_finding` | `engagement`, `finding_id` | Runs the validator again on a confirmed finding (it runs on its own on each confirmation). Returns the verdict, reason, evidence file and model. |
 | `list_findings` | `engagement`, optional `status`, `severity` | Findings, most severe first: id, title, severity, status, asset, source. |
 | `get_finding` | `engagement`, `finding_id`, `history` (default false) | One finding with every field; with `history`, every revision and decision with its reason. |
 | `import_observations` | `engagement`, `path` (a file of the engagement, such as `semgrep.json` or `evidence/authz/...`), optional `tool` | Turns a Semgrep, osv-scanner, pip-audit, bandit or gitleaks JSON, an authorization-matrix run, an app map or an HTTP exchange into observations. Re-importing doesn't duplicate; parser errors and limitations are returned. |

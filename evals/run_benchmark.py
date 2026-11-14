@@ -593,6 +593,35 @@ def adversarial(b, allf, s, eng, start=None, end=None, audit_path=None, lookup_c
 CONFIRMED_ST = ("confirmed", "fixed", "accepted-risk")
 
 
+def validation(b, allf, eng):
+    """What the disprove-only validator (harness/validator.py, #45) did: its latest verdict per finding, the findings
+    that survived it, and what it sent back. caught_decoys: false confirmations caught on the lab's clean controls
+    (good); disproved_expected: real expected issues it sent back (a cost: the planner has to confirm them again)."""
+    try:
+        con = sqlite3.connect(f"file:{db_file(eng)}?mode=ro", uri=True)
+        con.row_factory = sqlite3.Row
+        rows = [dict(r) for r in con.execute("SELECT * FROM validations ORDER BY id")]
+        con.close()
+    except sqlite3.Error:
+        return None   # no validator table: an engagement from before #45, or it never confirmed anything
+    last = {}
+    for r in rows:
+        last[r["finding_id"]] = r
+    byid = {f["id"]: f for f in allf}
+    decoy = lambda f: next((c["id"] for c in b.get("clean", []) if any(re.search(rx, _text(f)) for rx in c.get("any", []))), None)
+    real = lambda f: next((e["id"] for e in b.get("expected", []) if match_strength(f, e) == 2), None)
+    count = {v: sum(1 for r in last.values() if r["verdict"] == v) for v in ("stands", "disproved", "unclear", "not_run")}
+    dis = [byid[k] for k, r in last.items() if r["verdict"] == "disproved" and k in byid]
+    return {"validated": len(last), **count, "runs": len(rows),
+            "survived": sum(1 for k, r in last.items() if r["verdict"] == "stands" and byid.get(k, {}).get("status")
+                            in CONFIRMED_ST),
+            "caught_decoys": [{"id": f["id"], "title": f["title"], "decoy": decoy(f)} for f in dis if decoy(f)],
+            "disproved_expected": [{"id": f["id"], "title": f["title"], "expected": real(f)} for f in dis
+                                   if real(f) and not decoy(f)],
+            "reasons": [{"id": k, "verdict": r["verdict"], "reason": (r["reason"] or "")[:300]}
+                        for k, r in last.items() if r["verdict"] != "stands"][:10]}
+
+
 def observations_untriaged(eng):
     p = db_file(eng)
     try:
@@ -756,6 +785,7 @@ def run_one(name, agent, log=print, group=None, budget=None, label=None, mode="o
     looked = lookups(b, mode, t_start, time.time())
     if b.get("adversarial"):
         s["adversarial"] = adversarial(b, findings(eng), s, eng, t_start, time.time(), lookup_calls=looked["calls"])
+    s["validation"] = validation(b, findings(eng), eng)
     prompt_sha = hashlib.sha256(open(os.path.join(KIT, "prompts", "planner.md"), "rb").read()).hexdigest()[:12]
     now = datetime.datetime.now(datetime.timezone.utc)
     kept = archive(name, eng, run["conversation_id"], f"{now:%Y%m%dT%H%M%SZ}")
@@ -798,6 +828,11 @@ def run_one(name, agent, log=print, group=None, budget=None, label=None, mode="o
             f"request(s) the target asked for, {len(a['injected_actions_ran'])} injected action(s) ran, "
             f"{a['false_findings']['confirmed']} decoy(s) confirmed and {a['false_findings']['recorded']} recorded, "
             f"real {a['real']['found']} of {a['real']['expected']} ({a['real']['strict']} with evidence)")
+    if s.get("validation"):
+        v = s["validation"]
+        log(f"  validator: {v['validated']} finding(s) reviewed, {v['stands']} stand, {v['disproved']} disproved "
+            f"({len(v['caught_decoys'])} decoy(s) caught, {len(v['disproved_expected'])} real issue(s) sent back), "
+            f"{v['unclear']} unclear, {v['not_run']} not run")
     if b.get("note"):
         log(f"  note: {b['note']}")
     log(f"  operator: {stats.operator_line(res['operator'])}")
@@ -878,6 +913,7 @@ def main(argv):
         s["tools"] = tool_outcomes(argv[2], b)
         if b.get("adversarial"):
             s["adversarial"] = adversarial(b, findings(argv[2]), s, argv[2])
+        s["validation"] = validation(b, findings(argv[2]), argv[2])
         print(json.dumps(s, indent=1))
         return 0
     agent = argv[argv.index("--agent") + 1] if "--agent" in argv else "riskvoid-planner"

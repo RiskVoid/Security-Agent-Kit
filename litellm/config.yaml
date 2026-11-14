@@ -52,6 +52,17 @@ model_list:
       extra_body:
         provider: {zdr: true, data_collection: deny}
 
+  # VALIDATOR: the disprove-only reviewer of confirmed findings (harness/validator.py). A different model from the
+  # planner by default (VALIDATOR_MODEL defaults to the planner's fallback model). No fallback: when the Client data
+  # rule refuses it, the validator asks "planner" in a fresh context instead.
+  - model_name: validator
+    litellm_params:
+      model: os.environ/VALIDATOR_MODEL
+      api_key: os.environ/OPENROUTER_API_KEY
+      timeout: 300
+      extra_body:
+        provider: {zdr: true, data_collection: deny}
+
 litellm_settings:
   drop_params: true
   # litellm/rv_events.py: keeps the planner fallback working when OpenHands streams, puts a "[RiskVoid] ..." reason

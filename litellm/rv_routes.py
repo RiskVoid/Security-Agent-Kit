@@ -79,6 +79,8 @@ def group_route(group, env):
     fb_worker = model_destination(env.get("WORKER_FALLBACK_MODEL") or "openrouter/x", None, env)
     planner = model_destination(env.get("PLANNER_MODEL") or "openrouter/x", None, env)
     planner_fb = model_destination(env.get("PLANNER_FALLBACK_MODEL") or "openrouter/x", None, env)
+    validator = model_destination(env.get("VALIDATOR_MODEL") or env.get("PLANNER_FALLBACK_MODEL") or "openrouter/x",
+                                  None, env)
     fallback_on = (env.get("WORKER_FALLBACK") or "off") == "on"
     table = {
         "colab-qwen": (worker, [fb_worker] if fallback_on else []),
@@ -86,6 +88,7 @@ def group_route(group, env):
         "colab-qwen-fallback": (fb_worker, []),
         "planner": (planner, [planner_fb]),
         "planner-fallback": (planner_fb, []),
+        "validator": (validator, []),
     }
     return table.get(group, ("unknown", []))
 
@@ -102,7 +105,8 @@ def models(env):
                                 "model": env.get("WORKER_FALLBACK_MODEL", ""),
                                 "destination": group_route("colab-qwen-fallback", env)[0]},
             "planner": one("planner", "PLANNER_MODEL"),
-            "planner_fallback": one("planner-fallback", "PLANNER_FALLBACK_MODEL")}
+            "planner_fallback": one("planner-fallback", "PLANNER_FALLBACK_MODEL"),
+            "validator": one("validator", "VALIDATOR_MODEL")}
 
 
 def load_routes(path=ROUTES_FILE):
@@ -202,7 +206,7 @@ def decide(group, request, headers, routes, env, session=None):
                 f"engagement {e} allows its client data only to {', '.join(allowed)} (RULES.md: Client data). "
                 f"This call would go to {primary} ({LABELS.get(primary, primary)}) through the '{group}' model. "
                 + ("Use the riskvoid-local agent, or point the worker at an allowed endpoint (./rvkit worker)."
-                   if group.startswith("planner") else "Point the worker at an allowed endpoint (./rvkit worker).")))
+                   if group.startswith("planner") or group == "validator" else "Point the worker at an allowed endpoint (./rvkit worker).")))
             return out
         if any(f not in allowed for f in fbs):
             out["fallbacks"] = False

@@ -8,6 +8,7 @@ from mcp.server.fastmcp import FastMCP
 import findings_db as db
 import ops
 import quotecheck
+import validator
 import verification
 
 ACTOR = "agent:planner"  # changes made through this server are attributed to the planner agent
@@ -19,6 +20,22 @@ mcp = FastMCP("findings", host="0.0.0.0", port=8092, stateless_http=True)
 
 def _out(x) -> str:
     return json.dumps(x, indent=1)
+
+
+def _validated(engagement, row):
+    """A finding the planner just confirmed goes to the disprove-only validator (validator.py). The verdict is added
+    to what the tool returns; disproved has already sent the finding back to candidate."""
+    if not isinstance(row, dict) or row.get("status") != "confirmed":
+        return row
+    try:
+        v = validator.validate(engagement, row["id"])
+    except Exception as e:  # noqa: BLE001  the confirmation stands; the validation is just missing
+        v = {"verdict": "not_run", "reason": f"the validator failed: {type(e).__name__}: {e}"}
+    if v.get("verdict") == "disproved":
+        row = db.get(engagement, row["id"])
+        v["note"] = ("the finding is back to candidate. Look at the reason and the evidence: test again and confirm "
+                     "with better evidence, or mark it false-positive. Don't confirm it again with the same evidence.")
+    return {**row, "validation": v}
 
 
 @mcp.tool()
@@ -44,7 +61,7 @@ def record_finding(engagement: str, title: str, severity: str, asset: str, descr
         title=title, severity=severity, asset=asset, description=description, impact=impact,
         reproduction=reproduction, remediation=remediation, evidence=evidence or [], cvss_vector=cvss_vector,
         cvss_score=cvss_score, cwe=cwe, status=status, source="planner", notes=notes)})
-    return _out(row)
+    return _out(_validated(engagement, row))
 
 
 @mcp.tool()
@@ -90,7 +107,18 @@ def update_finding(engagement: str, finding_id: str, status: str | None = None, 
                                              "reason": reason, "method": method})
     except ValueError as e:
         return f"REFUSED: {e}"
-    return _out(row)
+    return _out(_validated(engagement, row) if status == "confirmed" else row)
+
+
+@mcp.tool()
+def validate_finding(engagement: str, finding_id: str) -> str:
+    """Send a confirmed finding to the disprove-only validator again (it runs on its own when you confirm one): a
+    separate model with only the finding, its cited evidence and its oracle records tries to disprove it. Returns
+    stands, disproved (the finding goes back to candidate, with the reason), unclear or not_run, and the reason."""
+    try:
+        return _out(validator.validate(engagement, finding_id))
+    except ValueError as e:
+        return f"REFUSED: {e}"
 
 
 @mcp.tool()
@@ -107,8 +135,12 @@ def get_finding(engagement: str, finding_id: str, history: bool = False) -> str:
     """Get one finding with all fields (verification, verified_by and method, priority, instances). history=true
     adds every earlier revision and the decisions made about it, with reasons."""
     f = db.get(engagement, finding_id)
+    v = validator.history(engagement, finding_id)
+    if v:
+        f["validation"] = v[0]
     if history:
         f["history"] = db.history(engagement, finding_id)
+        f["validations"] = v
     return _out(f)
 
 

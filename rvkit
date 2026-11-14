@@ -55,6 +55,7 @@ need_env() {
   envensure WORKER_FALLBACK "off"
   envensure PLANNER_MODEL "openrouter/z-ai/glm-5.3"
   envensure PLANNER_FALLBACK_MODEL "openrouter/deepseek/deepseek-v4-pro"
+  envensure VALIDATOR_MODEL "$(envget PLANNER_FALLBACK_MODEL)"   # disprove-only reviewer of confirmed findings
   envensure OPENROUTER_DAILY_BUDGET "20"
   envensure REDIS_PASSWORD "$(rand 24)"
   envensure OPENHANDS_API_KEY "oh-rv-$(rand 24)"

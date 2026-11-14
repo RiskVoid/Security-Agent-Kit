@@ -10,6 +10,8 @@
 #   timing               /api/eta with detail=full is slow on purpose (pass); two equally fast requests (fail)
 # The read_back pass case writes, so it needs the user's approval: the test prints the approval id and the command,
 # and runs it on the next run with RV_ORACLE_APPROVAL=<id> RV_ORACLE_MARKER=<marker> (same engagement kept).
+# The disprove-only validator (#45) is off here (no model). RV_ORACLE_VALIDATOR=1 turns it on: the oracle-confirmed
+# finding then goes to the validator model (one small OpenRouter call) and must stand.
 # Run: ./rvkit lab up && bash evals/oracle_test.sh
 cd "$(dirname "$0")/.." || exit 1
 ENG=rv-oracle-test
@@ -56,13 +58,22 @@ if [ -z "$RV_ORACLE_APPROVAL" ]; then
   rec2="$(echo "$r2" | tail -1)"
 
   # ---------------------------------------------------------------- the finding side (#44)
-  fpy() { docker compose exec -T findings-mcp python3 -c "import findings; $1" </dev/null; }
+  fpy() { docker compose exec -T -e VALIDATOR="${RV_ORACLE_VALIDATOR:-0}" findings-mcp python3 -c "import findings; $1" </dev/null; }
   check "a finding can't be confirmed by oracle with the clean case's record" \
         "$(fpy "print(findings.record_finding('$ENG', 'XSS in /api/docs', 'medium', '$L/api/docs', 'Reflected input.', evidence=['$rec2'], status='confirmed', method='oracle'))")" \
         'REFUSED: no cited verification passed'
   check "a finding confirmed by oracle with the passing record" \
-        "$(fpy "print(findings.record_finding('$ENG', 'Reflected XSS in /search', 'medium', '$L/search?q=', 'The q parameter is reflected without escaping.', evidence=['$rec'], status='confirmed', method='oracle'))")" \
+        "$(fpy "print(findings.record_finding('$ENG', 'HTML injection in /search', 'medium', '$L/search?q=', 'The q parameter is reflected into the page without escaping: HTML tags in it are kept as markup.', evidence=['$rec'], status='confirmed', method='oracle'))")" \
         '"verified_method": "oracle"'
+  if [ "${RV_ORACLE_VALIDATOR:-0}" = 1 ]; then
+    check "the validator lets the oracle-confirmed finding stand" \
+          "$(fpy "import validator; print(validator.latest('$ENG'))")" "'verdict': 'stands'"
+    # a false confirmation: the clean route's response cited as proof of an injection it doesn't show
+    clean="$(fpy "import json; print(json.load(open('$rec2'))['steps'][0]['evidence'])")"
+    check "the validator disproves a false confirmation on the clean route; it goes back to candidate" \
+          "$(fpy "import json; r = json.loads(findings.record_finding('$ENG', 'SQL injection in /api/docs', 'high', '$L/api/docs', 'The q parameter of /api/docs is injectable: the response shows a database error.', evidence=['$clean'], status='confirmed', method='tool-output')); print(r['status'], r['validation']['verdict'])")" \
+          '^candidate disproved'
+  fi
   printf 'Test report for the verification oracles.\n' | docker compose exec -T findings-mcp sh -c "mkdir -p /work/$ENG/report && cat > /work/$ENG/report/executive-summary.md"
   fpy "import ops; ops.call('report.build', {'engagement': '$ENG', 'actor': 'test:oracle'})" >/dev/null 2>&1
   html="$(docker compose exec -T findings-mcp sh -c "cat /work/$ENG/report/*.html" </dev/null)"

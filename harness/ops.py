@@ -73,7 +73,12 @@ def _event(name, actor, target, before, after, **extra):
 # ---------------------------------------------------------------- findings
 @op("finding.list", mutates=False)
 def finding_list(engagement, actor=None, status=None, severity=None):
-    return db.list_(engagement, status, severity), None
+    import validator
+    rows, last = db.list_(engagement, status, severity), validator.latest(engagement)
+    for r in rows:
+        if r["id"] in last:
+            r["validation"] = last[r["id"]]
+    return rows, None
 
 
 @op("finding.record")
@@ -122,7 +127,8 @@ def finding_update(engagement, actor, id, fields, expected_revision=None, reason
 
 @op("finding.history", mutates=False)
 def finding_history(engagement, actor=None, id=None):
-    return db.history(engagement, id or ""), None
+    import validator
+    return {**db.history(engagement, id or ""), "validations": validator.history(engagement, id or "")}, None
 
 
 @op("finding.not_reproducible")

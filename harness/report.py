@@ -29,6 +29,7 @@ from mcp.client.streamable_http import streamablehttp_client  # noqa: E402
 import findings_db as db  # noqa: E402
 import report_html  # noqa: E402
 import workspace  # noqa: E402
+import validator  # noqa: E402
 import verification  # noqa: E402
 from redact import redact  # noqa: E402
 
@@ -221,7 +222,10 @@ def collect(eng):
             "texts": {n: read_opt(rdir / n) for n in ("executive-summary.md", "methodology.md", "conclusion.md")},
             "findings": allf, "evidence": ev, "evidence_issues": issues, "readiness_issues": [],
             # the oracle runs each reported finding cites, with their controls (#44)
-            "verification": {f["id"]: verification.summary(eng, f.get("evidence")) for f in reported}}
+            "verification": {f["id"]: verification.summary(eng, f.get("evidence")) for f in reported},
+            # the disprove-only validator's latest verdict on each reported finding (#45)
+            "validation": {k: redact({x: v.get(x) for x in ("verdict", "reason", "evidence_ref", "model", "revision", "at")})
+                           for k, v in validator.latest(eng).items() if k in {f["id"] for f in reported}}}
 
 
 def print_pdf(html_path, pdf_path):
@@ -263,6 +267,7 @@ def build(eng, inp=None, out_dir=None):
     findings = [redact(f) for f in findings]
     ev, issues = inp["evidence"], list(inp["evidence_issues"])
     verif = inp.get("verification") or {}   # reports frozen before #44 have none
+    valid = inp.get("validation") or {}     # and before #45
     cands = [f for f in allf if f["status"] == "candidate"]
     fps = [f for f in allf if f["status"] == "false-positive"]
     dups = [f for f in allf if f["status"] == "duplicate"]
@@ -410,6 +415,11 @@ def build(eng, inp=None, out_dir=None):
                     rows=[[c["oracle"].replace("_", " "), f"{c['result']}: {c.get('reason') or ''}",
                            "; ".join(f"{x['role']}: status {x.get('status')}" for x in c["controls"]) or "none"]
                           for c in checks], col_weights=[1.2, 3, 2.4])
+        v = valid.get(f["id"])
+        if v:
+            d.h3("Independent review")
+            d.body(f"{report_html.VERDICT_LABEL.get(v['verdict'], v['verdict'])}: {v.get('reason') or ''}"
+                   + (f" ({v['evidence_ref']})" if v.get("evidence_ref") else ""))
 
     if concl_md:
         d.h1("Conclusion")
@@ -457,7 +467,7 @@ def build(eng, inp=None, out_dir=None):
         "version": m.get("version", "1.0"), "description": description, "cover": cover_pairs[:6],
         "exec_md": redact(exec_md), "meth_md": redact(meth_md), "concl_md": redact(concl_md),
         "findings": findings, "evidence": ev, "activity": act, "info": info, "period": period,
-        "coverage": inp.get("coverage"), "verification": verif,
+        "coverage": inp.get("coverage"), "verification": verif, "validation": valid,
         "status_label": STATUS_LABEL, "fmt_ts": fmt_ts, "n_fp": len(fps), "n_dup": len(dups)})
 
     cols = [("ID", 9), ("Severity", 12), ("Finding", 46), ("Asset", 28), ("CWE", 14), ("CVSS", 8),

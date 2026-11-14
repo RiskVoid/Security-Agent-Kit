@@ -588,7 +588,7 @@ function paneFindings() {
   const row = (f) => `<button class="rv-frow ${state.openFinding === f.id ? "selected" : ""}" aria-pressed="${state.openFinding === f.id}" data-fid="${esc(f.id)}">
       ${sevMark(f.severity)}
       <span class="body"><span class="title">${esc(f.title)}</span>
-        <span class="meta">${[f.id, f.asset || "no asset", f.cwe, f.verification === "verified" ? "verified" : f.verification === "not-reproducible" ? "not reproducible" : ""].filter(Boolean).map(esc).join(" · ")}</span></span>
+        <span class="meta">${[f.id, f.asset || "no asset", f.cwe, f.verification === "verified" ? "verified" : f.verification === "not-reproducible" ? "not reproducible" : "", f.validation?.verdict === "disproved" ? "disproved by the validator" : f.validation?.verdict === "stands" && f.status === "confirmed" ? "validated" : ""].filter(Boolean).map(esc).join(" · ")}</span></span>
       <span class="pri">${esc(f.priority || "")}</span>
       ${statusPill(f)}
     </button>`;
@@ -679,11 +679,21 @@ function evidenceBadge(st) {
   if (st.startsWith("not produced")) return tag("not audited", "warn");
   return tag(st, "fail");
 }
+// The disprove-only validator's verdict on a confirmed finding (harness/validator.py)
+const VERDICT = { stands: ["stands", "ok"], disproved: ["disproved", "warn"], unclear: ["unclear", ""], not_run: ["not run", ""] };
+function validationBlock(v, block) {
+  if (!v) return "";
+  const [label, kind] = VERDICT[v.verdict] || [v.verdict, ""];
+  return block("Validator", `<p class="rv-prose">${tag(label, kind)} ${esc(v.reason || "")}</p>
+    <div class="rv-meta">${v.evidence_ref ? `<span class="mono">${esc(v.evidence_ref)}</span>` : ""}${v.model ? `<span>${esc(v.model)}</span>` : ""}<span>revision ${esc(v.revision ?? "-")}</span><span>${fmtTime(v.at)}</span></div>`);
+}
 function historyHtml(h) {
   const dec = h.decisions.map((x) => `<li>${fmtTime(x.at)} <b>${esc(x.kind)}</b> ${x.from_value || x.to_value ? `${esc(x.from_value || "-")} &rarr; ${esc(x.to_value || "-")}` : ""}
     ${x.method ? tag(x.method) : ""} <span class="rv-dim">${esc(x.actor || "")}</span>${x.reason ? `<div class="rv-dim">${esc(x.reason)}</div>` : ""}</li>`).join("");
   const revs = h.revisions.map((r) => `<li>rev ${r.revision} · ${fmtTime(r.at)} <span class="rv-dim">${esc(r.actor || "")}</span> ${tag(r.snapshot.status)} ${sevTag(r.snapshot.severity)}</li>`).join("");
+  const val = (h.validations || []).map((v) => `<li>${fmtTime(v.at)} <b>validator</b> ${tag((VERDICT[v.verdict] || [v.verdict])[0], (VERDICT[v.verdict] || [, ""])[1])} <span class="rv-dim">rev ${esc(v.revision ?? "-")} ${esc(v.model || "")}</span>${v.reason ? `<div class="rv-dim">${esc(v.reason)}</div>` : ""}</li>`).join("");
   return `<div class="rv-history"><p class="rv-field-label">Decisions</p><ul class="rv-rows">${dec || "<li class='rv-dim'>none</li>"}</ul>
+    ${val ? `<p class="rv-field-label">Validator</p><ul class="rv-rows">${val}</ul>` : ""}
     <p class="rv-field-label">Revisions</p><ul class="rv-rows">${revs}</ul></div>`;
 }
 function previewBox(pv) {
@@ -714,6 +724,7 @@ function findingPanel(f, ev) {
       </div>
       <div class="rv-subtabs" role="tablist" aria-label="Finding sections">${tabs.map(([t, label]) => `<button role="tab" class="rv-subtab" data-ftab="${t}" aria-selected="false">${label}</button>`).join("")}</div>
       <div class="rv-fsec" data-fsec="details">
+        ${validationBlock(f.validation, block)}
         ${block("Description", `<p class="rv-prose">${esc(f.description)}</p>`)}
         ${f.reproduction ? block("Reproduction", `<pre class="rv-pre">${esc(f.reproduction)}</pre>`) : ""}
         ${f.remediation ? block("Remediation", `<p class="rv-prose">${esc(f.remediation)}</p>`) : ""}
