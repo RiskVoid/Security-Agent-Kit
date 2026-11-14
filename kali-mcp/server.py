@@ -189,7 +189,8 @@ async def run(command: str, engagement: str, timeout_s: int = 600, approval_id: 
 @with_rules
 async def verify(engagement: str, oracle: str, request: dict, marker: str = "", expect: str = "",
                  identities: list[str] | None = None, check: dict | None = None, control: dict | None = None,
-                 approval_id: str = "", finding: str = "", task: str = "") -> str:
+                 approval_id: str = "", finding: str = "", task: str = "", samples: int = 5,
+                 min_delay: float = 1.0) -> str:
     """Decide whether a finding holds with a deterministic oracle and a negative control, instead of judging a
     response yourself. request: {method, url, headers?, body?, identity?}; put {{marker}} where a fresh canary goes.
       marker               the canary (or expect, e.g. "<b>{{marker}}</b>") comes back in the response. Control: the
@@ -198,6 +199,10 @@ async def verify(engagement: str, oracle: str, request: dict, marker: str = "", 
                            it; controls: the owner gets it, the request without an identity doesn't.
       read_back            the request is the proof (it writes or reads the marker), check: {method, url, ...}
                            reads it back. Control: check before the proof doesn't find it.
+      browser_xss          a GET URL whose input calls rvMarker('{{marker}}'): the page opens in the sandboxed
+                           browser and passes only if that script ran. Control: the same URL with another token.
+      timing               request and control (both required): samples of each (default 5, max 10); passes when
+                           every probe is slower than every control by more than min_delay and the noise.
     Result: pass (holds and the control is clean), fail, or inconclusive. Each run is saved as a verification record
     (evidence/verify/...json): cite it as evidence and confirm the finding with method=oracle. Requests go through
     the same scope, tier, approval and identity checks as http_request; a write needs an approval (call again with
@@ -205,7 +210,7 @@ async def verify(engagement: str, oracle: str, request: dict, marker: str = "", 
     try:
         import oracles
         r = await _thread(oracles.verify, engagement, oracle, request, marker, expect, identities, check, control,
-                          approval_id or None, None, task or None, finding)
+                          approval_id or None, None, task or None, finding, None, samples, min_delay)
         return r["text"]
     except ValueError as e:
         return f"REFUSED: {e}"

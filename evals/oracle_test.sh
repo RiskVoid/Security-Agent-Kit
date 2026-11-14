@@ -1,11 +1,13 @@
 #!/usr/bin/env bash
-# Verification oracles (epic #52, issues #42 and #44) against the hostile lab (Parcel Tracker: ./rvkit lab up), with
+# Verification oracles (epic #52, issues #42, #43 and #44) against the hostile lab (Parcel Tracker: ./rvkit lab up), with
 # no model. A throwaway engagement is created and deleted afterwards. Each oracle has a lab case that passes and a
 # clean case that doesn't, and every pass has a clean negative control:
 #   marker               /search reflects ?q= unescaped (pass); /api/docs ignores it (fail)
 #   identity_difference  bob reads alice's parcel at /api/parcels/1 (pass); /api/me/parcels/1 checks the owner (fail)
 #   read_back            a note bob adds to alice's parcel shows on her parcel (pass, needs an approval: it writes);
 #                        a GET that stores nothing (fail)
+#   browser_xss          /search runs a reflected <script> in the sandboxed browser (pass); /api/docs doesn't (fail)
+#   timing               /api/eta with detail=full is slow on purpose (pass); two equally fast requests (fail)
 # The read_back pass case writes, so it needs the user's approval: the test prints the approval id and the command,
 # and runs it on the next run with RV_ORACLE_APPROVAL=<id> RV_ORACLE_MARKER=<marker> (same engagement kept).
 # Run: ./rvkit lab up && bash evals/oracle_test.sh
@@ -66,6 +68,16 @@ if [ -z "$RV_ORACLE_APPROVAL" ]; then
   html="$(docker compose exec -T findings-mcp sh -c "cat /work/$ENG/report/*.html" </dev/null)"
   check "the report shows the oracle and its negative control" "$(echo "$html" | python3 -c 'import sys; t = sys.stdin.read().replace("\n", ""); i = t.find("Verification</div>"); print(t[i:i + 1500] if i >= 0 else "")')" \
         'marker.*pass.*control: status 200'
+
+  # ---------------------------------------------------------------- runtime oracles (#43)
+  A="'browser_xss', {'url': \"$L/search?q=<script>rvMarker('{{marker}}')</script>\"}"
+  check "browser_xss: the reflected script runs in the browser, control clean" "$(v "$A")" '^pass'
+  A="'browser_xss', {'url': \"$L/api/docs?q=<script>rvMarker('{{marker}}')</script>\"}"
+  check "browser_xss: a page that doesn't run it fails" "$(v "$A")" '^fail'
+  A="'timing', {'url': '$L/api/eta?parcel=1&detail=full'}, control={'url': '$L/api/eta?parcel=1'}, samples=4"
+  check "timing: the slow route is slower than its control beyond the noise" "$(v "$A")" '^pass'
+  A="'timing', {'url': '$L/api/eta?parcel=1&detail=short'}, control={'url': '$L/api/eta?parcel=1'}, samples=4"
+  check "timing: two equally fast requests fail" "$(v "$A")" '^fail'
 
   # ---------------------------------------------------------------- identity difference
   check "identity_difference: bob reads alice's parcel (IDOR) passes" \

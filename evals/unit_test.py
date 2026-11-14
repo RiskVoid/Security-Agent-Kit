@@ -1814,6 +1814,63 @@ class Oracles(unittest.TestCase):
                             approval_id="ab12cd34")
         self.assertEqual(clean["result"], "fail")
 
+    def fake_browse(self, eng, url, identity=None, max_tier=None, task=None):
+        """/run?q= executes rvMarker(q); /echo?q= only reflects it; /always runs rvMarker('rvfixed123')."""
+        import urllib.parse
+        u = urllib.parse.urlsplit(url)
+        q = urllib.parse.parse_qs(u.query).get("q", [""])[0]
+        executed = []
+        m = re.search(r"rvMarker\('([^']+)'\)", q)
+        if u.path == "/run" and m:
+            executed.append("marker:" + m.group(1))
+        if u.path == "/always":
+            executed.append("marker:rvfixed123")
+        rel = f"evidence/browser/b{len(self.sent)}"
+        os.makedirs(os.path.join(self.tmp.name, eng, rel), exist_ok=True)
+        with open(os.path.join(self.tmp.name, eng, rel, "summary.json"), "w") as f:
+            json.dump({"steps": [{"ok": True, "status": 200}], "executed": executed}, f)
+        self.sent.append(("BROWSE", url, identity))
+        return f"exit=0\n[browser evidence: /work/{eng}/{rel}/ (requests.jsonl, page.html, screenshot.png, summary.json)]"
+
+    def test_browser_xss(self):
+        req = {"url": "http://t/run?q=<script>rvMarker('{{marker}}')</script>"}
+        r = self.o.verify("acme", "browser_xss", req, browse=self.fake_browse)
+        self.assertEqual(r["result"], "pass", r["reason"])
+        echo = self.o.verify("acme", "browser_xss", {"url": "http://t/echo?q=<script>rvMarker('{{marker}}')</script>"},
+                             browse=self.fake_browse)
+        self.assertEqual(echo["result"], "fail")             # reflected, never ran
+        fixed = self.o.verify("acme", "browser_xss", {"url": "http://t/always?q={{marker}}"}, marker="rvfixed123",
+                              browse=self.fake_browse)
+        self.assertEqual(fixed["result"], "inconclusive")    # it runs without the probe's input
+        with self.assertRaises(ValueError):
+            self.o.verify("acme", "browser_xss", {"url": "http://t/run?q=x"}, browse=self.fake_browse)
+
+    def timed(self, delays):
+        """A broker whose response time depends on the URL path: delays {path: [seconds, ...]} in turn."""
+        import urllib.parse
+        left = {k: list(v) for k, v in delays.items()}
+
+        def send(eng, method, url, headers, data, **kw):
+            path = urllib.parse.urlsplit(url).path
+            self.sent.append((method, url, None))
+            return {"status": 200, "body": b"ok", "headers": [], "evidence": f"evidence/verify/{len(self.sent)}.txt",
+                    "hops": [{"seconds": left[path].pop(0)}]}
+        return send
+
+    def test_timing(self):
+        slow = self.timed({"/slow": [1.6, 1.5, 1.7, 1.6, 1.5], "/fast": [0.1, 0.12, 0.09, 0.11, 0.1]})
+        r = self.o.verify("acme", "timing", {"url": "http://t/slow"}, control={"url": "http://t/fast"}, send=slow)
+        self.assertEqual(r["result"], "pass", r["reason"])
+        self.assertEqual(len(r["steps"]), 10)
+        same = self.timed({"/a": [0.1, 0.12, 0.09, 0.11, 0.1], "/b": [0.11, 0.1, 0.1, 0.12, 0.09]})
+        self.assertEqual(self.o.verify("acme", "timing", {"url": "http://t/a"}, control={"url": "http://t/b"},
+                                       send=same)["result"], "fail")
+        noisy = self.timed({"/n": [1.5, 0.1, 1.6, 0.2, 1.4], "/c": [0.1, 1.2, 0.1, 0.1, 0.2]})   # overlap: noise
+        self.assertEqual(self.o.verify("acme", "timing", {"url": "http://t/n"}, control={"url": "http://t/c"},
+                                       send=noisy)["result"], "fail")
+        with self.assertRaises(ValueError):
+            self.o.verify("acme", "timing", {"url": "http://t/slow"}, send=slow)   # no control
+
     def test_findings_side(self):
         import verification
         saved = db.WORK
