@@ -1442,6 +1442,25 @@ class BenchmarkScore(unittest.TestCase):
         self.assertEqual(t["expected_refusals"], {"hydra": True})
 
 
+    def test_left_candidate_is_counted_apart(self):
+        """An expected issue recorded as a candidate and never confirmed was detected, not found: a run that fails
+        to confirm must not read as a run that found nothing, and must not score as one that found it."""
+        cand = self.f(1, "SQL injection in /user", asset="app.py:13", status="candidate")
+        s = self.rb.score(self.b, [cand, self.f(2, "Hard-coded secret key")], self.tmp.name)
+        self.assertEqual((s["found"], s["left_candidate"], s["recall"], s["recorded_recall"]), (1, 1, 0.5, 1.0))
+        self.assertEqual(s["per_expected"][0], {"id": "sqli", "severity": "critical", "found_by": None,
+                                                "left_candidate": "F-001"})
+        self.assertNotIn("left_candidate", s["per_expected"][1])
+        s = self.rb.score(self.b, [self.f(1, "SQL injection in /user"),
+                                   self.f(3, "SQL injection again", status="candidate")], self.tmp.name)
+        self.assertEqual((s["found"], s["left_candidate"], s["recorded_recall"]), (1, 0, 0.5))   # already found
+        both = self.f(4, "SQL injection through a hard-coded query", status="candidate")
+        s = self.rb.score(self.b, [both], self.tmp.name)
+        self.assertEqual((s["found"], s["left_candidate"]), (0, 1))                 # one candidate, one item
+        s = self.rb.score(self.b, [self.f(5, "SQL injection", status="false-positive")], self.tmp.name)
+        self.assertEqual(s["left_candidate"], 0)                                    # rejected is not left
+
+
 class ToolCallConformance(unittest.TestCase):
     """Epic #52 #36: scoring of the worker model's tool calls (evals/toolcall_conformance.py), no model."""
 
@@ -1646,6 +1665,22 @@ class BenchStats(unittest.TestCase):
             self.assertEqual(op["worker_tasks"], {"done": 1, "error": 1})
             self.assertEqual((op["verified_findings"], op["cost_per_verified"]), (2, 0.75))
             self.assertIn("2 asked", self.st.operator_line(op))
+
+
+    def test_group_counts_left_candidates(self):
+        runs = [self.run_([1, 0, 0]), self.run_([1, 1, 0])]
+        runs[0]["score"]["per_expected"][1]["left_candidate"] = "F-9"
+        runs[0]["score"]["recorded_recall"], runs[1]["score"]["recorded_recall"] = 2 / 3, 2 / 3
+        g = self.st.group_summary(runs)
+        self.assertEqual([(i["found"], i["candidate"]) for i in g["items"]], [(2, 0), (1, 1), (0, 0)])
+        self.assertAlmostEqual(g["figures"]["recorded_recall"]["mean"], 0.667, places=3)
+        lines = []
+        self.st.print_group(g, lines.append)
+        self.assertIn("recorded (confirmed or left as a candidate) 67%", lines[0])
+        self.assertTrue(any("left as a candidate 1 of 2" in l and "█◌" in l for l in lines), lines)
+        old = self.st.group_summary([self.run_([1, 0, 0])])      # runs scored before the count existed
+        self.assertIsNone(old["figures"]["recorded_recall"]["mean"])
+        self.st.print_group(old, lines.append)
 
 
 class RulesPinned(unittest.TestCase):
@@ -2752,6 +2787,273 @@ class ImprovementLoop(unittest.TestCase):
         self.assertIn("## Merged as fixes, not judged", text)
         self.assertIn("| P-003 (2026-11-15) | `tool/y` | save the rest | a regression |", text)
         self.assertNotIn("No proposal has been judged yet", text)
+
+
+class RepeatGuard(unittest.TestCase):
+    """The planner repeats a refused call instead of reading the refusal (a run sent one update_finding about 60
+    times). harness/repeatguard.py changes the reply of a repeat; the call itself still runs every time."""
+    REFUSAL = ('REFUSED: F-001 is candidate: to confirm it, call update_finding with status="confirmed", the '
+               'evidence that shows it and the reproduction steps.')
+    PARAMS = ["engagement", "finding_id", "status", "evidence", "reproduction", "method", "priority", "root_cause"]
+    ARGS = {"engagement": "e", "finding_id": "F-001", "method": "source-review", "priority": "P1"}
+
+    def setUp(self):
+        import repeatguard
+        self.g = repeatguard
+        self.g.reset()
+        self.saved = os.environ.pop("PLANNER_REPEAT_GUARD", None)
+
+    def tearDown(self):
+        self.g.reset()
+        if self.saved is not None:
+            os.environ["PLANNER_REPEAT_GUARD"] = self.saved
+
+    def call(self, reply=None, args=None, tool="update_finding", eng="e"):
+        return self.g.observe(eng, tool, self.ARGS if args is None else args, self.REFUSAL if reply is None else reply,
+                              params=self.PARAMS)
+
+    def test_first_refusal_is_untouched(self):
+        self.assertEqual(self.call(), self.REFUSAL)
+
+    def test_second_names_what_was_sent_and_what_was_not(self):
+        self.call()
+        out = self.call()
+        self.assertTrue(out.startswith(self.REFUSAL), out)
+        self.assertIn("SAME CALL, SAME ANSWER (2nd time)", out)
+        self.assertIn("(finding_id, method, priority)", out)             # sent, without the engagement
+        self.assertIn("did not carry: status, evidence, reproduction.", out)   # asked for by the refusal, not sent
+
+    def test_third_opens_with_stop_and_keeps_the_refusal(self):
+        for _ in range(2):
+            self.call()
+        out = self.call()
+        self.assertTrue(out.startswith("STOP: this is the 3rd identical update_finding call"), out)
+        self.assertIn("Do not send it again.", out)
+        self.assertTrue(out.endswith(self.REFUSAL), out)
+        self.assertTrue(self.call().startswith("STOP: this is the 4th"))
+
+    def test_a_changed_call_or_reason_starts_again(self):
+        self.call()
+        self.assertEqual(self.call(args={**self.ARGS, "status": "confirmed"}), self.REFUSAL)   # other arguments
+        other = "REFUSED: status=confirmed needs reproduction"
+        self.assertEqual(self.call(reply=other), other)                    # the same call, another reason
+        self.assertIn("2nd time", self.call(reply=other))
+
+    def test_empty_arguments_count_as_not_sent(self):
+        self.call()
+        out = self.call(args={**self.ARGS, "status": None, "evidence": [], "notes": ""})
+        self.assertIn("2nd time", out)
+        self.assertIn("did not carry: status, evidence, reproduction.", out)
+
+    def test_success_clears_the_count(self):
+        self.call()
+        self.assertEqual(self.call(reply='{"id": "F-001"}'), '{"id": "F-001"}')
+        self.assertEqual(self.call(), self.REFUSAL)
+
+    def test_alternating_calls_are_each_counted(self):   # two calls refused in turn, as in a run stopped as stuck
+        b = {"engagement": "e", "finding_id": "F-001", "status": "confirmed"}
+        for _ in range(2):
+            self.call()
+            self.call(args=b)
+        self.assertTrue(self.call().startswith("STOP: this is the 3rd"))
+        self.assertTrue(self.call(args=b).startswith("STOP: this is the 3rd"))
+
+    def test_engagements_and_tools_are_separate(self):
+        self.call()
+        self.assertEqual(self.call(eng="other"), self.REFUSAL)
+        self.assertEqual(self.call(tool="update_coverage"), self.REFUSAL)
+
+    def test_same_result_three_times_in_a_row(self):
+        ok = '{"items": []}'
+        args = {"engagement": "e"}
+        self.assertEqual(self.call(ok, args, "get_coverage"), ok)
+        self.assertEqual(self.call(ok, args, "get_coverage"), ok)
+        out = self.call(ok, args, "get_coverage")
+        self.assertTrue(out.startswith(ok) and "NOTE: this is the 3rd identical get_coverage call in a row" in out, out)
+        self.call('{"id": "P-001"}', {"engagement": "e", "item": "P-001"}, "update_coverage")   # something else ran
+        self.assertEqual(self.call(ok, args, "get_coverage"), ok)
+        self.assertEqual(self.call('{"items": [1]}', args, "get_coverage"), '{"items": [1]}')   # the result changed
+        self.assertEqual(self.call(ok, args, "get_coverage"), ok)
+
+    def test_saved_but_not_done_counts_by_its_reason(self):
+        """A reply that saved something without doing what the call was for: the row in it changes with every save,
+        so the caller passes the reason, and the repeat is counted by that."""
+        def reply(rev):
+            return json.dumps({"note": "NOT CONFIRMED: ...", "id": "F-001", "revision": rev})
+        why = 'the quote is not in the cited evidence: cite the evidence file, with status="confirmed"'
+        outs = [self.g.observe("e", "update_finding", self.ARGS, reply(i), params=self.PARAMS, problem=why)
+                for i in range(3)]
+        self.assertEqual(outs[0], reply(0))
+        self.assertIn("SAME CALL, SAME ANSWER (2nd time)", outs[1])
+        self.assertIn("was not done for the same reason", outs[1])
+        self.assertIn("did not carry: status, evidence.", outs[1])
+        self.assertTrue(outs[2].startswith("STOP: this is the 3rd identical update_finding call") and
+                        outs[2].endswith(reply(2)), outs[2])
+        out = self.g.observe("e", "update_finding", self.ARGS, reply(3), params=self.PARAMS, problem="another reason")
+        self.assertEqual(out, reply(3))
+
+    def test_off_and_other_replies(self):
+        self.assertEqual(self.g.observe("e", "t", {}, {"not": "text"}), {"not": "text"})
+        os.environ["PLANNER_REPEAT_GUARD"] = "0"
+        try:
+            for _ in range(4):
+                self.assertEqual(self.call(), self.REFUSAL)
+        finally:
+            del os.environ["PLANNER_REPEAT_GUARD"]
+
+    def test_memory_is_bounded(self):
+        for i in range(self.g.KEEP + 20):
+            self.call(args={"engagement": "e", "finding_id": f"F-{i}"})
+        self.assertEqual(len(self.g._state["e"]["refused"]), self.g.KEEP)
+
+
+class FindingTools(unittest.TestCase):
+    """The planner's finding tools (harness/findings.py) with the MCP library stubbed and the validator faked: a
+    method without status is a confirmation attempt, a failed one keeps the finding and says why, and a repeated
+    refusal is pointed out."""
+    REPRO = "1. Open app.py at line 13. 2. The name parameter is concatenated into the SQL string."
+
+    def setUp(self):
+        import types
+        import quotecheck, repeatguard, validator
+        self.tmp = tempfile.TemporaryDirectory()
+        self.mods = (quotecheck, validator, repeatguard)
+        self.saved = (db.WORK, quotecheck.WORK, quotecheck.SRC, validator.validate)
+        db.WORK = quotecheck.WORK = self.tmp.name
+        quotecheck.SRC = os.path.join(self.tmp.name, "src")
+        os.makedirs(os.path.join(self.tmp.name, "e", "evidence", "runs"))
+        with open(os.path.join(self.tmp.name, "e", "evidence", "runs", "r1.txt"), "w") as f:
+            f.write("db.execute(\"SELECT * FROM users WHERE name = '\" + name + \"'\")\n")
+        self.validated = []
+        validator.validate = lambda eng, fid: self.validated.append(fid) or {"verdict": "stands", "reason": "ok"}
+        repeatguard.reset()
+        stubs = {"mcp": types.ModuleType("mcp"), "mcp.server": types.ModuleType("mcp.server"),
+                 "mcp.server.fastmcp": types.SimpleNamespace(FastMCP=lambda *a, **k: types.SimpleNamespace(
+                     tool=lambda: (lambda f: f)))}
+        was = {k: sys.modules.get(k) for k in stubs}
+        sys.modules.update(stubs)
+        try:
+            spec = importlib.util.spec_from_file_location("rv_findings_tools", os.path.join(KIT, "harness", "findings.py"))
+            self.t = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(self.t)
+        finally:
+            for k, v in was.items():
+                if v is None:
+                    sys.modules.pop(k, None)
+                else:
+                    sys.modules[k] = v
+
+    def tearDown(self):
+        quotecheck, validator, repeatguard = self.mods
+        db.WORK, quotecheck.WORK, quotecheck.SRC, validator.validate = self.saved
+        repeatguard.reset()
+        self.tmp.cleanup()
+
+    def record(self, **kw):
+        out = self.t.record_finding("e", kw.pop("title", "SQL injection in /user"), "high", "app.py:13",
+                                    kw.pop("description", "The name parameter is concatenated into the query."), **kw)
+        return json.loads(out) if out.startswith("{") else out
+
+    def update(self, fid, **kw):
+        out = self.t.update_finding("e", fid, **kw)
+        return json.loads(out) if out.startswith("{") else out
+
+    def test_record_with_a_method_confirms(self):
+        f = self.record(method="source-review", reproduction=self.REPRO)
+        self.assertEqual((f["status"], f["verified_method"]), ("confirmed", "source-review"))
+        self.assertEqual(self.validated, [f["id"]])
+        self.assertNotIn("note", f)
+
+    def test_record_without_a_method_is_a_candidate(self):
+        f = self.record()
+        self.assertEqual(f["status"], "candidate")
+        self.assertNotIn("note", f)
+        self.assertEqual(self.record(status="candidate", method="source-review")["status"], "candidate")   # said so
+        self.assertEqual(self.validated, [])
+
+    def test_record_with_a_method_that_cannot_confirm_is_kept_and_says_why(self):
+        f = self.record(method="source-review")   # no reproduction
+        self.assertEqual(f["status"], "candidate")
+        self.assertFalse(f.get("verified_method") and f["verified_method"] != "not stated", f)
+        self.assertTrue(f["note"].startswith(f"NOT CONFIRMED: saved as candidate {f['id']}."), f["note"])
+        self.assertIn("needs reproduction", f["note"])
+        self.assertIn(f'update_finding(finding_id="{f["id"]}", status="confirmed", method="source-review")', f["note"])
+        self.assertEqual(list(f)[0], "note")      # the first thing the model reads
+        self.assertEqual(self.validated, [])
+
+    def test_record_confirmed_outright_is_still_refused(self):
+        out = self.record(status="confirmed", method="source-review")
+        self.assertTrue(isinstance(out, str) and out.startswith("REFUSED") and "reproduction" in out, out)
+        self.assertEqual(db.list_("e"), [])
+
+    def test_update_with_a_method_confirms_a_candidate(self):
+        f = self.record(reproduction=self.REPRO)
+        got = self.update(f["id"], method="source-review", priority="P1", root_cause="string concatenation")
+        self.assertEqual((got["status"], got["verified_method"], got["priority"], got["root_cause"]),
+                         ("confirmed", "source-review", "P1", "string concatenation"))
+        self.assertEqual(self.validated, [f["id"]])
+        f2 = self.record(title="Debug mode", reproduction=self.REPRO)
+        self.assertEqual(self.update(f2["id"], method="source-review")["status"], "confirmed")   # method alone
+
+    def test_update_that_cannot_confirm_saves_the_rest_and_says_why(self):
+        f = self.record()   # no reproduction
+        got = self.update(f["id"], method="source-review", priority="P1", root_cause="string concatenation")
+        self.assertEqual((got["status"], got["priority"], got["root_cause"]), ("candidate", "P1", "string concatenation"))
+        self.assertTrue(got["note"].startswith(f"NOT CONFIRMED: saved priority, root_cause, and {f['id']} is still "
+                                               "candidate."), got["note"])
+        self.assertIn("needs reproduction", got["note"])
+        self.assertEqual(self.validated, [])
+
+    def test_the_collapsed_run(self):
+        """code-flask-20261115T132718Z: findings recorded with a method and no status, then one update_finding
+        with method, priority and root_cause, refused and resent about 60 times; the run scored 0 of 6."""
+        desc = "The route builds the query by concatenation: `request.args.get(\"name\") -> db.execute`."
+        f = self.record(description=desc, method="source-review", reproduction=self.REPRO)
+        self.assertEqual(f["status"], "candidate")
+        self.assertIn("quotes text its evidence doesn't contain", f["note"])   # known at once, not ten findings later
+        again = dict(method="source-review", priority="P1", root_cause="string concatenation")
+        first = self.update(f["id"], **again)
+        self.assertEqual((first["status"], first["priority"]), ("candidate", "P1"))   # saved, not refused
+        self.assertIn("quotes text its evidence doesn't contain", first["note"])
+        second, third = self.t.update_finding("e", f["id"], **again), self.t.update_finding("e", f["id"], **again)
+        self.assertIn("SAME CALL, SAME ANSWER (2nd time)", second)       # saved again, and the repeat is named
+        self.assertIn("did not carry: status, description, evidence.", second)
+        self.assertTrue(third.startswith("STOP: this is the 3rd identical update_finding call "
+                                         "(finding_id, method, priority, root_cause), not done"), third)
+        fixed = self.update(f["id"], method="source-review", evidence=["/work/e/evidence/runs/r1.txt"],
+                            description="The route builds the query by concatenation: `\" + name + \"`.")
+        self.assertEqual((fixed["status"], fixed["verified_method"]), ("confirmed", "source-review"))
+
+    def test_a_method_alone_that_cannot_confirm_is_refused_and_the_repeat_is_named(self):
+        f = self.record()
+        outs = [self.update(f["id"], method="source-review") for _ in range(3)]
+        self.assertTrue(outs[0].startswith(f"REFUSED: {f['id']} is candidate") and "needs reproduction" in outs[0], outs[0])
+        self.assertNotIn("SAME CALL", outs[0])
+        self.assertIn("SAME CALL, SAME ANSWER (2nd time)", outs[1])
+        self.assertIn("did not carry: status, reproduction.", outs[1])
+        self.assertTrue(outs[2].startswith("STOP: this is the 3rd identical update_finding call (finding_id, method)"),
+                        outs[2])
+        got = self.update(f["id"], method="source-review", reproduction=self.REPRO)   # a call that differs goes through
+        self.assertEqual(got["status"], "confirmed")
+
+    def test_a_disproved_finding_is_not_confirmed_again_by_a_method(self):
+        f = self.record(method="source-review", reproduction=self.REPRO)
+        _, validator, _ = self.mods
+        validator._save("e", f, "disproved", "the evidence shows a 404", "evidence/runs/r1.txt", "m")
+        db.update("e", f["id"], actor="agent:validator", reason="disproved", status="candidate")
+        self.validated.clear()
+        got = self.update(f["id"], method="source-review", root_cause="string concatenation")
+        self.assertEqual((got["status"], got["root_cause"]), ("candidate", "string concatenation"))
+        self.assertIn("the validator disproved it", got["note"])
+        self.assertEqual(self.validated, [])
+        got = self.update(f["id"], status="confirmed", method="source-review")   # said outright: allowed, as before
+        self.assertEqual(got["status"], "confirmed")
+
+    def test_other_tools_carry_the_guard(self):
+        outs = [self.t.update_coverage("e", "P-999", "tested") for _ in range(3)]
+        self.assertTrue(outs[0].startswith("REFUSED"), outs[0])
+        self.assertIn("SAME CALL, SAME ANSWER (2nd time)", outs[1])
+        self.assertTrue(outs[2].startswith("STOP: this is the 3rd identical update_coverage call"), outs[2])
 
 if __name__ == "__main__":
     unittest.main(verbosity=1)

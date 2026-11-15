@@ -22,6 +22,12 @@ changes to the harness are measured.
   returns a typed status and candidates with their proof.
 - The planner sees the engagement's rules that tools can't enforce restated on every Kali action result.
 - `./rvkit doctor --models` checks that the worker model makes well-formed tool calls.
+- The planner's finding tools point out a refused call that comes back unchanged: the second time the reply says
+  so and names the arguments the refusal asks for, and from the third it opens with STOP. The call still runs every
+  time (`PLANNER_REPEAT_GUARD=0` turns it off).
+- `record_finding` and `update_finding` read a `method` without `status` as a confirmation attempt, with the same
+  checks as `status="confirmed"`. When the checks fail, the finding and the other fields are saved and the reply
+  says why it is still a candidate. Before, the finding was recorded as a candidate without a word.
 
 ### Verification
 - A confirmed finding's quotes must appear in its evidence files.
@@ -78,6 +84,9 @@ changes to the harness are measured.
   person overruled, denied approvals, refused and failed commands, worker tasks, model calls). It keeps ids, counts
   and causes only, and `./rvkit close` collects once more before sealing.
 - Console: a **Failures** page shows both, by cause, with what is behind each one.
+- Scores count expected issues that were recorded as a candidate and never confirmed on their own ("left as a
+  candidate", and recorded recall), so a run that detected an issue and failed to confirm it doesn't read as a run
+  that missed it. `./rvkit bench --rescore` adds the count to saved runs.
 
 ### Fixed
 - nmap failed in the sandbox with "Operation not permitted": Kali's nmap ships with file capabilities beyond the

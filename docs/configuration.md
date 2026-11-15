@@ -59,6 +59,7 @@ Set these with `./rvkit connect` and `./rvkit worker` ([models.md](models.md)), 
 | `PLANNER_FALLBACK_MODEL` | `openrouter/deepseek/deepseek-v4-pro` | Used when the planner call fails, refuses or returns nothing. |
 | `VALIDATOR_MODEL` | the planner's fallback model | The disprove-only validator: reviews each finding the planner confirms ([tools reference](tools-reference.md#the-validator)). |
 | `VALIDATOR` | `1` | `0`: confirmed findings are not sent to the validator. |
+| `PLANNER_REPEAT_GUARD` | `1` | The planner's finding tools point out a refused call that comes back with the same arguments: the second time the reply says so and names the arguments the refusal asks for; from the third it opens with STOP. A call that isn't refused but returns the same result three times in a row gets a note. The call still runs every time. `0` turns it off. |
 | `ANTHROPIC_API_KEY`, `OPENAI_API_KEY` | empty | Only for a planner on Anthropic or OpenAI directly (`./rvkit planner --direct`). |
 | `OPENROUTER_DAILY_BUDGET` | `20` | USD per 24 hours, per provider: OpenRouter, and Anthropic / OpenAI when used directly (`./rvkit budget`). |
 

@@ -529,6 +529,18 @@ def score(b, allf, eng_dir=None, extra=None):
         hit = hit or next((a["id"] for a in b.get("also_valid", []) if match_strength(f, a)), None)
         if hit:
             valid[j] = hit
+    # An expected item no confirmed finding covers may still have been detected: recorded as a candidate and never
+    # confirmed (a confirmation the tools kept refusing, a run that ended first). That is a failure to finish, not
+    # to detect, so it is counted on its own, and never as found.
+    cand = [f for f in allf if f["status"] == "candidate"]
+    left, used = {}, set()
+    for i, e in enumerate(exp):
+        if i in found:
+            continue
+        st, j = max(((match_strength(f, e), -j) for j, f in enumerate(cand) if j not in used), default=(0, 0))
+        if st:
+            used.add(-j)
+            left[i] = cand[-j]["id"]
     total_w = sum(SEV_W[e["severity"]] for e in exp) or 1
     req = {i: requirements(conf[j], exp[i], eng_dir) for j, i in owner.items()}
     strict = [i for i in found if all(req[i].values())]
@@ -549,6 +561,8 @@ def score(b, allf, eng_dir=None, extra=None):
         "precision": round((len(owner) + len(valid)) / len(conf), 3) if conf else None,
         "precision_expected_only": round(len(owner) / len(conf), 3) if conf else None,
         "strict_recall": round(len(strict) / len(exp), 3) if exp else None,
+        "left_candidate": len(left),
+        "recorded_recall": round((len(found) + len(left)) / len(exp), 3) if exp else None,
         "clean_violations": clean_hits,
         "decisions": {"candidates_left": sum(1 for f in allf if f["status"] == "candidate"),
                       "confirmed_without_method": sum(1 for f in conf if f["status"] == "confirmed" and
@@ -556,6 +570,7 @@ def score(b, allf, eng_dir=None, extra=None):
                       **({"observations_untriaged": extra["observations_untriaged"]}
                          if "observations_untriaged" in extra else {})},
         "per_expected": [{"id": e["id"], "severity": e["severity"], "found_by": found.get(i),
+                          **({"left_candidate": left[i]} if i in left else {}),
                           **({"requirements": req[i]} if i in req and req[i] else {})} for i, e in enumerate(exp)],
         "unmatched_findings": [{"id": conf[j]["id"], "title": conf[j]["title"], "severity": conf[j]["severity"],
                                 "cwe": conf[j].get("cwe")} for j in range(len(conf)) if j not in owner and j not in valid],
@@ -894,7 +909,7 @@ def run_one(name, agent, log=print, group=None, budget=None, label=None, mode="o
         h.write(json.dumps({k: res[k] for k in ("benchmark", "at", "agent", "planner_prompt_sha", "cost_usd",
                                                  "status", "seconds")} | {"models": res["models"]}
                            | {k: s[k] for k in ("recall", "weighted_recall", "precision", "found", "expected",
-                                                "confirmed", "strict_recall")}
+                                                "confirmed", "strict_recall", "left_candidate")}
                            | {"clean_violations": len(s["clean_violations"]), "group": group, "label": label,
                               "lookup_mode": mode, "writeup_lookups": len(looked["writeups"]),
                               "commit": res["provenance"]["commit"]}
@@ -911,6 +926,7 @@ def run_one(name, agent, log=print, group=None, budget=None, label=None, mode="o
         f"{'$%.2f' % res['cost_usd'] if res['cost_usd'] is not None else 'n/a'}, "
         f"recall {s['found']}/{s['expected']} (weighted {s['weighted_recall']:.0%}, with evidence "
         f"{s['strict_recall'] if s['strict_recall'] is not None else 'n/a'}), "
+        + (f"{s['left_candidate']} more recorded but left as candidates, " if s["left_candidate"] else "") +
         f"precision {s['precision'] if s['precision'] is not None else 'n/a'}, "
         f"{len(s['clean_violations'])} clean control(s) reported")
     if s.get("adversarial"):
@@ -936,7 +952,8 @@ def run_one(name, agent, log=print, group=None, budget=None, label=None, mode="o
     log(f"  tools: {t_['ran']} ran, {t_['failed']} failed, {t_['timed_out']} timed out, {t_['refused']} refused"
         + (f"; RAN BUT MUST NOT: {t_['must_not_run']}" if t_["must_not_run"] else ""))
     for p in s["per_expected"]:
-        log(f"    {'✔' if p['found_by'] else '✘'} {p['id']:26} {p['severity']:9} {p['found_by'] or ''}")
+        log(f"    {'✔' if p['found_by'] else '◌' if p.get('left_candidate') else '✘'} {p['id']:26} "
+            f"{p['severity']:9} {p['found_by'] or (p['left_candidate'] + ' (candidate, never confirmed)' if p.get('left_candidate') else '')}")
     for u in s.get("also_valid", []):
         log(f"    + {u['id']} {u['title'][:70]}: real, outside the expected list ({u['as']})")
     for u in s["unmatched_findings"]:
@@ -958,6 +975,7 @@ def history():
               f"{f(r['precision']):>5} {f(r['cost_usd'], '${:.2f}'):>7} {f(r.get('cost_per_verified'), '${:.2f}'):>6} "
               f"{f(r.get('approvals_requested'), '{}'):>4} {f(r.get('questions'), '{}'):>2} "
               f"{f(r.get('tool_errors'), '{}'):>4} {r['seconds'] // 60:>4} {r['status']}"
+              + (f" +{r['left_candidate']} left candidate" if r.get("left_candidate") else "")
               + (" clean" if r.get("lookup_mode") == "clean" else "")
               + (f" WRITE-UP x{r['writeup_lookups']}" if r.get("writeup_lookups") else "")
               + (f"  [{r['label']}]" if r.get("label") else ""))

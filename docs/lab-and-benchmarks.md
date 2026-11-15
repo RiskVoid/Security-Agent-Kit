@@ -206,6 +206,8 @@ and what proof it needs, and the strict score counts only findings that meet all
 | recall | expected issues found / expected issues |
 | weighted recall | the same, weighted by severity: critical 4, high 3, medium 2, low 1 |
 | strict recall | expected issues found with every requirement met / expected issues |
+| left as a candidate | expected issues that no confirmed finding covers but a candidate finding matches: the agent recorded the issue and never confirmed it (a confirmation the tools refused, a run that ended first). Counted on its own and never as found |
+| recorded recall | expected issues found or left as a candidate / expected issues. A gap between this and recall is work the run detected and didn't finish, not something it missed |
 | precision | confirmed findings that are real / all confirmed findings. Real means a match to an expected issue, a second instance of one on another asset, or a known issue of the lab that the benchmark lists under `also_valid`. The last two count for precision only, never for recall |
 | precision, expected only | confirmed findings that matched an expected issue / all confirmed findings (the definition used before `also_valid`) |
 | clean violations | confirmed findings on a clean control: a fixed build, a safe route or pattern the benchmark lists under `clean`. Each one is a false positive |

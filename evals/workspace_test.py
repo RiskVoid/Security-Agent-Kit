@@ -200,17 +200,17 @@ def run():
     out = tool(f"findings.update_finding('{ENG}', 'F-003', status='confirmed')")
     check("update_finding refuses confirmed without a method", out.startswith("REFUSED") and "method" in out, out)
     out = tool(f"findings.update_finding('{ENG}', 'F-003', method='source-review')")
-    check("update_finding refuses a method on a candidate without status=confirmed",
-          out.startswith("REFUSED") and 'status="confirmed"' in out, out)
+    check("update_finding reads a method on a candidate as confirming it, and refuses one that can't be confirmed",
+          out.startswith("REFUSED") and "read as confirming" in out and "reproduction" in out, out)
     out = tool(f"findings.update_finding('{ENG}', 'F-003', method='source-review', priority='P2', "
                f"root_cause='sql-concat')")
     got = json.loads(out) if out.startswith("{") else {}
-    check("update_finding with a method and other fields on a candidate saves the other fields",
+    check("update_finding with a method and other fields on a candidate it can't confirm saves the other fields",
           got.get("priority") == "P2" and got.get("root_cause") == "sql-concat" and got.get("status") == "candidate",
           out)
-    check("... leaves the method out and says it is kept only with status=confirmed",
-          not got.get("verified_method") and "priority, root_cause" in got.get("note", "")
-          and 'status="confirmed"' in got.get("note", "") and "evidence" in got.get("note", ""), out)
+    check("... leaves the method out and says why the finding is still a candidate",
+          not got.get("verified_method") and got.get("note", "").startswith("NOT CONFIRMED: saved priority, root_cause")
+          and "reproduction" in got.get("note", "") and 'status="confirmed"' in got.get("note", ""), out)
     if '"status": "confirmed"' not in tool(f"findings.get_finding('{ENG}', 'F-003')"):
         out = tool(f"findings.update_finding('{ENG}', 'F-003', status='confirmed', method='source-review', reproduction='')")
         check("update_finding refuses confirmed without reproduction", out.startswith("REFUSED") and "reproduction" in out, out)
@@ -229,6 +229,19 @@ def run():
     made = json.loads(out)["id"] if out.startswith("{") else ""
     out = tool(f"findings.update_finding('{ENG}', '{made}', status='duplicate', duplicate_of='F-003')")
     check("the extra finding is merged away again", '"status": "duplicate"' in out, out)
+    rec = f"findings.record_finding('{ENG}', 'Method, no status', 'low', 'app.py', 'd', method='source-review'"
+    out = tool(rec + ", reproduction='1. Read app.py. 2. See the debug flag.')")
+    got = json.loads(out) if out.startswith("{") else {}
+    check("record_finding with a method and no status confirms",
+          got.get("status") == "confirmed" and got.get("verified_method") == "source-review", out)
+    out2 = tool(rec + ")")
+    got2 = json.loads(out2) if out2.startswith("{") else {}
+    check("... and one it can't confirm is saved as a candidate, with the reason",
+          got2.get("status") == "candidate" and got2.get("note", "").startswith("NOT CONFIRMED: saved as candidate")
+          and "reproduction" in got2.get("note", ""), out2)
+    for extra in (got.get("id"), got2.get("id")):
+        out = tool(f"findings.update_finding('{ENG}', '{extra}', status='duplicate', duplicate_of='F-003')")
+        check(f"{extra} is merged away again", '"status": "duplicate"' in out, out)
     out = tool(f"findings.update_coverage('{ENG}', '{pb['ids'][2]}', 'excluded')")
     check("update_coverage refuses excluded without a rationale", out.startswith("REFUSED"), out)
     out = tool(f"findings.get_handover('{ENG}')")

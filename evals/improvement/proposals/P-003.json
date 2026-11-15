@@ -1,0 +1,16 @@
+{
+ "id": "P-003",
+ "created": "2026-11-15",
+ "cause": "retry/",
+ "kind": "other",
+ "file": "harness/findings.py",
+ "change": "The planner's finding tools point out a refused call that comes back unchanged: the second time the reply names the arguments sent and the ones the refusal asks for, and from the third it opens with STOP (harness/repeatguard.py). record_finding and update_finding read a method without status as a confirmation attempt with the same checks as status=confirmed; when the checks fail, the finding and the other fields are saved and the reply says why it is still a candidate.",
+ "targets": [
+  "code-flask-20261115T132718Z",
+  "api-vampi-20261115T140938Z",
+  "code-node-20261115T134143Z"
+ ],
+ "read": 62,
+ "status": "proposed",
+ "judgement": null
+}

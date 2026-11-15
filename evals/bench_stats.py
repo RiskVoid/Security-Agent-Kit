@@ -77,9 +77,11 @@ def group_summary(runs):
     items = collections.OrderedDict()
     for r in runs:
         for p in r["score"].get("per_expected", []):
-            it = items.setdefault(p["id"], {"id": p["id"], "severity": p.get("severity"), "found": 0, "strict": 0})
+            it = items.setdefault(p["id"], {"id": p["id"], "severity": p.get("severity"), "found": 0, "strict": 0,
+                                            "candidate": 0})
             it["found"] += bool(p.get("found_by"))
             it["strict"] += _strict(p)
+            it["candidate"] += bool(p.get("left_candidate")) and not p.get("found_by")
     for it in items.values():
         it["of"] = n
     ks = list(range(1, n + 1))
@@ -89,6 +91,7 @@ def group_summary(runs):
     figures = {}
     for key, get in (("recall", lambda r: r["score"].get("recall")),
                      ("strict_recall", lambda r: r["score"].get("strict_recall")),
+                     ("recorded_recall", lambda r: r["score"].get("recorded_recall")),
                      ("precision", lambda r: r["score"].get("precision")),
                      ("cost_usd", lambda r: r.get("cost_usd")),
                      ("minutes", lambda r: (r.get("seconds") or 0) / 60),
@@ -118,18 +121,22 @@ def _r(x, d=3):
 def print_group(g, out=print):
     f = g["figures"]
     n = g["runs"]
+    rec = f.get("recorded_recall") or {}
     out(f"  {g['benchmark']} over {n} runs ({g.get('label') or g.get('group') or 'no label'}, lookup "
         f"{g.get('lookup', 'open')}): recall {fmt(f['recall']['mean'], f['recall']['se'], pct=True)}, "
         f"with evidence {fmt(f['strict_recall']['mean'], f['strict_recall']['se'], pct=True)}, "
+        + (f"recorded (confirmed or left as a candidate) {fmt(rec['mean'], rec['se'], pct=True)}, "
+           if rec.get("mean") is not None and rec["mean"] != f["recall"]["mean"] else "") +
         f"precision {fmt(f['precision']['mean'], f['precision']['se'])}, "
         f"cost {fmt(f['cost_usd']['mean'], f['cost_usd']['se'], money=True)}")
     out(f"    pass^k (with evidence) {'  '.join(f'k={k} {fmt(v, pct=True)}' for k, v in g['pass_hat_k'].items())};"
         f"  pass@{n} {fmt(g['pass_at_k'][str(n)], pct=True)}; every item in "
         f"{g['all_found_strict']['runs']} of {n} runs")
     for it in g["items"]:
-        bar = "█" * it["strict"] + "▒" * (it["found"] - it["strict"]) + "·" * (n - it["found"])
+        c = it.get("candidate", 0)
+        bar = "█" * it["strict"] + "▒" * (it["found"] - it["strict"]) + "◌" * c + "·" * (n - it["found"] - c)
         out(f"    {bar:{max(n, 3)}} {it['id']:26} {it['severity'] or '':9} found {it['found']} of {n}, "
-            f"with evidence {it['strict']} of {n}")
+            f"with evidence {it['strict']} of {n}" + (f", left as a candidate {c} of {n}" if c else ""))
     out(f"    statuses {', '.join(map(str, g['statuses']))}")
 
 
