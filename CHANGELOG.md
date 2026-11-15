@@ -22,6 +22,11 @@ settings or the findings database; `./rvkit update` migrates existing installs a
   and causes only, and `./rvkit close` collects once more before sealing.
 - Console: a **Failures** page shows both, by cause, with what is behind each one.
 
+### Fixed
+- nmap failed in the sandbox with "Operation not permitted": Kali's nmap ships with file capabilities beyond the
+  `CAP_NET_RAW` the sandbox allows, so Linux refused to start it. The Kali image now strips file capabilities, and
+  `evals/tools_smoke.sh` checks that nmap starts with the sandbox's privileges.
+
 ## [0.1.0]
 
 First public release.
