@@ -202,6 +202,15 @@ def run():
     out = tool(f"findings.update_finding('{ENG}', 'F-003', method='source-review')")
     check("update_finding refuses a method on a candidate without status=confirmed",
           out.startswith("REFUSED") and 'status="confirmed"' in out, out)
+    out = tool(f"findings.update_finding('{ENG}', 'F-003', method='source-review', priority='P2', "
+               f"root_cause='sql-concat')")
+    got = json.loads(out) if out.startswith("{") else {}
+    check("update_finding with a method and other fields on a candidate saves the other fields",
+          got.get("priority") == "P2" and got.get("root_cause") == "sql-concat" and got.get("status") == "candidate",
+          out)
+    check("... leaves the method out and says it is kept only with status=confirmed",
+          not got.get("verified_method") and "priority, root_cause" in got.get("note", "")
+          and 'status="confirmed"' in got.get("note", "") and "evidence" in got.get("note", ""), out)
     if '"status": "confirmed"' not in tool(f"findings.get_finding('{ENG}', 'F-003')"):
         out = tool(f"findings.update_finding('{ENG}', 'F-003', status='confirmed', method='source-review', reproduction='')")
         check("update_finding refuses confirmed without reproduction", out.startswith("REFUSED") and "reproduction" in out, out)

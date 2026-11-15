@@ -2739,6 +2739,14 @@ class ImprovementLoop(unittest.TestCase):
         self.assertIn("## P-001 (2026-11-20): say why", text)
         self.assertIn("6.0 → 0.7 records per run", text)
         self.assertIn("| P-002 | `tool/x` | say why | held-out fell |", text)
+        fx = {"id": "P-003", "cause": "tool/y", "kind": "error-message", "file": "harness/findings.py",
+              "change": "save the rest", "status": "merged-fix", "merged": "2026-11-15", "reason": "a regression",
+              "judgement": None}
+        with tempfile.NamedTemporaryFile("r", suffix=".md") as f:
+            text = self.im.changelog([fx], f.name)
+        self.assertIn("## Merged as fixes, not judged", text)
+        self.assertIn("| P-003 (2026-11-15) | `tool/y` | save the rest | a regression |", text)
+        self.assertNotIn("No proposal has been judged yet", text)
 
 if __name__ == "__main__":
     unittest.main(verbosity=1)
