@@ -96,6 +96,19 @@ planted instructions. Don't read held-out failures while writing a proposal: onc
    changelog lists it under "Tried and dropped", so nobody tries the same thing again without new evidence. The
    candidate runs of a kept change become the next round's baseline.
 
+## Fixes
+
+Some defects don't need a judge round. A refusal that throws away what the agent sent, a tool that fails on valid
+input, or a loop that the kit's own change started shows up plainly in the traces. With two or three runs a side, a
+judge round can't measure much more than reading those traces already shows, and it costs a candidate set of runs.
+
+Such a change is merged on its tests and the records read. Its proposal gets `"status": "merged-fix"`, with
+`"merged"` (the date) and `"reason"` (why it needed no judge round), and the changelog lists it under "Merged as
+fixes, not judged". The next baseline runs on the kit with the fix in it.
+
+The judge is for changes whose effect is uncertain: a prompt, a tool description, a playbook step, wording meant
+to steer the agent's behaviour.
+
 ## Reading the numbers
 
 - A cause that appears in only one or two runs can't shrink measurably. Pick causes that recur across runs.
@@ -148,3 +161,34 @@ touch `update_finding`.
   Its records on the tuning benchmarks are enough to write it. The `code-node` conversation read above now counts as
   tuning data for that cause.
 - Re-judge P-001 against a new baseline once the loop is fixed.
+
+### Round 2 (2026-11-15): P-002, merged as a fix
+
+**Cause.** `tool/findings_update_finding/refused: <id> is candidate, and this call doesn't confirm it`: 120
+records in 4 runs. The refusal came in with the confirm-loop fix (82ab380). A call carrying `method` on a candidate
+finding was refused as a whole, together with the `priority`, `root_cause` or `evidence` sent with it. All 77
+records in the three targeted tuning runs were read:
+
+- `code-flask-20261115T132718Z` (stopped at its budget): the planner meant to confirm F-001. After each refusal its
+  reasoning says it must add `status`, and then it sends the identical call again, 35 times. The loop is the model
+  copying its last call, not a misreading of the reply.
+- `api-vampi-20261115T140938Z` (stopped as stuck): the planner splits the confirmation across two calls, evidence
+  and `method` without `status`, then `status` without evidence. Both were refused, so the evidence was never saved.
+- `api-vampi-20261115T012259Z` (finished): after the validator sent F-015 back to candidate, the planner resent
+  `method` and `root_cause` four times. It recovered only when it dropped `method`.
+
+**Change.** `update_finding` saves the other fields, doesn't record `method`, and says so in its reply: the finding
+is still a candidate, and `method` is kept only with `status="confirmed"`, together with evidence and reproduction
+steps. A call with `method` alone is still refused (`harness/findings.py`, checked in `evals/workspace_test.py`).
+
+**Verdict.** Merged as a fix, without a judge round (see [Fixes](#fixes)). It repairs a regression the kit
+introduced, and the traces show it plainly. No candidate runs were spent on it.
+
+**Next.**
+- P-001 isn't judged again yet. Its held-out check fell because of this loop, so its verdict says nothing about
+  the change itself. It gets judged against the next baseline, which will include P-002, rather than in a round of
+  its own.
+- The planner repeats any refused call unchanged, not just this one: `update_coverage` (a Ledgerly run stopped as
+  stuck) and quote-check refusals on `status=confirmed` (the Flask run above, after this loop). A reply that changes
+  on an identical repeat, naming the fields that were sent and the ones that were missing, would address the whole
+  class.

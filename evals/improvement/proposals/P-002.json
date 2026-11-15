@@ -11,6 +11,8 @@
   "api-vampi-20261115T012259Z"
  ],
  "read": 77,
- "status": "proposed",
- "judgement": null
+ "status": "merged-fix",
+ "judgement": null,
+ "merged": "2026-11-15",
+ "reason": "A regression from the confirm-loop fix (82ab380), visible in every targeted trace: the refusal threw away the other fields and the planner resent the call 35-46 times, which collapsed 3 of 8 round-1 candidate runs. Merged on its tests and the 77 records read; a judge round with 2-3 runs a side couldn't add much for its cost."
 }

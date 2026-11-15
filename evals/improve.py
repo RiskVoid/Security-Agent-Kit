@@ -202,11 +202,15 @@ def changelog(props, out_path=None):
                   reverse=True)
     dropped = sorted((p for p in judged if p["status"] == "dropped"), key=lambda p: p["judgement"].get("at") or "",
                      reverse=True)
+    # a fix for a defect the traces show plainly (often one the kit introduced) is merged on its tests and the
+    # records read, without a judge round: improvement-loop.md, "Fixes"
+    fixes = sorted((p for p in props if p.get("status") == "merged-fix"), key=lambda p: p.get("merged") or "",
+                   reverse=True)
     lines = ["# Harness changelog", "",
              "Changes to prompts, tool descriptions, playbooks and error messages that the improvement loop kept, each "
              "with the numbers that kept it, and the ones it dropped. How a change gets here: "
              "[improvement-loop.md](improvement-loop.md).", "", MARK, ""]
-    if not judged:
+    if not judged and not fixes:
         lines += ["No proposal has been judged yet.", ""]
     for p in kept:
         j = p["judgement"]
@@ -226,6 +230,14 @@ def changelog(props, out_path=None):
         for p in dropped:
             why = "; ".join(p["judgement"].get("reasons") or []).replace("|", "/")
             lines.append(f"| {p['id']} | `{p['cause']}` | {p['change'].replace('|', '/')} | {why} |")
+        lines.append("")
+    if fixes:
+        lines += ["## Merged as fixes, not judged", "", "| Proposal | Cause | Change | Why no judge round |",
+                  "|---|---|---|---|"]
+        for p in fixes:
+            why = (p.get("reason") or "").replace("|", "/")
+            lines.append(f"| {p['id']} ({p.get('merged') or ''}) | `{p['cause']}` | {p['change'].replace('|', '/')} "
+                         f"| {why} |")
         lines.append("")
     text = "\n".join(lines)
     with open(out_path or CHANGELOG, "w") as f:
