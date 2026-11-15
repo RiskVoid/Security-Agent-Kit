@@ -89,6 +89,11 @@ changes to the harness are measured.
 - The agent could confirm findings without reproduction steps, and in a benchmark run it stopped writing them after
   one refusal. Confirming a finding through the agent's tools now needs reproduction steps; the console and the CLI
   are not held to this.
+- Benchmark scoring could credit an expected issue to the wrong finding when two findings matched two issues (an
+  unsafe YAML load and the PyYAML dependency both mention "yaml"), which failed the location check and capped
+  code-flask's strict recall at 83%. Each issue now goes to the finding that fits it best.
+- `--compare` could call a difference real from an error estimate over only two benchmarks. The verdict now also
+  needs a run-level permutation test to agree.
 
 ## [0.1.0]
 
