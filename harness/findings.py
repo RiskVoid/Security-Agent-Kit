@@ -33,9 +33,19 @@ def _validated(engagement, row):
         v = {"verdict": "not_run", "reason": f"the validator failed: {type(e).__name__}: {e}"}
     if v.get("verdict") == "disproved":
         row = db.get(engagement, row["id"])
-        v["note"] = ("the finding is back to candidate. Look at the reason and the evidence: test again and confirm "
-                     "with better evidence, or mark it false-positive. Don't confirm it again with the same evidence.")
+        v["note"] = ("the finding is back to candidate. Look at the reason and the evidence: test again, then confirm "
+                     "it with update_finding(status=\"confirmed\", method=..., evidence=[the new evidence]), or mark "
+                     "it false-positive. Don't confirm it again with the same evidence.")
     return {**row, "validation": v}
+
+
+def _reproduction_problem(text):
+    """An agent's confirmed finding needs the steps that show it: the report prints them, and a person retesting
+    needs them. People confirming in the console or the CLI aren't held to this."""
+    if (text or "").strip():
+        return None
+    return ("status=confirmed needs reproduction: the steps that show the issue (the requests or commands, in order, "
+            "and what each returns), so the client can reproduce it. Commands in it are not checked as quotes")
 
 
 @mcp.tool()
@@ -46,13 +56,14 @@ def record_finding(engagement: str, title: str, severity: str, asset: str, descr
     """Record a finding for an engagement. severity: critical|high|medium|low|info.
     status: candidate (default, not yet verified) or confirmed (you have reproduced or verified it).
     status=confirmed needs method = how you verified it (oracle, runtime-reproduction, replay, authorization-matrix,
-    source-review, tool-output, retest). oracle: cite the evidence/verify/ record of a kali verify run that passed
+    source-review, tool-output, retest) and reproduction (the steps that show it: requests or commands, and what
+    each returns). oracle: cite the evidence/verify/ record of a kali verify run that passed
     with a clean control (the strongest method; prefer it when an oracle fits). runtime-reproduction, replay, authorization-matrix and tool-output also
     need the evidence file that shows it. Text in backticks or code blocks (other than commands) is a quote:
     confirming is refused when a quote isn't in the cited evidence, or a /src/<file>:<line> doesn't exist.
     evidence: file paths under /work/<engagement>/evidence/. Returns the stored finding with its id (F-001...)."""
     if status == "confirmed":
-        problem = db.confirm_problem(method, evidence) or \
+        problem = db.confirm_problem(method, evidence) or _reproduction_problem(reproduction) or \
             (verification.problem(engagement, evidence or []) if method == "oracle" else None) or \
             quotecheck.refusal(engagement, description, reproduction, evidence or [])
         if problem:
@@ -75,7 +86,8 @@ def update_finding(engagement: str, finding_id: str, status: str | None = None, 
     """Update a finding. Use status=confirmed after verifying a candidate, with method = how you verified it
     (runtime-reproduction, replay, authorization-matrix, source-review, tool-output, retest; required, and
     runtime-reproduction, replay, authorization-matrix and tool-output also need the evidence file that shows
-    it; quotes in backticks must be in the cited evidence, as for record_finding); status=false-positive
+    it; quotes in backticks must be in the cited evidence, as for record_finding) and reproduction (kept from
+    before when not given). A candidate stays a candidate until a call says status=confirmed; status=false-positive
     when it doesn't hold; status=duplicate with duplicate_of=<id of the finding to keep>; fixed or accepted-risk
     after client feedback. reason is required for false-positive, accepted-risk and any severity or priority
     change. Severity is the technical severity; priority (P1-P4) is the remediation order, set separately; the
@@ -87,6 +99,17 @@ def update_finding(engagement: str, finding_id: str, status: str | None = None, 
                   prerequisites=prerequisites, root_cause=root_cause)
     if reason is None and status in ("false-positive", "accepted-risk") and notes:
         reason = notes  # the reason given in notes, as before
+    if status is None and method:
+        # method only records how a confirmation was verified: on a candidate this call would change nothing the
+        # agent wants, and a model that believes it confirmed the finding repeats it (seen 80 times in one run)
+        try:
+            cur = db.get(engagement, finding_id)
+        except ValueError as e:
+            return f"REFUSED: {e}"
+        if cur.get("status") != "confirmed":
+            return (f"REFUSED: {finding_id} is {cur.get('status')}, and this call doesn't confirm it: method only "
+                    f"records how a confirmation was verified. To confirm it, call update_finding with "
+                    f"status=\"confirmed\", method=\"{method}\", the evidence that shows it and the reproduction steps.")
     if status == "confirmed":
         try:
             cur = db.get(engagement, finding_id)
@@ -95,10 +118,12 @@ def update_finding(engagement: str, finding_id: str, status: str | None = None, 
         # confirming again without a method keeps the one already recorded
         ev = evidence if evidence is not None else cur.get("evidence")
         how = method or cur.get("verified_method")
-        problem = db.confirm_problem(how, ev) or (verification.problem(engagement, ev) if how == "oracle" else None) \
+        repro = reproduction if reproduction is not None else cur.get("reproduction")
+        problem = db.confirm_problem(how, ev) or _reproduction_problem(repro) \
+            or (verification.problem(engagement, ev) if how == "oracle" else None) \
             or quotecheck.refusal(
             engagement, description if description is not None else cur.get("description"),
-            reproduction if reproduction is not None else cur.get("reproduction"), ev)
+            repro, ev)
         if problem:
             return f"REFUSED: {problem}"
     try:

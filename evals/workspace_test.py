@@ -199,7 +199,14 @@ def run():
     check("update_finding refuses a false-positive without a reason", out.startswith("REFUSED") and "reason" in out, out)
     out = tool(f"findings.update_finding('{ENG}', 'F-003', status='confirmed')")
     check("update_finding refuses confirmed without a method", out.startswith("REFUSED") and "method" in out, out)
-    out = tool(f"findings.update_finding('{ENG}', 'F-003', status='confirmed', method='source-review')")
+    out = tool(f"findings.update_finding('{ENG}', 'F-003', method='source-review')")
+    check("update_finding refuses a method on a candidate without status=confirmed",
+          out.startswith("REFUSED") and 'status="confirmed"' in out, out)
+    if '"status": "confirmed"' not in tool(f"findings.get_finding('{ENG}', 'F-003')"):
+        out = tool(f"findings.update_finding('{ENG}', 'F-003', status='confirmed', method='source-review', reproduction='')")
+        check("update_finding refuses confirmed without reproduction", out.startswith("REFUSED") and "reproduction" in out, out)
+    out = tool(f"findings.update_finding('{ENG}', 'F-003', status='confirmed', method='source-review', "
+               f"reproduction='1. Open app.py at the query line. 2. The id parameter is concatenated into the SQL.')")
     check("update_finding records the method", '"verified_method": "source-review"' in out, out)
     rec = f"findings.record_finding('{ENG}', 'Confirmed at once', 'low', 'app.py', 'd', status='confirmed'"
     out = tool(rec + ")")
@@ -207,6 +214,8 @@ def run():
     out = tool(rec + ", method='runtime-reproduction')")
     check("record_finding refuses a runtime method without evidence", out.startswith("REFUSED") and "evidence" in out, out)
     out = tool(rec + ", method='source-review')")
+    check("record_finding refuses confirmed without reproduction", out.startswith("REFUSED") and "reproduction" in out, out)
+    out = tool(rec + ", method='source-review', reproduction='1. Read app.py. 2. See the debug flag.')")
     check("record_finding records the method", '"verified_method": "source-review"' in out, out)
     made = json.loads(out)["id"] if out.startswith("{") else ""
     out = tool(f"findings.update_finding('{ENG}', '{made}', status='duplicate', duplicate_of='F-003')")
