@@ -9,6 +9,7 @@
  "max_minutes": 90,
  "max_budget_usd": 6.0,
  "task": "Authenticated web application test of {url} (DVWA, a practice target). Credentials: admin / password. Follow the web-app playbook.",
+ "writeups": ["\\bdvwa\\b", "damn.?vulnerable.?web"],
  "expected": [
   {
    "id": "sqli",

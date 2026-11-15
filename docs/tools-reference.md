@@ -32,6 +32,7 @@ the agent did, to write better task prompts, or to extend the kit.
 | `approval_status` | `engagement`, `approval_id` | Where an approval stands: `pending`, `approved`, `denied`, `used` or `stale` (the scope or rules changed), as JSON. |
 | `list_credentials` | `engagement` | The names of the credentials stored for the engagement (never the values). Use one as `$RV_CRED_<NAME>` in `run`, or `{{cred:NAME}}` in an `http_request` URL, header or body. See [engagements.md](engagements.md#credentials). |
 | `laravel_map` | `engagement`, `path`, `build_url`, `routes_file`, `max_tier`, `task` | Maps a Laravel application from its source without running it: routes with effective middleware, controllers, models (mass assignment, tenant scopes), policies, views and sinks; leads, controls and gaps; the source digest compared with the deployment's build. Evidence in `evidence/appmap/`. See [laravel.md](laravel.md). |
+| `recon_map` | `engagement`, `url`, `depth` (1–5, default 2), `crawl_seconds` (default 120), `probe` (default true), `max_tier`, `task` | Maps a web target before testing: a katana crawl in the sandbox (links, JavaScript, robots, sitemap), the API paths its scripts name, its OpenAPI / Swagger schema at the usual paths, a GraphQL schema by a read-only introspection GET, and one GET without credentials to each path not yet fetched (401, 403 or a login redirect: authentication required). Only in-scope URLs are kept; every request goes through the brokers and the audit log. Evidence in `evidence/map/`. `get_map` merges it with the other sources. |
 | `list_identities` | `engagement` | The engagement's test identities: name, role, tenant, hosts, tiers, effects, fixtures (with markers) and session status. Never a secret. See [authenticated-testing.md](authenticated-testing.md#identities). |
 | `check_identity` | `engagement`, `identity` | The valid-session control: `valid`, `expired`, `challenge`, `denied`, `error` or `revoked`, with the reason. Logs a `form`/`json` identity in again once when its session expired. |
 | `list_captures` | `engagement`, `capture` | Imported HAR / Burp captures, sanitized. Without `capture`: the list; with an id: its requests (method, URL, in scope, status, excerpt). |
@@ -39,6 +40,7 @@ the agent did, to write better task prompts, or to extend the kit.
 | `browse` | `engagement`, `url`, `steps`, `identity`, `mask`, `approval_id`, `max_tier`, `task`, `timeout_s` | Headless Chromium in the engagement's sandbox; every request is checked against the scope. Reading is active and read-only; `click`, `fill`, `press` are intrusive (approval). Evidence in `evidence/browser/<run>/`. |
 | `propose_authz_matrix` | `engagement`, `name`, `operations`, `identities`, `expect`, `purpose`, `allow_writes`, `max_writes`, `cleanup`, `no_cleanup_reason` | Proposes an authorization matrix for the researcher to approve (bound to its digest and the policy revision). |
 | `run_authz_matrix` | `engagement`, `name`, `task` | Runs an approved matrix: identities checked first, each operation as each identity, verdicts `pass`, `FAIL`, `unexpected-deny`, `blocked`. Results in `evidence/authz/`. |
+| `verify` | `engagement`, `oracle` (`marker`, `identity_difference`, `read_back`, `browser_xss`, `timing`), `request` (`method`, `url`, `headers`, `body`, `identity`; `{{marker}}` where a fresh canary goes), `marker`, `expect`, `identities` (`[attacker, owner]`), `check` (the read-back request), `control`, `approval_id`, `finding`, `task`, `samples`, `min_delay` | Decides a finding with a deterministic oracle and a negative control: `marker` (the canary comes back; control: the same request with another token), `identity_difference` (the attacker gets the owner's fixture marker; controls: the owner gets it, the request without an identity doesn't), `read_back` (a separate check finds what the proof wrote; control: the check before the proof), `browser_xss` (the page opens in the sandboxed browser and passes only if script calling `rvMarker('{{marker}}')` or `alert` actually ran; control: another token), `timing` (`samples` of the probe and of a `control` request, interleaved; passes when every probe is slower than every control and the difference beats `min_delay` and three times the spread). Result `pass` (holds, control clean), `fail` or `inconclusive`. Each run is saved as a verification record in `evidence/verify/` and audited. Requests go through the same checks as `http_request`; a write needs an approval (call again with the same `marker` and the `approval_id`). A finding confirmed with `method=oracle` must cite a record that passed. |
 | `list_authz_matrices` | `engagement` | Proposed matrices and whether each is approved, or changed since. |
 | `cancel_task` | `engagement`, `task` | Kills the commands a worker task is running now. `worker-mcp` calls it when a task is cancelled or halted. |
 
@@ -68,16 +70,21 @@ Output notes:
 
 | Tool | Parameters | What it does |
 |---|---|---|
-| `delegate_task` | `goal`, `engagement`, `tier` (`passive` default, `active`, `intrusive`), `max_steps` (default 15, 1–40), `timeout_min` (default 30, 1–180), `wait_s` (default 240, max 600), `depends_on` (task ids) | Starts one focused task on the worker model. Refuses if the engagement is halted or the tier isn't allowed by `RULES.md`. With `depends_on`, it waits until those tasks are done (and is `blocked` if one fails). Returns the result, or a `task_id` with a note if it's still running after `wait_s`. |
+| `delegate_task` | `goal`, `engagement`, `tier` (`passive` default, `active`, `intrusive`), `max_steps` (default 15, 1–40), `timeout_min` (default 30, 1–180), `wait_s` (default 240, max 600), `depends_on` (task ids), `done_when` (the result that ends the task), `stop_when` (conditions to stop and report), `inputs` (evidence paths or finding ids to start from), `plan_item` (the coverage plan item the task tests) | Starts one focused task on the worker model. Refuses if the engagement is halted or the tier isn't allowed by `RULES.md`. With `depends_on`, it waits until those tasks are done (and is `blocked` if one fails). The contract fields go into the worker's instructions, and every tool result the worker sees ends with the steps left and the `done_when`. A `stop_when` that names an approval ends the task as `blocked` at the first approval, with the approval in `needs`, instead of pausing. With `plan_item`, the item must name one vulnerability class and one recon map entry or route group (refused otherwise), and the worker is told to test only that cell. Returns the result, or a `task_id` with a note if it's still running after `wait_s`. |
 | `get_task` | `task_id`, `wait_s` (default 240, max 600) | Waits for a task and returns its result. |
 | `cancel_task` | `task_id` | Stops a task; a running command is killed. |
 | `resume_task` | `task_id`, `wait_s` | Continues an interrupted task from its last checkpoint, after checking the engagement's policy again. An action that was in flight is not repeated: the model is told its result is unknown. |
 | `list_tasks` | `engagement` (optional) | Saved tasks, newest first (up to 50), including those from before a worker restart, with their approval and recovery decision. |
 
-A result has: `task_id`, `status` (`queued`, `waiting`, `running`, `awaiting_approval`, `done`, `error`, `blocked`,
-`cancelled`, `halted`, `interrupted`), `elapsed_s`, the `commands` it ran, the
-`candidate_findings` it recorded, the `evidence_dir`, the `model` that served it (shows when the fallback model
-was used) and `result` (`summary`, `observations`, `open_questions`, `confidence`). Secrets are redacted from it.
+A result has the typed fields first: `task_id`, `status` (`queued`, `waiting`, `running`, `awaiting_approval`,
+`done`, `error`, `blocked`, `cancelled`, `halted`, `interrupted`), `outcome` (`completed`, `partial`, `blocked`,
+`out_of_scope` from the worker; `budget_used`, `model_refused`, `tool_failure`, `provider_error`, `stalled` from the
+harness), `candidates` (each with `title`, `state` `hypothesis` or `reproduced`, `evidence` and `check`; a
+reproduced candidate must cite an evidence file of the engagement or `finish` is refused), `needs`, `errors` and
+the `recorded_findings` ids. Then `elapsed_s`, the `commands` it ran, the `evidence_dir`, the `contract`, the
+`model` that served it (shows when the fallback model was used), `worker_summary` (the worker's prose, marked as
+written by a model that read target content) and `result` (`confidence`, `open_questions`). Secrets are redacted
+from it. Task files from before these fields load as before; a finished one counts as `completed`.
 
 Things to know:
 
@@ -111,7 +118,7 @@ Inside a task, the worker model has these tools (they aren't MCP tools; `worker-
 | `fetch_url` | `url`: reads a public page as text through `web-mcp`. Refuses every engagement's targets and non-public addresses, on every redirect too. |
 | `read_file` | `path`, `start` (default 1), `lines` (default 200, max 500): numbered lines of a file under the engagement's in-scope code paths or its engagement folder. Nothing else. |
 | `record_candidate` | `title`, `severity`, `asset`, `description`, `evidence`, `cwe`: stores a **candidate** finding (source `worker:<task_id>`). Only the planner can confirm it. |
-| `finish` | `summary`, `observations`, `open_questions`, `confidence`: ends the task. |
+| `finish` | `status` (`completed`, `partial`, `blocked`, `out_of_scope`), `summary` (1–5 sentences), `candidates`, `errors`, `needs`, `open_questions`, `confidence`: ends the task. A `reproduced` candidate without an evidence file of the engagement is refused and the model is asked again. |
 
 Each tool output is cut to 6,000 characters in the model's context (the full output is in the step file), and the
 oldest outputs are shrunk when the conversation passes about 90,000 characters, so a task fits the 32K context of
@@ -123,6 +130,30 @@ the L4 profile.
 |---|---|---|
 | `record_finding` | `engagement`, `title`, `severity`, `asset`, `description`, and optional `impact`, `reproduction`, `remediation`, `evidence` (list of paths), `cvss_vector`, `cvss_score`, `cwe`, `status` (`candidate` by default; any of the five statuses is accepted), `notes` | Stores a finding and returns it with its id (`F-001`, `F-002`, …). Severity: `critical`, `high`, `medium`, `low`, `info`. |
 | `update_finding` | `engagement`, `finding_id`, then any field to change, including `status`, `priority` (`P1`-`P4`), `prerequisites`, `root_cause`; `reason`; `method` | Changes only the fields given. Statuses: `candidate`, `confirmed` (with `method`: how it was verified), `false-positive`, `duplicate` (needs `duplicate_of`: the finding to keep), `fixed`, `accepted-risk`. `reason` is required for `false-positive`, `accepted-risk`, a severity change and a change of a set priority; refused without it (`REFUSED: ...`). |
+
+**Quotes must be in the evidence.** When the planner confirms a finding (`record_finding` or `update_finding`
+with `status=confirmed`), text in backticks and code-block lines of its description and reproduction counts as
+quoted and must be found in the cited evidence files or the `/src` files it cites. Each `/src/<file>:<line>` must
+point at a line that exists. Otherwise the confirmation is refused, naming the missing quotes. Not counted as
+quotes: commands and scripts, names, paths and URLs on their own, `file:line` references, placeholders
+(`<id>`, `...`) and spans under 6 characters. Matching ignores whitespace, HTML entities and URL encoding. A
+quote of several words also passes when its words appear in order close together; a single token (a hash, a
+flag) must match exactly. `[REDACTED ...]` and `{{cred:NAME}}` match any value. People confirming in the console
+or with `./rvkit` are not checked. `python3 harness/quotecheck.py <engagements dir>` replays the check over
+past confirmations.
+
+<a id="the-validator"></a>**The validator tries to disprove each confirmation.** When the planner confirms a finding,
+a separate model call (`validator`: `VALIDATOR_MODEL`, a different model from the planner) gets only the finding,
+its cited evidence files, its oracle records with the responses they judged, and how each oracle works: not the
+conversation. Its only job is to disprove the finding. It answers `stands` or `disproved` with a reason tied to one
+of the cited files; a disproval that names no cited file counts as `unclear`. `disproved` sends the finding back to
+`candidate` with the reason (a decision by `agent:validator` in its history), and the tool result says so. When the
+engagement's Client data rule refuses the validator's model, the same call goes to `planner` in a fresh context;
+when no model can be used, the verdict is `not_run` and the confirmation stands. Evidence is given as data, never
+as instructions. The console shows the verdict on the finding and in its history, the report shows it as
+"Independent review", and benchmarks count what survived and what was caught. `VALIDATOR=0` turns it off.
+People confirming in the console or with `./rvkit` are not sent to it.
+| `validate_finding` | `engagement`, `finding_id` | Runs the validator again on a confirmed finding (it runs on its own on each confirmation). Returns the verdict, reason, evidence file and model. |
 | `list_findings` | `engagement`, optional `status`, `severity` | Findings, most severe first: id, title, severity, status, asset, source. |
 | `get_finding` | `engagement`, `finding_id`, `history` (default false) | One finding with every field; with `history`, every revision and decision with its reason. |
 | `import_observations` | `engagement`, `path` (a file of the engagement, such as `semgrep.json` or `evidence/authz/...`), optional `tool` | Turns a Semgrep, osv-scanner, pip-audit, bandit or gitleaks JSON, an authorization-matrix run, an app map or an HTTP exchange into observations. Re-importing doesn't duplicate; parser errors and limitations are returned. |
@@ -131,7 +162,9 @@ the L4 profile.
 | `triage_observations` | `engagement`, `ids`, `action` (`link` with `finding_id`, `duplicate` with `of`, `dismiss` with `reason`, `reopen`) | Decides about observations; linked ones become the finding's instances and evidence. |
 | `plan_tests` | `engagement`, `playbook` or `items` | Adds planned tests: one per checklist line of a playbook (once), or the given items with their standard references. |
 | `update_coverage` | `engagement`, `item`, `state`, and `evidence`, `finding_id` or `rationale` as the state needs; optional `build`, `policy_revision` | Records a planned test's outcome: `tested` (evidence), `failed` (finding), `blocked`, `excluded`, `not-applicable` (rationale). |
-| `get_coverage` | `engagement`, optional `state` | Planned tests, counts per state and per standard, stale and blocked items. |
+| `get_coverage` | `engagement`, optional `state`, `matrix` | Planned tests, counts per state and per standard, stale and blocked items. With `matrix=true`, the coverage matrix: each recon map entry x each vulnerability class that applies to it (access-control, authentication, injection, xss, ssrf, open-redirect, mass-assignment, file-upload: by the entry's method, parameters and authentication), the plan items covering each cell, and the gaps no item covers. |
+| `skip_coverage_cells` | `engagement`, `cells` (`[{entry, class}]`), `state` (`not-applicable` or `excluded`), `rationale` | Records matrix cells that won't be tested, with the reason, as plan items with that outcome (the gap-fill pass). |
+| `get_map` | `engagement`, optional `host`, `path`, `auth`, `limit` | The recon map, merged from `recon_map`, `laravel_map`, imported captures and the agent's own requests: one entry per method and path template (numbers, UUIDs and `{params}` are one segment), with parameters, authentication (`required`, `none`, `unknown`, and the basis), statuses, sources, evidence and the classes that apply. Entry ids (`E-xxxxxx`) don't change when the map is rebuilt; plan items reference them in `refs`, and a reference to an id that isn't in the map is refused. The report readiness check lists matrix gaps (`coverage-gaps`, exceptable). |
 | `set_objective` | `engagement`, `text` | What the engagement must answer. |
 | `get_handover` | `engagement` | Where the investigation stands, built from the records, plus the researcher's note. |
 | `write_file` | `engagement`, `path`, `content`, `append` (default false) | Writes one of: `PLAN.md`, `NOTES.md`, `notes/<name>.md` or `.txt`, `report/executive-summary.md`, `report/methodology.md`, `report/conclusion.md`, `report/meta.txt`. Anything else, or content over 1 MB, is refused. |

@@ -1,0 +1,16 @@
+{
+ "id": "P-001",
+ "created": "2026-11-14",
+ "cause": "tool/findings_update_coverage/refused: no such file",
+ "kind": "error-message",
+ "file": "harness/workspace.py",
+ "change": "When an evidence entry is a path followed by a note, as in 'evidence/runs/x.txt (no WAF)', and the path alone exists, the refusal says so: evidence takes file paths only, and the note goes in the rationale. Today it says only 'no such file'.",
+ "targets": [
+  "ai-llm-lab-20261110T173758Z",
+  "api-vampi-20261111T000126Z",
+  "web-dvwa-20261110T183942Z"
+ ],
+ "read": 45,
+ "status": "proposed",
+ "judgement": null
+}

@@ -45,7 +45,10 @@ Set these with `./rvkit connect` and `./rvkit worker` ([models.md](models.md)), 
 | `WORKER_FALLBACK_MODEL` | `openrouter/deepseek/deepseek-v4.1-flash` | The fallback model (OpenRouter). |
 | `COLAB_API_BASE`, `COLAB_MODEL` | | The last Colab URL and model, so `./rvkit worker colab` can switch back. |
 | `WORKER_PARALLEL_TASKS` | `1` | Delegated tasks the worker runs at once. Keep 1 for Colab; raise it for an API endpoint or a local server with parallel slots. |
-| `WORKER_CONTEXT_CHARS` | `90000` | Characters of task context the worker keeps (about 25K tokens, for a 32K-context model). Raise it for a model with a longer context. |
+| `WORKER_ADVISOR` | `1` | A worker task that stalls (the same call or error three times, or `WORKER_STALL_CALLS` calls with nothing new) first gets a nudge, then asks the planner model for advice, at most twice, before it stops as `stalled`. Only the goal and one line per recent step are sent, through the model gateway, which applies the engagement's client data rule; a private worker never asks. `0` turns the advice off. |
+| `WORKER_STALL_CALLS` | `8` | Worker calls with no new output and no candidate before a task counts as stalled. |
+| `WORKER_CONTEXT_CHARS` | `90000` | Characters of task context the worker keeps (about 25K tokens, for a 32K-context model). Raise it for a model with a longer context. Past it, the oldest tool results shrink to one line each (tool, command, exit status, digest summary, evidence path). |
+| `WORKER_KEEP_RESULTS` | `5` | The latest tool results a worker task always keeps whole. |
 
 ### Planner model and spend
 
@@ -54,6 +57,8 @@ Set these with `./rvkit connect` and `./rvkit worker` ([models.md](models.md)), 
 | `OPENROUTER_API_KEY` | empty | Your OpenRouter key. Without it only the `riskvoid-local` agent works. |
 | `PLANNER_MODEL` | `openrouter/z-ai/glm-5.3` | The planner (`./rvkit planner`). |
 | `PLANNER_FALLBACK_MODEL` | `openrouter/deepseek/deepseek-v4-pro` | Used when the planner call fails, refuses or returns nothing. |
+| `VALIDATOR_MODEL` | the planner's fallback model | The disprove-only validator: reviews each finding the planner confirms ([tools reference](tools-reference.md#the-validator)). |
+| `VALIDATOR` | `1` | `0`: confirmed findings are not sent to the validator. |
 | `ANTHROPIC_API_KEY`, `OPENAI_API_KEY` | empty | Only for a planner on Anthropic or OpenAI directly (`./rvkit planner --direct`). |
 | `OPENROUTER_DAILY_BUDGET` | `20` | USD per 24 hours, per provider: OpenRouter, and Anthropic / OpenAI when used directly (`./rvkit budget`). |
 
@@ -98,6 +103,30 @@ setting.
 | `RVKIT_REGISTRY` | `ghcr.io/riskvoid/security-agent-kit` | Where the kit's own images are pulled from (`-egress`, `-harness`, `-kali`, `-report`). |
 | `RVKIT_VERSION` | `0.1.0` | Which published version of the kit's images to pull. Normally matches the `VERSION` file. |
 | `SEMGREP_RULES_COMMIT` | pinned in `docker-compose.yml` | Commit of the Semgrep community rules downloaded into the `semgrep-rules` volume on first start. |
+
+### Tracing
+
+Off by default. `./rvkit tracing on` starts a bundled Jaeger (UI at http://127.0.0.1:16686) and exports OpenTelemetry
+traces of worker tasks, model calls and tool calls to it. Jaeger sits on its own internal network with the worker and
+LiteLLM, so the agent's sandbox can't read traces. Each
+task is one trace: an `invoke_agent riskvoid-worker` span, with a `chat <model>` span per model call and an
+`execute_tool <tool>` span per tool call. Span names and attributes follow the OpenTelemetry GenAI conventions. LiteLLM
+adds a span for each model call it routes, planner calls included.
+
+| Setting | Default | Meaning |
+|---|---|---|
+| `RV_TRACING` | `off` | `on` exports traces (`./rvkit tracing on` or `off`). |
+| `RV_TRACE_ENDPOINT` | the bundled Jaeger | Where LiteLLM sends its model-call spans: an OTLP/HTTP endpoint, without `/v1/traces`. Langfuse takes OTLP: its `/api/public/otel` endpoint. The worker's spans always go to the bundled Jaeger, because the worker has no network route out. |
+| `RV_TRACE_HEADERS` | empty | Headers for `RV_TRACE_ENDPOINT`, as `Name=value,Name2=value2`. Langfuse: `Authorization=Basic <base64 of public-key:secret-key>`. Set it in `.env` yourself; it is a secret. |
+| `RV_TRACE_CONTENT` | `off` | `on` puts content into the worker's spans: messages, tool arguments and tool results (`./rvkit tracing content on` or `off`). |
+| `RV_TRACE_DESTINATION` | `local` | The name the trace collector has in an engagement's Client data rule. |
+
+Without content, spans carry names, timings, models, token counts, tool names and statuses: no client code, no tool
+output. With `RV_TRACE_CONTENT=on`, content goes into a task's spans only when its engagement's **Client data** rule
+allows `RV_TRACE_DESTINATION` (or has no Client data rule) and its **Network** rule isn't `offline`. LiteLLM's own
+spans never carry messages, because LiteLLM can't apply that rule per engagement. A collector outside your machine is
+a place client data goes: name it in `RV_TRACE_DESTINATION`, and allow it only in the engagements that may send data
+there.
 
 ## Other files you can change
 

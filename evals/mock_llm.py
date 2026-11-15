@@ -53,13 +53,14 @@ def reply(body):
         m = re.search(r"output saved as verified evidence: (\S+?)\]", last)
         if not m:
             return {"role": "assistant", "content": None, "tool_calls": [_call("finish", {
-                "summary": "kali_run returned no evidence path: " + last[:300], "confidence": "low"})]}
+                "status": "blocked", "summary": "kali_run returned no evidence path: " + last[:300],
+                "errors": ["kali_run returned no evidence path"], "confidence": "low"})]}
         return {"role": "assistant", "content": None, "tool_calls": [_call("record_candidate", {
             "title": TITLE, "severity": "info", "asset": "/src", "cwe": "CWE-0",
             "description": "Recorded by the scripted test model; not a real issue.", "evidence": [m.group(1)]})]}
     return {"role": "assistant", "content": None, "tool_calls": [_call("finish", {
-        "summary": "Listed the source folder and recorded one test candidate. " + last[:120],
-        "observations": ["mock model"], "confidence": "high"})]}
+        "status": "completed", "summary": "Listed the source folder and recorded one test candidate. " + last[:120],
+        "candidates": [{"title": TITLE, "state": "hypothesis"}], "confidence": "high"})]}
 
 
 def scenario_step(body, steps):

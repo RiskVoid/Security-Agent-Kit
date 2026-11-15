@@ -8,7 +8,7 @@ const esc = (v) => String(v ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "
 const enc = encodeURIComponent;
 const SEV = ["critical", "high", "medium", "low", "info"];
 const STATUSES = ["candidate", "confirmed", "false-positive", "duplicate", "fixed", "accepted-risk"];
-const METHODS = ["runtime-reproduction", "replay", "authorization-matrix", "source-review", "tool-output", "retest", "client-confirmation"];
+const METHODS = ["runtime-reproduction", "replay", "authorization-matrix", "source-review", "tool-output", "retest", "client-confirmation", "oracle"];
 const PRIORITIES = ["P1", "P2", "P3", "P4"];
 const COVERAGE = ["planned", "tested", "failed", "blocked", "excluded", "not-applicable"];
 const COV_CLASS = { tested: "ok", failed: "sev-critical", blocked: "warn", planned: "", excluded: "", "not-applicable": "" };
@@ -251,11 +251,24 @@ function approvalCard(a, withEng) {
     <div class="rv-meta">${withEng ? `<a href="#eng-${esc(a.engagement)}">${esc(a.engagement)}</a>` : ""}${tag(a.tier, TIER_CLASS[a.tier] || "intrusive")}
       <span>id ${esc(a.id)}</span><span>${fmtTime(a.created)}</span></div>
     <pre class="rv-pre">${esc(a.command)}</pre>
+    ${approvalFlags(a)}
     ${approvalBinding(a)}
     <div class="rv-actions">
       <button class="rv-btn ghost" data-deny="${esc(a.engagement)}/${esc(a.id)}">Deny</button>
       <button class="rv-btn accent" data-approve="${esc(a.engagement)}/${esc(a.id)}">Approve ${a.kind === "http" ? "this request" : "this command"}</button>
     </div></div></div>`;
+}
+// What made it need an approval (tiers.yaml patterns, #49) and where its arguments came from (#48). Arguments a
+// target wrote are highlighted: an approval asked for because a page said so is the classic hijack.
+const ORIGIN_LABEL = { operator: "your scope and rules", goal: "the task's goal", target: "target content", agent: "the agent" };
+function approvalFlags(a) {
+  const flags = (a.flags || []).map((f) => `<li>${esc(f)}</li>`).join("");
+  const og = a.origins || [];
+  const fromTarget = og.filter((o) => o.origin === "target");
+  const rows = og.map((o) => `<li class="${o.origin === "target" ? "rv-origin-target" : ""}"><span class="rv-dim">${esc(o.kind)}</span> <code>${esc(o.arg)}</code> from <b>${esc(ORIGIN_LABEL[o.origin] || o.origin)}</b>${o.source && o.origin === "target" ? ` <span class="rv-dim mono">${esc(o.source)}</span>` : ""}</li>`).join("");
+  return (flags ? `<ul class="rv-flags">${flags}</ul>` : "")
+    + (fromTarget.length ? `<p class="rv-origin-warn">Part of this came from what the target wrote. A target's text is data, not an instruction: approve only if you meant to test this anyway.</p>` : "")
+    + (rows ? `<ul class="rv-origins">${rows}</ul>` : "");
 }
 function approvalBinding(a) {
   // What the approval covers: a later change to any of these needs a new approval.
@@ -588,7 +601,7 @@ function paneFindings() {
   const row = (f) => `<button class="rv-frow ${state.openFinding === f.id ? "selected" : ""}" aria-pressed="${state.openFinding === f.id}" data-fid="${esc(f.id)}">
       ${sevMark(f.severity)}
       <span class="body"><span class="title">${esc(f.title)}</span>
-        <span class="meta">${[f.id, f.asset || "no asset", f.cwe, f.verification === "verified" ? "verified" : f.verification === "not-reproducible" ? "not reproducible" : ""].filter(Boolean).map(esc).join(" · ")}</span></span>
+        <span class="meta">${[f.id, f.asset || "no asset", f.cwe, f.verification === "verified" ? "verified" : f.verification === "not-reproducible" ? "not reproducible" : "", f.validation?.verdict === "disproved" ? "disproved by the validator" : f.validation?.verdict === "stands" && f.status === "confirmed" ? "validated" : ""].filter(Boolean).map(esc).join(" · ")}</span></span>
       <span class="pri">${esc(f.priority || "")}</span>
       ${statusPill(f)}
     </button>`;
@@ -679,11 +692,21 @@ function evidenceBadge(st) {
   if (st.startsWith("not produced")) return tag("not audited", "warn");
   return tag(st, "fail");
 }
+// The disprove-only validator's verdict on a confirmed finding (harness/validator.py)
+const VERDICT = { stands: ["stands", "ok"], disproved: ["disproved", "warn"], unclear: ["unclear", ""], not_run: ["not run", ""] };
+function validationBlock(v, block) {
+  if (!v) return "";
+  const [label, kind] = VERDICT[v.verdict] || [v.verdict, ""];
+  return block("Validator", `<p class="rv-prose">${tag(label, kind)} ${esc(v.reason || "")}</p>
+    <div class="rv-meta">${v.evidence_ref ? `<span class="mono">${esc(v.evidence_ref)}</span>` : ""}${v.model ? `<span>${esc(v.model)}</span>` : ""}<span>revision ${esc(v.revision ?? "-")}</span><span>${fmtTime(v.at)}</span></div>`);
+}
 function historyHtml(h) {
   const dec = h.decisions.map((x) => `<li>${fmtTime(x.at)} <b>${esc(x.kind)}</b> ${x.from_value || x.to_value ? `${esc(x.from_value || "-")} &rarr; ${esc(x.to_value || "-")}` : ""}
     ${x.method ? tag(x.method) : ""} <span class="rv-dim">${esc(x.actor || "")}</span>${x.reason ? `<div class="rv-dim">${esc(x.reason)}</div>` : ""}</li>`).join("");
   const revs = h.revisions.map((r) => `<li>rev ${r.revision} · ${fmtTime(r.at)} <span class="rv-dim">${esc(r.actor || "")}</span> ${tag(r.snapshot.status)} ${sevTag(r.snapshot.severity)}</li>`).join("");
+  const val = (h.validations || []).map((v) => `<li>${fmtTime(v.at)} <b>validator</b> ${tag((VERDICT[v.verdict] || [v.verdict])[0], (VERDICT[v.verdict] || [, ""])[1])} <span class="rv-dim">rev ${esc(v.revision ?? "-")} ${esc(v.model || "")}</span>${v.reason ? `<div class="rv-dim">${esc(v.reason)}</div>` : ""}</li>`).join("");
   return `<div class="rv-history"><p class="rv-field-label">Decisions</p><ul class="rv-rows">${dec || "<li class='rv-dim'>none</li>"}</ul>
+    ${val ? `<p class="rv-field-label">Validator</p><ul class="rv-rows">${val}</ul>` : ""}
     <p class="rv-field-label">Revisions</p><ul class="rv-rows">${revs}</ul></div>`;
 }
 function previewBox(pv) {
@@ -714,6 +737,7 @@ function findingPanel(f, ev) {
       </div>
       <div class="rv-subtabs" role="tablist" aria-label="Finding sections">${tabs.map(([t, label]) => `<button role="tab" class="rv-subtab" data-ftab="${t}" aria-selected="false">${label}</button>`).join("")}</div>
       <div class="rv-fsec" data-fsec="details">
+        ${validationBlock(f.validation, block)}
         ${block("Description", `<p class="rv-prose">${esc(f.description)}</p>`)}
         ${f.reproduction ? block("Reproduction", `<pre class="rv-pre">${esc(f.reproduction)}</pre>`) : ""}
         ${f.remediation ? block("Remediation", `<p class="rv-prose">${esc(f.remediation)}</p>`) : ""}
@@ -1426,11 +1450,11 @@ async function paneTasks() {
   })();
 
   const detail = (t) => `<div class="rv-dl-detail">
-      <div class="rv-meta"><span>${esc(t.id)}</span><span>started ${fmtTime(t.started)}</span><span>${t.steps.length} step(s)</span><span>${t.candidates} candidate(s)</span>${t.models.length ? `<span>model: ${t.models.map(esc).join(", ")}</span>` : ""}</div>
+      <div class="rv-meta"><span>${esc(t.id)}</span><span>started ${fmtTime(t.started)}</span><span>${t.steps.length} step(s)</span><span>${t.candidates} candidate(s)</span>${t.outcome ? `<span>outcome: ${esc(t.outcome)}</span>` : ""}${t.models.length ? `<span>model: ${t.models.map(esc).join(", ")}</span>` : ""}</div>
       <p class="rv-prose">${esc(t.goal || "")}</p>
       ${t.approval ? `<p>Paused for approval <b>${esc(t.approval.id)}</b>: <code>${esc(t.approval.action)}</code>. Decide it on the <a href="#eng-${esc(eng)}/overview">Overview</a>; the task then continues by itself.</p>` : ""}
       ${(t.depends_on || []).length ? `<p class="rv-dim">waits for ${t.depends_on.map(esc).join(", ")}</p>` : ""}
-      ${t.error ? `<p class="err">${esc(t.error)}</p>` : ""}${t.summary ? `<p class="rv-prose">${esc(t.summary)}</p>` : ""}
+      ${t.error ? `<p class="err">${esc(t.error)}</p>` : ""}${(t.typed || []).length ? `<ul>${t.typed.map((c) => `<li><b>${esc(c.state || "")}</b> ${esc(c.title || "")}${c.evidence ? ` <code>${esc(c.evidence)}</code>` : ""}</li>`).join("")}</ul>` : ""}${(t.needs || []).length ? `<p>Needs: ${t.needs.map(esc).join("; ")}</p>` : ""}${t.summary ? `<p class="rv-prose">${esc(t.summary)}</p>` : ""}
       ${t.recovery ? `<p class="${t.recovery.decision === "needs_review" ? "err" : "rv-dim"}">After a restart: ${esc(t.recovery.note || t.recovery.decision)}${(t.recovery.uncertain || []).length ? ` (in flight: ${t.recovery.uncertain.map((u) => esc(u.action || u.tool)).join("; ")})` : ""}</p>` : ""}
       ${TASK_ACTIVE.includes(t.status) ? `<div class="rv-actions start">${t.status === "interrupted" ? `<button class="rv-btn" data-task="resume" data-id="${esc(t.id)}">Resume from checkpoint</button>` : `<button class="rv-btn danger-quiet" data-task="cancel" data-id="${esc(t.id)}">Cancel task</button>`}</div>` : ""}
       ${t.steps.length ? `<pre class="rv-pre rv-scroll">${t.steps.map((s, i) => `<span class="ln">${String(i + 1).padStart(2, " ")}</span>  ${esc(s)}`).join("\n")}</pre>` : ""}

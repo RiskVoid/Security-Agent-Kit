@@ -9,6 +9,10 @@ and reading only) aborts every request that can change state, whatever a script 
 Output in the job's evidence folder: requests.jsonl (every request, allowed or blocked, with the reason),
 page.html (DOM with input values masked), screenshot.png (password fields and the job's mask selectors masked),
 summary.json. Secret values are replaced by their references before anything is written.
+
+Script execution (the browser_xss oracle, epic #52 issue #43): every page gets rvMarker(x), and alert, confirm and
+prompt are recorded instead of shown. summary.json "executed" lists what they were called with, so an oracle can
+tell a script that ran from text that was only reflected.
 """
 import json, os, sys, time, urllib.parse
 
@@ -58,7 +62,7 @@ def main(job_path):
                         "allowed": allowed, "reason": reason, "status": status, "identity": identity})
 
     from playwright.sync_api import sync_playwright
-    result = {"steps": [], "blocked": [], "downloads_refused": 0, "console_errors": []}
+    result = {"steps": [], "blocked": [], "downloads_refused": 0, "console_errors": [], "executed": []}
     with sync_playwright() as p:
         browser = p.chromium.launch(executable_path=job.get("chromium", "/usr/bin/chromium"), headless=True,
                                     args=["--disable-dev-shm-usage", "--no-first-run", "--disable-background-networking",
@@ -88,6 +92,12 @@ def main(job_path):
             return route.continue_(headers={**request.headers, **add} if add else None)
 
         ctx.route("**/*", on_route)
+        # what scripts on the page ran: rvMarker(x) and dialogs (recorded, never shown)
+        ctx.add_init_script("""(() => { const rec = (k, v) => { try { (window.__rvExec = window.__rvExec || [])
+            .push(k + ':' + String(v).slice(0, 200)); } catch (e) {} };
+            window.rvMarker = (v) => rec('marker', v);
+            for (const k of ['alert', 'confirm', 'prompt']) window[k] = (v) => { rec(k, v); return k === 'confirm' ? false : null; };
+        })();""")
         if hasattr(ctx, "route_web_socket"):
             def on_ws(ws):
                 http_url = ws.url.replace("ws://", "http://", 1).replace("wss://", "https://", 1)
@@ -104,6 +114,8 @@ def main(job_path):
         page = ctx.new_page()
         statuses = {}
         page.on("response", lambda r: statuses.__setitem__(r.url, r.status))
+        page.on("dialog", lambda d: (len(result["executed"]) < 50 and
+                                     result["executed"].append(scrub(f"{d.type}:{d.message}")[:220]), d.dismiss()))
         page.on("download", lambda d: (result.__setitem__("downloads_refused", result["downloads_refused"] + 1),
                                        d.cancel()))
         page.on("console", lambda m: m.type == "error" and len(result["console_errors"]) < 20 and
@@ -151,6 +163,13 @@ def main(job_path):
             result["steps"].append(rec)
         try:
             page.wait_for_load_state("networkidle", timeout=5000)
+        except Exception:
+            pass
+        try:   # what ran in the page and its frames
+            for fr in page.frames:
+                for x in fr.evaluate("() => window.__rvExec || []") or []:
+                    if len(result["executed"]) < 50:
+                        result["executed"].append(scrub(x)[:220])
         except Exception:
             pass
         masks = [page.locator("input[type=password]")] + [page.locator(s) for s in job.get("mask") or []]

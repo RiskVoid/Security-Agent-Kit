@@ -38,3 +38,5 @@ jobs:
         run: |   # the vault tests need cryptography (kali-mcp's venv has it)
           python3 -c 'import cryptography' 2>/dev/null || python3 -m pip install --quiet --user --break-system-packages cryptography
           python3 evals/unit_test.py
+      - name: Worker loop (scripted model, fake tools)
+        run: python3 evals/worker_loop_test.py

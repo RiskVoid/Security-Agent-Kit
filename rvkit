@@ -55,6 +55,7 @@ need_env() {
   envensure WORKER_FALLBACK "off"
   envensure PLANNER_MODEL "openrouter/z-ai/glm-5.3"
   envensure PLANNER_FALLBACK_MODEL "openrouter/deepseek/deepseek-v4-pro"
+  envensure VALIDATOR_MODEL "$(envget PLANNER_FALLBACK_MODEL)"   # disprove-only reviewer of confirmed findings
   envensure OPENROUTER_DAILY_BUDGET "20"
   envensure REDIS_PASSWORD "$(rand 24)"
   envensure OPENHANDS_API_KEY "oh-rv-$(rand 24)"
@@ -133,11 +134,17 @@ config_openhands() { # $1 = --quiet or empty
 
 start_stack() { # pulls the published images for this version; builds any that aren't published (or all of them
   # with RVKIT_BUILD=1, which you want after changing the kit's code)
+  # web-mcp mounts the lookup policy folder: create it as this user, not as root through the bind mount
+  [ -f .env ] && mkdir -p "$(expand "$(envget ENGAGEMENTS_DIR)")/.control/lookup" 2>/dev/null
   if [ -n "${RVKIT_BUILD:-}" ]; then docker compose up -d --build
   elif [ -n "${RVKIT_NO_PULL:-}" ]; then docker compose up -d   # images already built locally (CI)
   else
     docker compose pull --ignore-pull-failures -q >/dev/null 2>&1 || true
     docker compose up -d
+  fi
+  # ./rvkit tracing on: start the bundled collector too (it's in a profile, off otherwise)
+  if [ -f .env ] && [[ "$(envget RV_TRACING || true)" =~ ^(on|1|true|yes)$ ]]; then
+    docker compose --profile tracing up -d otel-collector >/dev/null 2>&1 || warn "the trace collector didn't start"
   fi
 }
 
@@ -167,7 +174,7 @@ lab_vampi_init() { # VAmPI starts with an empty database: /createdb fills it wit
   done
   warn "VAmPI database setup didn't complete: check ./rvkit logs lab-vampi"
 }
-LAB="lab-juice-shop lab-dvwa lab-dvwa-db lab-vampi lab-dvga lab-llm lab-laravel lab-laravel-fixed"
+LAB="lab-juice-shop lab-dvwa lab-dvwa-db lab-vampi lab-dvga lab-llm lab-laravel lab-laravel-fixed lab-hostile"
 
 # Who acts, for the audit log: cli:<login> here; the console sets RVKIT_ACTOR=console:<login> when it calls rvkit.
 actor() { local a="${RVKIT_ACTOR:-cli:$(id -un 2>/dev/null | tr -cd 'A-Za-z0-9._@-' | cut -c1-64)}"
@@ -334,7 +341,19 @@ cmd_doctor() {
   else note "Worker endpoint not reachable: $(envget WORKER_API_BASE) (start Colab with /rv-start, or ./rvkit worker)"; fi
   if [ "${1:-}" = "--models" ]; then
     llm planner | grep -q '"choices"' && pass "Planner answers ($(envget PLANNER_MODEL))" || fail "Planner call failed (./rvkit test planner)"
-  else echo "   ${D}planner not called (costs a fraction of a cent): ./rvkit doctor --models${N}"; fi
+    if worker_reachable; then   # tool-call conformance of the worker model (evals/toolcall_conformance.py, 24 calls)
+      mkdir -p .rvkit/conformance
+      v="$(docker compose exec -T worker-mcp python3 - --json < evals/toolcall_conformance.py 2>/dev/null | tail -1)"
+      if echo "$v" | grep -q '"score"'; then
+        echo "$v" | python3 -c "import json,sys; d=json.load(sys.stdin); d['worker']=sys.argv[1]; d['endpoint']=sys.argv[2]; print(json.dumps(d))" \
+          "$(envget WORKER_MODEL_ID)" "$(envget WORKER_API_BASE | sed -E 's#//[^/]*trycloudflare.com#//<colab-tunnel>#')" >> .rvkit/conformance/history.jsonl
+        s="$(echo "$v" | python3 -c "import json,sys; d=json.load(sys.stdin); print(f\"{d['score']:.0%} (valid JSON {d['json']:.0%}, schema {d['schema']:.0%}, right tool {d['right_tool']:.0%})\")")"
+        if echo "$v" | python3 -c "import json,sys; d=json.load(sys.stdin); sys.exit(0 if d['score'] >= d['threshold'] else 1)"; then
+          pass "Worker tool calls: $s"
+        else note "Worker tool calls: $s, below 85%: expect malformed calls (details: docker compose exec -T worker-mcp python3 - < evals/toolcall_conformance.py)"; fi
+      else note "Worker tool-call check didn't run: ${v:-no output}"; fi
+    fi
+  else echo "   ${D}planner and worker tool calls not checked (costs a fraction of a cent): ./rvkit doctor --models${N}"; fi
   if [ -n "$(python3 scripts/model_events.py --since 86400 --problems 2>/dev/null)" ]; then
     note "Model calls failed in the last 24 hours:"; python3 scripts/model_events.py --since 86400 --problems | head -5 | sed 's/^/   /'
   else pass "No failed model calls in the last 24 hours"; fi
@@ -403,13 +422,16 @@ cmd_watch() {
 for e in json.load(sys.stdin): print(("problem" if e["problem"] else "info") + "\t" + e.get("message","").replace("\t"," "))')"
     fi
     rows="$(kctl approvals --json 2>/dev/null | python3 -c 'import sys,json
-for r in json.load(sys.stdin): print("\t".join([r["id"], r["engagement"], r["tier"], r["command"].replace("\t"," ").replace("\n"," ")]))' 2>/dev/null || true)"
-    while IFS=$'\t' read -r id eng tier command; do
+for r in json.load(sys.stdin):
+    why = list(r.get("flags") or []) + ["from target content: %s %r (%s)" % (o["kind"], o["arg"][:60], o.get("source")) for o in r.get("origins") or [] if o["origin"] == "target"]
+    print("\t".join([r["id"], r["engagement"], r["tier"], r["command"].replace("\t"," ").replace("\n"," "), " | ".join(why).replace("\t"," ").replace("\n"," ")]))' 2>/dev/null || true)"
+    while IFS=$'\t' read -r id eng tier command why; do
       [ -n "$id" ] || continue
       case "$seen" in *" $id "*) continue ;; esac
       seen="$seen$id "
       notify "RiskVoid: approval needed" "$eng: ${command:0:80}"
       printf '\n%s%s%s  %s  [%s]\n  %s\n' "$B" "$eng" "$N" "$id" "$tier" "$command"
+      [ -z "$why" ] || printf '  %s!! %s%s\n' "$Y" "$why" "$N"   # pattern flags (#49), arguments a target wrote (#48)
       a="$(ask "Approve this command? a=approve, d=deny, s=skip for now" "s")"
       case "$a" in
         a|A|y|Y) kctl approve "$eng" "$id" && ok "approved: tell the agent to run it again" ;;
@@ -577,7 +599,7 @@ cmd_worker() {
 }
 
 # ---------------------------------------------------------------- install / completion
-COMMANDS="setup up down update console status doctor logs connect worker planner budget test key openhands new engagement eng quickstart watch scope show policy finding approvals approve deny halt resume conversation cred identity capture authz vault appmap php task audit report close delete failures lab bench install completion help"
+COMMANDS="setup up down update console status doctor logs connect worker planner budget tracing test key openhands new engagement eng quickstart watch scope show policy finding approvals approve deny halt resume conversation cred identity capture authz vault appmap php task audit report close delete failures lab bench install completion help"
 ENG_SUB="list new show scope approvals approve deny halt resume audit report close delete"
 cmd_install() {
   local dir="${1:-$HOME/.local/bin}"
@@ -694,6 +716,7 @@ ${B}Models${N}
   planner [<model> [fallback]]  show / set the planner models (OpenRouter ids)
   planner --direct <provider/model> [fallback]   use Anthropic or OpenAI directly (asks for the key once)
   budget [usd]                  today's model spend / set the daily budget (per provider)
+  tracing on|off|content on|off  export traces of worker tasks, model and tool calls (OpenTelemetry)
   test [planner]                send a test prompt to the worker (or the planner)
   key [colab|litellm|openhands] print a key (colab = paste into the notebook)
   openhands                     re-apply the OpenHands configuration
@@ -729,7 +752,7 @@ ${B}Engagements${N}  (also as: rvkit eng <command>)
 
 ${B}Practice and tests${N}
   lab up|down|status            vulnerable practice targets on an isolated network
-  bench <name|all> [--repeat N] run a benchmark (evals/benchmarks/); --history, --failures, --score
+  bench <name|all> [--repeat N] run a benchmark (evals/benchmarks/); --history, --groups, --compare, --failures, --score
                                 what is tested and measured per stack: docs/capability-baselines.md
 
 ${B}Shell${N}
@@ -774,6 +797,25 @@ case "$cmd" in
     ok "Worker now points at Colab: $url ($(envget COLAB_MODEL))"
     test_model ;;
   worker)     cmd_worker "$@" ;;
+  tracing)   # trace export (epic #52, #51): ./rvkit tracing on|off|content on|off|status
+    need_env
+    tep="the bundled Jaeger (UI: http://127.0.0.1:16686)"
+    [ -z "$(envget RV_TRACE_ENDPOINT || true)" ] || tep="worker spans to $tep, LiteLLM spans to $(envget RV_TRACE_ENDPOINT)"
+    case "${1:-status}" in
+      on)  envset RV_TRACING on
+           docker compose --profile tracing up -d otel-collector >/dev/null
+           recreate_litellm; docker compose up -d --force-recreate worker-mcp >/dev/null 2>&1
+           ok "tracing on: worker tasks, model and tool calls go to $tep" ;;
+      off) envset RV_TRACING off; recreate_litellm; docker compose up -d --force-recreate worker-mcp >/dev/null 2>&1
+           docker compose --profile tracing stop otel-collector >/dev/null 2>&1 || true; ok "tracing off" ;;
+      content)
+           [[ "${2:-}" =~ ^(on|off)$ ]] || die "usage: ./rvkit tracing content on|off"
+           envset RV_TRACE_CONTENT "$2"; docker compose up -d --force-recreate worker-mcp >/dev/null 2>&1
+           ok "trace content $2 (only for engagements whose Client data rule allows $(envget RV_TRACE_DESTINATION || echo local), never offline ones)" ;;
+      status) a="$(envget RV_TRACING || true)"; c="$(envget RV_TRACE_CONTENT || true)"
+              echo "tracing: ${a:-off}   content: ${c:-off}   endpoint: $tep" ;;
+      *) die "usage: ./rvkit tracing on|off|content on|off|status" ;;
+    esac ;;
   budget)
     need_env
     if [ $# -eq 0 ]; then
@@ -964,7 +1006,7 @@ for k, b in p.items(): print("%s: spent $%.4f in the current 24 h period" % (k, 
       *) die "usage: ./rvkit lab up|down|status|reset" ;;
     esac ;;
   bench)
-    need_env; [ $# -ge 1 ] || die "usage: ./rvkit bench <name|all> [--agent riskvoid-planner|riskvoid-local] [--repeat N] [--budget USD] | --history | --failures [--show <cause>] | --score <name> <bench-engagement>   (list: ls evals/benchmarks)"
+    need_env; [ $# -ge 1 ] || die "usage: ./rvkit bench <name|all> [--agent riskvoid-planner|riskvoid-local|riskvoid-plain] [--repeat N] [--label L] [--clean] [--budget USD] | --history | --groups [name] | --compare <label-a> <label-b> | --failures [--show <cause>] | --improve split|analyze|propose|list|judge|changelog | --score <name> <bench-engagement>   (list: ls evals/benchmarks)"
     python3 evals/run_benchmark.py "$@" ;;
   finding)    need_env; cmd_finding "$@" ;;
   report)     need_env; cmd_report "$@" ;;

@@ -4,7 +4,7 @@ Commands run sandboxed per engagement (see core.py): own folder only, unprivileg
 engagement scope by nftables, tiers and rate limits from RULES.md, intrusive commands need host approval, and
 everything is audit-logged. Only run against systems you are authorised to test.
 """
-import functools, json, sys
+import functools, inspect, json, sys
 import anyio
 from mcp.server.fastmcp import FastMCP
 import core
@@ -21,6 +21,28 @@ async def _thread(fn, *args, **kw):
     return await anyio.to_thread.run_sync(functools.partial(fn, *args, **kw), limiter=_LIMIT)
 
 _LIMIT = anyio.CapacityLimiter(64)
+
+
+def rules_line(engagement):
+    """The engagement's unenforced rules as one line (policy.reminder), or "" (unknown engagement, no such rules)."""
+    try:
+        i = core.info(engagement)
+    except Exception:  # noqa: BLE001 - a reminder never makes a result fail
+        return ""
+    return core.rvpolicy.reminder(i["rules"], i.get("usage"))
+
+
+def with_rules(fn):
+    """Action tools end their result with the rules reminder, so the rules are in the planner's recent context
+    however its conversation was condensed (epic #52, issue #38)."""
+    sig = inspect.signature(fn)
+
+    @functools.wraps(fn)
+    async def wrap(*args, **kw):
+        out = await fn(*args, **kw)
+        line = rules_line(sig.bind_partial(*args, **kw).arguments.get("engagement") or "")
+        return f"{out}\n{line}" if line and isinstance(out, str) else out
+    return wrap
 
 
 @mcp.tool()
@@ -84,6 +106,7 @@ def engagement_activity(engagement: str) -> str:
 
 
 @mcp.tool()
+@with_rules
 async def http_request(engagement: str, method: str, url: str, headers: dict | None = None, body: str = "",
                  approval_id: str = "", max_tier: str = "", task: str = "", body_base64: bool = False,
                  identity: str = "") -> str:
@@ -105,6 +128,7 @@ async def http_request(engagement: str, method: str, url: str, headers: dict | N
 
 
 @mcp.tool()
+@with_rules
 async def analyze_source(engagement: str, tool: str, path: str, rulesets: list[str] | None = None, task: str = "") -> str:
     """Run a source-analysis tool on in-scope code with no network access at all (it can't reach targets or the
     internet). tool: semgrep (offline rules; rulesets = folders like php, python, javascript; default: detected
@@ -117,6 +141,7 @@ async def analyze_source(engagement: str, tool: str, path: str, rulesets: list[s
 
 
 @mcp.tool()
+@with_rules
 async def run(command: str, engagement: str, timeout_s: int = 600, approval_id: str = "", max_tier: str = "",
         task: str = "") -> str:
     """Run a shell command in the Kali sandbox for an engagement.
@@ -161,6 +186,37 @@ async def run(command: str, engagement: str, timeout_s: int = 600, approval_id: 
 
 
 @mcp.tool()
+@with_rules
+async def verify(engagement: str, oracle: str, request: dict, marker: str = "", expect: str = "",
+                 identities: list[str] | None = None, check: dict | None = None, control: dict | None = None,
+                 approval_id: str = "", finding: str = "", task: str = "", samples: int = 5,
+                 min_delay: float = 1.0) -> str:
+    """Decide whether a finding holds with a deterministic oracle and a negative control, instead of judging a
+    response yourself. request: {method, url, headers?, body?, identity?}; put {{marker}} where a fresh canary goes.
+      marker               the canary (or expect, e.g. "<b>{{marker}}</b>") comes back in the response. Control: the
+                           same request with another token. With an explicit marker, give control yourself.
+      identity_difference  identities: [attacker, owner], marker: the owner's fixture marker. The attacker gets
+                           it; controls: the owner gets it, the request without an identity doesn't.
+      read_back            the request is the proof (it writes or reads the marker), check: {method, url, ...}
+                           reads it back. Control: check before the proof doesn't find it.
+      browser_xss          a GET URL whose input calls rvMarker('{{marker}}'): the page opens in the sandboxed
+                           browser and passes only if that script ran. Control: the same URL with another token.
+      timing               request and control (both required): samples of each (default 5, max 10); passes when
+                           every probe is slower than every control by more than min_delay and the noise.
+    Result: pass (holds and the control is clean), fail, or inconclusive. Each run is saved as a verification record
+    (evidence/verify/...json): cite it as evidence and confirm the finding with method=oracle. Requests go through
+    the same scope, tier, approval and identity checks as http_request; a write needs an approval (call again with
+    the same marker and approval_id)."""
+    try:
+        import oracles
+        r = await _thread(oracles.verify, engagement, oracle, request, marker, expect, identities, check, control,
+                          approval_id or None, None, task or None, finding, None, samples, min_delay)
+        return r["text"]
+    except ValueError as e:
+        return f"REFUSED: {e}"
+
+
+@mcp.tool()
 def approval_status(engagement: str, approval_id: str) -> str:
     """Where an approval stands: pending, approved, denied, used, or stale (the scope changed). JSON."""
     try:
@@ -186,6 +242,24 @@ def cancel_task(engagement: str, task: str) -> str:
     """Kill the commands a worker task is running now (worker-mcp calls this when a task is cancelled)."""
     try:
         return f"killed {core.cancel_task(engagement, task)} command(s) of task {task}"
+    except ValueError as e:
+        return f"REFUSED: {e}"
+
+
+@mcp.tool()
+@with_rules
+async def recon_map(engagement: str, url: str, depth: int = 2, crawl_seconds: int = 120, probe: bool = True,
+                    max_tier: str = "", task: str = "") -> str:
+    """Map a web target before testing it (epic #52, #46): crawl it (katana: links, JavaScript, robots, sitemap),
+    read the API paths its scripts name, fetch its OpenAPI / Swagger schema and GraphQL schema (a read-only
+    introspection by GET), and send one GET without credentials to each path not yet fetched, to see which need
+    authentication. Only in-scope URLs are kept; every request is audited. Saves evidence/map/map-<time>.json.
+    Run it once per web target before planning tests; then get_map (findings) gives the merged map with entry
+    ids to reference in plan_tests. depth: crawl depth (1-5). probe=false: no unauthenticated GETs."""
+    import recon
+    try:
+        return await _thread(recon.build, engagement, url, depth, crawl_seconds, probe, max_tier or None,
+                             task or None)
     except ValueError as e:
         return f"REFUSED: {e}"
 
@@ -250,6 +324,7 @@ def list_captures(engagement: str, capture: str = "") -> str:
 
 
 @mcp.tool()
+@with_rules
 async def replay_request(engagement: str, capture: str, entry: int, identity: str = "", changes: dict | None = None,
                          markers: list[str] | None = None, approval_id: str = "", max_tier: str = "",
                          task: str = "") -> str:
@@ -268,6 +343,7 @@ async def replay_request(engagement: str, capture: str, entry: int, identity: st
 
 
 @mcp.tool()
+@with_rules
 async def browse(engagement: str, url: str, steps: list[dict] | None = None, identity: str = "",
                  mask: list[str] | None = None, approval_id: str = "", max_tier: str = "", task: str = "",
                  timeout_s: int = 180) -> str:
@@ -308,6 +384,7 @@ def propose_authz_matrix(engagement: str, name: str, operations: list[dict], ide
 
 
 @mcp.tool()
+@with_rules
 async def run_authz_matrix(engagement: str, name: str, task: str = "") -> str:
     """Run an approved authorization matrix: checks every identity first (blocked cells when a session isn't
     valid), sends each operation as each identity, compares the data returned (fixture markers, similarity to the

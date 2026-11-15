@@ -1,5 +1,5 @@
 ---
-version: 1
+version: 2
 title: API security test (REST, GraphQL)
 standard: OWASP API Security Top 10 2023, OWASP WSTG (APIT)
 tiers: passive, active; fuzzing and exploitation are intrusive (approval)
@@ -11,6 +11,8 @@ role (needed for authorisation tests), and which endpoints change real data. Put
 `/work/<eng>/creds/` (never in findings or PLAN.md) and pass them with `-H` / `--header`.
 
 ## 1. Discovery and inventory (API9: improper inventory)
+- [ ] Recon map first: kali `recon_map` on the API and its web client (schema, crawl, script API paths, which
+      need authentication); `get_map` is the inventory the plan items reference (E-xxxxxx)
 - [ ] Spec: try `/openapi.json`, `/swagger.json`, `/v3/api-docs`, `/api-docs`, `/swagger-ui/`, `/graphql`,
       `/graphiql`, `/.well-known/` with `curl -s -o /dev/null -w '%{http_code} %{url}\n' <url>/<path>`
 - [ ] Routes: `ffuf -u <base>/FUZZ -w /usr/share/seclists/Discovery/Web-Content/api/api-endpoints.txt
@@ -72,5 +74,6 @@ role (needed for authorisation tests), and which endpoints change real data. Put
   307 rate limit, 918 SSRF, 89 SQLi, 200/213 data exposure, 347 JWT signature, 1333 ReDoS).
 
 ## Done when
-Every endpoint in the inventory has had the authentication and authorisation checks, API1–API10 are each covered
+Every endpoint in the inventory (the recon map) has had the authentication and authorisation checks, the coverage
+matrix (`get_coverage matrix=true`) has no gaps, API1–API10 are each covered
 or marked out of scope in PLAN.md, fuzzing was approved or skipped with a reason, and candidates are triaged.

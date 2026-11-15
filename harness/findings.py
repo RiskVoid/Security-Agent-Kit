@@ -7,6 +7,9 @@ import json, os
 from mcp.server.fastmcp import FastMCP
 import findings_db as db
 import ops
+import quotecheck
+import validator
+import verification
 
 ACTOR = "agent:planner"  # changes made through this server are attributed to the planner agent
 
@@ -19,6 +22,22 @@ def _out(x) -> str:
     return json.dumps(x, indent=1)
 
 
+def _validated(engagement, row):
+    """A finding the planner just confirmed goes to the disprove-only validator (validator.py). The verdict is added
+    to what the tool returns; disproved has already sent the finding back to candidate."""
+    if not isinstance(row, dict) or row.get("status") != "confirmed":
+        return row
+    try:
+        v = validator.validate(engagement, row["id"])
+    except Exception as e:  # noqa: BLE001  the confirmation stands; the validation is just missing
+        v = {"verdict": "not_run", "reason": f"the validator failed: {type(e).__name__}: {e}"}
+    if v.get("verdict") == "disproved":
+        row = db.get(engagement, row["id"])
+        v["note"] = ("the finding is back to candidate. Look at the reason and the evidence: test again and confirm "
+                     "with better evidence, or mark it false-positive. Don't confirm it again with the same evidence.")
+    return {**row, "validation": v}
+
+
 @mcp.tool()
 def record_finding(engagement: str, title: str, severity: str, asset: str, description: str,
                    impact: str = "", reproduction: str = "", remediation: str = "", evidence: list[str] | None = None,
@@ -26,19 +45,23 @@ def record_finding(engagement: str, title: str, severity: str, asset: str, descr
                    status: str = "candidate", notes: str = "", method: str = "") -> str:
     """Record a finding for an engagement. severity: critical|high|medium|low|info.
     status: candidate (default, not yet verified) or confirmed (you have reproduced or verified it).
-    status=confirmed needs method = how you verified it (runtime-reproduction, replay, authorization-matrix,
-    source-review, tool-output, retest). runtime-reproduction, replay, authorization-matrix and tool-output also
-    need the evidence file that shows it.
+    status=confirmed needs method = how you verified it (oracle, runtime-reproduction, replay, authorization-matrix,
+    source-review, tool-output, retest). oracle: cite the evidence/verify/ record of a kali verify run that passed
+    with a clean control (the strongest method; prefer it when an oracle fits). runtime-reproduction, replay, authorization-matrix and tool-output also
+    need the evidence file that shows it. Text in backticks or code blocks (other than commands) is a quote:
+    confirming is refused when a quote isn't in the cited evidence, or a /src/<file>:<line> doesn't exist.
     evidence: file paths under /work/<engagement>/evidence/. Returns the stored finding with its id (F-001...)."""
     if status == "confirmed":
-        problem = db.confirm_problem(method, evidence)
+        problem = db.confirm_problem(method, evidence) or \
+            (verification.problem(engagement, evidence or []) if method == "oracle" else None) or \
+            quotecheck.refusal(engagement, description, reproduction, evidence or [])
         if problem:
             return f"REFUSED: {problem}"
     row, _ = ops.call("finding.record", {"engagement": engagement, "actor": ACTOR, "method": method or None, "fields": dict(
         title=title, severity=severity, asset=asset, description=description, impact=impact,
         reproduction=reproduction, remediation=remediation, evidence=evidence or [], cvss_vector=cvss_vector,
         cvss_score=cvss_score, cwe=cwe, status=status, source="planner", notes=notes)})
-    return _out(row)
+    return _out(_validated(engagement, row))
 
 
 @mcp.tool()
@@ -52,7 +75,7 @@ def update_finding(engagement: str, finding_id: str, status: str | None = None, 
     """Update a finding. Use status=confirmed after verifying a candidate, with method = how you verified it
     (runtime-reproduction, replay, authorization-matrix, source-review, tool-output, retest; required, and
     runtime-reproduction, replay, authorization-matrix and tool-output also need the evidence file that shows
-    it); status=false-positive
+    it; quotes in backticks must be in the cited evidence, as for record_finding); status=false-positive
     when it doesn't hold; status=duplicate with duplicate_of=<id of the finding to keep>; fixed or accepted-risk
     after client feedback. reason is required for false-positive, accepted-risk and any severity or priority
     change. Severity is the technical severity; priority (P1-P4) is the remediation order, set separately; the
@@ -70,7 +93,12 @@ def update_finding(engagement: str, finding_id: str, status: str | None = None, 
         except ValueError as e:
             return f"REFUSED: {e}"
         # confirming again without a method keeps the one already recorded
-        problem = db.confirm_problem(method or cur.get("verified_method"), evidence if evidence is not None else cur.get("evidence"))
+        ev = evidence if evidence is not None else cur.get("evidence")
+        how = method or cur.get("verified_method")
+        problem = db.confirm_problem(how, ev) or (verification.problem(engagement, ev) if how == "oracle" else None) \
+            or quotecheck.refusal(
+            engagement, description if description is not None else cur.get("description"),
+            reproduction if reproduction is not None else cur.get("reproduction"), ev)
         if problem:
             return f"REFUSED: {problem}"
     try:
@@ -79,7 +107,18 @@ def update_finding(engagement: str, finding_id: str, status: str | None = None, 
                                              "reason": reason, "method": method})
     except ValueError as e:
         return f"REFUSED: {e}"
-    return _out(row)
+    return _out(_validated(engagement, row) if status == "confirmed" else row)
+
+
+@mcp.tool()
+def validate_finding(engagement: str, finding_id: str) -> str:
+    """Send a confirmed finding to the disprove-only validator again (it runs on its own when you confirm one): a
+    separate model with only the finding, its cited evidence and its oracle records tries to disprove it. Returns
+    stands, disproved (the finding goes back to candidate, with the reason), unclear or not_run, and the reason."""
+    try:
+        return _out(validator.validate(engagement, finding_id))
+    except ValueError as e:
+        return f"REFUSED: {e}"
 
 
 @mcp.tool()
@@ -96,8 +135,12 @@ def get_finding(engagement: str, finding_id: str, history: bool = False) -> str:
     """Get one finding with all fields (verification, verified_by and method, priority, instances). history=true
     adds every earlier revision and the decisions made about it, with reasons."""
     f = db.get(engagement, finding_id)
+    v = validator.history(engagement, finding_id)
+    if v:
+        f["validation"] = v[0]
     if history:
         f["history"] = db.history(engagement, finding_id)
+        f["validations"] = v
     return _out(f)
 
 
@@ -178,13 +221,76 @@ def update_coverage(engagement: str, item: str, state: str, rationale: str = "",
 
 
 @mcp.tool()
-def get_coverage(engagement: str, state: str = "") -> str:
+def get_coverage(engagement: str, state: str = "", matrix: bool = False) -> str:
     """Planned tests and their outcomes, counts per state and per standard, stale items (the build or policy
-    changed since they ran), blocked items with the reason."""
+    changed since they ran), blocked items with the reason. matrix=true: the coverage matrix instead: each recon
+    map entry x each vulnerability class that applies to it, with the plan items that cover it; "gaps" are cells
+    no plan item covers (plan them, delegate them, or record why they're skipped)."""
+    if matrix:
+        try:
+            m = ops.call("coverage.matrix", {"engagement": engagement})[0]
+        except ValueError as e:
+            return f"REFUSED: {e}"
+        open_ = [c for c in m["cells"] if c["state"] in ("gap", "planned", "blocked")]
+        return _out({"entries": m["entries"], "counts": m["counts"], "complete": m["complete"],
+                     "gaps": [{k: c[k] for k in ("entry", "method", "path", "class")} for c in m["gaps"][:150]],
+                     "open": [{k: c[k] for k in ("entry", "method", "path", "class", "state", "items")}
+                              for c in open_ if c["state"] != "gap"][:150],
+                     "more": max(0, len(m["gaps"]) - 150), "plan_items_without_map_refs": m["unmapped_items"][:50]})
     r = ops.call("plan.list", {"engagement": engagement, "state": state or None})[0]
     r["items"] = [{k: i[k] for k in ("id", "title", "area", "refs", "state", "rationale", "finding_id", "stale")}
                   for i in r["items"]]
     return _out(r)
+
+
+@mcp.tool()
+def skip_coverage_cells(engagement: str, cells: list[dict], state: str, rationale: str) -> str:
+    """Record coverage-matrix cells you won't test, in one call (the gap-fill pass, #47). cells: [{"entry":
+    "E-1a2b3c", "class": "ssrf"}] from get_coverage(matrix=true) gaps. state: not-applicable (the class can't apply
+    here: say why) or excluded (out of scope or agreed not to test). rationale is required and shown in the
+    report. Each cell becomes a plan item with that outcome."""
+    import reconmap
+    if state not in ("not-applicable", "excluded"):
+        return "REFUSED: state must be not-applicable or excluded (plan and delegate the cells you will test)"
+    if not (rationale or "").strip():
+        return "REFUSED: a rationale is required"
+    bad = [c for c in cells or [] if not isinstance(c, dict) or c.get("class") not in reconmap.CLASSES
+           or not reconmap.ENTRY_RX.match(str(c.get("entry")))]
+    if bad or not cells:
+        return f"REFUSED: cells: [{{entry: E-xxxxxx, class: one of {', '.join(reconmap.CLASSES)}}}]"
+    try:
+        ids = ops.call("plan.add", {"engagement": engagement, "actor": ACTOR, "items": [
+            {"title": f"{c['class']} on {c['entry']}", "area": c["class"], "refs": [c["entry"]]} for c in cells]})[0]
+        ids = ids.get("ids", ids) if isinstance(ids, dict) else ids
+        for pid in ids:
+            ops.call("plan.update", {"engagement": engagement, "actor": ACTOR, "id": pid,
+                                     "fields": {"state": state, "rationale": rationale.strip()}})
+    except ValueError as e:
+        return f"REFUSED: {e}"
+    return _out({"recorded": ids, "state": state})
+
+
+@mcp.tool()
+def get_map(engagement: str, host: str = "", path: str = "", auth: str = "", limit: int = 200) -> str:
+    """The recon map (built from recon_map, laravel_map, imported captures and your own requests): each entry is a
+    method and path template with its parameters, whether it needs authentication (required | none | unknown, and
+    why), the sources that saw it, evidence, and the vulnerability classes that apply to it. Reference entries
+    in plan_tests by id (refs: ["E-1a2b3c", "WSTG-ATHZ-04"]): one class on one entry (or a few of one route group)
+    per item. Filters: host, path (substring), auth."""
+    try:
+        m = ops.call("map.get", {"engagement": engagement})[0]
+    except ValueError as e:
+        return f"REFUSED: {e}"
+    ents = [e for e in m["entries"] if (not host or host in (e["host"] or "")) and (not path or path in e["path"])
+            and (not auth or e["auth"] == auth)]
+    keep = ("id", "method", "host", "path", "params", "auth", "auth_basis", "status", "sources", "classes", "code")
+    out = {"entries": [{k: e[k] for k in keep if e.get(k) not in (None, [], {})} for e in ents[:max(1, min(limit, 500))]],
+           "total": len(m["entries"]), "shown": min(len(ents), limit), "hosts": m["hosts"], "tech": m["tech"],
+           "schemas": [{k: s.get(k) for k in ("kind", "url", "operations", "title", "note")} for s in m["schemas"]],
+           "sources": m["sources"]}
+    if not m["entries"]:
+        out["note"] = "no map yet: run kali recon_map on each web target (and laravel_map on source) first"
+    return _out(out)
 
 
 @mcp.tool()

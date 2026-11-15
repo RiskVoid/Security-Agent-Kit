@@ -90,7 +90,7 @@ serve(18098)
 worker.LITELLM = "http://127.0.0.1:18098/v1"
 ENG = "$ENG"
 info = worker.engagement_info(ENG)
-fin = {"tool_call": {"name": "finish", "arguments": {"summary": "done", "confidence": "high"}}}
+fin = {"tool_call": {"name": "finish", "arguments": {"status": "completed", "summary": "done", "confidence": "high"}}}
 def say(*a):
     print(*a, flush=True)
 def new(tier="passive", **kw):

@@ -9,6 +9,7 @@
  "max_minutes": 90,
  "max_budget_usd": 6.0,
  "task": "Black-box web application test of {url} (OWASP Juice Shop, a practice target). Follow the web-app playbook.",
+ "writeups": ["juice.?shop", "pwning", "bkimminich"],
  "expected": [
   {
    "id": "login-sqli",

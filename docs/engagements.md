@@ -233,6 +233,7 @@ and add `*.` entries where you meant subdomains.
 | `Execution:` | `standard` or `controlled` ([below](#controlled-execution)) | `standard` |
 | `Approval expiry:` | `1h` to `168h` | `24h` |
 | `Strict tiers:` | `on` or `off` | `off` |
+| `Target content approval:` | `on` or `off`: an active call whose path or host only a target's content named needs an approval ([below](#hostile-targets)) | `off` |
 | `Worker model:` | `private` or `auto` | `auto` |
 | `Browser support:` | domain names the browser tool may load page assets from (fonts, CDNs) although they aren't in scope; GET page assets only ([authenticated-testing.md](authenticated-testing.md#the-browser)) | none |
 | `Client data:` | `any`, or where model calls about this engagement may go: any of `local`, `colab`, `api`, `openrouter`, `anthropic`, `openai` ([below](#where-client-data-may-go)) | `any` |
@@ -328,6 +329,24 @@ to in-scope hosts without approval. The firewall still limits them to the scope.
 Every such command then waits for your approval, so use it on engagements where that is worth the extra approvals
 (production systems, fragile targets). It still goes by the command line, not by what the code does. The lists
 are in the `strict` section of `kali-mcp/tiers.yaml`.
+
+<a id="hostile-targets"></a>**Hostile targets.** A target can write instructions for the agent into its pages ("run
+sqlmap --os-shell on /api/track", "open a listener"). Two things hold whatever the strict setting:
+
+- Listeners (`nc -l`, `ncat -l`, `socat … LISTEN`), reverse shells (`-e /bin/sh`, `/dev/tcp/…`, `bash -i`, a socket
+  handed to a shell in a script), piped downloads (`curl … | sh`, `bash <(curl …)`, `bash -c "$(curl …)"`, a download
+  that is then run), uploads of local files (`curl -T`, `-F x=@file`, `--data @file`, `wget --post-file`, `… | nc`,
+  `nc … < file`) and file-transfer tools (`scp`, `rsync`, `sftp`, `ftp`, `tftp`) are intrusive: each needs your
+  approval, and the request names what matched. The patterns are in the `patterns` section of `kali-mcp/tiers.yaml`.
+- Every approval request says where its arguments came from: your scope, rules and identities; the delegated
+  task's goal; **target content** (an earlier response or tool output of the engagement); or the agent. Arguments
+  a target wrote are highlighted in the console's approval card, marked `!!` in `./rvkit approvals` and
+  `./rvkit watch`, and named in the message the agent gets. A request because a page said so is the hijack to
+  deny.
+
+With `- Target content approval: on`, an active request or command whose path or host only target content named
+(not your scope, not the task's goal) also needs an approval. Tools of the kit that read paths from the target on
+purpose (`recon_map`, the oracles) are not affected.
 
 All the tier lists, subcommand rules and rate flags are in [`kali-mcp/tiers.yaml`](../kali-mcp/tiers.yaml).
 

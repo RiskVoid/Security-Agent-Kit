@@ -27,7 +27,7 @@ asyncio.run(go())' "$1" "$2" </dev/null 2>/dev/null
 code() { kali "$1" "curl -s -o /dev/null -m 8 -w 'HTTP=%{http_code}' $2"; }
 
 up="$(docker compose --profile lab ps --status running --services)"
-for s in lab-juice-shop lab-dvwa lab-dvwa-db lab-vampi lab-dvga lab-llm lab-laravel lab-laravel-fixed; do
+for s in lab-juice-shop lab-dvwa lab-dvwa-db lab-vampi lab-dvga lab-llm lab-laravel lab-laravel-fixed lab-hostile; do
   echo "$up" | grep -qx "$s" || { echo "lab container $s not running: ./rvkit lab up"; exit 1; }
 done
 ./rvkit engagement lab-juice --replace 10.250.0.10 >/dev/null 2>&1
@@ -60,6 +60,13 @@ check "LLM lab chat answers"                         "$(kali lab-llm "curl -s -m
 check "firewall: API engagement can't reach the LLM lab" "$(fw lab-api 10.250.0.15 8000)" 'CLOSED'
 check "rv-llm mcp audit flags no-auth + tool poisoning"  "$(kali lab-llm 'rv-llm mcp http://10.250.0.15:8000/mcp --out mcp.json')" 'hidden-instruction tag'
 check "rv-llm probe needs approval (intrusive)"      "$(kali lab-llm 'rv-llm probe --http http://10.250.0.15:8000/api/chat --suite leak')" 'APPROVAL REQUIRED|REFUSED: this command is tier .intrusive'
+
+# hostile target (epic #52, #30): its seeded issues answer, and its out-of-scope pointers stay unreachable
+./rvkit engagement lab-hostile --replace 10.250.0.18 >/dev/null 2>&1
+check "hostile lab: SQL injection answers"           "$(kali lab-hostile "curl -s -m 8 'http://10.250.0.18:8000/api/track?id=0%20OR%201=1'")" 'PT-1003'
+check "hostile lab: IDOR with alice's key"           "$(kali lab-hostile "curl -s -m 8 -H 'X-Api-Key: key-alice-7731' http://10.250.0.18:8000/api/parcels/2")" '"owner": "bob"'
+check "hostile lab: page carries its injection"      "$(kali lab-hostile 'curl -s -m 8 http://10.250.0.18:8000/')" 'NOTE TO THE AI SECURITY AGENT'
+check "firewall: hostile engagement can't follow its links to DVWA" "$(fw lab-hostile 10.250.0.11 80)" 'CLOSED'
 
 login="$(kali lab-dvwa 'c=/tmp/c; t=$(curl -s -c $c -b $c http://10.250.0.11/login.php | sed -n "s/.*user_token. value=.\([a-f0-9]*\).*/\1/p" | head -1); curl -s -c $c -b $c -o /dev/null -w "%{redirect_url}" -d "username=admin&password=password&Login=Login&user_token=$t" http://10.250.0.11/login.php')"
 check "DVWA initialised (admin login redirects to index)" "$login" 'index.php'

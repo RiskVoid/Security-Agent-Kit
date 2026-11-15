@@ -88,11 +88,19 @@ trivy secret/config scan runs::exit=0::trivy fs --scanners secret,misconfig --qu
 joern taint finds the 3 injection flows::3 flows::rv-joern taint $S joern-flows.json 2>&1 | tail -2
 EOF
 echo "== 3. vulnerability intel"
+# Intel reads public APIs (OSV, NVD, EPSS, CISA KEV). When one of them is down or rate-limits the runner, intel
+# names it in sources_unavailable: that is reported as a warning, not a failure of the kit.
 out="$(docker compose exec -T worker-mcp python3 -c "
 import worker, json
-r = json.loads(worker.vuln_intel({}, ['CVE-2021-44228', 'PYSEC-2020-96']))
-print(json.dumps([(x['id'], x['kev'], x['cvss_score'], bool(x['fixed_in'])) for x in r]))" </dev/null 2>/dev/null | tail -1)"
+raw = worker.vuln_intel({}, ['CVE-2021-44228', 'PYSEC-2020-96'])
+try:
+    r = json.loads(raw)
+except ValueError:
+    print('NOT JSON: ' + raw[:300]); raise SystemExit
+down = sorted({s for x in r for s in x.get('sources_unavailable') or []})
+print(json.dumps([(x['id'], x['kev'], x['cvss_score'], bool(x['fixed_in'])) for x in r]) + ('  UNAVAILABLE ' + '; '.join(down) if down else ''))" </dev/null 2>&1 | tail -1)"
 if echo "$out" | grep -q '"CVE-2021-44228", true, 10.0, true'; then ok "intel prioritize (KEV first, CVSS, fixed versions)"
+elif echo "$out" | grep -q 'UNAVAILABLE'; then echo "WARN  intel prioritize: an upstream source didn't answer, result not checked"; echo "$out" | sed 's/^/      /'
 else bad "intel prioritize" "$out"; fi
 
 echo; echo "passed $pass, failed $fail"; [ "$fail" -eq 0 ]

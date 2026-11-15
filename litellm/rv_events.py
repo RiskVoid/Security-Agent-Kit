@@ -31,7 +31,8 @@ except ImportError:  # unit tests import classify() without LiteLLM installed
 EVENTS = os.environ.get("RV_EVENTS_FILE", "/rv-events/model-events.jsonl")
 MAX_BYTES = 512_000                       # the log is trimmed to its newer half beyond this
 WORKER = {"colab-qwen", "private-llm", "colab-qwen-fallback"}
-MODEL_VAR = {"planner": "PLANNER_MODEL", "planner-fallback": "PLANNER_FALLBACK_MODEL", "colab-qwen": "WORKER_MODEL_ID",
+MODEL_VAR = {"planner": "PLANNER_MODEL", "planner-fallback": "PLANNER_FALLBACK_MODEL", "validator": "VALIDATOR_MODEL",
+             "colab-qwen": "WORKER_MODEL_ID",
              "private-llm": "WORKER_MODEL_ID", "colab-qwen-fallback": "WORKER_FALLBACK_MODEL"}
 # request fields passed on to the fallback model (everything else is proxy bookkeeping)
 PASS = ("messages", "tools", "tool_choice", "temperature", "top_p", "max_tokens", "max_completion_tokens", "stop",

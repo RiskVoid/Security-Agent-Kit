@@ -5,7 +5,7 @@ Settings (.env):
   OPENROUTER_DAILY_BUDGET   USD per day for all OpenRouter calls (planner, and the worker fallback when on). Default 20
   WORKER_FALLBACK           on | off (default off). on: while the worker endpoint is down, worker calls go to
                             WORKER_FALLBACK_MODEL on OpenRouter, which then sees tool output and client code
-  PLANNER_MODEL, PLANNER_FALLBACK_MODEL
+  PLANNER_MODEL, PLANNER_FALLBACK_MODEL, VALIDATOR_MODEL
                             openrouter/<id> (default): OpenRouter key, zero-data-retention providers only.
                             anthropic/<id> or openai/<id>: that provider's API directly, with ANTHROPIC_API_KEY or
                             OPENAI_API_KEY. The daily budget then also caps that provider (Anthropic: provider budget;
@@ -32,6 +32,19 @@ def env():
     return out
 
 
+def tracing(t, e):
+    """./rvkit tracing on (#51): LiteLLM exports a span per model call over OTLP, without messages."""
+    if (e.get("RV_TRACING") or "off").lower() not in ("on", "1", "true", "yes"):
+        return t
+    t, n = re.subn(r'callbacks: \["rv_events.handler"\]', 'callbacks: ["rv_events.handler", "otel"]\n'
+                   '  # a model call can carry client data, and LiteLLM can\'t apply the Client data rule per engagement:\n'
+                   '  # its spans never carry messages\n'
+                   '  turn_off_message_logging: true', t)
+    if n != 1:
+        sys.exit("litellm/config.yaml: the callbacks line was not found")
+    return t
+
+
 def main():
     e = env()
     t = open(os.path.join(KIT, "litellm", "config.yaml")).read()
@@ -45,6 +58,10 @@ def main():
         sys.exit("litellm/config.yaml: expected the colab-qwen fallback rule in fallbacks and content_policy_fallbacks")
     if e.get("WORKER_FALLBACK", "off").lower() != "on":
         t = t.replace(FALLBACK_RULE, "")
+    if not e.get("VALIDATOR_MODEL"):   # an older .env: the validator uses the planner's fallback model
+        e["VALIDATOR_MODEL"] = e.get("PLANNER_FALLBACK_MODEL") or ""
+        t = t.replace("model: os.environ/VALIDATOR_MODEL", "model: os.environ/PLANNER_FALLBACK_MODEL")
+    t = tracing(t, e)
     t = planners(t, e, budget)
     t = worker(t, e)
     out = os.path.join(KIT, ".rvkit", "litellm.yaml")
@@ -72,9 +89,10 @@ def worker(t, e):
 
 
 def planners(t, e, budget):
-    """Point planner / planner-fallback at a direct provider when their model id says so."""
+    """Point planner / planner-fallback / validator at a direct provider when their model id says so."""
     used = set()
-    for name, var in (("planner", "PLANNER_MODEL"), ("planner-fallback", "PLANNER_FALLBACK_MODEL")):
+    for name, var in (("planner", "PLANNER_MODEL"), ("planner-fallback", "PLANNER_FALLBACK_MODEL"),
+                      ("validator", "VALIDATOR_MODEL")):
         prov = (e.get(var) or "openrouter/").split("/", 1)[0]
         if prov == "openrouter":
             continue

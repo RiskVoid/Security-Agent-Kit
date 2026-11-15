@@ -31,7 +31,7 @@ SEVERITIES = ("critical", "high", "medium", "low", "info")
 STATUSES = ("candidate", "confirmed", "false-positive", "duplicate", "fixed", "accepted-risk")
 VERIFICATION = ("unverified", "verified", "not-reproducible")
 METHODS = ("runtime-reproduction", "replay", "authorization-matrix", "source-review", "tool-output", "retest",
-           "client-confirmation", "not stated")
+           "client-confirmation", "oracle", "not stated")   # oracle: a kali verify run that passed (#42)
 PRIORITIES = ("P1", "P2", "P3", "P4")   # remediation priority: the client's order of work, not the severity
 NEEDS_REASON = ("false-positive", "accepted-risk")
 COVERAGE = ("planned", "tested", "failed", "blocked", "excluded", "not-applicable")
@@ -293,7 +293,7 @@ def _decision(con, finding_id, kind, before, after, reason, method, actor, revis
 
 
 # Methods that produce output: a finding confirmed by one of them must cite the evidence file that shows it.
-EVIDENCE_METHODS = ("runtime-reproduction", "replay", "authorization-matrix", "tool-output")
+EVIDENCE_METHODS = ("runtime-reproduction", "replay", "authorization-matrix", "tool-output", "oracle")
 
 
 def confirm_problem(method, evidence) -> str | None:

@@ -16,7 +16,7 @@ without a terminal.
 | Area | Commands |
 |---|---|
 | Start and check | [`setup`](#setup), [`up`](#up), [`down`](#down), [`update`](#update), [`status`](#status), [`doctor`](#doctor), [`quickstart`](#quickstart), [`logs`](#logs) |
-| Models | [`connect`](#connect), [`worker`](#worker), [`planner`](#planner), [`budget`](#budget), [`test`](#test), [`key`](#key), [`openhands`](#openhands) |
+| Models | [`connect`](#connect), [`worker`](#worker), [`planner`](#planner), [`budget`](#budget), [`tracing`](#tracing), [`test`](#test), [`key`](#key), [`openhands`](#openhands) |
 | Engagements | [`new`](#new), [`engagement`](#engagement), [`eng`](#eng), [`console`](#console), [`watch`](#watch), [`approvals`](#approvals), [`approve` / `deny`](#approve--deny), [`scope`](#scope), [`show`](#show), [`halt` / `resume`](#halt--resume), [`audit`](#audit), [`report`](#report), [`close`](#close), [`failures`](#failures), [`delete`](#delete) |
 | Practice and tests | [`lab`](#lab), [`bench`](#bench) |
 | Shell | [`install`](#install), [`completion`](#completion), [`help`](#help) |
@@ -201,6 +201,18 @@ recreates LiteLLM and sends a test prompt. With `--direct`, ids start with `anth
 
 The daily cap on OpenRouter spend (planner, plus the worker fallback when on). Over the cap, OpenRouter calls fail
 until the period ends. The spend so far is kept when you change the cap.
+
+### tracing
+
+```sh
+./rvkit tracing              # on or off, content on or off, and where traces go
+./rvkit tracing on           # export traces to the bundled Jaeger (UI: http://127.0.0.1:16686)
+./rvkit tracing off
+./rvkit tracing content on   # messages and tool output too, only where the Client data rule allows it
+```
+
+OpenTelemetry traces of worker tasks, model calls and tool calls. Settings and what spans carry:
+[configuration.md](configuration.md#tracing).
 
 ### test
 
@@ -594,13 +606,15 @@ practice and test engagements.
 ./rvkit bench --failures [--show <cause>] [--kind <kind>] [--benchmark <name>] [--model <text>]
                          [--since <YYYY-MM-DD>] [--json] [--rebuild]
 ./rvkit bench --score <name> <bench-engagement>
+./rvkit bench --improve split|analyze|propose|list|judge|changelog
 ```
 
 Runs the real agent unattended against a known target and scores it. Names are the files in `evals/benchmarks/`.
 `--repeat N` runs it N times and prints the spread; `--score` re-scores an existing `bench-` engagement without a
 model. `--failures` lists what went wrong in past runs, grouped by cause; `--show` gives the records of one cause
 and `--rebuild` derives them again from the saved runs
-([failures by cause](lab-and-benchmarks.md#failures-by-cause)).
+([failures by cause](lab-and-benchmarks.md#failures-by-cause)). `--improve` turns them into proposals and keeps a
+change only when its cause shrinks and the held-out benchmarks hold ([improvement-loop.md](improvement-loop.md)).
 Details: [lab-and-benchmarks.md](lab-and-benchmarks.md#benchmarks).
 
 ---

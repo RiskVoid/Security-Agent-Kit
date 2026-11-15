@@ -6,6 +6,7 @@
  "max_minutes": 45,
  "max_budget_usd": 3.0,
  "task": "Full source code security review of {src}, including its dependencies and secrets.",
+ "writeups": ["rv-demo-app"],
  "expected": [
   {
    "id": "sqli",

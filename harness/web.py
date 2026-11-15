@@ -4,12 +4,15 @@ Replaces the generic search/fetch MCP servers. The OpenHands agent has no direct
 way to read public pages. fetch refuses any engagement target (union of every registered engagement's scope, from
 kali-mcp) and any non-public address (kit services, lab, cloud metadata), on the first request and on every
 redirect. Targets are tested only through the kali tool, which is scope-checked and audit-logged.
+
+Both tools follow the lookup policy (lookup.py): a clean benchmark run limits them to vendor documentation and
+vulnerability records, and every call is logged to /lookup/log.jsonl.
 """
 import asyncio, json, os, threading, time, urllib.parse, urllib.request
 from mcp import ClientSession
 from mcp.client.streamable_http import streamablehttp_client
 from mcp.server.fastmcp import FastMCP
-import webfetch
+import lookup, webfetch
 
 SEARXNG = os.environ.get("SEARXNG_URL", "http://searxng:8080")
 KALI_MCP = os.environ.get("KALI_MCP_URL", "http://kali-mcp:8090/mcp")
@@ -43,9 +46,20 @@ def _scopes():
 @mcp.tool()
 def web_search(query: str, max_results: int = 8) -> str:
     """Search the web (private SearXNG instance). Returns title, URL and snippet per result."""
+    pol = lookup.policy()
+    why = lookup.check_search(pol, query)
+    if why:
+        lookup.log({"tool": "web_search", "query": query, "mode": pol["mode"], "run": pol["run"], "decision": "refused"})
+        return why
     url = f"{SEARXNG}/search?" + urllib.parse.urlencode({"q": query, "format": "json"})
     data = json.load(urllib.request.urlopen(url, timeout=30))
-    rows = data.get("results", [])[:max(1, min(max_results, 20))]
+    raw = data.get("results", [])
+    rows = lookup.filter_results(pol, raw)[:max(1, min(max_results, 20))]
+    lookup.log({"tool": "web_search", "query": query, "mode": pol["mode"], "run": pol["run"], "decision": "ok",
+                "results": [r.get("url") for r in raw[:20]], "kept": len(rows)})
+    if not rows and raw and pol["mode"] == "clean":
+        return ("no results on vendor documentation or vulnerability records (clean run: other sites are left out). "
+                "Work it out from the target itself.")
     return "\n\n".join(f"{r.get('title')}\n{r.get('url')}\n{(r.get('content') or '')[:300]}" for r in rows) \
         or "no results"
 
@@ -58,6 +72,12 @@ def fetch(url: str, start: int = 0, max_chars: int = 20000) -> str:
         nets, domains = _scopes()
     except Exception as e:  # fail closed
         return f"REFUSED: {e}"
+    pol = lookup.policy()
+    why = lookup.check_fetch(pol, url)
+    lookup.log({"tool": "fetch", "url": url, "mode": pol["mode"], "run": pol["run"],
+                "decision": "refused" if why else "ok"})
+    if why:
+        return why
     try:
         text = webfetch.fetch(url, nets, domains)
     except Exception as e:

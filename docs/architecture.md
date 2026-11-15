@@ -278,8 +278,11 @@ edits them changes nothing. Inside the sandbox, the files are replaced by the re
 
 The firewall is the hard boundary. Tiers, rate caps and the host precheck are guardrails against mistakes: a
 script (passive tier) or `curl` (active tier) can still send intrusive traffic to in-scope hosts, unless the
-engagement sets `Strict tiers: on` (interpreters and `curl`/`wget` sending data are then intrusive). The tier
-lists, subcommand rules, rate flags and strict rules are in `kali-mcp/tiers.yaml`.
+engagement sets `Strict tiers: on` (interpreters and `curl`/`wget` sending data are then intrusive). Listeners,
+reverse shells, piped downloads and file uploads are intrusive in every mode (the `patterns` section), and each
+approval request records where its arguments came from (scope, task goal, target content or the agent:
+`kali-mcp/origins.py`). The tier lists, subcommand rules, patterns, rate flags and strict rules are in
+`kali-mcp/tiers.yaml`.
 
 ### The agent's own container
 

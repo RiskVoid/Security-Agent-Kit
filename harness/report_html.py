@@ -48,6 +48,10 @@ GRADE = {"critical": ("F", "Critical exposure", "critical"), "high": ("D", "Need
          "medium": ("C", "Moderate exposure", "medium"), "low": ("B", "Minor issues only", "low"),
          "info": ("A", "No exploitable issues", "ok"), None: ("A", "No confirmed vulnerabilities", "ok")}
 STATUS_COLOR = {"Open": "critical", "Resolved": "ok", "Accepted risk": "medium"}
+# the disprove-only validator's verdict on a finding (validator.py, #45)
+VERDICT_LABEL = {"stands": "Stands: an independent reviewer could not disprove it from its evidence",
+                 "disproved": "Disproved by an independent reviewer", "unclear": "Independent review unclear",
+                 "not_run": "Independent review not run"}
 
 
 def e(v):
@@ -601,6 +605,19 @@ def render(c):
             [f'<code>{e(i["path"])}</code>' + (f' <span class="m">{e(i["note"])}</span>' if i.get("note") else ""),
              f'<span class="m">{e((i.get("sha256") or "")[:16])}{"…" if i.get("sha256") else "n/a"}</span>',
              integrity(i.get("status"))] for i in lst]) if lst else "<p>No evidence recorded.</p>"))
+        checks = (c.get("verification") or {}).get(f["id"]) or []
+        if checks:   # the oracle that decided the finding and its negative control (#44)
+            parts.append('<div class="sub">Verification</div>' + table(["Oracle", "Result", "Negative control"], [
+                [e(x["oracle"].replace("_", " ")), f'<b>{e(x["result"])}</b>: {e(x.get("reason") or "")}<br>'
+                 f'<span class="m">{e(x["record"])}</span>',
+                 "<br>".join(f'{e(k["role"])}: status {e(k.get("status"))}'
+                             + (f' <span class="m">{e(k.get("evidence"))}</span>' if k.get("evidence") else "")
+                             for k in x["controls"]) or "none"] for x in checks]))
+        v = (c.get("validation") or {}).get(f["id"])
+        if v:   # the disprove-only validator's verdict (#45)
+            parts.append('<div class="sub">Independent review</div>'
+                         f'<p><b>{e(VERDICT_LABEL.get(v["verdict"], v["verdict"]))}</b>: {e(v.get("reason") or "")}'
+                         + (f' <span class="m">{e(v["evidence_ref"])}</span>' if v.get("evidence_ref") else "") + "</p>")
         cards.append("".join(parts) + "</article>")
 
     secs = [section("01", "Executive summary", "What we found", exec_body),

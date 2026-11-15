@@ -32,7 +32,10 @@ and model versions:
   tool/<tool>/<class>       a tool call was refused, invalid, timed out or failed; the class is the reason with
                             names, ids, paths and numbers removed
   retry/<tool>/<class>      the same call was sent again after it failed the same way
-  worker/<what>             a worker task was interrupted, ran out of steps or ended without calling finish
+  worker/<what>             a worker task was interrupted, ran out of steps or ended without calling finish, sent
+                            malformed tool calls (malformed-calls), stopped on them (tool_failure), or stalled:
+                            stall/<repeat|error|no-progress>/<nudge|advice|stop>; or its typed outcome was a
+                            failure (blocked, out_of_scope, budget_used, model_refused, provider_error)
 
 The stage of a missed item comes from keyword matches ("any" and "cwe" of the expected item), so read it as a lead:
 --show lists the finding ids, plan items and tool calls behind each record. Records hold ids, titles and commands
@@ -79,6 +82,8 @@ VERSION = 1   # of the rules that build a cause: raise it when they change, then
 CONFIRMED = ("confirmed", "fixed", "accepted-risk")
 # Tools whose calls and results show contact with the target. Playbooks, plans and coverage are left out: they
 # quote the checklist, so an expected item's keywords would always be "seen".
+# A worker task's typed outcome (harness/worker.py OUTCOMES) that counts as a failure: completed and partial don't.
+TASK_FAILURES = ("blocked", "out_of_scope", "budget_used", "model_refused", "tool_failure", "provider_error", "stalled")
 TARGET_TOOLS = re.compile(r"^(kali_(?!list_engagements|engagement_|all_scopes|approval)|worker_)")
 NUDGES = (("no test plan", "no-plan"), ("have no outcome", "plan-unfinished"), ("not triaged", "untriaged"),
           ("got no answer", "no-model-answer"), ("stopped as stuck", "stuck"))
@@ -251,12 +256,20 @@ def collect(res, bench, data):
             add("retry", f"{tool}/{cls}", tool, n=repeats, examples=[_short_args(a) for a, n in again.items() if n > 1][:2])
     for t in (data or {}).get("tasks", []):
         result = t.get("result") or {}
+        typed = t.get("outcome") or result.get("status")   # #40: the task's typed outcome
         if t.get("status") not in (None, "done"):
-            add("worker", str(t["status"]), t.get("id"), goal=str(t.get("goal") or "")[:160])
+            add("worker", str(typed if typed in TASK_FAILURES else t["status"]), t.get("id"),
+                goal=str(t.get("goal") or "")[:160])
+        elif typed in TASK_FAILURES:
+            add("worker", typed, t.get("id"), goal=str(t.get("goal") or "")[:160])
         elif "without calling finish" in str(result.get("summary") or ""):
             add("worker", "no-finish", t.get("id"), goal=str(t.get("goal") or "")[:160])
         elif (t.get("step") or 0) > (t.get("max_steps") or 10 ** 6):
             add("worker", "out-of-steps", t.get("id"), goal=str(t.get("goal") or "")[:160])
+        if t.get("malformed"):
+            add("worker", "malformed-calls", t.get("id"), n=int(t["malformed"]), goal=str(t.get("goal") or "")[:160])
+        for st in t.get("stalls") or []:
+            add("worker", f"stall/{st.get('kind')}/{st.get('action')}", t.get("id"), what=str(st.get("detail"))[:160])
     return [{**base, "kind": SUMMARY, "cause": SUMMARY, "subject": None, "n": 0, "failures": len(out)}] + out
 
 
@@ -426,7 +439,9 @@ def engagement_items(eng, data):
             yield item("coverage", stage, what=f"{p['id']} {p.get('title') or ''}".strip(),
                        why=p.get("rationale") if stage == "blocked" else "planned, no outcome recorded")
     for t in data.get("tasks", []):
-        stage = (str(t["status"]) if t.get("status") not in (None, "done", "queued", "running", "waiting")
+        typed = t.get("outcome") or (t.get("result") or {}).get("status")
+        stage = (typed if typed in TASK_FAILURES
+                 else str(t["status"]) if t.get("status") not in (None, "done", "queued", "running", "waiting")
                  else "no-finish" if "without calling finish" in str((t.get("result") or {}).get("summary") or "")
                  else "out-of-steps" if t.get("status") == "done" and (t.get("step") or 0) > (t.get("max_steps") or 10 ** 6)
                  else None)

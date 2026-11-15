@@ -7,7 +7,7 @@ so a file that loads here means the same under any YAML parser.
 import json, re
 
 TIERS = ("passive", "active", "intrusive")
-KEYS = {"intrusive", "active", "subcommands", "rate_flags", "strict"}
+KEYS = {"intrusive", "active", "subcommands", "rate_flags", "strict", "patterns"}
 
 
 class ConfigError(ValueError):
@@ -207,6 +207,20 @@ def _rules(v, where):
     return out
 
 
+def _patterns(v, where):
+    out = []
+    for i, r in enumerate(v or []):
+        w = f"{where}[{i + 1}]"
+        if not isinstance(r, dict) or set(r) != {"what", "match", "tier"}:
+            raise ConfigError(f"{w}: expected what, match and tier")
+        try:
+            rx = re.compile(str(r["match"]))
+        except re.error as e:
+            raise ConfigError(f"{w}: bad regular expression: {e}") from None
+        out.append((rx, _tier(r["tier"], w), str(r["what"])[:120]))
+    return out
+
+
 def build(data, source="tiers.yaml"):
     """The checked policy tables from parsed YAML."""
     if not isinstance(data, dict):
@@ -237,6 +251,7 @@ def build(data, source="tiers.yaml"):
     return {
         "intrusive": intrusive, "active": active,
         "subcommands": _rules(data.get("subcommands"), f"{source}: subcommands"),
+        "patterns": _patterns(data.get("patterns"), f"{source}: patterns"),
         "rate_flags": rate,
         "interpreters": set(_names(strict.get("interpreters") or [], f"{source}: strict.interpreters")),
         "interpreter_tier": _tier(strict.get("interpreter_tier", "intrusive"), f"{source}: strict.interpreter_tier"),
