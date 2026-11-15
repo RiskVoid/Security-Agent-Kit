@@ -99,17 +99,26 @@ def update_finding(engagement: str, finding_id: str, status: str | None = None, 
                   prerequisites=prerequisites, root_cause=root_cause)
     if reason is None and status in ("false-positive", "accepted-risk") and notes:
         reason = notes  # the reason given in notes, as before
+    note = None
     if status is None and method:
-        # method only records how a confirmation was verified: on a candidate this call would change nothing the
-        # agent wants, and a model that believes it confirmed the finding repeats it (seen 80 times in one run)
+        # method only records how a confirmation was verified, so on a finding that isn't confirmed it is not kept.
+        # A call with nothing else would change nothing, and a model that believes it confirmed the finding repeats
+        # it (seen 80 times in one run), so that is refused. A call that also sets other fields saves those and says
+        # method was left out: refusing it all lost them, and the planner resent it 36-46 times.
         try:
             cur = db.get(engagement, finding_id)
         except ValueError as e:
             return f"REFUSED: {e}"
         if cur.get("status") != "confirmed":
-            return (f"REFUSED: {finding_id} is {cur.get('status')}, and this call doesn't confirm it: method only "
-                    f"records how a confirmation was verified. To confirm it, call update_finding with "
-                    f"status=\"confirmed\", method=\"{method}\", the evidence that shows it and the reproduction steps.")
+            how = (f"To confirm it, call update_finding with status=\"confirmed\", method=\"{method}\", the evidence "
+                   f"that shows it and the reproduction steps.")
+            given = [k for k, v in fields.items() if v is not None]
+            if not given:
+                return (f"REFUSED: {finding_id} is {cur.get('status')}, and this call doesn't confirm it: method only "
+                        f"records how a confirmation was verified. {how}")
+            method = None
+            note = (f"saved {', '.join(given)}. {finding_id} is still {cur.get('status')}: this call didn't confirm "
+                    f"it, so method was not recorded (it is kept only with status=\"confirmed\"). {how}")
     if status == "confirmed":
         try:
             cur = db.get(engagement, finding_id)
@@ -132,6 +141,8 @@ def update_finding(engagement: str, finding_id: str, status: str | None = None, 
                                              "reason": reason, "method": method})
     except ValueError as e:
         return f"REFUSED: {e}"
+    if note:
+        row = {"note": note, **row}
     return _out(_validated(engagement, row) if status == "confirmed" else row)
 
 

@@ -1,0 +1,16 @@
+{
+ "id": "P-002",
+ "created": "2026-11-15",
+ "cause": "tool/findings_update_finding/refused: <id> is candidate, and this call doesn't confirm it",
+ "kind": "error-message",
+ "file": "harness/findings.py",
+ "change": "When update_finding carries method with other fields and no status on a finding that isn't confirmed, the other fields are saved and the reply says method was not recorded (it is kept only with status=confirmed, with evidence and reproduction steps). A call with method alone is still refused.",
+ "targets": [
+  "code-flask-20261115T132718Z",
+  "api-vampi-20261115T140938Z",
+  "api-vampi-20261115T012259Z"
+ ],
+ "read": 77,
+ "status": "proposed",
+ "judgement": null
+}
