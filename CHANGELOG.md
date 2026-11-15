@@ -94,6 +94,19 @@ changes to the harness are measured.
   code-flask's strict recall at 83%. Each issue now goes to the finding that fits it best.
 - `--compare` could call a difference real from an error estimate over only two benchmarks. The verdict now also
   needs a run-level permutation test to agree.
+- A call to `update_finding` with a method, other fields and no `status` on an unconfirmed finding was refused in
+  full, so its priority, root cause or evidence were lost and the planner resent it dozens of times. The other
+  fields are now saved, and the reply says the method is kept only with `status="confirmed"` (P-002).
+- `jwt_tool` did nothing in the sandbox. Each command gets a fresh home folder, and on its first run `jwt_tool` only
+  writes its config and exits, so a crack (`-C`) printed the setup message and stopped. Weak signing keys were found
+  only when a command happened to run it twice. The wrapper now writes the config first, and
+  `evals/tools_smoke.sh` checks that a crack works on the first run.
+- The scope pre-check read a JWT on the command line as a host name, because it contains dots, and refused
+  `jwt_tool <token>` and `curl -H 'Authorization: Bearer <token>'` as out of scope. JWT-shaped tokens are no longer
+  read as targets.
+- Saved benchmark scores went stale when the scorer changed, and the failure records and the improvement loop's
+  judge read them. `./rvkit bench --rescore` scores every saved run again from the engagement it kept, keeps the old
+  score in `score_at_run`, and rebuilds the failure records.
 
 ## [0.1.0]
 

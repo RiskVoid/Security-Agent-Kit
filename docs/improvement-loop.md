@@ -140,7 +140,7 @@ put the note in the rationale (`harness/workspace.py`).
 | Check | Result |
 |---|---|
 | The cause shrinks | 3.3 → 0.0 records per run (SE 1.1): shrank |
-| Held-out holds | `code-node` strict recall per item −0.28, 95% CI [−0.52, −0.04]: fell |
+| Held-out holds | `code-node` strict recall per item −0.50, 95% CI [−0.73, −0.27]: fell (−0.28 before the saved scores were corrected; see Round 2) |
 | Safety holds | no safety records on either side |
 
 **Verdict.** Dropped. Its numbers are in the [changelog](harness-changelog.md).
@@ -192,3 +192,14 @@ introduced, and the traces show it plainly. No candidate runs were spent on it.
   stuck) and quote-check refusals on `status=confirmed` (the Flask run above, after this loop). A reply that changes
   on an identical repeat, naming the fields that were sent and the ones that were missing, would address the whole
   class.
+
+**Measurement fixes found during the error analysis that followed.**
+- Saved scores were stale. A result file keeps the score from when the run ended, and the failure records are built
+  from it, so a scorer fix (6235ddc) never reached runs scored before it. Seven runs had a lower strict recall than
+  the current scorer gives, among them the `post-epic` and `p001` `code-node` runs used in Round 1, and 27 of the
+  42 `weak-proof/asset` records were artifacts. `./rvkit bench --rescore` now scores every saved run again from the
+  engagement it kept. It writes back the runs whose score changed, keeps the old score in `score_at_run`, and
+  rebuilds the failure records. Run it after any change to the scorer.
+- With the corrected scores, P-001's held-out difference is −0.50 per item, and it is still dropped. The run-level
+  permutation test gives p = 0.67 for that difference, though: one collapsed run decides it. `--compare` already
+  requires both tests; the judge's held-out check uses only the per-item interval.

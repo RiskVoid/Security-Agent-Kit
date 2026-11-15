@@ -154,6 +154,7 @@ The budget is the OpenHands per-conversation limit for the run. The code targets
 ./rvkit bench --compare ref after-change         # paired comparison of two labelled sets of runs
 ./rvkit bench --failures                         # what went wrong in past runs, grouped by cause
 ./rvkit bench --score code-flask bench-code-flask   # score an existing benchmark engagement again, no model
+./rvkit bench --rescore                          # score every saved run again with the current scorer
 ```
 
 `--agent` is `riskvoid-planner` (default) or `riskvoid-local`. `--repeat N` runs the benchmark N times in one group:
@@ -326,7 +327,9 @@ models, the prompt version and what is behind it (finding ids, plan items, the t
 
 The stage of a missed item comes from keyword matches on the expected item's `any` and `cwe`, so treat it as a
 lead and check it with `--show`. Records are derived data: when the rules change, `--rebuild` writes them again
-from the saved runs. They hold ids, titles and commands from the kit's own targets. Engagements have their own
+from the saved runs. Saved scores don't follow a scorer change on their own: after one, `./rvkit bench --rescore`
+scores every saved run again from the engagement it kept, keeps the old score in `score_at_run`, and rebuilds the
+records. They hold ids, titles and commands from the kit's own targets. Engagements have their own
 records, without any of that text: [`./rvkit failures`](cli-reference.md#failures).
 
 The failure records feed the improvement loop: read the top causes on the tuning benchmarks, propose one change

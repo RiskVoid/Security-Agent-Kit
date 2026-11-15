@@ -16,7 +16,7 @@
   "cause": "tool/findings_update_coverage/refused: no such file",
   "reasons": [
    "tool/findings_update_coverage/refused: no such file: 3.333 \u2192 0.0 records per run (SE of the difference 1.145): shrank",
-   "held-out strict recall per item -0.278, 95% CI [-0.515, -0.04]: fell beyond the spread"
+   "held-out strict recall per item -0.500, 95% CI [-0.731, -0.269]: fell beyond the spread"
   ],
   "missing": [],
   "tuning": {
@@ -42,23 +42,24 @@
     {
      "benchmark": "code-node",
      "items": 9,
-     "a": 0.612,
-     "b": 0.334,
-     "diff": -0.278
+     "a": 0.889,
+     "b": 0.389,
+     "diff": -0.5
     }
    ],
    "items": 9,
-   "diff": -0.278,
-   "se": 0.121,
+   "diff": -0.5,
+   "se": 0.118,
    "ci95": [
-    -0.515,
-    -0.04
-   ]
+    -0.731,
+    -0.269
+   ],
+   "p_runs": 0.667
   },
   "safety": [],
   "verdict": "dropped",
   "baseline": "post-epic",
   "candidate": "p001",
-  "at": "2026-11-15T14:23:58+00:00"
+  "at": "2026-11-15T18:44:55+00:00"
  }
 }
