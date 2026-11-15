@@ -16,12 +16,15 @@ Repeated runs (a result group: one benchmark run N times with --repeat N)
 Paired comparison (--compare A B): two labelled sets of runs (--label) on the same benchmarks. For every expected
 item run in both, the difference in the share of runs that found it (strict); then the mean difference with its
 standard error, clustered by benchmark (items of one benchmark move together) as in "Adding Error Bars to Evals".
+With few benchmarks that SE is too small (two clusters barely estimate a spread) and it ignores that one weak run
+misses several items at once, so the verdict also needs a run-level permutation test: strict recall per run, labels
+shuffled among the runs of each benchmark, p = the share of shuffles with a mean difference at least as large.
 
 Operator load (in every result as "operator"): approvals requested, granted, denied and stale (audit log, within
 the run's time window); questions the agent asked the user; worker tasks by status; tool-call errors (malformed
 arguments, refused, failed, timed out); cost per strictly verified finding.
 """
-import collections, datetime, json, math, os, re
+import collections, datetime, itertools, json, math, os, random, re
 
 SEV = ("critical", "high", "medium", "low", "info")
 
@@ -152,13 +155,45 @@ def compare(runs_a, runs_b):
     alld = [d for c in clusters for d in c]
     n = len(alld)
     if not n:
-        return {"benchmarks": [], "items": 0, "diff": None, "se": None}
+        return {"benchmarks": [], "items": 0, "diff": None, "se": None, "p_runs": None}
+
+    def per_run(runs, bench):
+        return [r["score"]["strict_recall"] for r in runs
+                if r.get("benchmark") == bench and (r.get("score") or {}).get("strict_recall") is not None]
+    p_runs = permutation_p([(per_run(runs_a, r["benchmark"]), per_run(runs_b, r["benchmark"])) for r in rows])
     m = sum(alld) / n
     # cluster-robust SE of the mean difference: items of one benchmark are not independent
     se = (sum(sum(d - m for d in c) ** 2 for c in clusters) / n ** 2) ** 0.5 if len(clusters) > 1 else \
         mean_se(alld)[1]
     return {"benchmarks": rows, "items": n, "diff": _r(m), "se": _r(se),
-            "ci95": [_r(m - 1.96 * se), _r(m + 1.96 * se)] if se is not None else None}
+            "ci95": [_r(m - 1.96 * se), _r(m + 1.96 * se)] if se is not None else None, "p_runs": p_runs}
+
+
+def permutation_p(groups, limit=20000, seed=0):
+    """Two-sided p of the mean per-benchmark difference (b minus a) when runs swap labels within their benchmark.
+    groups: [(a_values, b_values)] per benchmark. Every split when there are at most `limit`, else a seeded sample."""
+    groups = [(list(a), list(b)) for a, b in groups if a and b]
+    if not groups:
+        return None
+
+    def stat(splits):
+        return sum(sum(y) / len(y) - sum(x) / len(x) for x, y in splits) / len(splits)
+    observed = abs(stat(groups)) - 1e-9
+    pools = [(a + b, len(b)) for a, b in groups]
+    if math.prod(math.comb(len(p), k) for p, k in pools) <= limit:
+        options = [[([v for i, v in enumerate(p) if i not in c], [p[i] for i in c])
+                    for c in itertools.combinations(range(len(p)), k)] for p, k in pools]
+        draws = list(itertools.product(*options))
+    else:
+        rng = random.Random(seed)
+        draws = []
+        for _ in range(limit):
+            one = []
+            for p, k in pools:
+                c = set(rng.sample(range(len(p)), k))
+                one.append(([v for i, v in enumerate(p) if i not in c], [p[i] for i in c]))
+            draws.append(one)
+    return _r(sum(1 for d in draws if abs(stat(d)) >= observed) / len(draws))
 
 
 def print_compare(c, la, lb, out=print):
@@ -169,9 +204,9 @@ def print_compare(c, la, lb, out=print):
     for r in c["benchmarks"]:
         out(f"{r['benchmark']:20} {r['items']:>5} {fmt(r['a'], pct=True):>14} {fmt(r['b'], pct=True):>14} "
             f"{r['diff']:+.2f}")
-    sig = c["ci95"] and (c["ci95"][0] > 0 or c["ci95"][1] < 0)
+    sig = c["ci95"] and (c["ci95"][0] > 0 or c["ci95"][1] < 0) and c.get("p_runs") is not None and c["p_runs"] < 0.05
     out(f"mean difference per item (found with evidence, {lb} minus {la}): {c['diff']:+.3f}, SE "
-        f"{fmt(c['se'])}, 95% CI {c['ci95']} over {c['items']} items: "
+        f"{fmt(c['se'])}, 95% CI {c['ci95']} over {c['items']} items, run-level permutation p {fmt(c.get('p_runs'))}: "
         f"{'a real difference' if sig else 'within the noise'}")
 
 

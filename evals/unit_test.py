@@ -1360,6 +1360,24 @@ class BenchmarkScore(unittest.TestCase):
         self.assertEqual(s["decisions"]["candidates_left"], 1)
         self.assertEqual(s["precision"], round(1 / 3, 3))  # the same issue twice is not a second real one
 
+    def test_each_item_goes_to_the_finding_that_fits_it(self):
+        b = json.load(open(os.path.join(KIT, "evals", "benchmarks", "code-flask.json")))
+        yaml_load = self.f(5, "Arbitrary object instantiation via yaml.load in POST /config", asset="app.py:24",
+                           cwe="CWE-502", description="PyYAML 5.3 full Loader (CVE-2020-1747)",
+                           evidence=json.dumps(["/src/app/app.py:24"]))
+        deps = self.f(6, "Vulnerable pinned dependencies: flask 0.12.2, pyyaml 5.3", asset="requirements.txt",
+                      cwe="CWE-1104", evidence=json.dumps(["/src/app/requirements.txt"]))
+        for order in ([yaml_load, deps], [deps, yaml_load]):
+            per = {p["id"]: p for p in self.rb.score(b, order, self.tmp.name)["per_expected"]}
+            self.assertEqual((per["unsafe-yaml"]["found_by"], per["vulnerable-dependencies"]["found_by"]),
+                             ("F-005", "F-006"))
+            self.assertTrue(all(per["unsafe-yaml"]["requirements"].values()))
+        # a second, better located instance replaces the first
+        loose = self.f(1, "SQL injection", asset="views.py:40")
+        exact = self.f(2, "SQL injection in /user", asset="app.py:13")
+        s = self.rb.score(self.b, [loose, exact], self.tmp.name)
+        self.assertEqual(s["per_expected"][0]["found_by"], "F-002")
+
     def test_real_extras_count_for_precision_only(self):
         b = dict(self.b, also_valid=[{"id": "open-redirect", "cwe": ["CWE-601"], "any": ["open redirect"]}])
         fs = [self.f(1, "SQL injection", asset="/user"), self.f(2, "Blind SQL injection", asset="/search"),
@@ -1574,6 +1592,24 @@ class BenchStats(unittest.TestCase):
         self.assertEqual(c["items"], 6)
         self.assertAlmostEqual(c["diff"], (0 + 1 + 0.5 + 1 + 0 + 0) / 6, places=3)
         self.assertLess(c["ci95"][0], c["diff"])
+        self.assertIsNotNone(c["p_runs"])
+
+    def test_one_weak_run_is_not_a_real_difference(self):
+        # two benchmarks, three runs a side; b has one weak run on each: the clustered CI can exclude zero, but runs
+        # swapped between the labels give differences as large often, so the verdict stays "within the noise"
+        a = [self.run_([1, 1, 1], label="a", bench=x) for x in ("p", "q") for _ in range(3)]
+        b = [self.run_(f, label="b", bench=x) for x in ("p", "q") for f in ([1, 1, 1], [1, 1, 1], [1, 0, 0])]
+        c = self.st.compare(a, b)
+        self.assertGreater(c["p_runs"], 0.05)
+        lines = []
+        self.st.print_compare(c, "a", "b", out=lines.append)
+        self.assertIn("within the noise", lines[-1])
+        # every run lower on both benchmarks: the smallest p three runs a side can give (2/400)
+        b = [self.run_([1, 0, 0], label="b", bench=x) for x in ("p", "q") for _ in range(3)]
+        self.assertEqual(self.st.compare(a, b)["p_runs"], 0.005)
+        sampled = self.st.permutation_p([([1, 1, 1], [0, 0, 0])], limit=10)     # 20 splits > 10: a seeded sample
+        self.assertEqual(sampled, self.st.permutation_p([([1, 1, 1], [0, 0, 0])], limit=10))
+        self.assertTrue(0 <= sampled <= 1)
 
     def test_operator_load(self):
         with tempfile.TemporaryDirectory() as d:
