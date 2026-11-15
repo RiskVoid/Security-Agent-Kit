@@ -14,6 +14,7 @@ New here? Read [What the kit is](overview.md), then [Getting started](getting-st
 |---|---|
 | [What the kit is](overview.md) | Capabilities, the kinds of work it does, safety controls, what it isn't, key terms |
 | [Architecture and design](architecture.md) | Services, networks, how one task flows through the system, trust boundaries, design decisions |
+| [Architecture overview (one page)](architecture-overview.html) | The same system as a single illustrated page for technical readers: diagrams of the services, the task flow and the finding lifecycle. Open the file in a browser |
 
 ## Set up
 
