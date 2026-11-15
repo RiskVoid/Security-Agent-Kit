@@ -94,6 +94,7 @@ grype scans the SBOM::CVE-|GHSA-::grype sbom:sbom.cdx.json -q 2>&1 | tail -15
 semgrep offline rules find injection::sqli|injection|subprocess|os-system|yaml::semgrep --config /opt/semgrep-rules/python/flask --metrics=off -q $S 2>&1 | tail -20
 trivy secret/config scan runs::exit=0::trivy fs --scanners secret,misconfig --quiet $S 2>&1 | tail -5
 joern taint finds the 3 injection flows::3 flows::rv-joern taint $S joern-flows.json 2>&1 | tail -2
+jwt_tool cracks a weak HS256 key on its first run (fresh HOME)::random is the CORRECT key::printf 'secret\nrandom\n' > jwt-wl.txt && jwt_tool eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJydi1zbW9rZSJ9.Rme4-KZBWKZCgwyRvmDBekldmKozxDdfuzgDbYaLsY0 -C -d jwt-wl.txt 2>&1 | tail -3
 EOF
 echo "== 3. vulnerability intel"
 # Intel reads public APIs (OSV, NVD, EPSS, CISA KEV). When one of them is down or rate-limits the runner, intel
