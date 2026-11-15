@@ -6,6 +6,54 @@ settings or the findings database; `./rvkit update` migrates existing installs a
 
 ## [Unreleased]
 
+The harness engineering epic: how the worker keeps its context, what the planner and the worker hand each other,
+how a finding gets verified, how testing covers the target, how the kit holds up against hostile targets, and how
+changes to the harness are measured.
+
+### Worker and planner
+- Long tool output keeps its head and its tail, with a digest for tools the kit reads (sqlmap's injection points,
+  nmap's open ports, nuclei's matches); the full output stays in the evidence file.
+- Malformed tool calls go back to the worker model as an error and never run.
+- Stall and repeat detection: a worker task that repeats itself or makes no progress is nudged, then asks the
+  planner for advice (at most twice, `WORKER_ADVISOR=0` turns it off), then stops.
+- Worker context: recent results stay whole, older ones shrink once to one line with their digest and evidence
+  path.
+- `delegate_task` takes a contract (done when, stop when, inputs, one coverage cell), and the worker's `finish`
+  returns a typed status and candidates with their proof.
+- The planner sees the engagement's rules that tools can't enforce restated on every Kali action result.
+- `./rvkit doctor --models` checks that the worker model makes well-formed tool calls.
+
+### Verification
+- A confirmed finding's quotes must appear in its evidence files.
+- Oracles prove a finding with a check the kit runs itself: a response marker, the difference between two
+  identities, a read-back, script execution in the sandboxed browser, and timing. Each runs a negative control, and
+  the report shows the oracle and its control for each verified finding.
+- A validator on a separate model (`VALIDATOR_MODEL`) tries to disprove each confirmed finding from its evidence
+  alone. A finding it disproves goes back to candidate. The console and the report show its verdict as
+  "Independent review"; `VALIDATOR=0` turns it off.
+
+### Coverage
+- `recon_map` builds a map of the target before testing: crawled pages and scripts, API schemas, GraphQL, and
+  unauthenticated probes. Plan items cite its entries.
+- The coverage matrix lists every map entry against the test classes that apply to it. Worker tasks are narrowed
+  to one cell, and cells can be skipped with a reason. Untested cells are flagged before delivery.
+
+### Hostile targets
+- Approvals show where each argument came from: the scope and rules, the task, the agent, or the target's own
+  content (with the file it was read from). The console and `./rvkit approvals` highlight arguments taken from
+  target content.
+- With `Target content approval: on` in RULES.md, an active call to a path or host that only target content named
+  needs an approval.
+- Listeners, reverse shells, piped downloads, download-then-run, and uploads (scp, sftp, ftp, tftp, rsync) are
+  intrusive by default, whatever tool runs them.
+- Lab: a hostile practice target with injected instructions, decoys and fake flags (`web-hostile` benchmark).
+
+### Operation
+- `./rvkit tracing on` exports OpenTelemetry traces of worker tasks, model calls and tool calls to a bundled
+  Jaeger. Content goes into spans only when switched on, and then only for engagements whose Client data rule
+  allows it.
+- Intel lookups retry the public vulnerability sources and name the ones that didn't answer.
+
 ### Console and operation
 - Console: an **Agent** section shows a conversation bound to the engagement, read-only, in the console's own
   design: messages, and each tool call as a typed line with its tier and result, refusals and approvals marked,
@@ -14,6 +62,15 @@ settings or the findings database; `./rvkit update` migrates existing installs a
   engagement takes no message. Each one is in the audit log with who did it.
 
 ### Benchmarks
+- Repeated runs (`--repeat N`): per expected finding, found in k of n runs; pass^k and pass@k; every mean with its
+  standard error. `--compare A B` pairs two labelled sets of runs with a 95% interval.
+- Clean runs (`--clean`) limit lookups to vendor documentation and vulnerability records and flag any lookup of a
+  write-up of the target. `--agent riskvoid-plain` runs a plain agent on the same model as a baseline.
+- Every result records the operator load: approvals, questions to the user, worker task outcomes, tool-call errors
+  and cost per verified finding.
+- `./rvkit bench --improve`: error analysis from failure records, one proposal per cause, and a judge that keeps a
+  change only when its cause shrinks, held-out benchmarks don't fall beyond the spread, and no safety cause rises.
+  Kept and dropped changes go into `docs/harness-changelog.md`.
 - Every benchmark run keeps its failures (missed and weakly proven findings, unexpected ones, refused and failed
   tool calls, early stops, worker tasks that didn't finish), each with a cause built from fixed rules.
   `./rvkit bench --failures` groups them by cause across runs; `--rebuild` derives them from saved runs.
