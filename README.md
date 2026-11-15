@@ -429,6 +429,8 @@ lab up|down|status                practice targets   bench <name|all>      bench
 | [Troubleshooting](docs/troubleshooting.md) | [Findings & reports](docs/findings-and-reports.md) | [Configuration](docs/configuration.md) |
 | [Commands](docs/cli-reference.md) | [Lab & benchmarks](docs/lab-and-benchmarks.md) | [Operations](docs/operations.md) |
 
+Blind-issue verification uses a [self-hosted HTTP callback catcher](docs/lab-and-benchmarks.md#self-hosted-callback-catcher). Select the engagement’s authorized catcher with `./rvkit callback <engagement> <url>`; the `verify` tool’s `out_of_band` oracle requires its exact token to arrive.
+
 Stuck? Run **`./rvkit doctor`** first. It checks Docker, every service, the firewall and the models, and says
 what to fix.
 

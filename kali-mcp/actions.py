@@ -24,6 +24,32 @@ HOP = {"host", "content-length", "transfer-encoding", "connection", "upgrade", "
 SECRET_HEADERS = {"authorization", "cookie", "proxy-authorization", "x-api-key"}
 
 
+def callback_catcher(eng, url=None):
+    """Operator-selected self-hosted catcher, kept outside the agent-writable engagement folder.
+
+    Selecting a catcher does not add it to scope. Both its callback and polling paths must already be allowed.
+    """
+    core.require(eng)
+    if url is not None:
+        if core.ACTOR.startswith("agent:"):
+            raise ValueError("only the host can configure a self-hosted callback catcher")
+        u = urllib.parse.urlsplit(url)
+        if (u.scheme not in ("http", "https") or not u.hostname or u.username or u.password or u.query
+                or u.fragment or u.path not in ("", "/")):
+            raise ValueError("catcher must be an http(s) origin without credentials, query or path")
+        url = url.rstrip("/")
+        for path in ("/callback/rvcheck123", "/events/rvcheck123"):
+            why = rvpolicy.check_url(core.policy_of(eng), url + path)
+            if why:
+                raise ValueError(f"catcher must already be in scope: {why}")
+        core._write_json(os.path.join(core.ctl_dir(eng), "callback.json"), {"url": url})
+        core._audit({"engagement": eng, "action": "callback.configure", "url": url})
+    try:
+        return json.loads(core.read_ctl(eng, "callback.json"))["url"]
+    except (ValueError, KeyError, TypeError):
+        raise ValueError("configure this engagement's self-hosted catcher on the host: ./rvkit callback <eng> <url>")
+
+
 def _blocked():
     b = core.ALWAYS_BLOCKED + core._local_subnets()
     return b + core._host_addrs(b)

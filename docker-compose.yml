@@ -271,6 +271,18 @@ services:
     networks: {rvlab: {ipv4_address: 10.250.0.18}}    # http://10.250.0.18:8000 (API key key-alice-7731)
     restart: "no"
 
+  lab-callback:  # self-hosted HTTP callback catcher; no internet and no published host port
+    build: ./callback-catcher
+    image: riskvoid-lab-callback:local
+    profiles: ["lab"]
+    networks: {rvlab: {ipv4_address: 10.250.0.19}}
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    pids_limit: 64
+    mem_limit: 128m
+    restart: "no"
+
   php-runner:   # the optional PHP profile (RW-013), started only by ./rvkit php: no network, read-only, no capabilities
     build: ./php-runner
     image: riskvoid-php-runner:local

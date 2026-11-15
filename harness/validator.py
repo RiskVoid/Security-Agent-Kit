@@ -57,6 +57,9 @@ ORACLE_METHOD = {
                    "another value) didn't run it.",
     "timing": "Probe and control samples, interleaved. pass: every probe sample is slower than every control sample "
               "and the difference of the means is above the minimum delay and three times the spread.",
+    "out_of_band": "A unique token at an operator-configured self-hosted catcher is absent before the requests "
+                   "and after a control with another token, then present after the probe. Only structured catcher "
+                   "events count; reflection of a callback URL or token in the target response does not.",
 }
 
 

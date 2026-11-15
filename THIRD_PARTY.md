@@ -73,6 +73,7 @@ in `vendor/composer/installed.json` inside the image.
 | Base image | Used by | Licence |
 |---|---|---|
 | `kalilinux/kali-rolling` | `kali-mcp` | A Linux distribution: every package keeps its own licence (section 3). Kali's policies (open source policy, EULA): https://www.kali.org/docs/policy/ |
+| `python:3.13.3-slim` | HTTP callback catcher (standard library only) | Debian packages under their own licences; Python under the PSF License |
 | `python:3.13-slim` | `web-mcp`, `worker-mcp`, `findings-mcp`, `intel-mcp`, lab LLM | Debian packages under their own licences; Python under the PSF License |
 | `alpine:3.24.3` | `egress-proxy` | Alpine packages under their own licences |
 | `php:8.4-cli-alpine` (pinned digest) | optional PHP profile (`php-runner`), Ledgerly lab | PHP under the PHP License 3.01; Alpine packages under their own licences |

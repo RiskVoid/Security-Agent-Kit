@@ -19,18 +19,21 @@ and runs a negative control. The result is pass only when the oracle holds AND t
   timing              N samples of the probe and N of the control, interleaved; pass when every probe is slower
                       than every control and the difference of the means is above min_delay and three times the
                       spread. The caller gives both requests.
+  out_of_band         {{callback}} becomes a unique URL at the engagement's self-hosted catcher. Pass only if a
+                      structured event for that token arrives after the probe, absent before and after the
+                      control request with another token. HTTP reflection never proves a callback.
 
 Every run writes a verification record (evidence/verify/<ts>-<oracle>-<id>.json) with the oracle, the result, the
 reason and each request's evidence file and status, and the record is audited and hashed like any evidence.
 results: pass (holds, control clean), fail (doesn't hold), inconclusive (the control or a precondition failed:
 no conclusion either way), or the broker's refusal or approval request.
 """
-import datetime, json, os, re
+import datetime, hashlib, json, math, os, re, time
 
 import core
 import actions
 
-ORACLES = ("marker", "identity_difference", "read_back", "browser_xss", "timing")
+ORACLES = ("marker", "identity_difference", "read_back", "browser_xss", "timing", "out_of_band")
 BROWSER_EVIDENCE = re.compile(r"\[browser evidence: /work/[^/]+/(\S+?)/ ")
 MAX_SAMPLES = 10
 PLACEHOLDER = "{{marker}}"
@@ -75,7 +78,7 @@ def _send(eng, req, role, approval_id=None, max_tier=None, task=None, identity=N
     hops = r.get("hops") or []
     return {"role": role, "status": r.get("status"), "evidence": f"/work/{eng}/{r['evidence']}" if r.get("evidence")
             else None, "error": r.get("error"), "seconds": hops[-1].get("seconds") if hops else None,
-            "_text": _response_text(r)}
+            "_redirected": len(hops) > 1, "_text": _response_text(r)}
 
 
 def _seen(step, marker):
@@ -225,8 +228,88 @@ def timing(eng, request, control, samples=5, min_delay=1.0, send_kw=None):
     return "fail", detail, "", steps
 
 
+def out_of_band(eng, request, marker, control=None, wait_seconds=3, finding="", send_kw=None,
+                control_approval_id=None):
+    """Only a structured event from the operator's catcher proves a callback; reflection proves nothing."""
+    if "{{callback}}" not in json.dumps(request):
+        raise ValueError("out_of_band needs {{callback}} in the request: the engagement's self-hosted callback URL")
+    delay = float(wait_seconds)
+    if not math.isfinite(delay) or not 0 <= delay <= 30:
+        raise ValueError("wait_seconds must be between 0 and 30")
+    base = actions.callback_catcher(eng)
+    # Namespace by engagement and finding, including when retrying an approved request with the same marker.
+    token = "rv" + hashlib.sha256(f"{eng}\0{finding}\0{marker}".encode()).hexdigest()[:32]
+    kw = send_kw or {}
+    ckw = {k: v for k, v in kw.items() if k != "approval_id"}
+    steps = []
+
+    def payload(req, value):
+        req = _fill(req, value)
+        url = base + "/callback/" + value
+        req["url"] = req["url"].replace("{{callback}}", url)
+        req["body"] = req["body"].replace("{{callback}}", url)
+        req["headers"] = {k: v.replace("{{callback}}", url) for k, v in req["headers"].items()}
+        return req
+
+    def poll(role):
+        step = _send(eng, _fill({"url": base + "/events/" + token}, ""), role, **ckw)
+        steps.append(step)
+        try:
+            # Parse the body only, never headers, an echoed URL, or a substring in arbitrary target output.
+            event = json.loads(step["_text"].split("\n\n", 1)[1])
+            count = event["count"]
+            if (step.get("error") or step.get("_redirected") or step["status"] != 200 or event["token"] != token
+                    or type(count) is not int or count < 0):
+                raise ValueError("invalid catcher event")
+        except (ValueError, KeyError, TypeError, IndexError):
+            return None
+        step.update(token=token, callbacks=count)
+        return count
+
+    def finish(result, reason):
+        return result, reason, marker, steps
+
+    other = "rv" + hashlib.sha256(f"{eng}\0{finding}\0{marker}\0control".encode()).hexdigest()[:32]
+    probe_req, control_req = payload(request, token), payload(control or request, other)
+    # Obtain both write approvals before consuming either. The broker never sends an unsafe method without one.
+    for req, role, opts in ((probe_req, "probe", kw),
+                            (control_req, "control: another token", {**ckw, "approval_id": control_approval_id})):
+        if req["method"] not in actions.SAFE_METHODS and not opts.get("approval_id"):
+            _send(eng, req, role, **opts)  # raises Stopped with this exact request's approval id
+            return finish("inconclusive", "the broker did not stop an unapproved write")
+
+    before = poll("control: catcher before requests")
+    if before is None:
+        return finish("inconclusive", "the self-hosted catcher is unavailable or returned an invalid event")
+    if before:
+        return finish("inconclusive", "this token already has a callback; use a fresh marker")
+    ctl = _send(eng, control_req, "control: another token",
+                approval_id=control_approval_id, **ckw)
+    steps.append(ctl)
+    if ctl.get("error") or not ctl.get("status") or ctl["status"] >= 400:
+        return finish("inconclusive", "the control request failed")
+    clean = poll("control: probe token after control")
+    if clean is None or clean:
+        return finish("inconclusive", "the catcher control is unavailable or the probe token arrived before the probe")
+    steps.append(_send(eng, probe_req, "probe", **kw))
+    if steps[-1].get("error"):
+        return finish("inconclusive", "the probe request failed")
+    deadline = time.monotonic() + delay
+    while True:
+        count = poll("check: callback after probe")
+        if count is None:
+            return finish("inconclusive", "the self-hosted catcher became unavailable or returned an invalid event")
+        if count:
+            return finish("pass", f"callback with {token!r} arrived only after the probe; another token stayed distinct")
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return finish("fail", f"no callback with {token!r} arrived within {delay:g}s")
+        time.sleep(min(0.25, remaining))
+
+
 def verify(eng, oracle, request, marker="", expect="", identities=None, check=None, control=None, approval_id=None,
-           max_tier=None, task=None, finding="", send=None, samples=5, min_delay=1.0, browse=None):
+           max_tier=None, task=None, finding="", send=None, samples=5, min_delay=1.0, browse=None, wait_seconds=3,
+           control_approval_id=None):
     """Run one oracle and record it. Returns {"result", "reason", "record", "text", ...}."""
     if oracle not in ORACLES:
         raise ValueError(f"oracle must be one of {', '.join(ORACLES)}")
@@ -235,6 +318,8 @@ def verify(eng, oracle, request, marker="", expect="", identities=None, check=No
     if marker and not MARKER_RX.match(marker):
         raise ValueError("a marker is 6-128 letters, digits and _ . : @ -")
     kw = {"approval_id": approval_id or None, "max_tier": max_tier, "task": task, "send": send}
+    if not marker and oracle == "out_of_band":
+        marker = "rv" + os.urandom(16).hex()
     if not marker and _has_placeholder(request) and oracle in ("marker", "read_back", "browser_xss"):
         marker = canary()   # chosen here so a request that needs an approval can be sent again with the same one
     try:
@@ -246,11 +331,16 @@ def verify(eng, oracle, request, marker="", expect="", identities=None, check=No
             result, reason, mark, steps = browser_xss(eng, request, marker, {**kw, "browse": browse})
         elif oracle == "timing":
             result, reason, mark, steps = timing(eng, request, control, samples, min_delay, kw)
+        elif oracle == "out_of_band":
+            result, reason, mark, steps = out_of_band(eng, request, marker, control, wait_seconds, finding, kw,
+                                                     control_approval_id)
         else:
             result, reason, mark, steps = read_back(eng, request, check, marker, kw)
     except Stopped as s:
         r = s.result
-        again = (f" Call verify again with the same arguments, marker='{marker}' and the approval_id once it is "
+        approval_arg = "control_approval_id" if oracle == "out_of_band" and r.get("role", "").startswith("control:") \
+            else "approval_id"
+        again = (f" Call verify again with the same arguments, marker='{marker}' and the {approval_arg} once it is "
                  "approved: the approval covers this exact request.") if r.get("approval") and marker else ""
         return {"result": "approval" if r.get("approval") else "refused", "approval": r.get("approval"),
                 "marker": marker or None,

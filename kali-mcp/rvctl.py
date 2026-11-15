@@ -25,6 +25,7 @@
   rvctl.py approval <eng> <id>       one approval's status (JSON)
   rvctl.py cancel <eng> <task-id>    kill the commands of a worker task
   rvctl.py routes                    the routing table the model gateway uses (JSON; rewritten too)
+  rvctl.py callback <eng> [url]       select/show this engagement's self-hosted callback catcher (already in scope)
   rvctl.py vault rotate              replace the vault key and re-encrypt every credential and session
   rvctl.py identity <eng> list [--json] | set <name> (JSON spec on stdin) | check <name> | revoke <name> | rm <name>
   rvctl.py capture <eng> list | import [--name N] (HAR/Burp XML on stdin) | show <id> | raw <id> | replay <id> | rm <id>
@@ -91,6 +92,11 @@ def main(a):
     if not a:
         print(__doc__); return 1
     cmd, rest = a[0], a[1:]
+    if cmd == "callback":
+        import actions
+        if len(rest) not in (1, 2):
+            raise ValueError("usage: callback <eng> [self-hosted catcher origin]")
+        print(actions.callback_catcher(rest[0], rest[1] if len(rest) == 2 else None)); return 0
     if cmd == "sync":
         expect = _opt(rest, "--expect")
         texts = json.load(sys.stdin) if "--stdin" in rest else None

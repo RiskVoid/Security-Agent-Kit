@@ -8,6 +8,7 @@
 #                        a GET that stores nothing (fail)
 #   browser_xss          /search runs a reflected <script> in the sandboxed browser (pass); /api/docs doesn't (fail)
 #   timing               /api/eta with detail=full is slow on purpose (pass); two equally fast requests (fail)
+#   out_of_band          /api/notify calls the self-hosted catcher (pass); /api/notify-safe only reflects (fail)
 # The read_back pass case writes, so it needs the user's approval: the test prints the approval id and the command,
 # and runs it on the next run with RV_ORACLE_APPROVAL=<id> RV_ORACLE_MARKER=<marker> (same engagement kept).
 # The disprove-only validator (#45) is off here (no model). RV_ORACLE_VALIDATOR=1 turns it on: the oracle-confirmed
@@ -16,6 +17,7 @@
 cd "$(dirname "$0")/.." || exit 1
 ENG=rv-oracle-test
 L=http://10.250.0.18:8000
+C=http://10.250.0.19:8000
 pass=0; fail=0
 check() { if echo "$2" | grep -qE "$3"; then pass=$((pass+1)); echo "PASS  $1"; else fail=$((fail+1)); echo "FAIL  $1"; echo "$2" | head -6 | sed 's/^/      /'; fi; }
 ctl() { docker compose exec -T kali-mcp python3 /opt/kali-mcp/rvctl.py --actor cli:oracle-test "$@"; }
@@ -31,8 +33,9 @@ trap cleanup EXIT
 docker compose --profile lab ps lab-hostile --format '{{.State}}' | grep -q running \
   || { echo "FAIL  the hostile lab isn't running (./rvkit lab up)"; exit 1; }
 if [ -z "$RV_ORACLE_APPROVAL" ]; then
-  ./rvkit engagement $ENG --replace --tiers passive,active,intrusive $L >/dev/null 2>&1 \
+  ./rvkit engagement $ENG --replace --tiers passive,active,intrusive $L $C >/dev/null 2>&1 \
     || { echo "FAIL  could not create $ENG"; exit 1; }
+  ./rvkit callback $ENG $C >/dev/null || exit 1
   # the lab's own test keys (evals/targets/rv-hostile-lab/app.py)
   printf 'key-alice-7731' | ctl cred $ENG set ALICE_KEY >/dev/null
   printf 'key-bob-2290' | ctl cred $ENG set BOB_KEY >/dev/null
@@ -89,6 +92,21 @@ if [ -z "$RV_ORACLE_APPROVAL" ]; then
   check "timing: the slow route is slower than its control beyond the noise" "$(v "$A")" '^pass'
   A="'timing', {'url': '$L/api/eta?parcel=1&detail=short'}, control={'url': '$L/api/eta?parcel=1'}, samples=4"
   check "timing: two equally fast requests fail" "$(v "$A")" '^fail'
+
+  # ---------------------------------------------------------------- out-of-band
+  A="'out_of_band', {'url': '$L/api/notify?url={{callback}}'}, finding='notify-ssrf'"
+  r="$(v "$A")"
+  check "out_of_band: the exact token arrives at the self-hosted catcher" "$r" '^pass'
+  check "out_of_band: verification record has a clean control" \
+        "$(docker compose exec -T kali-mcp cat "$(echo "$r" | tail -1)" </dev/null)" '"control_clean": true'
+  check "out_of_band: record accepted as finding verification" \
+        "$(fpy "import verification; print(verification.problem('$ENG', ['$(echo "$r" | tail -1)']))")" '^None$'
+  A="'out_of_band', {'url': '$L/api/notify-safe?url={{callback}}'}, wait_seconds=0"
+  check "out_of_band: reflecting the callback URL does not pass" "$(v "$A")" '^fail'
+  A="'out_of_band', {'url': '$L/api/notify?url=$C/callback/another-token&unused={{callback}}'}, wait_seconds=0"
+  check "out_of_band: a callback with another token does not pass" "$(v "$A")" '^fail'
+  A="'out_of_band', {'url': '$L/api/notify?url=http://10.250.0.19:1/callback/unused-token&unused={{callback}}'}, wait_seconds=0"
+  check "out_of_band: an unreachable callback does not pass" "$(v "$A")" '^fail'
 
   # ---------------------------------------------------------------- identity difference
   check "identity_difference: bob reads alice's parcel (IDOR) passes" \

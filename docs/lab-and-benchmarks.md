@@ -66,6 +66,49 @@ lab cases of the verification oracles (the kali `verify` tool): each oracle pass
 clean negative control and fails on the clean one. The read-back pass case writes to the lab, so it stops at an
 approval and prints the command to finish it.
 
+### Self-hosted callback catcher
+
+`./rvkit lab up` also starts the HTTP callback catcher at `http://10.250.0.19:8000`, with no published host port or
+internet access. Parcel Tracker's `GET /api/notify?url=...` calls only this catcher's `/callback/<token>` route;
+`/api/notify-safe` only reflects the URL. The out-of-band oracle passes on the callback and fails on reflection,
+a wrong token or an unreachable callback. Run `bash evals/oracle_test.sh` to check these alongside the other oracles.
+
+Create a lab engagement with both `http://10.250.0.18:8000` and `http://10.250.0.19:8000` in its scope, then select
+its catcher on the host:
+
+```sh
+./rvkit callback <engagement> http://10.250.0.19:8000
+```
+
+The agent can then call `verify` with:
+
+```json
+{"engagement":"<engagement>","oracle":"out_of_band","finding":"F-001",
+ "request":{"url":"http://10.250.0.18:8000/api/notify?url={{callback}}"},"wait_seconds":3}
+```
+
+`{{callback}}` becomes a URL with a fresh random token namespaced to the engagement and finding. The oracle checks
+that the token is absent, sends a control with another token, checks that the probe token is still absent, sends
+the probe, then polls for up to `wait_seconds` (0–30). An absent callback fails; an unavailable or invalid catcher,
+a stale token or a failed control is inconclusive. Every request and poll goes through the broker's scope, tier,
+identity, halt, budget and rate checks, with hashed evidence and an audited verification record. The agent cannot
+change the catcher. State-changing probes and controls need separate explicit approvals: keep the returned
+`marker`, use `approval_id` for the probe and `control_approval_id` for the control. Both approvals are requested
+before either write is sent.
+
+For a real engagement, run a **dedicated instance** of `callback-catcher/server.py` on infrastructure you control
+(`docker build -t rv-catcher ./callback-catcher`), behind your own HTTPS endpoint reachable by the target. Keep
+`/events/` accessible only to the kit using your reverse proxy or firewall; expose `/callback/` to the target.
+Supply any private polling authentication in the reverse proxy/network configuration. Configure the operator's
+catcher origin with `./rvkit callback <engagement> https://<your-catcher-host>` after its `/callback/` and `/events/`
+paths are authorized in the engagement scope. This command does not change scope. Never use public callback
+services: client traffic must stay on your infrastructure. There is no default external service or fallback.
+
+The catcher stores only exact token counts in memory, up to 10,000 tokens for ten minutes, and drops all events
+on restart. It stores no callback bodies, headers or source addresses and makes no outbound requests. This
+implementation supports HTTP callbacks for blind SSRF, command injection and XXE probes; it does not collect DNS
+callbacks. Restart the dedicated catcher when closing the engagement.
+
 ### Ledgerly (Laravel lab)
 
 A small invoicing application in Laravel 12 (PHP 8.4, SQLite) with two organizations, for authenticated and

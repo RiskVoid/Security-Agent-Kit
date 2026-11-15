@@ -8,7 +8,7 @@ import json, os, re
 
 import findings_db as db
 
-ORACLES = ("marker", "identity_difference", "read_back")
+ORACLES = ("marker", "identity_difference", "read_back", "browser_xss", "timing", "out_of_band")
 
 
 def _path(engagement, e):

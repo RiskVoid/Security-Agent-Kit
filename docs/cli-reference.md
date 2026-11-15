@@ -17,7 +17,7 @@ without a terminal.
 |---|---|
 | Start and check | [`setup`](#setup), [`up`](#up), [`down`](#down), [`update`](#update), [`status`](#status), [`doctor`](#doctor), [`quickstart`](#quickstart), [`logs`](#logs) |
 | Models | [`connect`](#connect), [`worker`](#worker), [`planner`](#planner), [`budget`](#budget), [`tracing`](#tracing), [`test`](#test), [`key`](#key), [`openhands`](#openhands) |
-| Engagements | [`new`](#new), [`engagement`](#engagement), [`eng`](#eng), [`console`](#console), [`watch`](#watch), [`approvals`](#approvals), [`approve` / `deny`](#approve--deny), [`scope`](#scope), [`show`](#show), [`halt` / `resume`](#halt--resume), [`audit`](#audit), [`report`](#report), [`close`](#close), [`failures`](#failures), [`delete`](#delete) |
+| Engagements | [`new`](#new), [`engagement`](#engagement), [`eng`](#eng), [`console`](#console), [`watch`](#watch), [`approvals`](#approvals), [`approve` / `deny`](#approve--deny), [`scope`](#scope), [`show`](#show), [`halt` / `resume`](#halt--resume), [`callback`](#callback), [`audit`](#audit), [`report`](#report), [`close`](#close), [`failures`](#failures), [`delete`](#delete) |
 | Practice and tests | [`lab`](#lab), [`bench`](#bench) |
 | Shell | [`install`](#install), [`completion`](#completion), [`help`](#help) |
 
@@ -465,6 +465,17 @@ Authorization matrices the agent proposes. See [authenticated-testing.md](authen
 ./rvkit task cancel <task-id>    # stop a worker task and kill its running command
 ./rvkit task resume <task-id>    # continue an interrupted task from its last checkpoint
 ```
+
+### callback
+
+```sh
+./rvkit callback <engagement> [http(s)://catcher-host:port]
+```
+
+Select the engagement's dedicated, self-hosted HTTP callback catcher, or show its current origin. Both
+`/callback/` and `/events/` must already be in scope; this command does not change scope. Only the host can
+configure it. The agent uses `verify` with `oracle=out_of_band` and `{{callback}}` in the payload. See
+[self-hosted callback catcher](lab-and-benchmarks.md#self-hosted-callback-catcher) for deployment and controls.
 
 ### audit
 

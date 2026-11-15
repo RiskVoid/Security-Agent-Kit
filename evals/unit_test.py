@@ -2056,6 +2056,30 @@ class ArgumentOrigins(unittest.TestCase):
                         else policy.parse_rules("- Target content approval: on")["target_content"])
 
 
+class CallbackConfiguration(unittest.TestCase):
+    def test_host_configuration_and_scope(self):
+        from unittest.mock import patch
+        import actions
+        with tempfile.TemporaryDirectory() as tmp:
+            ctl = os.path.join(tmp, "acme")
+            os.makedirs(ctl)
+            audits = []
+            with patch.object(core, "require"), patch.object(core, "ctl_dir", return_value=ctl), \
+                 patch.object(core, "policy_of", return_value=policy.effective("- http://catcher.test:8000", "")), \
+                 patch.object(core, "_audit", side_effect=audits.append), patch.object(core, "ACTOR", "cli:test"):
+                with self.assertRaisesRegex(ValueError, "configure"):
+                    actions.callback_catcher("acme")
+                self.assertEqual(actions.callback_catcher("acme", "http://catcher.test:8000/"), "http://catcher.test:8000")
+                self.assertEqual(actions.callback_catcher("acme"), "http://catcher.test:8000")
+                self.assertEqual(audits[-1]["action"], "callback.configure")
+                for url in ("https://public.example", "http://catcher.test:8000/events", "http://user@catcher.test:8000",
+                            "file:///tmp/catcher", "http://catcher.test:8000/?token=secret"):
+                    with self.subTest(url=url), self.assertRaises(ValueError):
+                        actions.callback_catcher("acme", url)
+                with patch.object(core, "ACTOR", "agent:test"), self.assertRaisesRegex(ValueError, "only the host"):
+                    actions.callback_catcher("acme", "http://catcher.test:8000")
+
+
 class Oracles(unittest.TestCase):
     """Epic #52, issues #42 and #44: each oracle passes on a vulnerable case, fails on a clean one, and is
     inconclusive when its control isn't clean. The broker (actions.send) is faked: a small in-memory app."""
@@ -2205,6 +2229,118 @@ class Oracles(unittest.TestCase):
                                        send=noisy)["result"], "fail")
         with self.assertRaises(ValueError):
             self.o.verify("acme", "timing", {"url": "http://t/slow"}, send=slow)   # no control
+
+    def callback_sender(self, mode="callback"):
+        import urllib.parse
+        events = {}
+        self.callback_bodies = []
+        polls = 0
+        def send(eng, method, url, headers, data, **kw):
+            nonlocal polls
+            self.callback_bodies.append(data)
+            self.sent.append((method, url, kw))
+            path = urllib.parse.urlsplit(url).path
+            body = ""
+            if method == "POST" and not kw.get("approval_id"):
+                return {"approval": "ab12cd34", "text": "APPROVAL REQUIRED"}
+            if path.startswith("/events/"):
+                token = path.split("/")[-1]
+                polls += 1
+                if mode == "delayed" and polls >= 4:
+                    events[token] = 1
+                if mode == "dirty-control" and polls >= 2:
+                    events[token] = 1
+                body = json.dumps({"token": token, "count": events.get(token, 0)})
+                if mode == "stale":
+                    body = json.dumps({"token": token, "count": 1})
+                if mode == "wrong-event":
+                    body = json.dumps({"token": "other-token", "count": 1})
+                if mode == "unavailable":
+                    return {"error": "connection refused"}
+                if mode == "malformed":
+                    body = "echo of " + token
+                if mode == "bool-count":
+                    body = json.dumps({"token": token, "count": True})
+                if mode == "refused":
+                    return {"refused": "out of scope", "text": "REFUSED: out of scope"}
+                if mode == "redirected":
+                    return {"status": 200, "body": body.encode(), "headers": [], "hops": [{}, {}]}
+            else:
+                callback = urllib.parse.parse_qs(urllib.parse.urlsplit(url).query).get("url", [""])[0]
+                if method == "POST":
+                    callback = data.decode()
+                token = callback.split("/")[-1]
+                if mode == "callback":
+                    events[token] = events.get(token, 0) + 1
+                elif mode == "wrong-token":
+                    events["different-token"] = 1
+                body = callback
+            return {"status": 403 if mode == "denied" and not path.startswith("/events/") else 200,
+                    "body": body.encode(), "headers": [], "evidence": f"evidence/verify/{len(self.sent)}.txt"}
+        return send
+
+    def test_out_of_band(self):
+        from unittest.mock import patch
+        import verification
+        req = {"url": "http://t/notify?url={{callback}}"}
+        with patch.object(self.o.actions, "callback_catcher", return_value="http://catcher"):
+            r = self.o.verify("acme", "out_of_band", req, finding="F-1", send=self.callback_sender(), wait_seconds=0)
+            self.assertEqual(r["result"], "pass", r)
+            self.assertTrue(r["control_clean"])
+            checks = [s for s in r["steps"] if "callbacks" in s]
+            self.assertEqual([s["callbacks"] for s in checks], [0, 0, 1])
+            self.assertEqual(len({s["token"] for s in checks}), 1)
+            saved = db.WORK
+            db.WORK = self.tmp.name
+            try:
+                self.assertIsNone(verification.problem("acme", [r["record"]]))
+            finally:
+                db.WORK = saved
+            for mode, result in (("reflect", "fail"), ("wrong-token", "fail"), ("stale", "inconclusive"),
+                                 ("wrong-event", "inconclusive"), ("unavailable", "inconclusive"),
+                                 ("malformed", "inconclusive"), ("bool-count", "inconclusive"),
+                                 ("dirty-control", "inconclusive"), ("redirected", "inconclusive"),
+                                 ("denied", "inconclusive"), ("refused", "refused")):
+                with self.subTest(mode=mode):
+                    r = self.o.verify("acme", "out_of_band", req, send=self.callback_sender(mode), wait_seconds=0)
+                    self.assertEqual(r["result"], result, r)
+            delayed = self.o.verify("acme", "out_of_band", req, send=self.callback_sender("delayed"), wait_seconds=0.01)
+            self.assertEqual(delayed["result"], "pass", delayed)
+            for delay in (-1, 31, float("nan"), float("inf")):
+                with self.assertRaises(ValueError):
+                    self.o.verify("acme", "out_of_band", req, wait_seconds=delay)
+            with self.assertRaises(ValueError):
+                self.o.verify("acme", "out_of_band", {"url": "http://t/?url={{marker}}"})
+
+    def test_out_of_band_approvals_and_isolation(self):
+        from unittest.mock import patch
+        req = {"method": "POST", "url": "http://t/notify", "body": "{{callback}}"}
+        send = self.callback_sender()
+        with patch.object(self.o.actions, "callback_catcher", return_value="http://catcher"):
+            first = self.o.verify("acme", "out_of_band", req, send=send, wait_seconds=0)
+            self.assertEqual(first["result"], "approval")
+            probe = self.sent[-1][1:]
+            probe_body = self.callback_bodies[-1]
+            marker = first["marker"]
+            second = self.o.verify("acme", "out_of_band", req, marker=marker, send=send,
+                                   approval_id="probe-id", wait_seconds=0)
+            self.assertEqual(second["result"], "approval")
+            self.assertIn("control_approval_id", second["text"])
+            r = self.o.verify("acme", "out_of_band", req, marker=marker, send=send,
+                              approval_id="probe-id", control_approval_id="control-id", wait_seconds=0)
+            self.assertEqual(r["result"], "pass", r)
+            writes = [s for s in self.sent if s[0] == "POST"]
+            self.assertEqual([s[2]["approval_id"] for s in writes], [None, None, "control-id", "probe-id"])
+            self.assertEqual(writes[-1][1:], (probe[0], {**probe[1], "approval_id": "probe-id"}))
+            self.assertEqual(self.callback_bodies[-2], probe_body)
+            # Same caller marker in another finding or engagement cannot select the earlier event.
+            tokens = []
+            for eng, finding in (("acme", "one"), ("acme", "two"), ("other", "one")):
+                os.makedirs(os.path.join(self.tmp.name, eng), exist_ok=True)
+                out = self.o.verify(eng, "out_of_band", {"url": "http://t/notify?url={{callback}}"},
+                                    finding=finding, marker=marker, send=self.callback_sender(), wait_seconds=0)
+                tokens.append(out["steps"][-1]["token"])
+            self.assertEqual(len(set(tokens)), 3)
 
     def test_findings_side(self):
         import verification

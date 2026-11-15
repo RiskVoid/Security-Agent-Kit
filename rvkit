@@ -174,7 +174,7 @@ lab_vampi_init() { # VAmPI starts with an empty database: /createdb fills it wit
   done
   warn "VAmPI database setup didn't complete: check ./rvkit logs lab-vampi"
 }
-LAB="lab-juice-shop lab-dvwa lab-dvwa-db lab-vampi lab-dvga lab-llm lab-laravel lab-laravel-fixed lab-hostile"
+LAB="lab-juice-shop lab-dvwa lab-dvwa-db lab-vampi lab-dvga lab-llm lab-laravel lab-laravel-fixed lab-hostile lab-callback"
 
 # Who acts, for the audit log: cli:<login> here; the console sets RVKIT_ACTOR=console:<login> when it calls rvkit.
 actor() { local a="${RVKIT_ACTOR:-cli:$(id -un 2>/dev/null | tr -cd 'A-Za-z0-9._@-' | cut -c1-64)}"
@@ -599,7 +599,7 @@ cmd_worker() {
 }
 
 # ---------------------------------------------------------------- install / completion
-COMMANDS="setup up down update console status doctor logs connect worker planner budget tracing test key openhands new engagement eng quickstart watch scope show policy finding approvals approve deny halt resume conversation cred identity capture authz vault appmap php task audit report close delete failures lab bench install completion help"
+COMMANDS="setup up down update console status doctor logs connect worker planner budget tracing test key openhands new engagement eng quickstart watch scope show policy finding approvals approve deny halt resume conversation cred callback identity capture authz vault appmap php task audit report close delete failures lab bench install completion help"
 ENG_SUB="list new show scope approvals approve deny halt resume audit report close delete"
 cmd_install() {
   local dir="${1:-$HOME/.local/bin}"
@@ -622,7 +622,7 @@ _rvkit() {
     eng) COMPREPLY=( \$(compgen -W "$ENG_SUB" -- "\$cur") ) ;;
     worker) COMPREPLY=( \$(compgen -W "show colab local api openrouter fallback" -- "\$cur") ) ;;
     lab) COMPREPLY=( \$(compgen -W "up down status reset" -- "\$cur") ) ;;
-    show|policy|scope|approvals|approve|deny|halt|resume|conversation|cred|audit|report|close|delete)
+    show|policy|scope|approvals|approve|deny|halt|resume|conversation|cred|callback|audit|report|close|delete)
       engs="\$(ls "\$(grep -E '^ENGAGEMENTS_DIR=' "$KIT/.env" 2>/dev/null | cut -d= -f2- | sed "s|^~|\$HOME|")" 2>/dev/null | grep -v '^_')"
       COMPREPLY=( \$(compgen -W "\$engs" -- "\$cur") ) ;;
   esac
@@ -729,6 +729,7 @@ ${B}Engagements${N}  (also as: rvkit eng <command>)
   eng list                      all engagements with scope and pending approvals
   watch                         approve / deny intrusive commands as they come in (desktop notification)
   approvals [eng] | approve|deny <eng> <id>   list / decide approvals
+  callback <eng> [url]               select/show the engagement's self-hosted callback catcher (already in scope)
   scope <eng> [--yes]           apply edits to SCOPE.md / RULES.md (shows the diff first)
   show <eng>                    active scope and rules
   policy <eng> [--json]         what the scope allows and excludes, what isn't enforced, revision history
@@ -864,6 +865,7 @@ for k, b in p.items(): print("%s: spent $%.4f in the current 24 h period" % (k, 
   openhands)  need_env; bold "Configuring OpenHands"; config_openhands && ok "OpenHands ready: $UI_URL (agent: riskvoid-planner)" ;;
   new)        cmd_new "$@" ;;
   engagement) cmd_engagement "$@" ;;
+  callback)   need_env; kctl callback "$@" ;;
   englist)    need_env; kctl list ;;
   quickstart) cmd_quickstart ;;
   watch)      need_env; cmd_watch ;;
@@ -997,6 +999,7 @@ for k, b in p.items(): print("%s: spent $%.4f in the current 24 h period" % (k, 
         echo "   DVGA        http://10.250.0.14:5013/graphql   GraphQL API"
         echo "   LLM lab     http://10.250.0.15:8000   AI support assistant (chat /api/chat, MCP /mcp)"
         echo "   Ledgerly    http://10.250.0.16:8000   Laravel multi-tenant app (alice@acme.test / alice-lab-pass); fixed build at 10.250.0.17:8000"
+        echo "   Catcher     http://10.250.0.19:8000   self-hosted HTTP callbacks (./rvkit callback <eng> <url>)"
         echo "   Try: ./rvkit quickstart, or ./rvkit engagement lab-juice 10.250.0.10" ;;
       down)   docker compose --profile lab stop $LAB >/dev/null 2>&1; docker compose --profile lab rm -f $LAB >/dev/null 2>&1
               ok "Lab stopped and removed (it resets to a clean state on the next 'lab up')" ;;
