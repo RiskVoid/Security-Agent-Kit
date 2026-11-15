@@ -9,7 +9,7 @@ What the kit can do for each kind of target, as four separate claims that are ea
 | **Lab-verified** | a test in `evals/` runs the method against a seeded lab target, with protected controls, and passes in CI | a model running the method unattended finds the same issues |
 | **Measured model result** | a saved benchmark run of the real agent, scored as in [lab-and-benchmarks.md](lab-and-benchmarks.md#how-runs-are-scored) | the same result on other code, other models, or another run |
 
-Last checked 2026-11-10. Re-check after changing the Kali image, a playbook or a
+Last checked 2026-11-15. Re-check after changing the Kali image, a playbook or a
 benchmark: `./rvkit bench --history` for measured results, the tests in
 [regression-matrix.md](regression-matrix.md) for the lab-verified methods.
 
@@ -128,9 +128,50 @@ The tables above are single runs. From the harness engineering work on, results 
 | Approvals, questions | what the runs asked of a person, per run |
 | Cost per verified finding | cost divided by the issues found with evidence |
 
-`./rvkit bench --groups <name>` prints these figures and the found k of n of each expected issue. No repeated
-set has been published yet: the reference runs are tracked in
-[issue #31](https://github.com/RiskVoid/Security-Agent-Kit/issues/31).
+`./rvkit bench --groups <name>` prints these figures and the found k of n of each expected issue.
+
+### Before and after the harness engineering epic
+
+On 2026-11-15 two benchmarks ran **three times each on the kit from before the epic** (commit `8c6323d`, label
+`pre-epic`) and **three times each after it** (label `post-epic`), with the same models: planner GLM-5.3, worker
+GLM-5.3 Flash, through OpenRouter, capped at $1.50 a run. After the epic, the validator ran on DeepSeek V4 Pro.
+The runs were scored with the corrected matcher (each expected issue goes to the finding that fits it best).
+
+| | `api-vampi` before | after | `code-flask` before | after |
+|---|---|---|---|---|
+| Found, mean ± SE | 81% ±4 | 81% ±13 | 100% ±0 | 94% ±6 |
+| With evidence, mean ± SE | 81% ±4 | 78% ±11 | 100% ±0 | 89% ±6 |
+| pass^3 (found with evidence in every run) | 78% | 56% | 100% | 67% |
+| pass@3 (in at least one run) | 89% | 89% | 100% | 100% |
+| Precision, mean | 0.78 | 0.76 | 0.97 | 1.00 |
+| Confirmed findings per run (9 and 6 expected) | 10.7 | 11.0 | 9.7 | 6.3 |
+| Cost per run, mean ± SE | $0.97 ±0.40 | $0.77 ±0.30 | $0.56 ±0.19 | $0.24 ±0.06 |
+| Minutes per run | 22 | 12 | 9 | 4 |
+| Runs stopped at the cap | 1 of 3 | 0 of 3 | 0 of 3 | 0 of 3 |
+
+The paired comparison (`./rvkit bench --compare pre-epic post-epic`) gives a mean difference per expected issue of
+−0.07 with evidence. Shuffling the six runs of each benchmark between the two labels gives a difference that large
+in 26% of shuffles (p = 0.26), so it is **within the noise**. Cost (p = 0.32) and time (p = 0.33) are lower after
+the epic on both benchmarks, but not beyond the noise either.
+
+What the numbers say:
+- **Detection didn't change measurably.** Both sides found the same issues, apart from single runs. The gap after
+  the epic comes from three runs: one short VAmPI run ($0.23, 6 minutes) tested SQL injection and the JWT secret
+  and wrongly concluded neither was there; one Flask run merged the hardcoded secret and debug mode into one
+  finding; one Flask run cited an evidence file at a path that doesn't exist.
+- **Runs were cheaper and shorter**, and none stopped at the cap.
+- **Fewer duplicate findings on Flask** (9.7 to 6.3 for 6 issues, precision unchanged): one finding per root cause.
+- **Finding completeness moved both ways.** Every confirmed finding after the epic has reproduction steps (88% on
+  Flask before). Remediation went from 100% of findings to 88% on VAmPI and 67% on Flask: nothing requires it.
+- **The epic's verification and safety work isn't exercised here.** The validator reviewed 51 findings and
+  disproved none (these labs have no decoys), no run delegated to the worker, and `web-hostile`, which tests the
+  safety rules, didn't exist before the epic. Approvals: 3 per VAmPI run and none on Flask; no questions to a
+  person.
+- **Three runs a side only show large effects.** A change of 5 to 10 points in strict recall needs more runs.
+
+Two measurement defects were found and fixed while reading these results: the scorer could credit the unsafe YAML
+issue to the PyYAML dependency finding, which capped Flask's strict recall at 83% on both sides, and `--compare`
+could call a difference real from an error estimate over only two benchmarks (see the CHANGELOG).
 
 ### Release acceptance run
 
@@ -189,7 +230,7 @@ Details: [laravel.md](laravel.md), [authenticated-testing.md](authenticated-test
 | Executable available | Semgrep (Python and Flask rules, offline), Bandit, Joern, pip-audit, OSV-Scanner, Gitleaks, TruffleHog, Syft/Grype |
 | Method implemented | `code-review`, `secrets-review` and `supply-chain` playbooks; observation parsers for Semgrep and Bandit output |
 | Lab-verified | `tools_smoke.sh`: the Flask Semgrep rules find the injection sinks in `rv-demo-app`; `phase5_e2e.sh` (40 checks): Bandit, Semgrep, Joern and pip-audit outputs hashed as evidence, findings confirmed by source review, a final report with every evidence file verified. No fixed build of the Flask target, so no clean control |
-| Measured model result | `code-flask`: 6 of 6 with evidence, precision 0.67 ([above](#measured-model-results)) |
+| Measured model result | `code-flask`: 6 of 6 with evidence, precision 0.67 ([above](#measured-model-results)); with GLM-5.3 over three runs, 89% with evidence, precision 1.00 ([before and after](#before-and-after-the-harness-engineering-epic)) |
 
 ### JavaScript and TypeScript (Express)
 
