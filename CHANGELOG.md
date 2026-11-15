@@ -83,6 +83,12 @@ changes to the harness are measured.
 - nmap failed in the sandbox with "Operation not permitted": Kali's nmap ships with file capabilities beyond the
   `CAP_NET_RAW` the sandbox allows, so Linux refused to start it. The Kali image now strips file capabilities, and
   `evals/tools_smoke.sh` checks that nmap starts with the sandbox's privileges.
+- After the validator disproved a finding, the planner could loop re-confirming it with `update_finding` calls that
+  gave a method but no `status=confirmed`: each call changed nothing, and one benchmark run repeated it about 80
+  times until its budget ran out. Such a call is now refused with what to send instead.
+- The agent could confirm findings without reproduction steps, and in a benchmark run it stopped writing them after
+  one refusal. Confirming a finding through the agent's tools now needs reproduction steps; the console and the CLI
+  are not held to this.
 
 ## [0.1.0]
 

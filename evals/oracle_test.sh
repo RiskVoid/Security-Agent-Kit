@@ -60,10 +60,10 @@ if [ -z "$RV_ORACLE_APPROVAL" ]; then
   # ---------------------------------------------------------------- the finding side (#44)
   fpy() { docker compose exec -T -e VALIDATOR="${RV_ORACLE_VALIDATOR:-0}" findings-mcp python3 -c "import findings; $1" </dev/null; }
   check "a finding can't be confirmed by oracle with the clean case's record" \
-        "$(fpy "print(findings.record_finding('$ENG', 'XSS in /api/docs', 'medium', '$L/api/docs', 'Reflected input.', evidence=['$rec2'], status='confirmed', method='oracle'))")" \
+        "$(fpy "print(findings.record_finding('$ENG', 'XSS in /api/docs', 'medium', '$L/api/docs', 'Reflected input.', evidence=['$rec2'], status='confirmed', method='oracle', reproduction='Run the oracle record.'))")" \
         'REFUSED: no cited verification passed'
   check "a finding confirmed by oracle with the passing record" \
-        "$(fpy "print(findings.record_finding('$ENG', 'HTML injection in /search', 'medium', '$L/search?q=', 'The q parameter is reflected into the page without escaping: HTML tags in it are kept as markup.', evidence=['$rec'], status='confirmed', method='oracle'))")" \
+        "$(fpy "print(findings.record_finding('$ENG', 'HTML injection in /search', 'medium', '$L/search?q=', 'The q parameter is reflected into the page without escaping: HTML tags in it are kept as markup.', evidence=['$rec'], status='confirmed', method='oracle', reproduction='Open /search with an HTML tag in q.'))")" \
         '"verified_method": "oracle"'
   if [ "${RV_ORACLE_VALIDATOR:-0}" = 1 ]; then
     check "the validator lets the oracle-confirmed finding stand" \
@@ -71,7 +71,7 @@ if [ -z "$RV_ORACLE_APPROVAL" ]; then
     # a false confirmation: the clean route's response cited as proof of an injection it doesn't show
     clean="$(fpy "import json; print(json.load(open('$rec2'))['steps'][0]['evidence'])")"
     check "the validator disproves a false confirmation on the clean route; it goes back to candidate" \
-          "$(fpy "import json; r = json.loads(findings.record_finding('$ENG', 'SQL injection in /api/docs', 'high', '$L/api/docs', 'The q parameter of /api/docs is injectable: the response shows a database error.', evidence=['$clean'], status='confirmed', method='tool-output')); print(r['status'], r['validation']['verdict'])")" \
+          "$(fpy "import json; r = json.loads(findings.record_finding('$ENG', 'SQL injection in /api/docs', 'high', '$L/api/docs', 'The q parameter of /api/docs is injectable: the response shows a database error.', evidence=['$clean'], status='confirmed', method='tool-output', reproduction='Open /api/docs with a quote in q.')); print(r['status'], r['validation']['verdict'])")" \
           '^candidate disproved'
   fi
   printf 'Test report for the verification oracles.\n' | docker compose exec -T findings-mcp sh -c "mkdir -p /work/$ENG/report && cat > /work/$ENG/report/executive-summary.md"
