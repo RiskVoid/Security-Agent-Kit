@@ -484,6 +484,37 @@ def score(b, allf, eng_dir=None, extra=None):
         return False
     for i in sorted(edges, key=lambda i: len(edges[i])):
         assign(i, set())
+    # The matching above only maximises how many items are found. When findings match more than one item (an unsafe
+    # YAML load and the PyYAML dependency both say "yaml"), credit each item to the finding that fits it best: keyword
+    # match, then CWE agreement, then requirements met. Swaps keep the count and stop when no swap improves the fit.
+    fits = {}
+
+    def fit(i, j):
+        if (i, j) not in fits:
+            f, e = conf[j], exp[i]
+            cwe = set(re.findall(r"cwe-\d+", str(f.get("cwe") or "").lower())) & {c.lower() for c in e.get("cwe", [])}
+            fits[i, j] = (match_strength(f, e), int(bool(cwe)), sum(requirements(f, e, eng_dir).values()))
+        return fits[i, j]
+
+    def plus(a, b):
+        return tuple(x + y for x, y in zip(a, b))
+    linked = {i: set(js) for i, js in edges.items()}
+    improved = True
+    while improved:
+        improved = False
+        for j1, i1 in list(owner.items()):
+            spare = next((j for j in edges[i1] if j not in owner and fit(i1, j) > fit(i1, j1)), None)
+            if spare is not None:
+                del owner[j1]
+                owner[spare] = i1
+                improved = True
+                break
+            other = next((j2 for j2, i2 in owner.items() if j2 != j1 and j2 in linked[i1] and j1 in linked[i2] and
+                          plus(fit(i1, j2), fit(i2, j1)) > plus(fit(i1, j1), fit(i2, j2))), None)
+            if other is not None:
+                owner[j1], owner[other] = owner[other], i1
+                improved = True
+                break
     found = {i: conf[j]["id"] for j, i in owner.items()}
     # Real issues outside the expected list are not false positives: a second instance of an expected item (a keyword
     # match on another asset, e.g. blind SQLi next to SQLi) or a known issue of the lab listed under "also_valid". They count as true
