@@ -8,7 +8,7 @@ Changes to prompts, tool descriptions, playbooks and error messages that the imp
 
 | Proposal | Cause | Change | Why |
 |---|---|---|---|
-| P-001 | `tool/findings_update_coverage/refused: no such file` | When an evidence entry is a path followed by a note, as in 'evidence/runs/x.txt (no WAF)', and the path alone exists, the refusal says so: evidence takes file paths only, and the note goes in the rationale. Today it says only 'no such file'. | tool/findings_update_coverage/refused: no such file: 3.333 → 0.0 records per run (SE of the difference 1.145): shrank; held-out strict recall per item -0.278, 95% CI [-0.515, -0.04]: fell beyond the spread |
+| P-001 | `tool/findings_update_coverage/refused: no such file` | When an evidence entry is a path followed by a note, as in 'evidence/runs/x.txt (no WAF)', and the path alone exists, the refusal says so: evidence takes file paths only, and the note goes in the rationale. Today it says only 'no such file'. | tool/findings_update_coverage/refused: no such file: 3.333 → 0.0 records per run (SE of the difference 1.145): shrank; held-out strict recall per item -0.500, 95% CI [-0.731, -0.269]: fell beyond the spread |
 
 ## Merged as fixes, not judged
 

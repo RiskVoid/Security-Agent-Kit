@@ -1023,6 +1023,9 @@ HOST_RE = re.compile(r"(?<![\w./-])(?:https?://)?((?:\d{1,3}\.){3}\d{1,3}(?:/\d{
                      re.I)
 FILE_EXT = re.compile(r"\.(txt|json|jsonl|md|py|js|ts|yml|yaml|xml|html|log|csv|err|out|sh|conf|cfg|ini|toml|lock|"
                       r"gz|zip|tar|pem|key|crt|db|sqlite|nmap|gnmap|xsl)$", re.I)
+# A JWT (base64url header and payload, both JSON objects, so both start "eyJ") has dots and reads as a host name:
+# "jwt_tool eyJ... -C" and "curl -H 'Authorization: Bearer eyJ...'" were refused as out of scope.
+JWT_RE = re.compile(r"eyJ[\w-]+\.eyJ[\w-]+\.[\w-]*")
 
 
 # Tools that name their target as user@host: there a name after "@" is the target, never an email address.
@@ -1056,9 +1059,10 @@ def precheck(command, info_, pol=None):
     for prog, seg in _segments(command):
         if prog not in ACTIVE and prog not in INTRUSIVE:
             continue
+        jwts = [j.span() for j in JWT_RE.finditer(seg)]
         for m in HOST_RE.finditer(seg):
             t = m.group(1).lower()
-            if _email_domain(seg, m.start(1), prog):
+            if _email_domain(seg, m.start(1), prog) or any(a <= m.start(1) < b for a, b in jwts):
                 continue
             if FILE_EXT.search(t) or any(t == d or t.endswith("." + d) for d in infra):
                 continue

@@ -654,6 +654,66 @@ def validation(b, allf, eng):
                         for k, r in last.items() if r["verdict"] != "stands"][:10]}
 
 
+def rescore_saved(path):
+    """Score a saved run again with the current scorer, from the engagement the run kept (its findings database
+    and evidence). Returns the new score, or None when the run kept no engagement. What the scorer can't rebuild
+    from the archive (tool outcomes, validation, untriaged observations) is kept from the saved score."""
+    import shutil
+    import tarfile
+    import tempfile
+    import failures
+    res = json.load(open(path))
+    bp = os.path.join(BENCH, f"{res.get('benchmark')}.json")
+    data = failures.run_data(path, res) if os.path.isfile(bp) else None
+    arc = os.path.join(KIT, res["data"], "engagement.tar.gz") if res.get("data") else path[:-5] + "/engagement.tar.gz"
+    if not data or not os.path.isfile(arc):
+        return None
+    old, tmp = res.get("score") or {}, tempfile.mkdtemp()
+    try:
+        with tarfile.open(arc) as tar:
+            tar.extractall(tmp, filter="data")
+        new = score(json.load(open(bp)), data["findings"], tmp)
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+    new["decisions"] = {**(old.get("decisions") or {}), **new["decisions"]}
+    return {**old, **new}
+
+
+def rescore_all(write=True, out=print):
+    """--rescore: score every saved run again (the scorer changes; saved scores don't). A run whose score changed is
+    written back, keeping the score it got at run time in score_at_run; then the failure records are rebuilt
+    from the new scores. Returns the number of runs whose score changed."""
+    import failures
+    changed = 0
+    for p in sorted(glob.glob(os.path.join(OUT, "*.json"))):
+        try:
+            res = json.load(open(p))
+            if not isinstance(res, dict) or "score" not in res or "benchmark" not in res:
+                continue
+            new = rescore_saved(p)
+        except (OSError, ValueError, KeyError) as e:
+            out(f"  skipped {os.path.basename(p)}: {e}")
+            continue
+        old = res["score"]
+        keys = ("recall", "strict_recall", "precision", "per_expected", "clean_violations")
+        if new is None or all(old.get(k) == new.get(k) for k in keys):
+            continue
+        changed += 1
+        out(f"  {os.path.basename(p)[:-5]} ({res.get('label') or 'no label'}): recall {old.get('recall')} → "
+            f"{new['recall']}, strict {old.get('strict_recall')} → {new['strict_recall']}")
+        if write:
+            res.setdefault("score_at_run", old)
+            res["score"], res["rescored_at"] = new, datetime.datetime.now(datetime.timezone.utc).isoformat(
+                timespec="seconds")
+            with open(p + ".tmp", "w") as f:
+                json.dump(res, f, indent=1)
+            os.replace(p + ".tmp", p)
+    if write:
+        runs, records = failures.rebuild()
+        out(f"  failure records rebuilt: {records} from {runs} runs")
+    return changed
+
+
 def observations_untriaged(eng):
     p = db_file(eng)
     try:
@@ -938,6 +998,11 @@ def main(argv):
     if argv[0] == "--improve":   # the improvement loop: proposals judged against held-out runs (evals/improve.py)
         import improve
         return improve.main(argv[1:])
+    if argv[0] == "--rescore":  # score saved runs again after a scorer change (--dry-run: only list the changes)
+        n = rescore_all(write="--dry-run" not in argv)
+        print(f"{n} saved run(s) score differently with the current scorer"
+              + (" (not written: --dry-run)" if "--dry-run" in argv and n else ""))
+        return 0
     if argv[0] == "--score":  # score an existing benchmark engagement, without running a model
         if len(argv) < 3 or not argv[2].startswith("bench-"):
             print("usage: --score <benchmark> <bench-engagement>  (benchmark engagements only)")

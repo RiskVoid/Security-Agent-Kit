@@ -606,12 +606,13 @@ practice and test engagements.
 ./rvkit bench --failures [--show <cause>] [--kind <kind>] [--benchmark <name>] [--model <text>]
                          [--since <YYYY-MM-DD>] [--json] [--rebuild]
 ./rvkit bench --score <name> <bench-engagement>
+./rvkit bench --rescore [--dry-run]
 ./rvkit bench --improve split|analyze|propose|list|judge|changelog
 ```
 
 Runs the real agent unattended against a known target and scores it. Names are the files in `evals/benchmarks/`.
 `--repeat N` runs it N times and prints the spread; `--score` re-scores an existing `bench-` engagement without a
-model. `--failures` lists what went wrong in past runs, grouped by cause; `--show` gives the records of one cause
+model, and `--rescore` scores every saved run again from the engagement it kept (after a scorer change). `--failures` lists what went wrong in past runs, grouped by cause; `--show` gives the records of one cause
 and `--rebuild` derives them again from the saved runs
 ([failures by cause](lab-and-benchmarks.md#failures-by-cause)). `--improve` turns them into proposals and keeps a
 change only when its cause shrinks and the held-out benchmarks hold ([improvement-loop.md](improvement-loop.md)).

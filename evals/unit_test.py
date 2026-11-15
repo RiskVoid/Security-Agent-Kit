@@ -310,6 +310,11 @@ class Scope(unittest.TestCase):
         self.assertEqual(core.precheck("curl http://admin@evil.test/", info, pol), ["evil.test"])
         self.assertEqual(core.precheck("impacket-psexec admin@evil.test", info, pol), ["evil.test"])
         self.assertEqual(core.precheck("hydra -l admin@evil.test -P p.txt evil.test ssh", info, pol), ["evil.test"])
+        # a JWT has dots but is a token, not a host (seen refusing jwt_tool cracks in VAmPI runs)
+        jwt = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJydi1zbW9rZSJ9.Rme4-KZBWKZCgwyRvmDBekldmKozxDdfuzgDbYaLsY0"
+        self.assertEqual(core.precheck(f"jwt_tool {jwt} -C -d wl.txt", info, pol), [])
+        self.assertEqual(core.precheck(f"curl http://10.0.0.1/me -H 'Authorization: Bearer {jwt}'", info, pol), [])
+        self.assertEqual(core.precheck(f"jwt_tool {jwt} -t http://evil.test/me", info, pol), ["evil.test"])
 
     def test_names(self):
         self.assertTrue(core._name_ok("acme-2026.11_a"))
