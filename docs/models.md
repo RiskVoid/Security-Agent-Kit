@@ -207,7 +207,8 @@ model is connected.
 
 | Worker profile | Model | Score | Measured |
 |---|---|---|---|
-| Hosted (OpenRouter) | GLM-5.3 Flash (`z-ai/glm-5.3-flash`) | 92% and 96% in two runs: it misses "finish with high confidence" and once read the evidence again instead of recording a candidate | 2026-11-13 |
+| Hosted (OpenRouter) | GLM-5.3 Flash (`z-ai/glm-5.3-flash`) | 92%, 96% and 92% in three runs: it misses "finish with high confidence", once read the evidence again instead of recording a candidate, and once checked an identity it was told was valid instead of sending the request | 2026-11-13, 2026-11-15 |
+| Hosted fallback (OpenRouter) | DeepSeek V4.1 Flash (`deepseek/deepseek-v4.1-flash`) | **75%, below the 85% bar**: valid JSON and schema 96%, but it never finished when told to (0 of 3, it kept running commands), read the evidence again instead of recording a candidate twice, and called `finish` when no tool was needed. As the worker's fallback it is likely to use more steps | 2026-11-15 |
 | Colab L4 (Q4_K_M) | Qwen3.8-27B abliterated | not measured yet | |
 | Colab A100 (Q8_0) | Qwen3.8-27B abliterated | not measured yet | |
 
