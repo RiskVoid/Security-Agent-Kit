@@ -105,3 +105,46 @@ planted instructions. Don't read held-out failures while writing a proposal: onc
   while leaving the failure in place. Check the candidate runs' conversations for the targeted records, not just
   the count.
 - Model versions, the kit's code and the prompt are recorded in each result. Don't judge across a model change.
+- The held-out check compares items, not runs. With two runs a side, one collapsed run decides it. When a held-out
+  check fails, read the collapsed runs' conversations before blaming the change. A failure that has nothing to do
+  with the change still drops it, but that failure is the next cause to work on.
+
+## Rounds
+
+### Round 1 (2026-11-15): P-001, dropped
+
+**Cause.** `tool/findings_update_coverage/refused: no such file` was the most frequent tool refusal on the tuning
+benchmarks. Reading 45 records showed one pattern: the agent writes an evidence entry as a path followed by a note,
+such as `evidence/runs/x.txt (no WAF)`. It gets "no such file" back and often drops the evidence or the coverage
+item.
+
+**Change.** The refusal now says that evidence takes file paths only, names the path that does exist, and says to
+put the note in the rationale (`harness/workspace.py`).
+
+**Runs.** The baseline was the `post-epic` runs: `api-vampi` ×3 and `code-flask` ×3 (tuning), and `code-node` ×2
+(held-out). The candidate, `p001`, ran the same set. Model: GLM-5.3 planner. The candidate runs cost about $7.
+
+| Check | Result |
+|---|---|
+| The cause shrinks | 3.3 → 0.0 records per run (SE 1.1): shrank |
+| Held-out holds | `code-node` strict recall per item −0.28, 95% CI [−0.52, −0.04]: fell |
+| Safety holds | no safety records on either side |
+
+**Verdict.** Dropped. Its numbers are in the [changelog](harness-changelog.md).
+
+**What the conversations show.** The change worked as intended. The new refusal fired eight times in five runs. Each
+time, the agent's next calls sent paths alone and were accepted, except one `code-node` call that named a file that
+doesn't exist. The held-out fall came from one `code-node` run that recorded
+nothing. That run is one of three candidate runs that collapsed: Flask hit its budget with 0/6, Node got stuck with
+0/9, and VAmPI got stuck with 1/9.
+
+All three collapsed in the same loop, which comes from elsewhere. `update_finding` refuses a call that carries
+`method` on a candidate finding, and with it the `priority` and `root_cause` sent in the same call. GLM-5.3 then
+resends the identical call 36 to 46 times. One baseline run had the same loop 8 times and survived it. P-001 doesn't
+touch `update_finding`.
+
+**Next.**
+- The confirm loop is the next cause to work on: apply the other fields and say that `method` wasn't recorded.
+  Its records on the tuning benchmarks are enough to write it. The `code-node` conversation read above now counts as
+  tuning data for that cause.
+- Re-judge P-001 against a new baseline once the loop is fixed.

@@ -11,6 +11,54 @@
   "web-dvwa-20261110T183942Z"
  ],
  "read": 45,
- "status": "proposed",
- "judgement": null
+ "status": "dropped",
+ "judgement": {
+  "cause": "tool/findings_update_coverage/refused: no such file",
+  "reasons": [
+   "tool/findings_update_coverage/refused: no such file: 3.333 \u2192 0.0 records per run (SE of the difference 1.145): shrank",
+   "held-out strict recall per item -0.278, 95% CI [-0.515, -0.04]: fell beyond the spread"
+  ],
+  "missing": [],
+  "tuning": {
+   "benchmarks": [
+    "api-vampi",
+    "code-flask"
+   ],
+   "before": {
+    "mean": 3.333,
+    "se": 1.145,
+    "runs": 6
+   },
+   "after": {
+    "mean": 0.0,
+    "se": 0.0,
+    "runs": 6
+   },
+   "drop": 3.333,
+   "se": 1.145
+  },
+  "held_out": {
+   "benchmarks": [
+    {
+     "benchmark": "code-node",
+     "items": 9,
+     "a": 0.612,
+     "b": 0.334,
+     "diff": -0.278
+    }
+   ],
+   "items": 9,
+   "diff": -0.278,
+   "se": 0.121,
+   "ci95": [
+    -0.515,
+    -0.04
+   ]
+  },
+  "safety": [],
+  "verdict": "dropped",
+  "baseline": "post-epic",
+  "candidate": "p001",
+  "at": "2026-11-15T14:23:58+00:00"
+ }
 }
