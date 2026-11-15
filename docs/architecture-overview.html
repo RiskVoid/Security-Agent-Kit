@@ -1,0 +1,799 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Security Agent Kit: architecture overview</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter+Tight:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap">
+<style>
+/* Layout: one reading column, 68ch prose, full-width figures on a raised surface.
+   A mono spec strip opens the page; each section is carried by one diagram or one table. */
+:root{
+  --bg:oklch(14% .008 260); --surface:oklch(17% .008 260); --surface-2:oklch(21.5% .009 260);
+  --line:oklch(27% .010 260); --line-strong:oklch(40% .012 260); --stroke:oklch(60% .010 260);
+  --ink:oklch(96% .005 260); --text:oklch(80% .006 260); --muted:oklch(63% .008 260);
+  --accent:#47B6FF; --accent-soft:rgba(71,182,255,.12);
+  --warn:oklch(77% .13 70); --ok:oklch(75% .12 155); --bad:oklch(70% .16 25);
+  --sans:"Inter Tight",system-ui,-apple-system,"Segoe UI",sans-serif;
+  --mono:"JetBrains Mono",ui-monospace,"SF Mono",Menlo,monospace;
+  color-scheme:dark;
+}
+@media (prefers-color-scheme: light){
+  :root:not([data-theme="dark"]){
+    --bg:oklch(98.6% .003 260); --surface:oklch(96.6% .004 260); --surface-2:oklch(93.4% .005 260);
+    --line:oklch(88.5% .006 260); --line-strong:oklch(74% .008 260); --stroke:oklch(52% .010 260);
+    --ink:oklch(21% .012 260); --text:oklch(35% .010 260); --muted:oklch(49% .010 260);
+    --accent:oklch(50% .15 245); --accent-soft:oklch(50% .15 245 / .09);
+    --warn:oklch(50% .13 60); --ok:oklch(45% .12 155); --bad:oklch(50% .18 25);
+    color-scheme:light;
+  }
+}
+:root[data-theme="light"]{
+  --bg:oklch(98.6% .003 260); --surface:oklch(96.6% .004 260); --surface-2:oklch(93.4% .005 260);
+  --line:oklch(88.5% .006 260); --line-strong:oklch(74% .008 260); --stroke:oklch(52% .010 260);
+  --ink:oklch(21% .012 260); --text:oklch(35% .010 260); --muted:oklch(49% .010 260);
+  --accent:oklch(50% .15 245); --accent-soft:oklch(50% .15 245 / .09);
+  --warn:oklch(50% .13 60); --ok:oklch(45% .12 155); --bad:oklch(50% .18 25);
+  color-scheme:light;
+}
+*{box-sizing:border-box}
+body{margin:0}
+img{max-width:100%}
+html{scroll-behavior:smooth;scroll-padding-top:calc(env(safe-area-inset-top,0px) + 4px)}
+@media (prefers-reduced-motion: reduce){html{scroll-behavior:auto}}
+body{background:var(--bg);color:var(--text);font:400 16px/1.6 var(--sans);-webkit-font-smoothing:antialiased}
+.page{max-width:1080px;margin:0 auto;padding-block:8px 96px;
+  padding-left:max(16px, env(safe-area-inset-left, 0px));padding-right:max(16px, env(safe-area-inset-right, 0px))}
+h1,h2,h3,p,ul,ol,dl,dd,figure,table{margin:0}
+ul,ol{padding:0;list-style:none}
+h1,h2,h3{color:var(--ink);font-weight:600;text-wrap:balance}
+h1{font-size:clamp(30px,5vw,44px);line-height:1.08;letter-spacing:-.03em}
+h2{font-size:clamp(23px,3.2vw,29px);line-height:1.15;letter-spacing:-.022em}
+h3{font-size:15.5px;line-height:1.35;letter-spacing:-.005em}
+a{color:var(--accent);text-decoration:none}
+a:hover{text-decoration:underline}
+a:focus-visible{outline:2px solid var(--accent);outline-offset:3px;border-radius:3px}
+code{font:400 .86em var(--mono);color:var(--ink);overflow-wrap:anywhere}
+.prose{max-width:68ch}
+.lede{font-size:17.5px;line-height:1.55;max-width:66ch}
+.eyebrow{display:flex;align-items:center;gap:10px;font:400 11px/1 var(--mono);letter-spacing:.14em;text-transform:uppercase;color:var(--muted)}
+.eyebrow::before{content:"";width:24px;height:1px;background:var(--accent);flex:none}
+.small{font-size:13.5px;line-height:1.55;color:var(--muted)}
+
+/* header */
+.brand{display:flex;align-items:center;gap:10px;font:700 17px/1 var(--sans);letter-spacing:-.03em;text-transform:uppercase;color:var(--ink)}
+.brand svg{width:24px;height:24px;flex:none}
+.brand b{color:var(--accent);font-weight:700}
+.top{display:flex;flex-direction:column;gap:22px;padding-block:52px 8px}
+.spec{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:0 40px;border-top:1px solid var(--line);margin-top:10px}
+.spec div{display:grid;grid-template-columns:8.5rem minmax(0,1fr);gap:12px;padding:10px 0;border-bottom:1px solid var(--line);font-size:14.5px}
+.spec dt{font:400 11px/1.9 var(--mono);letter-spacing:.1em;text-transform:uppercase;color:var(--muted)}
+.spec dd{color:var(--ink)}
+/* section menu: one bar that stays at the top while you scroll, current section highlighted */
+body::before{content:"";position:fixed;inset:0 0 auto;height:env(safe-area-inset-top,0px);z-index:10;background:var(--bg)}
+.toc{position:sticky;top:calc(env(safe-area-inset-top,0px) + 8px);z-index:20;display:flex;align-items:center;gap:6px;padding:5px;
+  background:var(--surface);background:color-mix(in oklab,var(--surface) 84%,transparent);-webkit-backdrop-filter:blur(14px);backdrop-filter:blur(14px);
+  border:1px solid var(--line);border-radius:10px;box-shadow:0 -10px 0 var(--bg)}
+.toc .brand{font-size:15px;padding:0 14px 0 9px;flex:none}
+.toc .brand svg{width:20px;height:20px}
+.toc .brand:hover{text-decoration:none}
+.toc .links{position:relative;display:flex;gap:2px;flex:1;min-width:0;overflow-x:auto;scrollbar-width:none;padding-left:6px;border-left:1px solid var(--line)}
+.toc .links::-webkit-scrollbar{display:none}
+.toc .links a{flex:1 0 auto;text-align:center;white-space:nowrap;padding:8px 9px;border-radius:6px;font:500 13px/1.3 var(--sans);color:var(--text);transition:background .15s,color .15s}
+.toc .links a:hover{background:var(--surface-2);color:var(--ink);text-decoration:none}
+.toc .links a[aria-current="true"]{background:var(--accent-soft);color:var(--accent)}
+.toc a:focus-visible{outline-offset:-2px}
+
+/* sections */
+section{display:flex;flex-direction:column;gap:22px;padding-top:64px}
+.head{display:flex;flex-direction:column;gap:14px}
+.sub{display:flex;flex-direction:column;gap:12px}
+
+/* figures */
+figure.fig{background:var(--surface);border:1px solid var(--line);border-radius:10px;padding:18px 18px 14px;display:flex;flex-direction:column;gap:12px;min-width:0}
+.scroll{overflow-x:auto;min-width:0}
+.scroll svg{display:block;width:100%;min-width:780px;height:auto}
+figcaption{font-size:13.5px;line-height:1.55;color:var(--muted);max-width:86ch}
+.key{display:flex;flex-wrap:wrap;gap:6px 22px;font:400 11.5px/1.5 var(--mono);color:var(--text);padding-top:10px;border-top:1px solid var(--line)}
+.key span{display:inline-flex;align-items:center;gap:8px}
+.key i{display:inline-block;width:26px;height:0;border-top:1.5px solid var(--stroke);flex:none}
+.key i.a{border-top-color:var(--accent)}
+.key i.d{border-top-style:dashed}
+.key i.z{height:11px;width:20px;border:1px dashed var(--line-strong);border-radius:2px}
+
+/* svg vocabulary */
+svg .b{fill:var(--surface-2);stroke:var(--line-strong);stroke-width:1}
+svg .b.a{stroke:var(--accent)}
+svg .t{font:500 13px var(--sans);fill:var(--ink)}
+svg .s{font:400 10.5px var(--mono);fill:var(--muted)}
+svg .l{font:400 11px var(--mono);fill:var(--text);paint-order:stroke;stroke:var(--surface);stroke-width:5px;stroke-linejoin:round}
+svg .l.a{fill:var(--accent)}
+svg .ph{font:400 10.5px var(--mono);letter-spacing:.14em;fill:var(--muted)}
+svg .e{stroke:var(--stroke);stroke-width:1.25;fill:none}
+svg .e.a{stroke:var(--accent)}
+svg .e.d{stroke-dasharray:4 4}
+svg .zone{fill:none;stroke:var(--line-strong);stroke-dasharray:6 5}
+svg .life{stroke:var(--line-strong);stroke-width:1;stroke-dasharray:2 5}
+svg .sep{stroke:var(--line);stroke-width:1}
+svg .fw{stroke:var(--accent);stroke-width:2;stroke-dasharray:7 5}
+svg .ah{fill:var(--stroke)}
+svg .ah.a{fill:var(--accent)}
+
+/* hairline grids of short items */
+.cells{display:grid;grid-template-columns:repeat(auto-fit,minmax(290px,1fr));gap:1px;background:var(--line);border:1px solid var(--line);border-radius:10px;overflow:hidden}
+.cells>*{background:var(--bg);padding:18px 20px;display:flex;flex-direction:column;gap:7px;min-width:0}
+.cells .k{font:400 10.5px/1 var(--mono);letter-spacing:.12em;text-transform:uppercase;color:var(--accent)}
+.cells p{font-size:14.5px;line-height:1.55}
+
+/* ordered steps: plain numerals, no badges */
+.steps{border-top:1px solid var(--line)}
+.steps li{display:grid;grid-template-columns:2.4rem minmax(0,1fr) auto;gap:4px 14px;align-items:baseline;padding:13px 0;border-bottom:1px solid var(--line)}
+.steps .n{font:500 13px/1.6 var(--mono);color:var(--accent);font-variant-numeric:tabular-nums}
+.steps h3{display:inline}
+.steps p{font-size:14.5px;line-height:1.55}
+.tag{font:400 10.5px/1.6 var(--mono);letter-spacing:.1em;text-transform:uppercase;color:var(--muted);white-space:nowrap}
+.tag.hard{color:var(--accent)}
+@media (max-width:640px){.steps li{grid-template-columns:2rem minmax(0,1fr)}.steps .tag{grid-column:2}}
+
+.row5{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:0;border-top:1px solid var(--line);border-bottom:1px solid var(--line)}
+.row5 li{padding:14px 16px 14px 0;display:flex;flex-direction:column;gap:4px;min-width:0}
+.row5 li+li{padding-left:16px;border-left:1px solid var(--line)}
+.row5 .n{font:500 13px/1 var(--mono);color:var(--accent)}
+.row5 p{font-size:13.5px;line-height:1.5}
+@media (max-width:760px){.row5{grid-template-columns:1fr}.row5 li,.row5 li+li{padding:12px 0;border-left:0}.row5 li+li{border-top:1px solid var(--line)}}
+
+/* tables */
+.tw{overflow-x:auto;min-width:0;border:1px solid var(--line);border-radius:10px}
+table{border-collapse:collapse;width:100%;font-size:14.5px;line-height:1.5}
+th,td{text-align:left;vertical-align:top;padding:11px 16px;border-bottom:1px solid var(--line)}
+tr:last-child td{border-bottom:0}
+th{font:400 10.5px/1.6 var(--mono);letter-spacing:.12em;text-transform:uppercase;color:var(--muted);background:var(--surface);white-space:nowrap}
+td:first-child{color:var(--ink);font-weight:500}
+td:first-child code{white-space:nowrap}
+td.num{font:400 13px/1.7 var(--mono);font-variant-numeric:tabular-nums;white-space:nowrap;text-align:right;color:var(--text)}
+th.num{text-align:right}
+.wide{min-width:720px}
+
+/* coverage matrix */
+.cov td,.cov th{white-space:nowrap}
+.cov td:first-child{font:400 12.5px/1.7 var(--mono);font-weight:400}
+.cov td:first-child em{font-style:normal;color:var(--muted);margin-right:10px}
+.st{font:400 11.5px/1.7 var(--mono);display:inline-flex;align-items:center;gap:7px;vertical-align:middle}
+.st::before{content:"";width:8px;height:8px;border-radius:50%;flex:none}
+.st.tested{color:var(--ok)} .st.tested::before{background:var(--ok)}
+.st.finding{color:var(--bad)} .st.finding::before{background:var(--bad);border-radius:1px;transform:rotate(45deg)}
+.st.gap{color:var(--warn)} .st.gap::before{border:1.5px solid var(--warn);background:none}
+.st.skip{color:var(--text)} .st.skip::before{border-radius:0;background:linear-gradient(var(--text),var(--text)) center/100% 1.5px no-repeat}
+.st.na{color:var(--muted)} .st.na::before{background:none}
+
+.two{display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:28px 40px}
+.two>*{min-width:0}
+.bul{display:flex;flex-direction:column;gap:9px;font-size:15px}
+.bul li{padding-left:18px;position:relative}
+.bul li::before{content:"";position:absolute;left:1px;top:.62em;width:5px;height:5px;border-radius:50%;background:var(--accent)}
+footer{margin-top:72px;padding-top:20px;border-top:1px solid var(--line);font-size:13.5px;color:var(--muted);display:flex;flex-direction:column;gap:6px}
+</style>
+</head>
+<body>
+<div class="page">
+
+<nav class="toc" aria-label="Sections">
+  <a class="brand" href="#top" aria-label="RiskVoid, back to top">
+    <svg viewBox="0 0 500 500" aria-hidden="true"><path fill="#47B6FF" d="M255.517 425.414 33.856 74.256l432.289.084-104.131 185.741-45.204.646s103.036 165.151 102.842 164.953l-60.637.063-133.121-215.982s110.143-.181 110.143 0c0 .183 50.394-85.003 50.394-85.003H129.707l160.283 250.946-34.473 49.71Z"/></svg>
+    <span>Risk<b>Void</b></span>
+  </a>
+  <div class="links">
+    <a href="#system">System</a>
+    <a href="#flow">Task flow</a>
+    <a href="#gates">Command path</a>
+    <a href="#models">Models</a>
+    <a href="#worker">Worker loop</a>
+    <a href="#findings">Findings</a>
+    <a href="#coverage">Coverage</a>
+    <a href="#control">Control plane</a>
+    <a href="#build">Source</a>
+    <a href="#evals">Measurement</a>
+    <a href="#limits">Limits</a>
+  </div>
+</nav>
+
+<header class="top" id="top">
+  <p class="eyebrow">Security Agent Kit · Architecture overview</p>
+  <h1>How the Security Agent Kit is built</h1>
+  <p class="lede">The kit is a self-hosted AI agent for authorised security work: code review and testing of web apps, APIs, AI apps and networks. Two models do the reasoning. Everything they can touch goes through a small set of tool servers, and the controls live in those servers, outside the model.</p>
+  <dl class="spec">
+    <div><dt>Runs as</dt><dd>Docker Compose on one machine</dd></div>
+    <div><dt>Agent runtime</dt><dd>OpenHands, pinned</dd></div>
+    <div><dt>Tool boundary</dt><dd>Five MCP servers</dd></div>
+    <div><dt>Models</dt><dd>A planner and a worker, behind LiteLLM</dd></div>
+    <div><dt>Execution</dt><dd>A Kali sandbox per command, 45+ tools</dd></div>
+    <div><dt>Records</dt><dd>Plain folders and SQLite on the host</dd></div>
+  </dl>
+</header>
+
+
+<!-- ───────────── SYSTEM ───────────── -->
+<section id="system">
+  <div class="head">
+    <p class="eyebrow">System</p>
+    <h2>Containers, networks and the ways out</h2>
+    <p class="prose">The agent runtime sits on an internal Docker network with no route to the internet or the host. Each way out goes through a service that applies one rule. Scope, approvals and halt are set from the host, where the agent has no access.</p>
+  </div>
+
+  <figure class="fig">
+    <div class="scroll">
+    <svg viewBox="0 0 1000 626" role="img" aria-label="The agent runtime and seven services share an internal network. Each service that leaves that network applies one rule, and the operator controls kali-mcp from the host.">
+      <defs>
+        <marker id="a1" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path class="ah" d="M0 0 10 5 0 10z"/></marker>
+        <marker id="a1a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path class="ah a" d="M0 0 10 5 0 10z"/></marker>
+      </defs>
+
+      <text class="ph" x="14" y="22">HOST · PUBLISHED PORTS BIND TO 127.0.0.1 ONLY</text>
+
+      <!-- host -->
+      <rect class="b" x="60" y="34" width="140" height="46" rx="6"/>
+      <text class="t" x="130" y="54" text-anchor="middle">Browser</text>
+      <text class="s" x="130" y="70" text-anchor="middle">agent UI</text>
+      <rect class="b a" x="450" y="34" width="180" height="46" rx="6"/>
+      <text class="t" x="540" y="54" text-anchor="middle">./rvkit and Console</text>
+      <text class="s" x="540" y="70" text-anchor="middle">operator only</text>
+
+      <!-- internal network -->
+      <rect class="zone" x="14" y="108" width="972" height="270" rx="10"/>
+      <text class="ph" x="972" y="130" text-anchor="end">RVAGENT · INTERNAL NETWORK · NO INTERNET, NO HOST</text>
+
+      <path class="e" d="M130 80V150" marker-end="url(#a1)"/>
+      <text class="l" x="138" y="100">127.0.0.1:8000</text>
+
+      <rect class="b" x="60" y="150" width="140" height="56" rx="6"/>
+      <text class="t" x="130" y="174" text-anchor="middle">gateway</text>
+      <text class="s" x="130" y="191" text-anchor="middle">Caddy</text>
+      <path class="e" d="M200 178H250" marker-end="url(#a1)"/>
+      <rect class="b" x="250" y="150" width="250" height="56" rx="6"/>
+      <text class="t" x="375" y="174" text-anchor="middle">agent-canvas</text>
+      <text class="s" x="375" y="191" text-anchor="middle">OpenHands runtime, planner agent</text>
+
+      <!-- bus -->
+      <path class="e" d="M375 206V256M92 256H908"/>
+      <path class="e" d="M92 256V296" marker-end="url(#a1)"/>
+      <path class="e" d="M228 256V296" marker-end="url(#a1)"/>
+      <path class="e" d="M364 256V296" marker-end="url(#a1)"/>
+      <path class="e" d="M500 256V296" marker-end="url(#a1)"/>
+      <path class="e" d="M636 256V296" marker-end="url(#a1)"/>
+      <path class="e" d="M772 256V296" marker-end="url(#a1)"/>
+      <path class="e" d="M908 256V296" marker-end="url(#a1)"/>
+      <text class="l" x="92" y="246" text-anchor="middle">HTTP(S) proxy</text>
+      <text class="l" x="228" y="246" text-anchor="middle">model calls</text>
+      <text class="l" x="724" y="246" text-anchor="middle">MCP tool calls</text>
+
+      <!-- control plane -->
+      <path class="e a" d="M540 80V296" marker-end="url(#a1a)"/>
+      <text class="l a" x="550" y="156">control plane</text>
+      <text class="l" x="550" y="172">scope, approvals, halt</text>
+
+      <!-- services -->
+      <rect class="b" x="30" y="296" width="124" height="56" rx="6"/>
+      <text class="t" x="92" y="320" text-anchor="middle">egress-proxy</text>
+      <text class="s" x="92" y="337" text-anchor="middle">tinyproxy</text>
+      <rect class="b" x="166" y="296" width="124" height="56" rx="6"/>
+      <text class="t" x="228" y="320" text-anchor="middle">litellm</text>
+      <text class="s" x="228" y="337" text-anchor="middle">model gateway</text>
+      <rect class="b" x="302" y="296" width="124" height="56" rx="6"/>
+      <text class="t" x="364" y="320" text-anchor="middle">web-mcp</text>
+      <text class="s" x="364" y="337" text-anchor="middle">search, fetch</text>
+      <rect class="b a" x="438" y="296" width="124" height="56" rx="6"/>
+      <text class="t" x="500" y="320" text-anchor="middle">kali-mcp</text>
+      <text class="s" x="500" y="337" text-anchor="middle">tools, policy</text>
+      <rect class="b" x="574" y="296" width="124" height="56" rx="6"/>
+      <text class="t" x="636" y="320" text-anchor="middle">worker-mcp</text>
+      <text class="s" x="636" y="337" text-anchor="middle">delegate_task</text>
+      <rect class="b" x="710" y="296" width="124" height="56" rx="6"/>
+      <text class="t" x="772" y="320" text-anchor="middle">findings-mcp</text>
+      <text class="s" x="772" y="337" text-anchor="middle">records, report</text>
+      <rect class="b" x="846" y="296" width="124" height="56" rx="6"/>
+      <text class="t" x="908" y="320" text-anchor="middle">intel-mcp</text>
+      <text class="s" x="908" y="337" text-anchor="middle">CVE intel</text>
+
+      <!-- exits -->
+      <path class="e" d="M92 352V440" marker-end="url(#a1)"/>
+      <path class="e" d="M228 352V440" marker-end="url(#a1)"/>
+      <path class="e" d="M364 352V440" marker-end="url(#a1)"/>
+      <path class="e" d="M500 352V440" marker-end="url(#a1)"/>
+      <path class="e" d="M636 352V440" marker-end="url(#a1)"/>
+      <path class="e" d="M772 352V440" marker-end="url(#a1)"/>
+      <path class="e" d="M908 352V440" marker-end="url(#a1)"/>
+      <text class="l" x="100" y="414">allowlist only</text>
+      <text class="l" x="236" y="414">route policy</text>
+      <text class="l" x="372" y="414">public only</text>
+      <text class="l" x="508" y="414">command gates</text>
+      <text class="l" x="644" y="414">task evidence</text>
+      <text class="l" x="780" y="414">findings, report</text>
+      <text class="l" x="916" y="414">lookups</text>
+
+      <rect class="b" x="30" y="440" width="124" height="56" rx="6"/>
+      <text class="t" x="92" y="464" text-anchor="middle">Registries</text>
+      <text class="s" x="92" y="481" text-anchor="middle">vulnerability DBs</text>
+      <rect class="b" x="166" y="440" width="124" height="56" rx="6"/>
+      <text class="t" x="228" y="464" text-anchor="middle">Model providers</text>
+      <text class="s" x="228" y="481" text-anchor="middle">planner, worker</text>
+      <rect class="b" x="302" y="440" width="124" height="56" rx="6"/>
+      <text class="t" x="364" y="464" text-anchor="middle">Web research</text>
+      <text class="s" x="364" y="481" text-anchor="middle">SearXNG, pages</text>
+      <rect class="b a" x="438" y="440" width="124" height="56" rx="6"/>
+      <text class="t" x="500" y="464" text-anchor="middle">Sandbox</text>
+      <text class="s" x="500" y="481" text-anchor="middle">one per command</text>
+      <path class="e" d="M562 468H590" marker-end="url(#a1)"/>
+      <rect class="b" x="590" y="440" width="228" height="56" rx="6"/>
+      <text class="t" x="704" y="464" text-anchor="middle">Engagement folders on the host</text>
+      <text class="s" x="704" y="481" text-anchor="middle">/work written, /src read-only</text>
+      <rect class="b" x="846" y="440" width="124" height="56" rx="6"/>
+      <text class="t" x="908" y="464" text-anchor="middle">OSV, NVD</text>
+      <text class="s" x="908" y="481" text-anchor="middle">EPSS, CISA KEV</text>
+
+      <!-- firewall and targets -->
+      <path class="e" d="M500 496V560" marker-end="url(#a1)"/>
+      <path class="fw" d="M380 528H620"/>
+      <text class="l a" x="632" y="524">scope firewall</text>
+      <text class="l" x="632" y="540">nftables per engagement user, own DNS</text>
+      <rect class="b" x="438" y="560" width="124" height="56" rx="6"/>
+      <text class="t" x="500" y="584" text-anchor="middle">In-scope targets</text>
+      <text class="s" x="500" y="601" text-anchor="middle">or the lab network</text>
+    </svg>
+    </div>
+    <div class="key">
+      <span><i></i>call or data</span>
+      <span><i class="a"></i>set from the host only, enforced below the agent</span>
+      <span><i class="z"></i>network boundary</span>
+    </div>
+    <figcaption>worker-mcp has no internet access either. It reaches the worker model through litellm, runs commands through kali-mcp and does research through web-mcp, all over the internal network.</figcaption>
+  </figure>
+
+  <div class="cells">
+    <div><span class="k">egress-proxy</span><p>The agent container's only way out. Allowlisted package registries and vulnerability databases, deny by default. Engagement targets are refused.</p></div>
+    <div><span class="k">litellm</span><p>Every model call, from the planner and from the worker. It holds the provider keys and the daily spend cap, and checks each call against the engagement's data rules.</p></div>
+    <div><span class="k">web-mcp</span><p>Search and fetch for research. Fetch refuses any host in any engagement's scope and any non-public address, and checks again on every redirect.</p></div>
+    <div><span class="k">kali-mcp</span><p>The only way to run a tool or send traffic to a target. Policy, tiers, approvals, the sandbox, the firewall and the audit log all live here.</p></div>
+    <div><span class="k">findings-mcp</span><p>The planner's only write path: findings through validated operations, and a fixed list of files such as <code>PLAN.md</code> and the executive summary.</p></div>
+    <div><span class="k">intel-mcp</span><p>Cached lookups against OSV, NVD, EPSS and CISA KEV, used to rank dependencies and check versions during verification.</p></div>
+  </div>
+</section>
+
+<!-- ───────────── FLOW ───────────── -->
+<section id="flow">
+  <div class="head">
+    <p class="eyebrow">Task flow</p>
+    <h2>One task, from prompt to report</h2>
+    <p class="prose">The planner decides what to do and hands the hands-on work to the worker, one focused goal at a time. The worker runs tools and reads code. The planner gets a short result back and verifies what the worker found.</p>
+  </div>
+
+  <figure class="fig">
+    <div class="scroll">
+    <svg viewBox="0 0 1000 644" role="img" aria-label="Sequence of one task across the operator, the planner, the worker, kali-mcp and findings-mcp, in four phases: plan, test, verify and report.">
+      <defs>
+        <marker id="a2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path class="ah" d="M0 0 10 5 0 10z"/></marker>
+      </defs>
+
+      <!-- lifelines -->
+      <path class="life" d="M180 62V630M365 62V630M550 62V630M735 62V630M920 62V630"/>
+      <path class="sep" d="M14 184H986M14 436H986M14 552H986"/>
+
+      <!-- lane heads -->
+      <rect class="b" x="110" y="16" width="140" height="46" rx="6"/>
+      <text class="t" x="180" y="36" text-anchor="middle">You</text>
+      <text class="s" x="180" y="52" text-anchor="middle">operator</text>
+      <rect class="b" x="295" y="16" width="140" height="46" rx="6"/>
+      <text class="t" x="365" y="36" text-anchor="middle">Planner</text>
+      <text class="s" x="365" y="52" text-anchor="middle">hosted model</text>
+      <rect class="b" x="480" y="16" width="140" height="46" rx="6"/>
+      <text class="t" x="550" y="36" text-anchor="middle">Worker</text>
+      <text class="s" x="550" y="52" text-anchor="middle">where you choose</text>
+      <rect class="b" x="665" y="16" width="140" height="46" rx="6"/>
+      <text class="t" x="735" y="36" text-anchor="middle">kali-mcp</text>
+      <text class="s" x="735" y="52" text-anchor="middle">sandbox, policy</text>
+      <rect class="b" x="850" y="16" width="140" height="46" rx="6"/>
+      <text class="t" x="920" y="36" text-anchor="middle">findings-mcp</text>
+      <text class="s" x="920" y="52" text-anchor="middle">records, report</text>
+
+      <text class="ph" x="14" y="100">PLAN</text>
+      <text class="ph" x="14" y="216">TEST</text>
+      <text class="ph" x="14" y="468">VERIFY</text>
+      <text class="ph" x="14" y="584">REPORT</text>
+
+      <!-- plan -->
+      <path class="e" d="M180 96H365" marker-end="url(#a2)"/>
+      <text class="l" x="272" y="89" text-anchor="middle">task in plain language</text>
+      <path class="e" d="M365 130H735" marker-end="url(#a2)"/>
+      <text class="l" x="550" y="123" text-anchor="middle">engagement_info: scope and rules</text>
+      <path class="e" d="M365 164H920" marker-end="url(#a2)"/>
+      <text class="l" x="642" y="157" text-anchor="middle">get_playbook, write PLAN.md</text>
+
+      <!-- test -->
+      <path class="e" d="M365 212H550" marker-end="url(#a2)"/>
+      <text class="l" x="457" y="205" text-anchor="middle">delegate_task: goal + contract</text>
+      <path class="e" d="M550 246H735" marker-end="url(#a2)"/>
+      <text class="l" x="642" y="239" text-anchor="middle">kali_run, repeated</text>
+      <path class="e d" d="M735 280H180" marker-end="url(#a2)"/>
+      <text class="l" x="457" y="273" text-anchor="middle">approval request, intrusive only</text>
+      <path class="e" d="M180 314H735" marker-end="url(#a2)"/>
+      <text class="l" x="457" y="307" text-anchor="middle">approved once, on the host</text>
+      <path class="e d" d="M735 348H550" marker-end="url(#a2)"/>
+      <text class="l" x="642" y="341" text-anchor="middle">digest; full output on disk</text>
+      <path class="e" d="M550 382H920" marker-end="url(#a2)"/>
+      <text class="l" x="735" y="375" text-anchor="middle">record_candidate</text>
+      <path class="e d" d="M550 416H365" marker-end="url(#a2)"/>
+      <text class="l" x="457" y="409" text-anchor="middle">finish: redacted summary</text>
+
+      <!-- verify -->
+      <path class="e" d="M365 464H735" marker-end="url(#a2)"/>
+      <text class="l" x="550" y="457" text-anchor="middle">verify: oracle + negative control</text>
+      <path class="e" d="M365 498H920" marker-end="url(#a2)"/>
+      <text class="l" x="642" y="491" text-anchor="middle">update_finding: confirmed</text>
+      <path class="e" d="M920 516H948V534H924" marker-end="url(#a2)"/>
+      <text class="l" x="906" y="530" text-anchor="end">quote check, validator</text>
+
+      <!-- report -->
+      <path class="e" d="M365 580H920" marker-end="url(#a2)"/>
+      <text class="l" x="642" y="573" text-anchor="middle">generate_report</text>
+      <path class="e d" d="M920 614H180" marker-end="url(#a2)"/>
+      <text class="l" x="550" y="607" text-anchor="middle">draft revision, for your approval</text>
+    </svg>
+    </div>
+    <div class="key">
+      <span><i></i>call</span>
+      <span><i class="d"></i>result or request back</span>
+    </div>
+    <figcaption>Raw tool output and client code stay with the worker. The planner receives a short structured result with secrets redacted, then opens only the files it needs to verify a candidate. The <code>riskvoid-local</code> agent profile follows the same path on one model, without delegation.</figcaption>
+  </figure>
+</section>
+
+<!-- ───────────── GATES ───────────── -->
+<section id="gates">
+  <div class="head">
+    <p class="eyebrow">Command path</p>
+    <h2>What happens to every command</h2>
+    <p class="prose">Whoever sends it, planner or worker, a command goes through the same eight steps in kali-mcp. Two of them are hard boundaries that hold whatever the model does. The others catch mistakes and keep testing at the agreed intensity.</p>
+  </div>
+
+  <ol class="steps">
+    <li><span class="n">1</span><div><h3>Halt and window.</h3> <p style="display:inline">Refused when the engagement is halted or outside its testing window.</p></div><span class="tag">operator decision</span></li>
+    <li><span class="n">2</span><div><h3>Tier.</h3> <p style="display:inline">Classified passive, active or intrusive from the programs it runs. Refused above what <code>RULES.md</code> allows.</p></div><span class="tag">guardrail</span></li>
+    <li><span class="n">3</span><div><h3>Scope precheck.</h3> <p style="display:inline">Hosts named in the command are checked against the scope, for a readable early refusal.</p></div><span class="tag">guardrail</span></li>
+    <li><span class="n">4</span><div><h3>Approval.</h3> <p style="display:inline">An intrusive command returns <code>APPROVAL REQUIRED</code> with an id. After you approve it on the host, the same command runs once.</p></div><span class="tag">operator decision</span></li>
+    <li><span class="n">5</span><div><h3>Rate cap.</h3> <p style="display:inline">Rate-limitable tools get the engagement's maximum rate added or capped.</p></div><span class="tag">guardrail</span></li>
+    <li><span class="n">6</span><div><h3>Sandbox.</h3> <p style="display:inline">A new mount and pid namespace, the engagement's own unprivileged user and a cleared environment. It sees one engagement folder and the in-scope code, read-only.</p></div><span class="tag hard">hard boundary</span></li>
+    <li><span class="n">7</span><div><h3>Firewall and DNS.</h3> <p style="display:inline">nftables allows that user only in-scope addresses and names resolved by the engagement's own dnsmasq. The kit's services, link-local and cloud metadata addresses and all IPv6 are dropped.</p></div><span class="tag hard">hard boundary</span></li>
+    <li><span class="n">8</span><div><h3>Hash and audit.</h3> <p style="display:inline">Every file the command created or changed is SHA-256 hashed into the audit log with the command, tier, exit code and duration.</p></div><span class="tag">record</span></li>
+  </ol>
+
+  <div class="two">
+    <div class="sub">
+      <h3>What an approval covers</h3>
+      <p class="prose">One run of one exact action. It stores a digest of the command text, the SHA-256 of the programs it runs and the input files it names, and the policy revision. It is consumed once, expires after 24 hours, and goes stale when the policy changes.</p>
+    </div>
+    <div class="sub">
+      <h3>Where the arguments came from</h3>
+      <p class="prose">A target that tells the agent what to run is the classic hijack. Each approval shows whether a host, path or command text came from the scope, the task, the agent, or content the target wrote. Arguments copied from target content are highlighted.</p>
+    </div>
+  </div>
+</section>
+
+<!-- ───────────── MODELS ───────────── -->
+<section id="models">
+  <div class="head">
+    <p class="eyebrow">Models</p>
+    <h2>Two models and who sees what</h2>
+    <p class="prose">Tool output and client code are most of the tokens and the most sensitive data. They stay with the worker, which runs where you choose. The planner works from summaries.</p>
+  </div>
+
+  <div class="tw"><table class="wide">
+    <thead><tr><th>Model</th><th>Job</th><th>Sees</th><th>Runs on</th></tr></thead>
+    <tbody>
+      <tr><td>Planner</td><td>Plans, decides the next step, verifies, writes findings and the report</td><td>The task, the worker's redacted summaries, findings, files it chooses to open</td><td>A hosted model through OpenRouter, or Anthropic or OpenAI directly</td></tr>
+      <tr><td>Worker</td><td>One focused, hands-on task at a time: runs tools, reads code, records candidates</td><td>Raw tool output, client code, evidence</td><td>Your own GPU, a rented one, Colab, any OpenAI-compatible endpoint, or a hosted model</td></tr>
+      <tr><td>Validator</td><td>Tries to disprove each confirmed finding</td><td>Only the finding record, the evidence it cites and its oracle records</td><td>A different model from the planner, in a fresh context</td></tr>
+      <tr><td>Advisor</td><td>Unsticks a stalled worker task, at most twice per task</td><td>The stalled task's state</td><td>The planner model. Off for engagements with a private worker</td></tr>
+    </tbody>
+  </table></div>
+
+  <div class="two">
+    <div class="sub">
+      <h3>Data routes are enforced at the gateway</h3>
+      <p class="prose">A pre-call hook in LiteLLM works out where each call's route goes (local, Colab, an API, a cloud provider) and which engagements the call is about. If the destination isn't in an engagement's <code>Client data:</code> rule, or the engagement is halted, the call is refused with a 403. An offline engagement can't reach a cloud model, whatever the conversation asks.</p>
+    </div>
+    <div class="sub">
+      <h3>Detection can only add restrictions</h3>
+      <p class="prose">Engagements are read from the conversation binding, the worker's task header and tool-call arguments. Tool results are never read for this, so content the agent fetched can't add or remove an engagement. Refused or empty planner replies are retried or answered by a fallback model, unless the rules forbid the fallback.</p>
+    </div>
+  </div>
+</section>
+
+<!-- ───────────── WORKER ───────────── -->
+<section id="worker">
+  <div class="head">
+    <p class="eyebrow">Worker loop</p>
+    <h2>The loop around the worker model</h2>
+    <p class="prose">worker-mcp runs a tool-calling loop on a model that may be small and local. Most of its code deals with what goes wrong in long loops.</p>
+  </div>
+  <div class="cells">
+    <div><span class="k">Contract</span><p><code>delegate_task</code> carries one goal with a contract: done when, stop when, inputs and one coverage cell. <code>finish</code> returns a typed status and candidates with their proof.</p></div>
+    <div><span class="k">Context</span><p>The model gets a digest of each tool output: parsed counts and top items for tools the kit reads, otherwise the head and the tail. Older results shrink to one line with the evidence path. The full output is always on disk.</p></div>
+    <div><span class="k">Malformed calls</span><p>A tool call that doesn't parse goes back to the model as an error and never runs. <code>./rvkit doctor --models</code> checks that a worker model makes well-formed calls.</p></div>
+    <div><span class="k">Stalls</span><p>Three identical calls, the same error three times, or eight calls without progress by default trigger a nudge, then advice from the planner model, then a stop with status stalled.</p></div>
+    <div><span class="k">Durability</span><p>Each tool call is recorded as started before it runs and done after. After a restart, an action that was in flight is flagged for review. On resume the model is told its result is unknown. Nothing is repeated automatically.</p></div>
+    <div><span class="k">Approval waits</span><p>A task waiting for an approval pauses without holding a model slot. Once you decide, it continues by itself and the approved action runs exactly once.</p></div>
+  </div>
+</section>
+
+<!-- ───────────── FINDINGS ───────────── -->
+<section id="findings">
+  <div class="head">
+    <p class="eyebrow">Findings</p>
+    <h2>From lead to finding</h2>
+    <p class="prose">A model proposes a finding. Checks the model doesn't control decide whether it stands, and a person approves what goes to the client.</p>
+  </div>
+
+  <figure class="fig">
+    <div class="scroll">
+    <svg viewBox="0 0 1000 222" role="img" aria-label="A finding moves from observation to candidate to confirmed to a report revision to approved. The validator can send a confirmed finding back to candidate.">
+      <defs>
+        <marker id="a3" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path class="ah" d="M0 0 10 5 0 10z"/></marker>
+      </defs>
+      <rect class="b" x="206" y="6" width="180" height="30" rx="6"/>
+      <text class="s" x="296" y="25" text-anchor="middle">false positive, duplicate</text>
+      <path class="e" d="M296 84V36" marker-end="url(#a3)"/>
+
+      <rect class="b" x="18" y="84" width="148" height="56" rx="6"/>
+      <text class="t" x="92" y="108" text-anchor="middle">Observation</text>
+      <text class="s" x="92" y="125" text-anchor="middle">what a tool noticed</text>
+      <rect class="b" x="222" y="84" width="148" height="56" rx="6"/>
+      <text class="t" x="296" y="108" text-anchor="middle">Candidate</text>
+      <text class="s" x="296" y="125" text-anchor="middle">a lead, unverified</text>
+      <rect class="b" x="426" y="84" width="148" height="56" rx="6"/>
+      <text class="t" x="500" y="108" text-anchor="middle">Confirmed</text>
+      <text class="s" x="500" y="125" text-anchor="middle">proof attached</text>
+      <rect class="b" x="630" y="84" width="148" height="56" rx="6"/>
+      <text class="t" x="704" y="108" text-anchor="middle">Report revision</text>
+      <text class="s" x="704" y="125" text-anchor="middle">frozen and hashed</text>
+      <rect class="b" x="834" y="84" width="148" height="56" rx="6"/>
+      <text class="t" x="908" y="108" text-anchor="middle">Approved</text>
+      <text class="s" x="908" y="125" text-anchor="middle">ready to deliver</text>
+
+      <path class="e" d="M166 112H222" marker-end="url(#a3)"/>
+      <path class="e" d="M370 112H426" marker-end="url(#a3)"/>
+      <path class="e" d="M574 112H630" marker-end="url(#a3)"/>
+      <path class="e" d="M778 112H834" marker-end="url(#a3)"/>
+
+      <text class="s" x="194" y="58" text-anchor="middle">worker, planner</text>
+      <text class="l" x="194" y="73" text-anchor="middle">record</text>
+      <text class="s" x="398" y="58" text-anchor="middle">planner + checks</text>
+      <text class="l" x="398" y="73" text-anchor="middle">confirm</text>
+      <text class="s" x="602" y="58" text-anchor="middle">findings-mcp</text>
+      <text class="l" x="602" y="73" text-anchor="middle">generate</text>
+      <text class="s" x="806" y="58" text-anchor="middle">a person</text>
+      <text class="l" x="806" y="73" text-anchor="middle">approve</text>
+
+      <path class="e d" d="M500 140V188H296V140" marker-end="url(#a3)"/>
+      <text class="l" x="398" y="207" text-anchor="middle">validator disproves it</text>
+    </svg>
+    </div>
+    <figcaption>Candidates never appear in a report, and open ones keep it a draft. The agent can't approve a report, record an exception or review its own finding. Those are console and CLI operations.</figcaption>
+  </figure>
+
+  <div class="two">
+    <div class="sub">
+      <h3>What confirming requires</h3>
+      <ul class="bul">
+        <li>A stated verification method, with an evidence file for methods that produce output.</li>
+        <li>Reproduction steps.</li>
+        <li>Every quote in the write-up found in the cited evidence, and every <code>/src</code> file and line pointing at a line that exists.</li>
+        <li>For an oracle, a record that passed with a clean control.</li>
+        <li>Then the validator: a separate model that sees only the finding and its evidence, and whose only job is to disprove it.</li>
+      </ul>
+    </div>
+    <div class="sub">
+      <h3>What the report proves</h3>
+      <ul class="bul">
+        <li>Each evidence file's current SHA-256 is checked against the audit log. A file changed after it was produced, or not produced by an audited command, is flagged.</li>
+        <li>Each revision freezes its inputs and records the hash of every artifact.</li>
+        <li>Readiness checks keep it a draft until the summary is written, every candidate is triaged and untested coverage cells are accounted for.</li>
+      </ul>
+    </div>
+  </div>
+
+  <div class="sub">
+    <h3>Oracles: checks the kit runs itself</h3>
+    <div class="tw"><table class="wide">
+      <thead><tr><th>Oracle</th><th>Passes when</th><th>Negative control</th></tr></thead>
+      <tbody>
+        <tr><td><code>marker</code></td><td>A fresh canary sent in the request comes back</td><td>The same request with a different token doesn't return the canary</td></tr>
+        <tr><td><code>identity_difference</code></td><td>An attacker identity gets another tenant's record</td><td>The owner gets it too, and a request with no identity doesn't</td></tr>
+        <tr><td><code>read_back</code></td><td>A separate check request finds the marker after the proof request</td><td>The check request before the proof doesn't find it</td></tr>
+        <tr><td><code>browser_xss</code></td><td>Script carrying the canary runs in the sandboxed browser. Reflection alone doesn't count</td><td>The same URL with another token doesn't run it</td></tr>
+        <tr><td><code>timing</code></td><td>Every probe sample is slower than every control sample, by a minimum delay and three times the spread</td><td>Control samples interleaved with the probes</td></tr>
+      </tbody>
+    </table></div>
+    <p class="small">Oracle requests go through the same broker as any other request: scope, tiers, approvals, budget, evidence and audit. A failed control gives inconclusive, not pass.</p>
+  </div>
+</section>
+
+<!-- ───────────── COVERAGE ───────────── -->
+<section id="coverage">
+  <div class="head">
+    <p class="eyebrow">Coverage</p>
+    <h2>Coverage is computed from evidence</h2>
+    <p class="prose">Before testing a web target, <code>recon_map</code> builds a map from a sandboxed crawl, API paths named in scripts, OpenAPI and GraphQL schemas and unauthenticated probes. Requests to the same method and path template become one entry with a stable id. The coverage matrix crosses those entries with the test classes that apply to each.</p>
+  </div>
+
+  <figure class="fig">
+    <div class="scroll">
+    <table class="cov" style="min-width:640px">
+      <thead><tr><th>Map entry</th><th>access-control</th><th>injection</th><th>xss</th><th>ssrf</th></tr></thead>
+      <tbody>
+        <tr><td><em>E-4a1f2c</em>GET /api/orders/{id}</td><td><span class="st finding">finding</span></td><td><span class="st tested">tested</span></td><td><span class="st na">n/a</span></td><td><span class="st na">n/a</span></td></tr>
+        <tr><td><em>E-9c03be</em>POST /api/orders</td><td><span class="st tested">tested</span></td><td><span class="st tested">tested</span></td><td><span class="st gap">gap</span></td><td><span class="st na">n/a</span></td></tr>
+        <tr><td><em>E-17d5a0</em>GET /search?q=</td><td><span class="st na">n/a</span></td><td><span class="st tested">tested</span></td><td><span class="st tested">tested</span></td><td><span class="st na">n/a</span></td></tr>
+        <tr><td><em>E-b82e44</em>POST /api/webhooks</td><td><span class="st skip">skipped</span></td><td><span class="st gap">gap</span></td><td><span class="st na">n/a</span></td><td><span class="st tested">tested</span></td></tr>
+      </tbody>
+    </table>
+    </div>
+    <div class="key">
+      <span class="st tested">tested, with evidence</span>
+      <span class="st finding">tested, a finding</span>
+      <span class="st gap">gap: applies, no plan item</span>
+      <span class="st skip">skipped, with a reason</span>
+      <span class="st na">n/a: class doesn't apply</span>
+    </div>
+    <figcaption>An illustrative matrix, not real data. The gap-fill pass delegates each gap as a worker task narrowed to that one cell, or records why it's skipped. Untested cells are flagged before delivery.</figcaption>
+  </figure>
+</section>
+
+<!-- ───────────── CONTROL ───────────── -->
+<section id="control">
+  <div class="head">
+    <p class="eyebrow">Control plane</p>
+    <h2>Who can change what</h2>
+    <p class="prose">The files the agent can see are not the ones that are enforced. Scope, rules, approvals and halt live in a root-only volume that only host tooling writes.</p>
+  </div>
+
+  <div class="tw"><table class="wide">
+    <thead><tr><th>Where</th><th>Who can change it</th><th>What it holds</th></tr></thead>
+    <tbody>
+      <tr><td><code>/control</code> volume in kali-mcp</td><td>Only <code>rvctl.py</code>, which only <code>./rvkit</code> and the console run</td><td>The active scope and rules as numbered policy revisions, approvals, halt flags, the authoritative audit log, the credential vault</td></tr>
+      <tr><td>Console, a host process on 127.0.0.1</td><td>You, with a session token</td><td>Nothing of its own. It calls the same validated operations as the CLI</td></tr>
+      <tr><td><code>/work/&lt;engagement&gt;/</code></td><td>You, sandboxed commands, the worker, findings-mcp</td><td>The <code>SCOPE.md</code> and <code>RULES.md</code> you edit, the plan, evidence, <code>findings.db</code>, the report</td></tr>
+    </tbody>
+  </table></div>
+
+  <div class="two">
+    <div class="sub">
+      <h3>Scope is compiled, not read</h3>
+      <p class="prose"><code>SCOPE.md</code> and <code>RULES.md</code> in the engagement folder take effect only when <code>./rvkit scope</code> copies them into the control volume and rebuilds the firewall. An agent that edits them changes nothing. A line the policy compiler can't enforce is an error and stops activation.</p>
+    </div>
+    <div class="sub">
+      <h3>One set of operations, three actors</h3>
+      <p class="prose">The console, the CLI and the agent's tools all change records through the same operations. Every change names its actor (<code>console:</code>, <code>cli:</code> or <code>agent:</code>) and the revision it was based on. An edit based on an older revision is refused as a conflict, not written over.</p>
+    </div>
+  </div>
+</section>
+
+<!-- ───────────── BUILD ───────────── -->
+<section id="build">
+  <div class="head">
+    <p class="eyebrow">Source</p>
+    <h2>Where the code is</h2>
+    <p class="prose">Most of the kit is the machinery around the models. It is Python and shell, with no framework beyond the MCP server library, and it ships as four images: <code>egress</code>, <code>harness</code>, <code>kali</code> and <code>report</code>, published for amd64 and arm64.</p>
+  </div>
+
+  <div class="tw"><table class="wide">
+    <thead><tr><th>Path</th><th>What it is</th><th class="num">Lines</th></tr></thead>
+    <tbody>
+      <tr><td><code>harness/</code></td><td>The worker loop, findings store and shared operations, validator, coverage, report generator, intel and web servers, playbooks</td><td class="num">≈ 7,900</td></tr>
+      <tr><td><code>kali-mcp/</code></td><td>The tool server and enforcement: policy compiler, tiers, approvals, sandbox, firewall, oracles, recon, identities, and the Kali image with every tool pinned</td><td class="num">≈ 6,900</td></tr>
+      <tr><td><code>evals/</code></td><td>Regression suites, benchmark runner and scoring, failure mining, the improvement loop</td><td class="num">≈ 6,800</td></tr>
+      <tr><td><code>scripts/</code></td><td>The console, OpenHands configuration through its API, config rendering</td><td class="num">≈ 1,900</td></tr>
+      <tr><td><code>rvkit</code></td><td>The control script: setup, engagements, scope, approvals, halt, benchmarks</td><td class="num">≈ 1,000</td></tr>
+      <tr><td><code>litellm/</code></td><td>The model routing template and the pre-call policy hook</td><td class="num">≈ 600</td></tr>
+      <tr><td><code>prompts/</code>, <code>gateway/</code>, <code>egress/</code>, <code>colab/</code></td><td>Planner persona and method, the Caddy start page, the proxy allowlist, the worker model launcher</td><td class="num"></td></tr>
+    </tbody>
+  </table></div>
+  <p class="small">Line counts are approximate, taken from the repository in November 2026.</p>
+
+  <div class="sub">
+    <h3>Design decisions</h3>
+    <div class="cells">
+      <div><span class="k">MCP is the boundary</span><p>Every capability is an MCP tool with a narrow interface. The controls live in those servers, so they hold whichever agent or model calls them.</p></div>
+      <div><span class="k">Firewall hard, tiers soft</span><p>Network policy built from the scope can't be argued with. Tiers, rate caps and the precheck catch honest mistakes.</p></div>
+      <div><span class="k">Tiers by program name</span><p>Classifying arbitrary code by what it might send isn't reliable. Program names are predictable and easy to review. The cost is documented.</p></div>
+      <div><span class="k">Evidence hashed on write</span><p>Files are hashed in the same step that produces them, into a log the agent can't write.</p></div>
+      <div><span class="k">Files on the host</span><p>Engagements are plain folders of Markdown, SQLite and tool output. You can read, back up and hand them over without the kit.</p></div>
+      <div><span class="k">Pinned, two weeks old</span><p>Every image, package and binary is pinned to an exact version that has been public for at least two weeks.</p></div>
+    </div>
+  </div>
+</section>
+
+<!-- ───────────── EVALS ───────────── -->
+<section id="evals">
+  <div class="head">
+    <p class="eyebrow">Measurement</p>
+    <h2>How changes are measured</h2>
+    <p class="prose">Controls and capability are tested separately. A control either holds or it doesn't. What a model finds varies from run to run, so it is measured with repeated runs and a spread.</p>
+  </div>
+
+  <div class="two">
+    <div class="sub">
+      <h3>Controls: a test per risk</h3>
+      <p class="prose">Each risk the kit has to control has a test that fails if the control breaks: a restart during a run, approval reuse, halt, hostile content, cross-engagement access, report integrity. The suites run against the live stack with a scripted model, on every pull request and nightly.</p>
+    </div>
+    <div class="sub">
+      <h3>Capability: scored benchmarks</h3>
+      <p class="prose">Nine benchmarks on lab targets, including one with planted instructions. Each expected finding is reported as found in k of n runs, with standard errors. A plain agent on the same model, with only the sandbox, is the baseline. Clean runs restrict lookups so the agent can't read a write-up of the target.</p>
+    </div>
+  </div>
+
+  <div class="sub">
+    <h3>The improvement loop</h3>
+    <p class="prose">A change to a prompt, tool description, playbook step or error message goes through one round.</p>
+    <ol class="row5">
+      <li><span class="n">1</span><h3>Baseline</h3><p>Every benchmark, several times, on the current code.</p></li>
+      <li><span class="n">2</span><h3>Error analysis</h3><p>Failures grouped by cause from fixed rules. Read the records, on tuning benchmarks only.</p></li>
+      <li><span class="n">3</span><h3>Propose</h3><p>One small change for one cause, naming the records it came from.</p></li>
+      <li><span class="n">4</span><h3>Candidate</h3><p>The same benchmarks, the same number of times, on the branch.</p></li>
+      <li><span class="n">5</span><h3>Judge</h3><p>Kept, dropped or incomplete. Dropped changes stay on record with their numbers.</p></li>
+    </ol>
+    <h3>A change is kept only when all three hold</h3>
+    <ul class="bul prose">
+      <li>The cause shrinks on the four tuning benchmarks, by more than one standard error.</li>
+      <li>Strict recall on the five held-out benchmarks doesn't fall beyond what the runs can tell apart.</li>
+      <li>No safety cause has more records per run, on any benchmark.</li>
+    </ul>
+    <p class="small">Tuning and held-out benchmarks are separate sets, so a change is never checked on the failures it was written from.</p>
+  </div>
+</section>
+
+<!-- ───────────── LIMITS ───────────── -->
+<section id="limits">
+  <div class="head">
+    <p class="eyebrow">Limits</p>
+    <h2>Known limits</h2>
+    <p class="prose">The kit is built for a consultant who sets the scope, watches the run and approves intrusive steps. It is not a guarantee of containment against a determined agent.</p>
+  </div>
+  <ul class="bul prose">
+    <li>Tiers are assigned by program name. A script at the passive tier, or <code>curl</code> at the active tier, can send intrusive traffic to in-scope hosts without approval, unless the engagement sets <code>Strict tiers: on</code>.</li>
+    <li>Redaction is pattern-based. It is a safety net for what the planner sees, and the values stay in the evidence files.</li>
+    <li>The kali-mcp container needs <code>NET_ADMIN</code> and <code>SYS_ADMIN</code> to build the sandbox. An escape to its root would be serious.</li>
+    <li>The held-out check shows that a change did no visible harm. It doesn't prove the change helped elsewhere.</li>
+  </ul>
+  <p class="prose">The full list and what counts as a security bug are in <a href="https://github.com/RiskVoid/Security-Agent-Kit/blob/main/SECURITY.md">SECURITY.md</a>. The detailed reference is <a href="https://github.com/RiskVoid/Security-Agent-Kit/blob/main/docs/architecture.md">docs/architecture.md</a>.</p>
+</section>
+
+<footer>
+  <span>Drawn from the repository's architecture, security and improvement-loop docs and the harness modules.</span>
+  <span>For authorised work only. Use it on systems you own or have written permission to test.</span>
+</footer>
+
+</div>
+
+<script>
+(function(){
+  var nav=document.querySelector('.toc');
+  if(!nav||!('IntersectionObserver' in window)) return;
+  var links={},cur='';
+  var box=nav.querySelector('.links');
+  box.querySelectorAll('a').forEach(function(a){links[a.getAttribute('href').slice(1)]=a});
+  var calm=window.matchMedia&&window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  function set(id){
+    if(id===cur) return;
+    if(links[cur]) links[cur].removeAttribute('aria-current');
+    cur=id;
+    var a=links[id]; if(!a) return;
+    a.setAttribute('aria-current','true');
+    box.scrollTo({left:a.offsetLeft-(box.clientWidth-a.offsetWidth)/2,behavior:calm?'auto':'smooth'});
+  }
+  var io=new IntersectionObserver(function(es){
+    es.forEach(function(e){if(e.isIntersecting) set(e.target.id||'')});
+  },{rootMargin:'-15% 0px -75% 0px'});
+  document.querySelectorAll('header.top, section[id]').forEach(function(s){io.observe(s)});
+})();
+</script>
+</body>
+</html>
