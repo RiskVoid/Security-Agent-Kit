@@ -59,6 +59,14 @@ syft|syft version
 grype|grype version
 EOF
 
+# Tools run in the sandbox with CAP_NET_RAW only (rv-sandbox.sh). A binary with file capabilities beyond that can't
+# start there ("Operation not permitted"), which the version checks above, run as root, don't see.
+caps="$(docker compose exec -T kali-mcp sh -c 'getcap -r /usr /opt 2>/dev/null' </dev/null)"
+if [ -z "$caps" ]; then ok "no binary has file capabilities"; else bad "binaries with file capabilities" "$caps"; fi
+out="$(docker compose exec -T kali-mcp setpriv --reuid=65000 --regid=65000 --clear-groups --inh-caps=-all,+net_raw \
+  --ambient-caps=-all,+net_raw --bounding-set=-all,+net_raw --no-new-privs nmap --version </dev/null 2>&1)"
+if echo "$out" | grep -q '^Nmap version'; then ok "nmap starts with the sandbox's privileges"; else bad "nmap in the sandbox" "$out"; fi
+
 echo "== 2. through the sandbox (demo-code, passive)"
 mcp_run() {
   docker compose exec -T worker-mcp python3 -c '

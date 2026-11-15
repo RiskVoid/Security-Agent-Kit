@@ -105,6 +105,11 @@ COPY aitools/rv-llm /usr/local/bin/rv-llm
 COPY aitools/jwt_tool_wrap.py /opt/jwt_tool/jwt_tool_wrap.py
 RUN chmod 755 /opt/kali-mcp/rv-sandbox.sh /opt/kali-mcp/joern/rv-joern && chmod 700 /opt/kali-mcp/rvctl.py \
     && chmod 644 /opt/kali-mcp/joern/taint.sc && chmod 755 /usr/local/bin/rv-llm && ln -sf /opt/kali-mcp/joern/rv-joern /usr/local/bin/rv-joern
+# The sandbox runs every command with CAP_NET_RAW only (rv-sandbox.sh: bounding set, ambient, no_new_privs). Linux
+# refuses to start a binary whose file capabilities go beyond that ("Operation not permitted"), and Kali's nmap ships
+# with cap_net_admin and cap_net_bind_service too. Strip file capabilities from everything: the sandbox's ambient
+# CAP_NET_RAW is what nmap's raw scans need, and nothing else may gain more. (Last layer: catches every install above.)
+RUN getcap -r /usr /opt 2>/dev/null | cut -d' ' -f1 | xargs -r setcap -r && [ -z "$(getcap -r /usr /opt 2>/dev/null)" ]
 WORKDIR /work
 EXPOSE 8090
 CMD ["/opt/venv/bin/python3", "/opt/kali-mcp/server.py"]
