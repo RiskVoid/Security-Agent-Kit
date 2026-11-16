@@ -71,9 +71,21 @@ render_litellm() {
   python3 scripts/render_litellm.py || die "could not render the LiteLLM config (see above)"
 }
 planner_key() { # the .env key the planner model uses: planner_key [model]
-  case "${1:-$(envget PLANNER_MODEL)}" in anthropic/*) echo ANTHROPIC_API_KEY ;; openai/*) echo OPENAI_API_KEY ;; *) echo OPENROUTER_API_KEY ;; esac
+  case "${1:-$(envget PLANNER_MODEL)}" in anthropic/*) echo ANTHROPIC_API_KEY ;; openai/*) echo OPENAI_API_KEY ;;
+    bedrock/*) echo AWS_BEARER_TOKEN_BEDROCK ;; *) echo OPENROUTER_API_KEY ;; esac
 }
-spend_sum() { # today's spend across the providers LiteLLM budgets (OpenRouter, and Anthropic when used directly)
+need_bedrock() { # Amazon Bedrock: asks once for the Bedrock API key and region, stored in .env
+  local key region
+  if [ -z "$(envget AWS_BEARER_TOKEN_BEDROCK)" ]; then
+    key="$(ask_secret "Amazon Bedrock API key (AWS console: Bedrock > API keys) (hidden input)")"
+    [ -n "$key" ] || die "AWS_BEARER_TOKEN_BEDROCK is needed for Bedrock models"; envset AWS_BEARER_TOKEN_BEDROCK "$key"
+  fi
+  if [ -z "$(envget AWS_REGION_NAME)" ]; then
+    region="$(ask "AWS region for Bedrock" "us-east-1")"
+    [[ "$region" =~ ^[a-z]{2}(-gov)?-[a-z]+-[0-9]$ ]] || die "not an AWS region: $region"; envset AWS_REGION_NAME "$region"
+  fi
+}
+spend_sum() { # today's spend across the providers LiteLLM budgets (OpenRouter; Anthropic or Bedrock when used directly)
   curl -s -m 5 $LITELLM_URL/provider/budgets -H "Authorization: Bearer $(envget LITELLM_MASTER_KEY)" | python3 -c 'import sys,json
 try: print("%.2f" % sum((b.get("spend") or 0) for b in json.load(sys.stdin)["providers"].values()))
 except Exception: print("?")' 2>/dev/null || echo "?"
@@ -107,7 +119,7 @@ test_model() {
     if [ "$model" = "colab-qwen" ]; then
       warn "Worker model not reachable at $(envget WORKER_API_BASE). Colab: is the notebook running, and did you run ./rvkit connect <url>? Other endpoints: ./rvkit worker"
     else
-      warn "Model '$model' not reachable. Check OPENROUTER_API_KEY in .env and ./rvkit logs litellm"
+      warn "Model '$model' not reachable. Check $(planner_key) in .env and ./rvkit logs litellm"
     fi
     echo "$out" | head -c 400; echo
     return 1
@@ -263,12 +275,14 @@ cmd_setup() {
     echo "   local  a server on this machine: Ollama, LM Studio, llama-server, vLLM (detected automatically)"
     echo "   api    any OpenAI-compatible URL you run (RunPod, Modal, your GPU server)"
     echo "   openrouter  no GPU: a hosted model with your OpenRouter key (client data goes to OpenRouter)"
+    echo "   bedrock  no GPU: a model on Amazon Bedrock with a Bedrock API key (client data goes to AWS)"
     echo "   later  decide later (./rvkit worker)"
     worker="$(ask "Worker" "${RVKIT_WORKER:-colab}")"
   fi
   case "$worker" in
     local) "$SELF" worker local || true ;;
     openrouter) "$SELF" worker openrouter || true ;;
+    bedrock) "$SELF" worker bedrock || true ;;
     api)   local u m k; u="$(ask "Endpoint base URL (ending in /v1)" "")"; m="$(ask "Model name" "")"
            k="$(ask_secret "API key")"; [ -n "$u" ] && [ -n "$m" ] && "$SELF" worker api "$u" "$m" "${k:-none}" || true ;;
     colab) cat <<EOF
@@ -555,6 +569,9 @@ cmd_worker() {
       echo "worker endpoint: $(envget WORKER_API_BASE)   model: $(envget WORKER_MODEL_ID)"
       case "$(envget WORKER_MODEL_ID)" in openrouter/*)
         echo "  hosted on OpenRouter (zero-data-retention providers): tool output and client code go there, also for"
+        echo "  'Worker model: private' engagements and the riskvoid-local agent. For fully local work: ./rvkit worker local" ;;
+      bedrock/*)
+        echo "  hosted on Amazon Bedrock ($(envget AWS_REGION_NAME)): tool output and client code go there, also for"
         echo "  'Worker model: private' engagements and the riskvoid-local agent. For fully local work: ./rvkit worker local" ;; esac
       if [ "$(envget WORKER_FALLBACK)" = "on" ]; then
         echo "fallback (when the endpoint is down): $(envget WORKER_FALLBACK_MODEL) via OpenRouter, zero-data-retention providers"
@@ -593,7 +610,14 @@ cmd_worker() {
       warn "Tool output and client code will go to $m on OpenRouter (zero-data-retention providers only)."
       envset WORKER_API_BASE "https://openrouter.ai/api/v1"; envset WORKER_API_KEY none
       envset WORKER_MODEL_ID "openrouter/${m:-deepseek/deepseek-v4.1-flash}" ;;
-    *) die "usage: ./rvkit worker [show | colab | local [url] [model] [key] | api <url> <model> [key] | openrouter [model] | fallback [on|off|<openrouter-model>]]" ;;
+    bedrock) # no GPU: a model on Amazon Bedrock (AWS credits pay for it), with the Bedrock API key
+      local m="${2:-qwen.qwen3-coder-next}"; m="${m#bedrock/}"
+      [[ "$m" =~ ^[A-Za-z0-9._:/-]+$ ]] || die "not a Bedrock model id: $m"
+      need_bedrock
+      warn "Tool output and client code will go to $m on Amazon Bedrock ($(envget AWS_REGION_NAME))."
+      envset WORKER_API_BASE "https://bedrock-runtime.$(envget AWS_REGION_NAME).amazonaws.com"; envset WORKER_API_KEY none
+      envset WORKER_MODEL_ID "bedrock/$m" ;;
+    *) die "usage: ./rvkit worker [show | colab | local [url] [model] [key] | api <url> <model> [key] | openrouter [model] | bedrock [model] | fallback [on|off|<openrouter-model>]]" ;;
   esac
   recreate_litellm; ok "Worker: $(envget WORKER_API_BASE) ($(envget WORKER_MODEL_ID))"; test_model
 }
@@ -620,7 +644,7 @@ _rvkit() {
   if [ "\$COMP_CWORD" -eq 1 ]; then COMPREPLY=( \$(compgen -W "$COMMANDS" -- "\$cur") ); return; fi
   case "\$prev" in
     eng) COMPREPLY=( \$(compgen -W "$ENG_SUB" -- "\$cur") ) ;;
-    worker) COMPREPLY=( \$(compgen -W "show colab local api openrouter fallback" -- "\$cur") ) ;;
+    worker) COMPREPLY=( \$(compgen -W "show colab local api openrouter bedrock fallback" -- "\$cur") ) ;;
     lab) COMPREPLY=( \$(compgen -W "up down status reset" -- "\$cur") ) ;;
     show|policy|scope|approvals|approve|deny|halt|resume|conversation|cred|audit|report|close|delete)
       engs="\$(ls "\$(grep -E '^ENGAGEMENTS_DIR=' "$KIT/.env" 2>/dev/null | cut -d= -f2- | sed "s|^~|\$HOME|")" 2>/dev/null | grep -v '^_')"
@@ -634,7 +658,7 @@ EOF
       echo "complete -c rvkit -f"
       echo "complete -c rvkit -n '__fish_use_subcommand' -a '$COMMANDS'"
       echo "complete -c rvkit -n '__fish_seen_subcommand_from eng' -a '$ENG_SUB'"
-      echo "complete -c rvkit -n '__fish_seen_subcommand_from worker' -a 'show colab local api openrouter fallback'"
+      echo "complete -c rvkit -n '__fish_seen_subcommand_from worker' -a 'show colab local api openrouter bedrock fallback'"
       echo "complete -c rvkit -n '__fish_seen_subcommand_from lab' -a 'up down status'"
       echo "complete -c rvkit -n '__fish_seen_subcommand_from show policy scope approvals approve deny halt resume conversation cred audit report close delete' -a \"(ls (grep -E '^ENGAGEMENTS_DIR=' $KIT/.env | cut -d= -f2- | string replace -r '^~' \$HOME) 2>/dev/null | string match -v '_*')\""
       ;;
@@ -710,11 +734,12 @@ ${B}Start${N}
 
 ${B}Models${N}
   connect <url> [key] [model]   point the worker at a running Colab model (the notebook prints this line)
-  worker [show|colab|local|api|openrouter …]   switch the worker endpoint; 'worker local' finds Ollama /
-                                LM Studio / llama-server on this machine; 'worker openrouter' needs no GPU
+  worker [show|colab|local|api|openrouter|bedrock …]   switch the worker endpoint; 'worker local' finds
+                                Ollama / LM Studio / llama-server on this machine; 'worker openrouter' and
+                                'worker bedrock' need no GPU
   worker fallback [on|off|<model>]  OpenRouter model used while the worker is down (off by default)
   planner [<model> [fallback]]  show / set the planner models (OpenRouter ids)
-  planner --direct <provider/model> [fallback]   use Anthropic or OpenAI directly (asks for the key once)
+  planner --direct <provider/model> [fallback]   use Anthropic, OpenAI or Amazon Bedrock directly (asks for the key once)
   budget [usd]                  today's model spend / set the daily budget (per provider)
   tracing on|off|content on|off  export traces of worker tasks, model and tool calls (OpenTelemetry)
   test [planner]                send a test prompt to the worker (or the planner)
@@ -819,7 +844,7 @@ case "$cmd" in
   budget)
     need_env
     if [ $# -eq 0 ]; then
-      echo "Daily budget: \$$(envget OPENROUTER_DAILY_BUDGET) per provider (OpenRouter; Anthropic / OpenAI when the planner uses them directly)"
+      echo "Daily budget: \$$(envget OPENROUTER_DAILY_BUDGET) per provider (OpenRouter; Anthropic / OpenAI / Bedrock when used directly)"
       curl -s -m 10 $LITELLM_URL/provider/budgets -H "Authorization: Bearer $(envget LITELLM_MASTER_KEY)" |
         python3 -c 'import sys,json
 try: p=json.load(sys.stdin)["providers"]
@@ -834,12 +859,13 @@ for k, b in p.items(): print("%s: spent $%.4f in the current 24 h period" % (k, 
     need_env
     case "${1:-show}" in
       show) echo "planner: $(envget PLANNER_MODEL)   fallback: $(envget PLANNER_FALLBACK_MODEL)"
-            echo "   openrouter/...: zero-data-retention providers only. anthropic/... or openai/...: that provider's API directly, under its own data terms"
+            echo "   openrouter/...: zero-data-retention providers only. anthropic/..., openai/... or bedrock/...: that provider's API directly, under its own data terms"
             exit 0 ;;
       --direct)
-            shift; [ $# -ge 1 ] || die "usage: ./rvkit planner --direct anthropic/<model>|openai/<model> [fallback]"
+            shift; [ $# -ge 1 ] || die "usage: ./rvkit planner --direct anthropic/<model>|openai/<model>|bedrock/<model> [fallback]"
             for m in "$@"; do
-              [[ "$m" =~ ^(anthropic|openai|openrouter)/[A-Za-z0-9._:/-]+$ ]] || die "model ids must start with anthropic/, openai/ or openrouter/: $m"
+              [[ "$m" =~ ^(anthropic|openai|bedrock|openrouter)/[A-Za-z0-9._:/-]+$ ]] || die "model ids must start with anthropic/, openai/, bedrock/ or openrouter/: $m"
+              case "$m" in bedrock/*) need_bedrock; continue ;; esac
               k="$(planner_key "$m")"
               if [ -z "$(envget "$k")" ]; then
                 key="$(ask_secret "$k for $m (hidden input)")"

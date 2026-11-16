@@ -60,10 +60,11 @@ Set these with `./rvkit connect` and `./rvkit worker` ([models.md](models.md)), 
 | `VALIDATOR_MODEL` | the planner's fallback model | The disprove-only validator: reviews each finding the planner confirms ([tools reference](tools-reference.md#the-validator)). |
 | `VALIDATOR` | `1` | `0`: confirmed findings are not sent to the validator. |
 | `ANTHROPIC_API_KEY`, `OPENAI_API_KEY` | empty | Only for a planner on Anthropic or OpenAI directly (`./rvkit planner --direct`). |
-| `OPENROUTER_DAILY_BUDGET` | `20` | USD per 24 hours, per provider: OpenRouter, and Anthropic / OpenAI when used directly (`./rvkit budget`). |
+| `AWS_BEARER_TOKEN_BEDROCK`, `AWS_REGION_NAME` | empty | Only for models on Amazon Bedrock (`./rvkit planner --direct bedrock/...`, `./rvkit worker bedrock`): a Bedrock API key and its region. |
+| `OPENROUTER_DAILY_BUDGET` | `20` | USD per 24 hours, per provider: OpenRouter, and Anthropic / OpenAI / Bedrock when used directly (`./rvkit budget`). |
 
-All OpenRouter calls ask for zero-data-retention providers that don't collect prompts. Direct Anthropic / OpenAI
-calls follow that provider's own API data terms ([Models](models.md#anthropic-or-openai-directly)).
+All OpenRouter calls ask for zero-data-retention providers that don't collect prompts. Direct Anthropic / OpenAI /
+Bedrock calls follow that provider's own API data terms ([Models](models.md#anthropic-or-openai-directly)).
 
 ### Reports and branding
 

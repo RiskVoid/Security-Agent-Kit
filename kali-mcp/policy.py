@@ -44,7 +44,7 @@ DAYS = ("mon", "tue", "wed", "thu", "fri", "sat", "sun")
 # (litellm/rv_routes.py) classifies every model route into one of these and refuses calls that would send an
 # engagement's data elsewhere. local = a model server on this machine or the local network; colab = the Colab
 # notebook; api = another self-hosted endpoint (./rvkit worker api); the rest are hosted providers.
-DESTINATIONS = ("local", "colab", "api", "openrouter", "anthropic", "openai")
+DESTINATIONS = ("local", "colab", "api", "openrouter", "anthropic", "openai", "bedrock")
 DEFAULT_RULES = {"tiers": ["passive", "active"], "max_rate": 100, "network": "online", "window": None,
                  "strict": False, "worker": "auto", "timezone": "UTC", "dates": None, "days": None,
                  "max_requests": None, "max_commands": None, "max_parallel": 2, "redirects": "in-scope",
