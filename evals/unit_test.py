@@ -5,6 +5,7 @@ They run on every pull request in about a second. The full stack is tested by th
 Run: python3 evals/unit_test.py
 """
 import importlib.util, json, os, re, sys, tempfile, time, unittest
+from unittest import mock
 
 KIT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path[:0] = [os.path.join(KIT, "kali-mcp"), os.path.join(KIT, "harness"), os.path.join(KIT, "scripts")]
@@ -162,24 +163,49 @@ class LiteLLMConfig(unittest.TestCase):
     def test_planners(self):
         import contextlib, io, re, render_litellm as r
         t = open(os.path.join(KIT, "litellm", "config.yaml")).read()
-        self.assertEqual(r.planners(t, {"PLANNER_MODEL": "openrouter/a/b", "PLANNER_FALLBACK_MODEL": "openrouter/c"}, "20"), t)
+        self.assertEqual(r.planners(t, {"PLANNER_MODEL": "openrouter/a/b", "PLANNER_FALLBACK_MODEL": "openrouter/c"}, "20"),
+                         (t, set()))
         with contextlib.redirect_stderr(io.StringIO()):
-            out = r.planners(t, {"PLANNER_MODEL": "anthropic/m", "PLANNER_FALLBACK_MODEL": "openai/n"}, "7")
+            out = r.render(t, {"PLANNER_MODEL": "anthropic/m", "PLANNER_FALLBACK_MODEL": "openai/n",
+                               "VALIDATOR_MODEL": "openrouter/v", "OPENROUTER_DAILY_BUDGET": "7"})
         block = lambda n: re.search(r"  - model_name: %s\n(?:    .*\n)+" % n, out).group(0)
         self.assertIn("os.environ/ANTHROPIC_API_KEY", block("planner"))
         self.assertNotIn("zdr", block("planner"))                         # OpenRouter-only routing option dropped
         self.assertIn("max_budget: 7\n      budget_duration: 1d", block("planner-fallback"))  # not a provider budget:
         self.assertNotIn("    openai: {budget_limit", out)                 # the worker also counts as "openai"
         self.assertIn("    anthropic: {budget_limit: 7, time_period: 1d}", out)
+        self.assertNotIn("bedrock", out)
         self.assertIn("zdr: true", block("colab-qwen-fallback"))           # worker fallback untouched
         with self.assertRaises(SystemExit):
             r.planners(t, {"PLANNER_MODEL": "gemini/x"}, "20")
 
+    def test_bedrock(self):  # ./rvkit planner --direct bedrock/... and ./rvkit worker bedrock: AWS credits
+        import contextlib, io, re, render_litellm as r
+        t = open(os.path.join(KIT, "litellm", "config.yaml")).read()
+        e = {"PLANNER_MODEL": "bedrock/us.zai.glm-5.3", "PLANNER_FALLBACK_MODEL": "bedrock/us.deepseek.v3.2",
+             "VALIDATOR_MODEL": "openrouter/v", "WORKER_MODEL_ID": "bedrock/qwen.qwen3-coder-next",
+             "AWS_BEARER_TOKEN_BEDROCK": "k", "AWS_REGION_NAME": "us-east-1", "OPENROUTER_DAILY_BUDGET": "9"}
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            out = r.render(t, dict(e))
+        self.assertEqual(err.getvalue(), "")
+        block = lambda n: re.search(r"  - model_name: %s\n(?:    .*\n)+" % n, out).group(0)
+        for name in ("planner", "planner-fallback", "colab-qwen", "private-llm"):
+            self.assertIn("api_key: os.environ/AWS_BEARER_TOKEN_BEDROCK", block(name), name)
+            self.assertNotIn("zdr", block(name), name)                     # OpenRouter-only routing option
+            self.assertNotIn("WORKER_API_BASE", block(name), name)         # LiteLLM's Bedrock endpoint, not a URL
+        self.assertIn("os.environ/OPENROUTER_API_KEY", block("validator"))  # each route keeps its own provider
+        self.assertEqual(out.count("    bedrock: {budget_limit: 9, time_period: 1d}"), 1)  # once, for planner + worker
+        with contextlib.redirect_stderr(err):                               # no region: rendered, with a warning
+            r.render(t, dict(e, AWS_REGION_NAME=""))
+        self.assertIn("AWS_REGION_NAME is empty", err.getvalue())
+
     def test_worker_on_openrouter(self):  # ./rvkit worker openrouter: no GPU
         import re, render_litellm as r
         t = open(os.path.join(KIT, "litellm", "config.yaml")).read()
-        self.assertEqual(r.worker(t, {"WORKER_MODEL_ID": "openai/qwen38-27b"}), t)
-        out = r.worker(t, {"WORKER_MODEL_ID": "openrouter/deepseek/x", "OPENROUTER_API_KEY": "k"})
+        self.assertEqual(r.worker(t, {"WORKER_MODEL_ID": "openai/qwen38-27b"}), (t, set()))
+        out, used = r.worker(t, {"WORKER_MODEL_ID": "openrouter/deepseek/x", "OPENROUTER_API_KEY": "k"})
+        self.assertEqual(used, {"openrouter"})
         for name in ("colab-qwen", "private-llm"):
             block = re.search(r"  - model_name: %s\n(?:    .*\n)+" % name, out).group(0)
             self.assertIn("os.environ/OPENROUTER_API_KEY", block)
@@ -615,6 +641,10 @@ class ModelEvents(unittest.TestCase):
         self.assertEqual(c("planner", "This request requires more credits", 402), "credits")
         self.assertEqual(c("planner", "ExceededBudget: crossed budget for provider openrouter", 400), "budget")
         self.assertEqual(c("planner", "invalid api key", 401), "auth")
+        with mock.patch.dict(os.environ, {"WORKER_MODEL_ID": "bedrock/qwen.qwen3-coder-next"}):  # hosted worker
+            msg = self.rv.classify("colab-qwen", E("Invalid API Key format", 403))[1]
+        self.assertIn("AWS_BEARER_TOKEN_BEDROCK", msg)
+        self.assertNotIn("./rvkit connect", msg)
         self.assertEqual(c("planner", "temporarily rate-limited upstream", 429), "rate_limit")
         self.assertEqual(c("colab-qwen", "Connection error"), "worker_down")
         self.assertEqual(c("colab-qwen", "Cloudflare tunnel error", 530), "worker_down")
@@ -734,6 +764,13 @@ class DataRoutes(unittest.TestCase):
                            ("http://worker-not-connected.invalid/v1", "local")):
             self.assertEqual(r.group_route("private-llm", dict(env, WORKER_API_BASE=base))[0], dest, base)
         self.assertEqual(r.group_route("private-llm", dict(env, WORKER_MODEL_ID="openrouter/m"))[0], "openrouter")
+        bedrock = dict(env, WORKER_MODEL_ID="bedrock/qwen.qwen3-coder-next",
+                       WORKER_API_BASE="https://bedrock-runtime.us-east-1.amazonaws.com", PLANNER_MODEL="bedrock/us.zai.glm-5.3")
+        self.assertEqual(r.group_route("private-llm", bedrock)[0], "bedrock")
+        self.assertEqual(r.group_route("planner", bedrock), ("bedrock", ["anthropic"]))
+        self.assertEqual(r.group_route("private-llm", dict(env, WORKER_API_BASE="https://bedrock-mantle.us-east-1.api.aws/v1"))[0],
+                         "bedrock")                                         # ./rvkit worker api on Bedrock's OpenAI URL
+        self.assertEqual(r.LABELS["bedrock"], "Amazon Bedrock")
 
     def decide(self, group, request, headers=None, session=None):
         return self.r.decide(group, request, headers or {}, self.ROUTES, self.ENV, session)
@@ -775,6 +812,7 @@ class DataRoutes(unittest.TestCase):
         self.assertIsNone(policy.parse_rules("- Client data: any")[0]["client_data"])
         self.assertIsNone(policy.parse_rules("")[0]["client_data"])
         self.assertTrue(policy.parse_rules("- Client data: moon")[1])
+        self.assertEqual(policy.parse_rules("- Client data: bedrock, local")[0]["client_data"], ["local", "bedrock"])
         self.assertTrue(any("Client data" in x for x in policy.effective("- a.example.com", "- Client data: local")["limits"]))
 
     def test_policy_refusal_passes_through(self):

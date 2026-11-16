@@ -443,7 +443,7 @@ function paneOverview() {
 }
 
 // ---------------------------------------------------------------- models, conversations, credentials (RW-006/7)
-const DEST = { local: "this machine or network", colab: "Colab notebook", api: "self-hosted endpoint", openrouter: "OpenRouter", anthropic: "Anthropic", openai: "OpenAI" };
+const DEST = { local: "this machine or network", colab: "Colab notebook", api: "self-hosted endpoint", openrouter: "OpenRouter", anthropic: "Anthropic", openai: "OpenAI", bedrock: "Amazon Bedrock" };
 function destTag(dest, allowed) {
   const ok = !allowed || allowed.includes(dest);
   return tag(DEST[dest] || dest, ok ? "" : "warn") + (ok ? "" : ` <span class="err">not allowed for this engagement's client data</span>`);

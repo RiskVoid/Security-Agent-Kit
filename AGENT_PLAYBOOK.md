@@ -19,7 +19,9 @@ Keep the user informed in one short line per step. When the user has to act, say
    (`./rvkit worker local` finds Ollama, LM Studio or llama-server by itself), or another OpenAI-compatible
    endpoint (`./rvkit worker api <url> <model>`; the user types the API key into the command themselves), or, with
    no GPU at all, a hosted model on OpenRouter (`./rvkit worker openrouter`; tell the user in one line that tool
-   output and client code then go to OpenRouter). Check with `./rvkit test`.
+   output and client code then go to OpenRouter) or on Amazon Bedrock, which AWS credits pay for (the user runs
+   `./rvkit worker bedrock` in their own terminal: it asks for the Bedrock API key; tool output and client code then
+   go to AWS). Check with `./rvkit test`.
 4. Run `./rvkit doctor` and explain any problem it reports. Then tell the user to open http://localhost:8000/ and
    start a conversation with the `riskvoid-planner` agent. Suggest `./rvkit quickstart` for a safe first try (a
    practice engagement against the isolated lab), and `./rvkit watch` in a terminal to approve intrusive commands.

@@ -2,7 +2,7 @@
 
 Every model route is classified into a destination: local (a model server on this machine or the local network),
 colab (the Colab notebook), api (another self-hosted endpoint), or a hosted provider (openrouter, anthropic,
-openai). An engagement's RULES.md can limit where its client data goes ("Client data: local, colab"). The LiteLLM
+openai, bedrock). An engagement's RULES.md can limit where its client data goes ("Client data: local, colab"). The LiteLLM
 hook in rv_events.py calls decide() before every model call and refuses the call, or turns off its fallbacks,
 when the call would carry an engagement's data to a destination that engagement doesn't allow.
 
@@ -25,7 +25,7 @@ ROUTES_FILE = os.environ.get("RV_ROUTES_FILE", "/rv-routes/routes.json")
 WORKER_GROUPS = ("colab-qwen", "private-llm")
 LABELS = {"local": "a model server on this machine or network", "colab": "the Colab notebook",
           "api": "a self-hosted API endpoint", "openrouter": "OpenRouter", "anthropic": "Anthropic",
-          "openai": "OpenAI"}
+          "openai": "OpenAI", "bedrock": "Amazon Bedrock"}
 NAME = r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}"
 _cache = {"mtime": None, "data": None}
 
@@ -45,6 +45,8 @@ def _host_kind(base, env):
         return "anthropic"
     if host in ("api.openai.com",):
         return "openai"
+    if "bedrock" in host and host.endswith((".amazonaws.com", ".api.aws")):  # e.g. Bedrock's OpenAI-compatible URL
+        return "bedrock"
     if "colab" in host:
         return "colab"
     if host in ("localhost", "host.docker.internal", "host.containers.internal", "gateway.docker.internal") \
@@ -66,6 +68,8 @@ def model_destination(model_id, api_base, env):
         return "openrouter"
     if m.startswith("anthropic/"):
         return "anthropic"
+    if m.startswith("bedrock/"):
+        return "bedrock"
     if api_base:
         return _host_kind(api_base, env)
     if m.startswith("openai/"):
