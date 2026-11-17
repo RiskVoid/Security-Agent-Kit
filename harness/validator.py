@@ -16,10 +16,11 @@ Besides the cited evidence files, the validator gets the source lines the findin
 Model: "validator" (VALIDATOR_MODEL, by default the planner's fallback model: a different model from the planner).
 When the engagement's Client data rule refuses it, the same call goes to "planner" (the planner's model, in a fresh
 context). When neither may run, or the gateway can't be reached, the verdict is not_run and nothing changes.
+Each verdict is saved with the model that gave it and the tokens its calls used (an empty answer counts too).
 
 Evidence is target content: it is given as data, inside markers, and the validator is told never to follow it.
 """
-import datetime, json, os, re, urllib.error, urllib.parse, urllib.request
+import datetime, json, os, re, sqlite3, urllib.error, urllib.parse, urllib.request
 
 import findings_db as db
 import quotecheck
@@ -78,10 +79,23 @@ ORACLE_METHOD = {
 }
 
 
+TOKEN_COLS = ("prompt_tokens", "completion_tokens", "cached_tokens")
+
+
 def _ensure(con):
+    """The validations table. The token columns (#78) are added to a table from before them, as findings_db adds
+    columns: its older rows keep NULL there (not recorded)."""
     con.execute("""CREATE TABLE IF NOT EXISTS validations (id INTEGER PRIMARY KEY AUTOINCREMENT,
         finding_id TEXT NOT NULL, revision INTEGER, verdict TEXT NOT NULL, reason TEXT, evidence_ref TEXT,
-        model TEXT, at TEXT)""")
+        model TEXT, at TEXT, prompt_tokens INTEGER, completion_tokens INTEGER, cached_tokens INTEGER)""")
+    cols = {r[1] for r in con.execute("PRAGMA table_info(validations)")}
+    for col in TOKEN_COLS:
+        if col not in cols:
+            try:
+                con.execute(f"ALTER TABLE validations ADD COLUMN {col} INTEGER")
+            except sqlite3.OperationalError as e:   # another process added it first
+                if "duplicate column" not in str(e):
+                    raise
 
 
 def history(engagement, finding_id=None):
@@ -100,13 +114,14 @@ def latest(engagement):
     return out
 
 
-def _save(engagement, finding, verdict, reason, ref, model):
+def _save(engagement, finding, verdict, reason, ref, model, tokens=(0, 0, 0)):
+    """tokens: (prompt, completion, cached) of every model call the verdict took."""
     with db._db(engagement) as con:
         _ensure(con)
-        con.execute("INSERT INTO validations (finding_id, revision, verdict, reason, evidence_ref, model, at) "
-                    "VALUES (?,?,?,?,?,?,?)", (finding["id"], finding.get("revision"), verdict, (reason or "")[:1000],
-                                               ref, model, datetime.datetime.now(datetime.timezone.utc)
-                                               .isoformat(timespec="seconds")))
+        con.execute("INSERT INTO validations (finding_id, revision, verdict, reason, evidence_ref, model, at, "
+                    "prompt_tokens, completion_tokens, cached_tokens) VALUES (?,?,?,?,?,?,?,?,?,?)",
+                    (finding["id"], finding.get("revision"), verdict, (reason or "")[:1000], ref, model,
+                     datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds"), *tokens))
 
 
 def _clip(text, needles=(), limit=None):
@@ -255,7 +270,14 @@ def _chat(model, engagement, messages):
         "Authorization": f"Bearer {LITELLM_KEY}", "Content-Type": "application/json",
         "x-rv-engagement": engagement, "x-rv-task": "validator"})
     r = json.load(urllib.request.urlopen(req, timeout=180))
-    return r["choices"][0]["message"].get("content") or "", r.get("model") or model
+    return r["choices"][0]["message"].get("content") or "", r.get("model") or model, r.get("usage")
+
+
+def usage_counts(u):
+    """(prompt, completion, cached) tokens of one reply's usage; cached is the part of prompt read from the cache."""
+    u = u or {}
+    cached = (u.get("prompt_tokens_details") or {}).get("cached_tokens") or u.get("cache_read_input_tokens") or 0
+    return int(u.get("prompt_tokens") or 0), int(u.get("completion_tokens") or 0), int(cached or 0)
 
 
 def parse(text, files):
@@ -285,16 +307,17 @@ def validate(engagement, finding_id, chat=None):
         return {"verdict": "not_run", "reason": "the validator is off (VALIDATOR=0)"}
     text, files = packet(engagement, f)
     messages = [{"role": "system", "content": SYSTEM}, {"role": "user", "content": text}]
-    answer, model, errors = None, None, []
+    answer, model, errors, tokens = None, None, [], [0, 0, 0]
     for m in MODELS:
         try:
-            a, mm = (chat or _chat)(m.strip(), engagement, messages)
+            a, mm, *usage = (chat or _chat)(m.strip(), engagement, messages)
         except urllib.error.HTTPError as e:   # a Client data refusal: try the next model
             errors.append(f"{m}: HTTP {e.code}")
             continue
         except (urllib.error.URLError, OSError, ValueError, KeyError) as e:
             errors.append(f"{m}: {type(e).__name__}")
             continue
+        tokens = [x + y for x, y in zip(tokens, usage_counts(usage[0] if usage else None))]   # an empty answer counts
         if not a.strip() or a.lstrip().startswith("[RiskVoid]"):   # no answer (rv_events puts its reason in)
             errors.append(f"{m}: no answer")
             continue
@@ -302,10 +325,10 @@ def validate(engagement, finding_id, chat=None):
         break
     if answer is None:
         res = {"verdict": "not_run", "reason": "no validator model could be used: " + "; ".join(errors)}
-        _save(engagement, f, "not_run", res["reason"], None, None)
+        _save(engagement, f, "not_run", res["reason"], None, None, tokens)
         return res
     verdict, reason, ref = parse(answer, files)
-    _save(engagement, f, verdict, reason, ref, model)
+    _save(engagement, f, verdict, reason, ref, model, tokens)
     res = {"verdict": verdict, "reason": reason, "evidence_ref": ref, "model": model}
     if verdict == "disproved" and DEMOTE:
         db.update(engagement, finding_id, actor=ACTOR, status="candidate",

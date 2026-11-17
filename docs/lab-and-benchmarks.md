@@ -230,7 +230,8 @@ The result records them under `conversations` and `restarts`, and `conversation.
 them in order.
 
 The result also records findings marked false
-positive or duplicate, wall time, planner tokens, automatic approvals, the agent, the worker model and endpoint.
+positive or duplicate, wall time, tokens by role (below), automatic approvals, the agent, the worker model and
+endpoint.
 
 Every result carries its **provenance**, so you can tell which change moved a score: the kit commit and whether
 the tree had local changes, hashes of `prompts/planner.md` and `prompts/local.md`, each playbook's version, the
@@ -240,6 +241,24 @@ finding ids and titles from the kit's own targets, never client data.
 **Cost** is the change in your OpenRouter key's total usage between the start and the end of the run. Don't use
 the same key for anything else during a run, or the number will include that too. Without an OpenRouter key, cost
 is `n/a`.
+
+**Tokens** are counted for every role that calls a model, so a change that moves work from the planner to the
+worker, or adds reviewer calls, can't look cheaper than it is. Tokens also count a role that runs on an endpoint
+not billed per token (a Colab or local worker), which the cost leaves out.
+
+| Role | Where its figure comes from |
+|---|---|
+| planner | the OpenHands conversation's accumulated usage, every conversation of the run (the result's `tokens`) |
+| worker | `tokens` in each task's `task.json`: every worker model call adds its prompt, completion and cached tokens |
+| advisor | the advice records in each task's `task.json` (`advisor[].tokens`) |
+| validator | the token columns of each verdict in the `validations` table, summed in `score.validation.tokens` |
+
+A role's figure is prompt plus completion tokens; cached tokens are part of prompt. The result holds the four
+figures, their total and the detail under `operator.token_use`, and the line in `history.jsonl` holds the four and
+the total under `token_use`. `--history` prints the total, `--groups` its mean, and `--compare` the mean total next
+to the mean billed cost of each set. A run saved before tokens were counted by role has only the planner's figure:
+the others and the total show as `n/a`, not 0. A run with no worker task or no validator verdict shows 0 for that
+role.
 
 ### Plain-agent baseline
 

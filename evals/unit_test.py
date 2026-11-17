@@ -1792,6 +1792,49 @@ class BenchStats(unittest.TestCase):
         self.assertIsNone(old["figures"]["recorded_recall"]["mean"])
         self.st.print_group(old, lines.append)
 
+    def test_tokens_by_role(self):   # #78: every role's tokens in the result, missing ones not shown as 0
+        res = {"tokens": {"prompt_tokens": 1000, "completion_tokens": 100, "cache_read_tokens": 800},
+               "score": {"validation": {"validated": 1, "tokens": {"prompt": 300, "completion": 30, "cached": 0}}}}
+        tasks = [{"status": "done", "tokens": {"prompt_tokens": 5000, "completion_tokens": 500, "cached_tokens": 0,
+                                               "calls": 4},
+                  "advisor": [{"kind": "repeat", "tokens": {"prompt_tokens": 200, "completion_tokens": 20}},
+                              {"kind": "repeat", "error": "URLError: down"}]},
+                 {"status": "blocked", "tokens": {"prompt_tokens": 0, "completion_tokens": 0, "cached_tokens": 0,
+                                                  "calls": 0}}]
+        tu = self.st.token_use(res, tasks)
+        self.assertEqual({r: tu[r] for r in self.st.ROLES}, {"planner": 1100, "worker": 5500, "advisor": 220,
+                                                             "validator": 330})
+        self.assertEqual(tu["total"], 7150)
+        self.assertEqual(tu["detail"]["planner"], {"prompt": 1000, "completion": 100, "cached": 800})
+        self.assertEqual(self.st.tokens_line(tu), "total 7k (planner 1k, worker 6k, advisor 220, validator 330)")
+        # no worker task and no validator verdict: those roles used nothing, and the total holds
+        none = self.st.token_use({"tokens": res["tokens"], "score": {"validation": None}}, [])
+        self.assertEqual((none["worker"], none["advisor"], none["validator"], none["total"]), (0, 0, 0, 1100))
+        # a run saved before #78: tasks and verdicts without token figures are not recorded, not 0
+        old_tasks = [{"status": "done", "advisor": [{"tokens": {"prompt_tokens": 50, "completion_tokens": 5}}]}]
+        old = self.st.token_use({"tokens": res["tokens"], "score": {"validation": {"validated": 2}}}, old_tasks)
+        self.assertEqual((old["planner"], old["worker"], old["advisor"], old["validator"], old["total"]),
+                         (1100, None, 55, None, None))
+        self.assertIn("worker n/a", self.st.tokens_line(old))
+        # a saved result read back: with the figures in operator, else what the result itself holds
+        saved = {**self.run_([1, 0, 0], label="new"), "operator": {"token_use": tu}}
+        legacy = {**self.run_([1, 0, 0], label="old"), "tokens": res["tokens"]}
+        self.assertEqual(self.st.run_tokens(saved)["total"], 7150)
+        self.assertEqual((self.st.run_tokens(legacy)["planner"], self.st.run_tokens(legacy)["total"]), (1100, None))
+        g = self.st.group_summary([saved, saved])
+        self.assertEqual(g["figures"]["tokens_total"]["mean"], 7150)
+        lines = []
+        self.st.print_group(g, lines.append)
+        self.assertIn("cost $1.00 ±0.00, tokens 7k", lines[0])
+        self.assertIsNone(self.st.group_summary([legacy])["figures"]["tokens_total"]["mean"])
+        c = self.st.compare([legacy, legacy], [saved, saved])        # the total next to the billed cost
+        self.assertEqual(c["spend"]["b"], {"cost_usd": 1.0, "tokens": 7150, "runs_with_tokens": 2, "runs": 2})
+        self.assertIsNone(c["spend"]["a"]["tokens"])
+        lines = []
+        self.st.print_compare(c, "old", "new", out=lines.append)
+        self.assertIn("old cost $1.00, tokens n/a (0 of 2 runs recorded them); new cost $1.00, tokens 7k", lines[-2])
+        json.dumps(tu)
+
 
 class RulesPinned(unittest.TestCase):
     """Epic #52, issue #38: the rules the kit can't enforce (stop conditions, window, budgets, client data) end every
@@ -2102,6 +2145,31 @@ class Validator(unittest.TestCase):
         c = db.record("acme", actor="agent:planner", title="maybe", severity="low", status="candidate")
         self.assertEqual(self.v.validate("acme", c["id"], chat=self.chat([]))["verdict"], "not_run")
         self.assertEqual(self.calls, [])
+
+    def test_a_verdict_keeps_its_tokens_and_model(self):   # #78; a validations table from before keeps opening
+        import sqlite3
+        with sqlite3.connect(db.db_path("acme")) as con:     # the table as validator.py made it before the columns
+            con.execute("""CREATE TABLE validations (id INTEGER PRIMARY KEY AUTOINCREMENT, finding_id TEXT NOT NULL,
+                revision INTEGER, verdict TEXT NOT NULL, reason TEXT, evidence_ref TEXT, model TEXT, at TEXT)""")
+            con.execute("INSERT INTO validations (finding_id, verdict, reason, model) VALUES (?,?,?,?)",
+                        (self.f["id"], "stands", "old verdict", "m"))
+        self.assertEqual(self.v.history("acme")[0]["prompt_tokens"], None)      # opens; not recorded, not 0
+        answers = [("[RiskVoid] No answer: empty reply.", "validator-id", {"prompt_tokens": 900, "completion_tokens": 400}),
+                   ('{"verdict": "stands", "reason": "ok", "evidence_ref": ""}', "planner-id",
+                    {"prompt_tokens": 1000, "completion_tokens": 50, "prompt_tokens_details": {"cached_tokens": 600}})]
+        self.v.validate("acme", self.f["id"], chat=lambda m, e, msgs: answers.pop(0))
+        row = self.v.history("acme")[0]
+        self.assertEqual((row["model"], row["prompt_tokens"], row["completion_tokens"], row["cached_tokens"]),
+                         ("planner-id", 1900, 450, 600))                 # the empty answer's tokens count too
+        spec = importlib.util.spec_from_file_location("rv_bench", os.path.join(KIT, "evals", "run_benchmark.py"))
+        run_benchmark = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(run_benchmark)
+        rows = [dict(r) for r in self.v.history("acme")]
+        cols = set(rows[0])
+        self.assertIsNone(run_benchmark.validator_tokens(rows, cols))     # one verdict from before: not recorded
+        self.assertEqual(run_benchmark.validator_tokens(rows[:1], cols), {"prompt": 1900, "completion": 450,
+                                                                          "cached": 600})
+        self.assertIsNone(run_benchmark.validator_tokens([{"verdict": "stands"}], {"verdict"}))
 
 
 class ReconMap(unittest.TestCase):

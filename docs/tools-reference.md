@@ -118,7 +118,7 @@ Inside a task, the worker model has these tools (they aren't MCP tools; `worker-
 | `analyze_source` | `tool`, `path`, `rulesets`: calls the kali `analyze_source` tool (no network). |
 | `vuln_intel` | `ids`: ranks up to 50 vulnerability ids with the intel `prioritize` tool. |
 | `web_search` | `query`: SearXNG search through `web-mcp`, 8 results. |
-| `fetch_url` | `url`: reads a public page as text through `web-mcp`. Refuses every engagement's targets and non-public addresses, on every redirect too. |
+| `fetch_url` | `url`, `start` (default 0): reads a public page as text through `web-mcp`, in parts of 100,000 characters from `start`. When more follows, the reply ends with the `start` of the next part, and the model calls `fetch_url` again with it. The model sees the head and the tail of a part; the whole part is in the step file, which it can read with `read_file`. Refuses every engagement's targets and non-public addresses, on every redirect too. |
 | `read_file` | `path`, `start` (default 1), `lines` (default 200, max 500): numbered lines of a file under the engagement's in-scope code paths or its engagement folder. Nothing else. |
 | `record_candidate` | `title`, `severity`, `asset`, `description`, `evidence`, `cwe`: stores a **candidate** finding (source `worker:<task_id>`). Only the planner can confirm it. |
 | `finish` | `status` (`completed`, `partial`, `blocked`, `out_of_scope`), `summary` (1–5 sentences), `candidates`, `errors`, `needs`, `open_questions`, `confidence`: ends the task. A `reproduced` candidate without an evidence file of the engagement is refused and the model is asked again. |
