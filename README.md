@@ -133,7 +133,7 @@ The full list, with the tier of each tool (passive, active or intrusive), is in
 
 | Platform | How it's tested |
 |---|---|
-| Linux amd64, Docker Engine (Ubuntu 24.04) | A fresh machine in CI: `./rvkit setup` and all 15 integration suites, nightly and before every release |
+| Linux amd64, Docker Engine (Ubuntu 24.04) | A fresh machine in CI: `./rvkit setup` and all 15 integration suites, nightly, before every release and on pull requests that change code |
 | macOS on Apple Silicon, OrbStack or Docker Desktop | Where the kit is developed: all suites, by hand before each change |
 | Linux arm64 | Images are built for it. Before every release, a clean arm64 runner installs them and runs the policy suite; the other suites aren't run there yet |
 | Windows | Not supported yet (WSL2 is on the [roadmap](ROADMAP.md)) |
