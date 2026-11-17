@@ -231,7 +231,7 @@ Actions are pinned to a commit SHA, with the release tag in a comment.
   guard, the console). It
   builds no images. This is the check a pull request needs.
 - `.github/workflows/integration.yml` builds every image and runs the full-stack suites: `evals/ci_prepare.sh`,
-  then the 15 suites listed in [Tests](#tests) (amd64, no model or API key needed). Image layers are cached
+  then the 16 suites listed in [Tests](#tests) (amd64, no model or API key needed). Image layers are cached
   between runs, so a run that changes little takes much less than the first one (15–20 minutes). It runs:
   - on a pull request that changes `harness/`, `kali-mcp/`, `litellm/`, `scripts/`, `egress/`, `gateway/`,
     `php-runner/`, `prompts/`, `searxng/`, `evals/` (not `evals/improvement/` or `evals/results/`), `rvkit`,
