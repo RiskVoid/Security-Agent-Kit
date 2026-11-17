@@ -7,6 +7,7 @@ import json, os
 from mcp.server.fastmcp import FastMCP
 import findings_db as db
 import ops
+import pins
 import quotecheck
 import validator
 import verification
@@ -18,25 +19,87 @@ ACTOR = "agent:planner"  # changes made through this server are attributed to th
 mcp = FastMCP("findings", host="0.0.0.0", port=8092, stateless_http=True)
 
 
+NOT_CONFIRMED = "NOT CONFIRMED: "
+
+
 def _out(x) -> str:
     return json.dumps(x, indent=1)
 
 
+ACK_VALUE = 200   # a field longer than this is acknowledged by its length: the model wrote it, it needn't read it back
+
+
+def _ack(row, sent=(), head=("id", "title", "severity", "status", "verified_method", "revision")):
+    """What a write returns: the row's identity and state, and the fields this call sent (long ones by length).
+    Returning the whole finding after every update made these replies a third of the planner's context;
+    get_finding still returns everything."""
+    if not isinstance(row, dict):
+        return row
+    out = {k: row[k] for k in ("note",) if k in row}
+    out.update({k: row.get(k) for k in head if k in row})
+    for k in sent:
+        v = row.get(k)
+        if k in out or v is None:
+            continue
+        text = v if isinstance(v, str) else json.dumps(v)
+        out[k] = v if len(text) <= ACK_VALUE else f"saved ({len(text)} characters)"
+    for k in ("quotes", "validation", "previous_revision"):
+        if k in row:
+            out[k] = row[k]
+    return out
+
+
+def _repin(engagement):
+    """Findings whose cited evidence was moved since they were confirmed are pointed at the moved file."""
+    try:
+        return pins.repair(engagement)
+    except Exception:  # noqa: BLE001
+        return []
+
+
 def _validated(engagement, row):
     """A finding the planner just confirmed goes to the disprove-only validator (validator.py). The verdict is added
-    to what the tool returns; disproved has already sent the finding back to candidate."""
+    to what the tool returns. A disproved finding stays confirmed and is flagged for the person (the default), or
+    has already gone back to candidate (VALIDATOR_DISPROVE=demote)."""
     if not isinstance(row, dict) or row.get("status") != "confirmed":
         return row
+    try:
+        pins.pin(engagement, row)   # what it cites, by content: a file moved later is found again (pins.py)
+    except Exception:  # noqa: BLE001  a pin is a convenience; the confirmation doesn't depend on it
+        pass
+    quotes = _quotes(engagement, row)
     try:
         v = validator.validate(engagement, row["id"])
     except Exception as e:  # noqa: BLE001  the confirmation stands; the validation is just missing
         v = {"verdict": "not_run", "reason": f"the validator failed: {type(e).__name__}: {e}"}
-    if v.get("verdict") == "disproved":
+    if v.get("verdict") == "disproved" and v.get("action") == "back to candidate":
         row = db.get(engagement, row["id"])
         v["note"] = ("the finding is back to candidate. Look at the reason and the evidence: test again, then confirm "
                      "it with update_finding(status=\"confirmed\", method=..., evidence=[the new evidence]), or mark "
                      "it false-positive. Don't confirm it again with the same evidence.")
-    return {**row, "validation": v}
+    elif v.get("verdict") == "disproved":
+        v["note"] = (f"{row['id']} is still confirmed, and the reviewer's objection is on record for the person who "
+                     "signs the report. Read the reason once. If it is right, correct the finding (cite the evidence "
+                     "that shows it, narrow the claim, or mark it false-positive). If the evidence already shows "
+                     "what the finding says, leave it and go on with the plan: do not send this call again.")
+    return {**row, **({"quotes": quotes} if quotes else {}), "validation": v}
+
+
+def _quotes(engagement, row):
+    """Quotes of a confirmed finding that are not in its evidence (quotecheck.py): listed, never a refusal."""
+    try:
+        return quotecheck.flag(engagement, row.get("description"), row.get("reproduction"), row.get("evidence"))
+    except Exception:  # noqa: BLE001  a list for the reader; the confirmation doesn't depend on it
+        return None
+
+
+def _disproved(engagement, finding_id):
+    """True when the validator's newest verdict on this finding is disproved."""
+    try:
+        h = validator.history(engagement, finding_id)
+    except Exception:  # noqa: BLE001  no verdicts to read is not a disproval
+        return False
+    return bool(h) and h[0].get("verdict") == "disproved"
 
 
 def _reproduction_problem(text):
@@ -48,31 +111,58 @@ def _reproduction_problem(text):
             "and what each returns), so the client can reproduce it. Commands in it are not checked as quotes")
 
 
+def _confirm_problem(engagement, method, evidence, reproduction, description):
+    """Why the agent may not confirm a finding with this method, evidence and text (None: it may)."""
+    return db.confirm_problem(method, evidence) or _reproduction_problem(reproduction) or \
+        (verification.problem(engagement, evidence or []) if method == "oracle" else None) or \
+        quotecheck.refusal(engagement, description, reproduction, evidence or [])
+
+
+def _confirm_call(finding_id, method):
+    return (f"update_finding(finding_id=\"{finding_id}\", status=\"confirmed\", method=\"{method}\") plus what "
+            f"is missing above")
+
+
 @mcp.tool()
 def record_finding(engagement: str, title: str, severity: str, asset: str, description: str,
                    impact: str = "", reproduction: str = "", remediation: str = "", evidence: list[str] | None = None,
                    cvss_vector: str = "", cvss_score: float | None = None, cwe: str = "",
-                   status: str = "candidate", notes: str = "", method: str = "") -> str:
+                   status: str = "", notes: str = "", method: str = "") -> str:
     """Record a finding for an engagement. severity: critical|high|medium|low|info.
-    status: candidate (default, not yet verified) or confirmed (you have reproduced or verified it).
-    status=confirmed needs method = how you verified it (oracle, runtime-reproduction, replay, authorization-matrix,
+    status: candidate (not yet verified) or confirmed (you have reproduced or verified it). Left out, it is
+    confirmed when you give a method and candidate when you don't.
+    Confirming needs method = how you verified it (oracle, runtime-reproduction, replay, authorization-matrix,
     source-review, tool-output, retest) and reproduction (the steps that show it: requests or commands, and what
     each returns). oracle: cite the evidence/verify/ record of a kali verify run that passed
     with a clean control (the strongest method; prefer it when an oracle fits). runtime-reproduction, replay, authorization-matrix and tool-output also
-    need the evidence file that shows it. Text in backticks or code blocks (other than commands) is a quote:
-    confirming is refused when a quote isn't in the cited evidence, or a /src/<file>:<line> doesn't exist.
+    need the evidence file that shows it. Confirming is refused when a /src/<file>:<line> in the text doesn't
+    exist. Text in backticks or code blocks (other than commands) that isn't in the cited evidence is listed in
+    the reply (quotes): the finding is confirmed all the same.
+    A method without status that can't be confirmed is saved as a candidate, and the reply's note says why.
     evidence: file paths under /work/<engagement>/evidence/. Returns the stored finding with its id (F-001...)."""
-    if status == "confirmed":
-        problem = db.confirm_problem(method, evidence) or _reproduction_problem(reproduction) or \
-            (verification.problem(engagement, evidence or []) if method == "oracle" else None) or \
-            quotecheck.refusal(engagement, description, reproduction, evidence or [])
+    note = None
+    if not status:
+        # A method says how the finding was verified, so a call that carries one means to confirm. Recording it as
+        # a candidate without a word left the planner believing it was confirmed: one run recorded ten findings
+        # this way and spent the rest of its budget failing to confirm the first.
+        status = "confirmed" if method else "candidate"
+        if method:
+            problem = _confirm_problem(engagement, method, evidence, reproduction, description)
+            if problem:
+                status, note = "candidate", problem
+    elif status == "confirmed":
+        problem = _confirm_problem(engagement, method, evidence, reproduction, description)
         if problem:
             return f"REFUSED: {problem}"
-    row, _ = ops.call("finding.record", {"engagement": engagement, "actor": ACTOR, "method": method or None, "fields": dict(
+    row, _ = ops.call("finding.record", {"engagement": engagement, "actor": ACTOR,
+                                         "method": (method or None) if status == "confirmed" else None, "fields": dict(
         title=title, severity=severity, asset=asset, description=description, impact=impact,
         reproduction=reproduction, remediation=remediation, evidence=evidence or [], cvss_vector=cvss_vector,
         cvss_score=cvss_score, cwe=cwe, status=status, source="planner", notes=notes)})
-    return _out(_validated(engagement, row))
+    if note:
+        row = {"note": (f"{NOT_CONFIRMED}saved as candidate {row['id']}. {note.rstrip('.')}. Don't record it again: to confirm "
+                        f"it, call {_confirm_call(row['id'], method)}."), **row}
+    return _out(_ack(_validated(engagement, row), ("asset", "cwe", "cvss_vector", "cvss_score", "evidence")))
 
 
 @mcp.tool()
@@ -86,9 +176,10 @@ def update_finding(engagement: str, finding_id: str, status: str | None = None, 
     """Update a finding. Use status=confirmed after verifying a candidate, with method = how you verified it
     (runtime-reproduction, replay, authorization-matrix, source-review, tool-output, retest; required, and
     runtime-reproduction, replay, authorization-matrix and tool-output also need the evidence file that shows
-    it; quotes in backticks must be in the cited evidence, as for record_finding) and reproduction (kept from
-    before when not given). A candidate stays a candidate until a call says status=confirmed; status=false-positive
-    when it doesn't hold; status=duplicate with duplicate_of=<id of the finding to keep>; fixed or accepted-risk
+    it; quotes in backticks that aren't in the cited evidence are listed, as for record_finding) and reproduction (kept from
+    before when not given). A method without status on a candidate is read as status=confirmed and gets the same
+    checks: when they fail, the other fields are saved and the reply's note says why it is still a candidate.
+    status=false-positive when it doesn't hold; status=duplicate with duplicate_of=<id of the finding to keep>; fixed or accepted-risk
     after client feedback. reason is required for false-positive, accepted-risk and any severity or priority
     change. Severity is the technical severity; priority (P1-P4) is the remediation order, set separately; the
     CVSS score is computed from a CVSS 3.1 cvss_vector (give cvss_score with a 4.0 vector). prerequisites:
@@ -99,26 +190,41 @@ def update_finding(engagement: str, finding_id: str, status: str | None = None, 
                   prerequisites=prerequisites, root_cause=root_cause)
     if reason is None and status in ("false-positive", "accepted-risk") and notes:
         reason = notes  # the reason given in notes, as before
+    method_given = method
     note = None
     if status is None and method:
-        # method only records how a confirmation was verified, so on a finding that isn't confirmed it is not kept.
-        # A call with nothing else would change nothing, and a model that believes it confirmed the finding repeats
-        # it (seen 80 times in one run), so that is refused. A call that also sets other fields saves those and says
-        # method was left out: refusing it all lost them, and the planner resent it 36-46 times.
+        # method says how a confirmation was verified, so on a candidate a call that carries one means to confirm:
+        # it gets the same checks as status="confirmed". Refusing it sent the planner into a loop (it resent the
+        # call 36-46 times), and saving the rest while leaving the finding a candidate left it believing it had
+        # confirmed. When the checks fail, the other fields are saved and the note says why it isn't confirmed.
         try:
             cur = db.get(engagement, finding_id)
         except ValueError as e:
             return f"REFUSED: {e}"
-        if cur.get("status") != "confirmed":
-            how = (f"To confirm it, call update_finding with status=\"confirmed\", method=\"{method}\", the evidence "
-                   f"that shows it and the reproduction steps.")
-            given = [k for k, v in fields.items() if v is not None]
+        was = cur.get("status")
+        given = [k for k, v in fields.items() if v is not None]
+        if was == "candidate" and _disproved(engagement, finding_id):
+            # the validator sent it back: only an explicit confirmation with new evidence may try again
+            problem = ("the validator disproved it (get_finding shows the reason). Test again, then send "
+                       "status=\"confirmed\" with the new evidence, or mark it false-positive")
+        elif was == "candidate":
+            problem = _confirm_problem(
+                engagement, method, evidence if evidence is not None else cur.get("evidence"),
+                reproduction if reproduction is not None else cur.get("reproduction"),
+                description if description is not None else cur.get("description"))
+        elif was != "confirmed":
+            problem = "method is kept only with status=\"confirmed\""
+        else:
+            problem = None
+        if was == "candidate" and not problem:
+            status = fields["status"] = "confirmed"
+        elif problem:
             if not given:
-                return (f"REFUSED: {finding_id} is {cur.get('status')}, and this call doesn't confirm it: method only "
-                        f"records how a confirmation was verified. {how}")
+                return (f"REFUSED: {finding_id} is {was}, and a method without status is read as confirming it, "
+                        f"which can't be done: {problem.rstrip('.')}.")
             method = None
-            note = (f"saved {', '.join(given)}. {finding_id} is still {cur.get('status')}: this call didn't confirm "
-                    f"it, so method was not recorded (it is kept only with status=\"confirmed\"). {how}")
+            note = (f"{NOT_CONFIRMED}saved {', '.join(given)}, and {finding_id} is still {was}. {problem.rstrip('.')}. To "
+                    f"confirm it, call {_confirm_call(finding_id, method_given)}.")
     if status == "confirmed":
         try:
             cur = db.get(engagement, finding_id)
@@ -128,11 +234,8 @@ def update_finding(engagement: str, finding_id: str, status: str | None = None, 
         ev = evidence if evidence is not None else cur.get("evidence")
         how = method or cur.get("verified_method")
         repro = reproduction if reproduction is not None else cur.get("reproduction")
-        problem = db.confirm_problem(how, ev) or _reproduction_problem(repro) \
-            or (verification.problem(engagement, ev) if how == "oracle" else None) \
-            or quotecheck.refusal(
-            engagement, description if description is not None else cur.get("description"),
-            repro, ev)
+        problem = _confirm_problem(engagement, how, ev, repro,
+                                   description if description is not None else cur.get("description"))
         if problem:
             return f"REFUSED: {problem}"
     try:
@@ -143,14 +246,16 @@ def update_finding(engagement: str, finding_id: str, status: str | None = None, 
         return f"REFUSED: {e}"
     if note:
         row = {"note": note, **row}
-    return _out(_validated(engagement, row) if status == "confirmed" else row)
+    sent = [k for k, v in fields.items() if v is not None and k != "status"]
+    return _out(_ack(_validated(engagement, row) if status == "confirmed" else row, sent))
 
 
 @mcp.tool()
 def validate_finding(engagement: str, finding_id: str) -> str:
     """Send a confirmed finding to the disprove-only validator again (it runs on its own when you confirm one): a
-    separate model with only the finding, its cited evidence and its oracle records tries to disprove it. Returns
-    stands, disproved (the finding goes back to candidate, with the reason), unclear or not_run, and the reason."""
+    separate model with only the finding, its cited evidence and source lines and its oracle records tries to
+    disprove it. Returns stands, disproved (the finding stays confirmed and is flagged for the person, with the
+    reason), unclear or not_run, and the reason."""
     try:
         return _out(validator.validate(engagement, finding_id))
     except ValueError as e:
@@ -161,6 +266,7 @@ def validate_finding(engagement: str, finding_id: str) -> str:
 def list_findings(engagement: str, status: str | None = None, severity: str | None = None) -> str:
     """List findings, most severe first. Filter by status (candidate|confirmed|false-positive|duplicate|fixed|accepted-risk)
     and/or severity. Returns id, title, severity, status, asset for each."""
+    _repin(engagement)
     rows = db.list_(engagement, status, severity)
     return _out([{k: r[k] for k in ("id", "title", "severity", "status", "asset", "source")} for r in rows]
                 or "no findings")
@@ -174,6 +280,9 @@ def get_finding(engagement: str, finding_id: str, history: bool = False) -> str:
     v = validator.history(engagement, finding_id)
     if v:
         f["validation"] = v[0]
+    quotes = _quotes(engagement, f) if f.get("status") == "confirmed" else None
+    if quotes:
+        f["quotes"] = {"not_in_evidence": quotes["not_in_evidence"]}
     if history:
         f["history"] = db.history(engagement, finding_id)
         f["validations"] = v
@@ -182,6 +291,7 @@ def get_finding(engagement: str, finding_id: str, history: bool = False) -> str:
 
 # ---------------------------------------------------------------- investigation workspace (RW-015 to RW-018)
 def _call(name, **req):
+    _repin(req.get("engagement"))
     try:
         return _out(ops.call(name, {"engagement": req.pop("engagement"), "actor": ACTOR, **req})[0])
     except ValueError as e:
@@ -246,14 +356,23 @@ def plan_tests(engagement: str, items: list[dict] | None = None, playbook: str =
 @mcp.tool()
 def update_coverage(engagement: str, item: str, state: str, rationale: str = "", evidence: list[str] | None = None,
                     finding_id: str = "", build: str = "", policy_revision: str = "") -> str:
-    """Record a planned test's outcome. state: tested (ran, no issue: evidence required), failed (an issue: the
+    """Record a planned test's outcome. state: tested (ran, no issue: evidence required, a tool output under
+    /work/<engagement>/ or the source that shows it, /src/<repo>/<file>:<line>), failed (an issue: the
     finding_id it produced), blocked (couldn't run: rationale, and what would unblock it), excluded (out of scope
     or agreed not to test: rationale), not-applicable (rationale), planned. build: the source digest or deployed
     build it ran on; policy_revision: the engagement's policy revision (engagement_info)."""
     fields = {"state": state, "rationale": rationale or None, "evidence": evidence, "finding_id": finding_id or None,
               "build": build or None, "policy_revision": policy_revision or None}
-    return _call("plan.update", engagement=engagement, id=item, fields={k: v for k, v in fields.items()
-                                                                         if v is not None})
+    _repin(engagement)
+    try:
+        row = ops.call("plan.update", {"engagement": engagement, "actor": ACTOR, "id": item,
+                                       "fields": {k: v for k, v in fields.items() if v is not None}})[0]
+    except ValueError as e:
+        return f"REFUSED: {e}"
+    if not isinstance(row, dict):
+        return _out(row)
+    return _out({k: row[k] for k in ("id", "title", "state", "evidence", "finding_id", "stale", "warning", "note")
+                 if row.get(k) not in (None, "", [], False)})
 
 
 @mcp.tool()
@@ -424,6 +543,7 @@ def report_readiness(engagement: str) -> str:
     """What blocks delivery now (and what a person excepted, with the rationale), plus warnings: coverage without
     outcomes, stale results, reported findings missing fields or a verification method, fixed findings without a
     retest, untriaged candidates, open cleanup obligations. The report revisions and their states."""
+    _repin(engagement)
     r = ops.call("report.revisions", {"engagement": engagement})[0]
     return _out({"readiness": r["readiness"], "revisions": [{k: v[k] for k in ("id", "state", "created",
                                                                              "approved_by")} for v in r["revisions"]]})

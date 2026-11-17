@@ -248,7 +248,7 @@ approve its own requests. Ctrl-C stops it.
 <summary><b>See the engagement overview</b></summary>
 <br>
 <p align="center">
-  <img src="docs/img/console-overview.png" alt="Console engagement overview: findings by severity, scope and rules, a ready prompt for the agent" width="100%">
+  <img src="docs/img/console-overview.png" alt="Console engagement overview: the next step, findings by severity, scope and rules, and where each model sends data" width="100%">
 </p>
 </details>
 

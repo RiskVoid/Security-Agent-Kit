@@ -8,8 +8,10 @@ Used by ./rvkit status, doctor and watch, and by the console. Python 3.9+, stand
   python3 scripts/model_events.py --count                                   number of lines in the log
 
 Kinds: "fallback" and "refusal" mean another model answered instead, "context" that OpenHands summarised older turns
-to fit the context window (recovered, shown as info). Everything else (no_answer, credits, budget, auth, rate_limit,
-worker_down, timeout, error) means the call failed.
+to fit the context window (recovered, shown as info). "repeat" means the planner sent one tool call again and again
+and the gateway left the repeats out of what it reads, "loop" that the gateway ended such a turn without calling the
+model (litellm/rv_repeats.py). Everything else (no_answer, credits, budget, auth, rate_limit, worker_down, timeout,
+error) means the call failed.
 """
 import calendar, json, os, sys, time
 

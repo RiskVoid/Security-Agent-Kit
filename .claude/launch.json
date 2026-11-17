@@ -1,0 +1,71 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "kit-page-mockup",
+      "runtimeExecutable": "python3",
+      "runtimeArgs": [
+        "-m",
+        "http.server",
+        "8765",
+        "--bind",
+        "127.0.0.1",
+        "--directory",
+        "/private/tmp/claude-501/-Users-ruslansazonov--claude-spares-spare-ZvWdHR/8471b591-819e-40a0-a7ba-025614e62a1f/scratchpad/preview"
+      ],
+      "port": 8765
+    },
+    {
+      "name": "agent-mockup",
+      "runtimeExecutable": "python3",
+      "runtimeArgs": [
+        "-m",
+        "http.server",
+        "8766",
+        "--bind",
+        "127.0.0.1",
+        "--directory",
+        "/private/tmp/claude-501/-Users-ruslansazonov--claude-spares-spare-9lgNMs/8eef6313-8fc5-45d3-8bc4-18fd74e44813/scratchpad/agent-mockup"
+      ],
+      "port": 8766
+    },
+    {
+      "name": "console-dev",
+      "runtimeExecutable": "python3",
+      "runtimeArgs": [
+        "/private/tmp/claude-501/-Users-ruslansazonov--claude-spares-spare-9lgNMs/8eef6313-8fc5-45d3-8bc4-18fd74e44813/scratchpad/dev/console_dev.py"
+      ],
+      "port": 18100
+    },
+    {
+      "name": "console-dev-failures",
+      "runtimeExecutable": "python3",
+      "runtimeArgs": [
+        "/private/tmp/claude-501/-Users-ruslansazonov--claude-spares-spare-wDNM7c/bdbf87a7-3ee4-4053-8d90-c2adf9736a7a/scratchpad/dev/console_dev.py"
+      ],
+      "port": 18110
+    },
+    {
+      "name": "rv-console",
+      "runtimeExecutable": "python3",
+      "runtimeArgs": [
+        "scripts/console.py"
+      ],
+      "port": 8100
+    },
+    {
+      "name": "architecture-overview",
+      "runtimeExecutable": "python3",
+      "runtimeArgs": [
+        "-m",
+        "http.server",
+        "8767",
+        "--bind",
+        "127.0.0.1",
+        "--directory",
+        "docs"
+      ],
+      "port": 8767
+    }
+  ]
+}

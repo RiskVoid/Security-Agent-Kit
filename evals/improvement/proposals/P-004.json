@@ -1,0 +1,18 @@
+{
+ "id": "P-004",
+ "created": "2026-11-15",
+ "cause": "retry/",
+ "kind": "other",
+ "file": "harness/findings.py",
+ "change": "record_finding and update_finding read a method without status as a confirmation attempt, with the same checks as status=confirmed. When the checks fail, the finding and the other fields are saved and the reply says why it is still a candidate. A candidate the validator disproved is confirmed again only with status=confirmed. Benchmark scores count an expected item matched only by a candidate finding as left as a candidate.",
+ "targets": [
+  "code-flask-20261115T132718Z",
+  "api-vampi-20261115T140938Z",
+  "code-node-20261115T134143Z"
+ ],
+ "read": 62,
+ "status": "merged-fix",
+ "judgement": null,
+ "merged": "2026-11-15",
+ "reason": "record_finding with a method and no status saved a candidate without a word, and the planner then worked as if the finding were confirmed: visible in every targeted trace. Replaying the finding calls of the three collapsed runs against the new tools turns 144 refusals into 4, and in the p003 candidate runs a method-only call confirmed a finding. It ran together with P-003 (dropped), so it has no judge numbers of its own, and it does not stop the planner repeating a call that can't succeed."
+}

@@ -86,7 +86,7 @@ CONFIRMED = ("confirmed", "fixed", "accepted-risk")
 TASK_FAILURES = ("blocked", "out_of_scope", "budget_used", "model_refused", "tool_failure", "provider_error", "stalled")
 TARGET_TOOLS = re.compile(r"^(kali_(?!list_engagements|engagement_|all_scopes|approval)|worker_)")
 NUDGES = (("no test plan", "no-plan"), ("have no outcome", "plan-unfinished"), ("not triaged", "untriaged"),
-          ("got no answer", "no-model-answer"), ("stopped as stuck", "stuck"))
+          ("got no answer", "no-model-answer"), ("stopped as stuck", "stuck"), ("again and again", "loop-cut"))
 LEADS = ("no plan item", "targets not in scope", "references look like")   # messages that go on to quote the input
 
 
@@ -236,6 +236,8 @@ def collect(res, bench, data):
         for needle, why in NUDGES:
             if needle in text:
                 add("stopped-early", why)
+    for r in res.get("restarts") or []:    # the run went on in a new conversation (run_benchmark.run_conversation)
+        add("stopped-early", "loop-new-conversation", str(r.get("reason") or ""))
     dec = s.get("decisions") or {}
     for key, stage in (("candidates_left", "candidates-left"), ("confirmed_without_method", "confirmed-without-method"),
                        ("observations_untriaged", "observations-untriaged")):

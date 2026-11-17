@@ -33,7 +33,8 @@ OB_STATES = ("open", "done", "waived")
 HUMAN_RX = re.compile(r"^(console|cli):")
 # Readiness checks a person may except, with the rationale: methodology choices. The others are facts about the
 # record (no summary, untriaged candidates, broken evidence, no client name) and have to be fixed.
-EXCEPTABLE = ("coverage-plan", "coverage-open", "coverage-stale", "coverage-gaps", "fields", "verification", "retest")
+EXCEPTABLE = ("coverage-plan", "coverage-open", "coverage-stale", "coverage-gaps", "fields", "verification", "retest",
+              "review")
 MATERIAL = ("critical", "high")
 REQUIRED_FIELDS = ("asset", "description", "impact", "reproduction", "remediation")
 
@@ -159,6 +160,14 @@ def readiness(eng, inp=None):
             checks.append((f"fields:{f['id']}", f"{f['id']} has no {', '.join(missing)}"))
         if f["status"] == "confirmed" and f.get("verified_method") in (None, "", "not stated"):
             checks.append((f"verification:{f['id']}", f"{f['id']} is confirmed without a verification method"))
+    try:   # the validator disputes a confirmed finding (validator.py): a person settles it before delivery
+        import validator
+        for fid, v in validator.disputed(eng, reported).items():
+            checks.append((f"review:{fid}", f"{fid} is confirmed, and the independent reviewer disputes it: "
+                           f"{(v.get('reason') or '')[:300]} Correct the finding, mark it false-positive, or "
+                           "record an exception with the reason it stands."))
+    except Exception:  # noqa: BLE001  a missing validations table must not stop the report
+        pass
     with db._db(eng) as con:
         retested = {r["finding_id"] for r in con.execute("SELECT finding_id FROM retests WHERE outcome='resolved'")}
         open_obs = con.execute("SELECT COUNT(*) FROM observations WHERE status='new'").fetchone()[0]
@@ -170,6 +179,17 @@ def readiness(eng, inp=None):
         if any(redact(f.get(k) or "") != (f.get(k) or "") for k in ("description", "reproduction", "impact", "notes")):
             warnings.append(f"{f['id']}: its text contains what looks like a secret (redacted in the report; "
                             "remove it from the finding)")
+    try:   # quotes that aren't in the cited evidence (quotecheck.py): for the person to read, not a blocker
+        import quotecheck
+        for f in reported:
+            q = quotecheck.unverified(eng, f.get("description"), f.get("reproduction"), f.get("evidence")) \
+                if f["status"] == "confirmed" else []
+            if q:
+                warnings.append(f"{f['id']}: {len(q)} text(s) in backticks are not in its cited evidence ("
+                                + "; ".join(f"`{x[:60]}`" for x in q[:3]) + ("; ..." if len(q) > 3 else "")
+                                + "). Fine for an example input; check any that reads as what the target returned")
+    except Exception:  # noqa: BLE001  a reading aid must not stop the report
+        pass
     if open_obs:
         warnings.append(f"{open_obs} observation(s) not triaged (not in the report)")
     if open_obl:

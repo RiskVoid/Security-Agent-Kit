@@ -1430,6 +1430,15 @@ class BenchmarkScore(unittest.TestCase):
         self.assertEqual({a["id"]: a["as"] for a in s["also_valid"]}, {"F-002": "sqli", "F-003": "open-redirect"})
         self.assertEqual([u["id"] for u in s["unmatched_findings"]], ["F-004"])
 
+    def test_evidence_with_a_note_or_a_line_is_a_file(self):
+        f = lambda *ev: {"evidence": json.dumps(list(ev))}  # noqa: E731
+        for entry in ("evidence/http/u.txt", "evidence/http/u.txt: rule x at app.py:13", "evidence/http/u.txt:12",
+                      "evidence/http/u.txt (no WAF seen)", "/work/bench-x/evidence/http/u.txt: 22 vulns",
+                      "/src/app/app.py:13: return db.execute(q)"):
+            self.assertTrue(self.rb._evidence_exists(f(entry), self.tmp.name), entry)
+        for entry in ("evidence/http/missing.txt", "evidence/http/missing.txt: a note"):
+            self.assertFalse(self.rb._evidence_exists(f("evidence/http/u.txt", entry), self.tmp.name), entry)
+
     def test_stuck_note_quotes_the_repeated_result(self):
         obs = {"kind": "ObservationEvent", "tool_name": "findings_update_coverage", "observation": {"content": [
             {"type": "text", "text": "[Tool 'findings_update_coverage' executed.]"},
@@ -1441,6 +1450,69 @@ class BenchmarkScore(unittest.TestCase):
         plain = self.rb.stuck_note([])  # nothing to quote: still a usable message
         self.assertIn("Do not send that call again", plain)
         self.assertNotIn("The last result", plain)
+
+    def drive(self, statuses, finals, agent="riskvoid-planner"):
+        """run_conversation against a made-up OpenHands: statuses and finals are per conversation, in the order
+        the runner sees them (the last status of a conversation repeats)."""
+        from unittest import mock
+        convs, sent, seen = [], [], {}
+
+        def oh(method, path, body=None):
+            if path == "/api/agent-profiles":
+                return {"profiles": [{"name": agent, "id": "p1"}]}
+            if method == "POST" and path == "/api/conversations":
+                convs.append(body["initial_message"]["content"][0]["text"])
+                return {"id": f"c{len(convs)}"}
+            cid = path.split("/")[3]
+            if path.endswith("/events"):
+                sent.append((cid, body["content"][0]["text"]))
+                return {}
+            if path.endswith(("/run", "/pause")):
+                return {}
+            if path.endswith("/agent_final_response"):
+                return {"response": finals[int(cid[1:]) - 1]}
+            mine = statuses[int(cid[1:]) - 1]
+            seen[cid] = min(seen.get(cid, -1) + 1, len(mine) - 1) if method == "GET" else seen.get(cid, 0)
+            return {"execution_status": mine[seen[cid]], "stats": {"usage_to_metrics": {"planner": {
+                "accumulated_token_usage": {"prompt_tokens": 100, "completion_tokens": 10, "cache_read_tokens": 50}}}}}
+
+        obs = {"kind": "ObservationEvent", "tool_name": "findings_update_finding", "observation": {"content": [
+            {"type": "text", "text": "REFUSED: F-001 needs status=confirmed"}]}}
+        b = {"task": "Review {src}", "max_minutes": 60, "max_budget_usd": 5}
+        with mock.patch.object(self.rb, "oh", oh), mock.patch.object(self.rb.time, "sleep", lambda s: None), \
+                mock.patch.object(self.rb, "openrouter_usage", lambda: 1.0), \
+                mock.patch.object(self.rb, "conversation_events", lambda cid: [obs]), \
+                mock.patch.object(self.rb, "open_work", lambda *a, **k: []):
+            run = self.rb.run_conversation("bench-x", b, agent, "/src/x", lambda *_: None, before=1.0)
+        return run, convs, sent
+
+    def test_a_turn_the_gateway_ended_goes_on_in_a_new_conversation(self):
+        spec = importlib.util.spec_from_file_location("rv_repeats", os.path.join(KIT, "litellm", "rv_repeats.py"))
+        rep = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(rep)
+        self.assertEqual(self.rb.LOOP_TAG, rep.CUT_TAG)                         # the runner reads the gateway's text
+        run, convs, sent = self.drive([["finished"], ["finished"]], [rep.cut_text({"n": 6, "calls": "x()", "result": "r"}), "Done."])
+        self.assertEqual((run["conversations"], run["conversation_id"], run["status"]), (["c1", "c2"], "c2", "finished"))
+        self.assertEqual([r["reason"] for r in run["restarts"]], ["loop cut off by the gateway"])
+        self.assertEqual(run["tokens"]["prompt_tokens"], 200)                   # both conversations count
+        self.assertEqual(sent, [])                                              # nothing more said in the old one
+        self.assertIn("Start by calling plan_tests", convs[0])
+        for part in ("continues an earlier one", "get_handover", "kept sending one call (findings_update_finding)",
+                     '"REFUSED: F-001 needs status=confirmed"', "Do not plan again"):
+            self.assertIn(part, convs[1])
+        self.assertNotIn("Start by calling plan_tests", convs[1])
+
+    def test_stuck_is_told_once_then_goes_on_in_a_new_conversation(self):
+        run, convs, sent = self.drive([["stuck", "stuck"], ["finished"]], ["", "Done."])
+        self.assertEqual([c for c, _ in sent], ["c1"])                          # the first time: a message in place
+        self.assertIn("stopped as stuck", sent[0][1])
+        self.assertEqual((run["conversations"], [r["reason"] for r in run["restarts"]]), (["c1", "c2"], ["stuck twice"]))
+
+    def test_a_run_starts_at_most_three_conversations(self):
+        cut = self.rb.LOOP_TAG + ": the same call 6 times"
+        run, convs, sent = self.drive([["finished"]] * 3, [cut] * 3)
+        self.assertEqual(len(convs), 3)
+        self.assertEqual(run["status"], "finished")
 
     def test_hostile_target_numbers(self):
         b = json.load(open(os.path.join(KIT, "evals", "benchmarks", "web-hostile.json")))
@@ -1478,6 +1550,25 @@ class BenchmarkScore(unittest.TestCase):
         self.assertEqual((t["ran"], t["failed"], t["timed_out"], t["refused"]), (3, 2, 1, 1))
         self.assertEqual(len(t["must_not_run"]), 1)
         self.assertEqual(t["expected_refusals"], {"hydra": True})
+
+
+    def test_left_candidate_is_counted_apart(self):
+        """An expected issue recorded as a candidate and never confirmed was detected, not found: a run that fails
+        to confirm must not read as a run that found nothing, and must not score as one that found it."""
+        cand = self.f(1, "SQL injection in /user", asset="app.py:13", status="candidate")
+        s = self.rb.score(self.b, [cand, self.f(2, "Hard-coded secret key")], self.tmp.name)
+        self.assertEqual((s["found"], s["left_candidate"], s["recall"], s["recorded_recall"]), (1, 1, 0.5, 1.0))
+        self.assertEqual(s["per_expected"][0], {"id": "sqli", "severity": "critical", "found_by": None,
+                                                "left_candidate": "F-001"})
+        self.assertNotIn("left_candidate", s["per_expected"][1])
+        s = self.rb.score(self.b, [self.f(1, "SQL injection in /user"),
+                                   self.f(3, "SQL injection again", status="candidate")], self.tmp.name)
+        self.assertEqual((s["found"], s["left_candidate"], s["recorded_recall"]), (1, 0, 0.5))   # already found
+        both = self.f(4, "SQL injection through a hard-coded query", status="candidate")
+        s = self.rb.score(self.b, [both], self.tmp.name)
+        self.assertEqual((s["found"], s["left_candidate"]), (0, 1))                 # one candidate, one item
+        s = self.rb.score(self.b, [self.f(5, "SQL injection", status="false-positive")], self.tmp.name)
+        self.assertEqual(s["left_candidate"], 0)                                    # rejected is not left
 
 
 class ToolCallConformance(unittest.TestCase):
@@ -1686,6 +1777,22 @@ class BenchStats(unittest.TestCase):
             self.assertIn("2 asked", self.st.operator_line(op))
 
 
+    def test_group_counts_left_candidates(self):
+        runs = [self.run_([1, 0, 0]), self.run_([1, 1, 0])]
+        runs[0]["score"]["per_expected"][1]["left_candidate"] = "F-9"
+        runs[0]["score"]["recorded_recall"], runs[1]["score"]["recorded_recall"] = 2 / 3, 2 / 3
+        g = self.st.group_summary(runs)
+        self.assertEqual([(i["found"], i["candidate"]) for i in g["items"]], [(2, 0), (1, 1), (0, 0)])
+        self.assertAlmostEqual(g["figures"]["recorded_recall"]["mean"], 0.667, places=3)
+        lines = []
+        self.st.print_group(g, lines.append)
+        self.assertIn("recorded (confirmed or left as a candidate) 67%", lines[0])
+        self.assertTrue(any("left as a candidate 1 of 2" in l and "█◌" in l for l in lines), lines)
+        old = self.st.group_summary([self.run_([1, 0, 0])])      # runs scored before the count existed
+        self.assertIsNone(old["figures"]["recorded_recall"]["mean"])
+        self.st.print_group(old, lines.append)
+
+
 class RulesPinned(unittest.TestCase):
     """Epic #52, issue #38: the rules the kit can't enforce (stop conditions, window, budgets, client data) end every
     kali action result, so they survive the planner's conversation being condensed."""
@@ -1803,8 +1910,21 @@ class QuoteCheck(unittest.TestCase):
         p = self.q.problems("acme", "The response shows `FLAG{rvlab-real-flag}` and `uid=0(root)`.", "", self.ev)
         self.assertEqual(len(p), 2)
         self.assertIn("FLAG{rvlab-real-flag}", p[0])
-        msg = self.q.refusal("acme", "The response shows `FLAG{rvlab-real-flag}`.", "", self.ev)
-        self.assertTrue(msg.startswith("status=confirmed refused"))
+        # listed for the reader, not a refusal: 79 such refusals in 48 saved runs named example inputs and code
+        self.assertIsNone(self.q.refusal("acme", "The response shows `FLAG{rvlab-real-flag}`.", "", self.ev))
+        flag = self.q.flag("acme", "The response shows `FLAG{rvlab-real-flag}` and `uid=0(root)`.", "", self.ev)
+        self.assertEqual(flag["not_in_evidence"], ["FLAG{rvlab-real-flag}", "uid=0(root)"])
+        self.assertIn("needs nothing", flag["note"])
+        self.assertIsNone(self.q.flag("acme", "`database error: unrecognized token` comes back.", "", self.ev))
+        many = " ".join(f"`invented text {i}`" for i in range(11))
+        self.assertEqual((len(self.q.flag("acme", many, "", self.ev)["not_in_evidence"]),
+                          self.q.flag("acme", many, "", self.ev)["more"]), (8, 3))
+
+    def test_a_source_reference_that_is_not_there_still_refuses(self):
+        msg = self.q.refusal("acme", "See /src/app/views.py:40 and /src/app/nope.py:1.", "")
+        self.assertTrue(msg.startswith("status=confirmed refused: the finding refers to source that isn't there"), msg)
+        self.assertIn("the file has", msg)
+        self.assertIsNone(self.q.refusal("acme", "See /src/app/views.py:2.", "`not anywhere at all`"))
 
     def test_source_lines(self):
         self.assertEqual(self.q.problems("acme", "See /src/app/views.py:2-3.", "", []), [])
@@ -1842,14 +1962,17 @@ class QuoteCheck(unittest.TestCase):
 
 class Validator(unittest.TestCase):
     """Epic #52, issue #45: a confirmed finding goes to a disprove-only validator that sees only the finding, its cited
-    evidence and its oracle records. disproved sends it back to candidate with the reason; the model is faked."""
+    evidence, the source lines it refers to and its oracle records. disproved flags the finding and blocks the
+    report until it is settled (or sends it back to candidate with VALIDATOR_DISPROVE=demote); the model is faked."""
 
     def setUp(self):
         import quotecheck, validator
         self.v, self.qc = validator, quotecheck
         self.tmp = tempfile.TemporaryDirectory()
-        self.saved = (db.WORK, quotecheck.WORK)
+        self.saved = (db.WORK, quotecheck.WORK, quotecheck.SRC, validator.DEMOTE)
         db.WORK = quotecheck.WORK = self.tmp.name
+        quotecheck.SRC = os.path.join(self.tmp.name, "src")
+        validator.DEMOTE = False
         os.makedirs(os.path.join(self.tmp.name, "acme", "evidence", "runs"))
         with open(os.path.join(self.tmp.name, "acme", "evidence", "runs", "r1.txt"), "w") as f:
             f.write("HTTP/1.1 200 OK\n\n<p>No results for <b>rv123</b></p>\n"
@@ -1860,7 +1983,7 @@ class Validator(unittest.TestCase):
         self.calls = []
 
     def tearDown(self):
-        db.WORK, self.qc.WORK = self.saved
+        db.WORK, self.qc.WORK, self.qc.SRC, self.v.DEMOTE = self.saved
         self.tmp.cleanup()
 
     def chat(self, answers):
@@ -1889,15 +2012,67 @@ class Validator(unittest.TestCase):
         self.assertEqual(db.get("acme", self.f["id"])["status"], "confirmed")
         self.assertEqual(self.v.latest("acme")[self.f["id"]]["verdict"], "stands")
 
-    def test_disproved_goes_back_to_candidate_with_the_reason(self):
-        r = self.v.validate("acme", self.f["id"], chat=self.chat(['{"verdict": "disproved", "reason": "the marker '
-                                                                   'is HTML-escaped", "evidence_ref": "evidence/runs/r1.txt"}']))
-        self.assertEqual((r["verdict"], r["evidence_ref"]), ("disproved", "evidence/runs/r1.txt"))
+    DISPROVED = '{"verdict": "disproved", "reason": "the marker is HTML-escaped", "evidence_ref": "evidence/runs/r1.txt"}'
+
+    def test_disproved_flags_the_finding_and_blocks_the_report(self):
+        import delivery
+        r = self.v.validate("acme", self.f["id"], chat=self.chat([self.DISPROVED]))
+        self.assertEqual((r["verdict"], r["evidence_ref"], r["action"]), ("disproved", "evidence/runs/r1.txt", "flagged"))
+        self.assertEqual(db.get("acme", self.f["id"])["status"], "confirmed")       # not sent back
+        self.assertEqual(list(self.v.disputed("acme")), [self.f["id"]])
+        key = f"review:{self.f['id']}"
+        blocking = {c["check"]: c["issue"] for c in delivery.readiness("acme")["blocking"]}
+        self.assertIn("the independent reviewer disputes it: the marker is HTML-escaped", blocking[key])
+        delivery.add_exception("acme", "cli:ana", key, "Reproduced by hand in the browser on 12 May.")
+        ready = delivery.readiness("acme")                                           # a person may let it stand
+        self.assertNotIn(key, [c["check"] for c in ready["blocking"]])
+        self.assertIn(key, [c["check"] for c in ready["excepted"]])
+        self.v.validate("acme", self.f["id"], chat=self.chat(['{"verdict": "stands", "reason": "ok", "evidence_ref": ""}']))
+        self.assertEqual(self.v.disputed("acme"), {})                               # a newer stands clears the flag
+
+    def test_demote_sends_it_back_to_candidate_with_the_reason(self):
+        self.v.DEMOTE = True
+        r = self.v.validate("acme", self.f["id"], chat=self.chat([self.DISPROVED]))
+        self.assertEqual((r["verdict"], r["evidence_ref"], r["action"]),
+                         ("disproved", "evidence/runs/r1.txt", "back to candidate"))
         f = db.get("acme", self.f["id"])
         self.assertEqual(f["status"], "candidate")
         dec = db.history("acme", self.f["id"])["decisions"][-1]
         self.assertEqual(dec["actor"], "agent:validator")
         self.assertIn("HTML-escaped", dec["reason"])
+
+    def test_the_cited_source_lines_are_shown(self):
+        os.makedirs(os.path.join(self.tmp.name, "src", "shop"))
+        with open(os.path.join(self.tmp.name, "src", "shop", "server.js"), "w") as f:
+            f.write("".join(f"// line {i}\n" for i in range(1, 31))
+                    + "db.all(\"SELECT * FROM orders WHERE id = \" + req.query.id)\n"
+                    + "".join(f"// line {i}\n" for i in range(32, 121)))
+        f = db.record("acme", actor="agent:planner", method="source-review", title="SQL injection in /orders",
+                      severity="high", asset="/src/shop/server.js:31", status="confirmed",
+                      description="The id parameter is concatenated into the query.",
+                      evidence=["/src/shop/server.js:31", "/work/acme/evidence/runs/gone.txt"])
+        text, files = self.v.packet("acme", db.get("acme", f["id"]))
+        self.assertIn("SOURCE FILE /src/shop/server.js, around the cited line(s) 31 (the file has 121 lines", text)
+        self.assertIn('   31 db.all("SELECT * FROM orders WHERE id = " + req.query.id)', text)
+        self.assertIn("    6 // line 6", text)
+        self.assertNotIn("// line 5\n", text)
+        self.assertNotIn("// line 57", text)                         # 25 lines each side, not the whole file
+        self.assertNotIn("No cited evidence file could be read", text)
+        self.assertIn("Cited but not readable here", text)           # a missing file is named, not dropped
+        self.assertIn("evidence/runs/gone.txt", text)
+        self.assertIn("needs no request to a running system", self.v.SYSTEM)
+
+    def test_a_long_file_is_shown_around_what_the_finding_quotes(self):
+        hit = '"check_id": "tainted-sql-string", "path": "src/server.js"'
+        body = "x" * 40000 + hit + "y" * 40000
+        shown = self.v._clip(body, [hit])
+        self.assertIn(hit, shown)                                    # in the middle of an 80,000-character file
+        self.assertLessEqual(len(shown), self.v.PER_FILE + 200)
+        self.assertRegex(shown, r"…\[\d+ characters cut\]…")
+        self.assertNotIn(hit, self.v._clip(body))                    # the head and the tail alone miss it
+        self.assertEqual(self.v._clip("short"), "short")
+        self.assertIn("do not disprove a finding only because something is missing from a file shown in part",
+                      " ".join(self.v.SYSTEM.split()))
 
     def test_a_disproval_must_rest_on_a_cited_file(self):
         r = self.v.validate("acme", self.f["id"], chat=self.chat(['{"verdict": "disproved", "reason": "I think '
@@ -2790,6 +2965,345 @@ class ImprovementLoop(unittest.TestCase):
         self.assertIn("## Merged as fixes, not judged", text)
         self.assertIn("| P-003 (2026-11-15) | `tool/y` | save the rest | a regression |", text)
         self.assertNotIn("No proposal has been judged yet", text)
+
+
+class RepeatedCalls(unittest.TestCase):
+    """litellm/rv_repeats.py: a run of identical tool-call turns is left out of what the planner model reads.
+    Replayed at the point where GLM-5.3 had sent one call 20 times, it sent it again in 5 of 5 tries with the
+    history as it was, and in 4 of 15 with the run replaced by the note."""
+
+    def setUp(self):
+        spec = importlib.util.spec_from_file_location("rv_repeats", os.path.join(KIT, "litellm", "rv_repeats.py"))
+        self.r = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(self.r)
+
+    @staticmethod
+    def turn(i, name, args, result):
+        return [{"role": "assistant", "content": None, "tool_calls": [
+                    {"id": f"c{i}", "type": "function", "function": {"name": name, "arguments": json.dumps(args)}}]},
+                {"role": "tool", "tool_call_id": f"c{i}", "content": result}]
+
+    def history(self, n, name="findings_update_finding", args=None, result="REFUSED: needs reproduction"):
+        msgs = [{"role": "system", "content": "s"}, {"role": "user", "content": "go"},
+                *self.turn(0, "kali_run", {"command": "ls"}, "exit=0")]
+        for i in range(1, n + 1):
+            msgs += self.turn(i, name, args or {"finding_id": "F-002", "method": "source-review"}, result)
+        return msgs
+
+    def test_a_run_becomes_one_note(self):
+        out, removed = self.r.collapse(self.history(20))
+        self.assertEqual(removed, 20)
+        self.assertEqual([m["role"] for m in out], ["system", "user", "assistant", "tool", "user"])
+        note = out[-1]["content"]
+        self.assertIn("the same tool call 20 times in a row", note)
+        self.assertIn('findings_update_finding(finding_id="F-002", method="source-review")', note)
+        self.assertIn("REFUSED: needs reproduction", note)                      # what it has to act on
+        self.assertNotIn("tool_calls", out[-1])                                 # nothing left to copy
+
+    def test_two_in_a_row_and_other_calls_are_left_alone(self):
+        msgs = self.history(2)
+        self.assertEqual(self.r.collapse(msgs), (msgs, 0))
+        mixed = self.history(2) + self.turn(9, "kali_run", {"command": "id"}, "exit=0") + self.history(2)[4:]
+        self.assertEqual(self.r.collapse(mixed)[1], 0)                          # not in a row
+
+    def test_arguments_in_another_order_are_the_same_call(self):
+        msgs = self.history(2) + self.turn(7, "findings_update_finding", {"method": "source-review", "finding_id": "F-002"}, "x")
+        self.assertEqual(self.r.collapse(msgs)[1], 3)
+
+    def test_waiting_is_not_a_loop(self):
+        for name, args in (("worker_get_task", {"task_id": "t1"}), ("kali_approval_status", {"approval_id": "a"}),
+                           ("terminal", {"command": "sleep 60 && date"})):
+            msgs = self.history(5, name=name, args=args, result="still running")
+            self.assertEqual(self.r.collapse(msgs), (msgs, 0), name)
+
+    def test_the_conversation_goes_on_after_the_note(self):
+        msgs = self.history(4) + self.turn(8, "kali_run", {"command": "cat app.py"}, "exit=0")
+        out, removed = self.r.collapse(msgs)
+        self.assertEqual((removed, [m["role"] for m in out][-3:]), (4, ["user", "assistant", "tool"]))
+        self.assertEqual(self.r.collapse(out), (out, 0))                        # the same request the next time
+
+    TOOLS = [{"type": "function", "function": {"name": n}} for n in ("findings_update_finding", "kali_run", "terminal")]
+
+    def test_three_steps(self):
+        for n, withheld, cut in ((3, [], False), (4, ["findings_update_finding"], False),
+                                 (5, ["findings_update_finding"], False), (6, ["findings_update_finding"], True)):
+            r = self.r.review(self.history(n), self.TOOLS)
+            self.assertEqual((r["removed"], r["streak"], r["withhold"], bool(r["cut"])), (n, n, withheld, cut), n)
+            names = [t["function"]["name"] for t in r["tools"]]
+            self.assertEqual("findings_update_finding" in names, not withheld, n)   # it can't send the call
+        note = self.r.review(self.history(4), self.TOOLS)["messages"][-1]["content"]
+        self.assertIn("findings_update_finding is not available for your next step", note)
+        self.assertNotIn("not available", self.r.review(self.history(3), self.TOOLS)["messages"][-1]["content"])
+        text = self.r.cut_text(self.r.review(self.history(6), self.TOOLS)["cut"], "acme")
+        self.assertTrue(text.startswith(self.r.CUT_TAG))
+        for part in ("6 times in a row", "REFUSED: needs reproduction", "./rvkit conversation acme new"):
+            self.assertIn(part, text)
+
+    def test_a_message_in_between_does_not_start_the_count_again(self):
+        again = self.turn(30, "findings_update_finding", {"finding_id": "F-002", "method": "source-review"}, "REFUSED: x")
+        msgs = self.history(3) + [{"role": "user", "content": "The run was stopped as stuck"}] + again
+        r = self.r.review(msgs, self.TOOLS)
+        self.assertEqual((r["removed"], r["streak"], r["withhold"]), (4, 4, ["findings_update_finding"]))
+        self.assertEqual([m["role"] for m in r["messages"]][-2:], ["user", "user"])   # the user's message stays
+        self.assertIn("stopped as stuck", r["messages"][-2]["content"])
+
+    def test_the_user_is_heard_after_a_cut(self):
+        msgs = self.history(6) + [{"role": "assistant", "content": self.r.CUT_TAG}, {"role": "user", "content": "go on"}]
+        r = self.r.review(msgs, self.TOOLS)
+        self.assertEqual((r["streak"], r["withhold"], r["cut"]), (6, ["findings_update_finding"], None))
+        self.assertEqual(r["messages"][-1]["content"], "go on")
+        more = msgs + self.turn(40, "findings_update_finding", {"finding_id": "F-002", "method": "source-review"}, "REFUSED: x")
+        self.assertTrue(self.r.review(more, self.TOOLS)["cut"])                 # and the same call again is cut at once
+
+    def test_another_call_gives_the_tool_back(self):
+        msgs = self.history(5) + self.turn(50, "kali_run", {"command": "cat app.py"}, "exit=0")
+        r = self.r.review(msgs, self.TOOLS)
+        self.assertEqual((r["removed"], r["streak"], r["withhold"], r["tools"]), (5, 0, [], self.TOOLS))
+
+    def test_never_a_request_without_tools(self):
+        only = [self.TOOLS[0]]
+        r = self.r.review(self.history(4), only)
+        self.assertEqual((r["withhold"], r["tools"]), ([], only))
+        self.assertEqual(self.r.review(self.history(4))["tools"], None)        # a request that carried none
+
+    def test_off(self):
+        os.environ["REPEAT_COLLAPSE"] = "0"
+        try:
+            self.assertFalse(self.r.enabled())
+        finally:
+            del os.environ["REPEAT_COLLAPSE"]
+        self.assertTrue(self.r.enabled())
+
+
+class FindingTools(unittest.TestCase):
+    """The planner's finding tools (harness/findings.py) with the MCP library stubbed and the validator faked: a
+    method without status is a confirmation attempt, and a failed one keeps the finding and says why."""
+    REPRO = "1. Open app.py at line 13. 2. The name parameter is concatenated into the SQL string."
+
+    def setUp(self):
+        import types
+        import quotecheck, validator
+        self.tmp = tempfile.TemporaryDirectory()
+        self.mods = (quotecheck, validator)
+        self.saved = (db.WORK, quotecheck.WORK, quotecheck.SRC, validator.validate)
+        db.WORK = quotecheck.WORK = self.tmp.name
+        quotecheck.SRC = os.path.join(self.tmp.name, "src")
+        os.makedirs(os.path.join(self.tmp.name, "e", "evidence", "runs"))
+        with open(os.path.join(self.tmp.name, "e", "evidence", "runs", "r1.txt"), "w") as f:
+            f.write("db.execute(\"SELECT * FROM users WHERE name = '\" + name + \"'\")\n")
+        self.validated = []
+        validator.validate = lambda eng, fid: self.validated.append(fid) or {"verdict": "stands", "reason": "ok"}
+        stubs = {"mcp": types.ModuleType("mcp"), "mcp.server": types.ModuleType("mcp.server"),
+                 "mcp.server.fastmcp": types.SimpleNamespace(FastMCP=lambda *a, **k: types.SimpleNamespace(
+                     tool=lambda: (lambda f: f)))}
+        was = {k: sys.modules.get(k) for k in stubs}
+        sys.modules.update(stubs)
+        try:
+            spec = importlib.util.spec_from_file_location("rv_findings_tools", os.path.join(KIT, "harness", "findings.py"))
+            self.t = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(self.t)
+        finally:
+            for k, v in was.items():
+                if v is None:
+                    sys.modules.pop(k, None)
+                else:
+                    sys.modules[k] = v
+
+    def tearDown(self):
+        quotecheck, validator = self.mods
+        db.WORK, quotecheck.WORK, quotecheck.SRC, validator.validate = self.saved
+        self.tmp.cleanup()
+
+    def record(self, **kw):
+        out = self.t.record_finding("e", kw.pop("title", "SQL injection in /user"), "high", "app.py:13",
+                                    kw.pop("description", "The name parameter is concatenated into the query."), **kw)
+        return json.loads(out) if out.startswith("{") else out
+
+    def update(self, fid, **kw):
+        out = self.t.update_finding("e", fid, **kw)
+        return json.loads(out) if out.startswith("{") else out
+
+    def test_record_with_a_method_confirms(self):
+        f = self.record(method="source-review", reproduction=self.REPRO)
+        self.assertEqual((f["status"], f["verified_method"]), ("confirmed", "source-review"))
+        self.assertEqual(self.validated, [f["id"]])
+        self.assertNotIn("note", f)
+
+    def test_record_without_a_method_is_a_candidate(self):
+        f = self.record()
+        self.assertEqual(f["status"], "candidate")
+        self.assertNotIn("note", f)
+        self.assertEqual(self.record(status="candidate", method="source-review")["status"], "candidate")   # said so
+        self.assertEqual(self.validated, [])
+
+    def test_record_with_a_method_that_cannot_confirm_is_kept_and_says_why(self):
+        f = self.record(method="source-review")   # no reproduction
+        self.assertEqual(f["status"], "candidate")
+        self.assertFalse(f.get("verified_method") and f["verified_method"] != "not stated", f)
+        self.assertTrue(f["note"].startswith(f"NOT CONFIRMED: saved as candidate {f['id']}."), f["note"])
+        self.assertIn("needs reproduction", f["note"])
+        self.assertIn(f'update_finding(finding_id="{f["id"]}", status="confirmed", method="source-review")', f["note"])
+        self.assertEqual(list(f)[0], "note")      # the first thing the model reads
+        self.assertEqual(self.validated, [])
+
+    def test_record_confirmed_outright_is_still_refused(self):
+        out = self.record(status="confirmed", method="source-review")
+        self.assertTrue(isinstance(out, str) and out.startswith("REFUSED") and "reproduction" in out, out)
+        self.assertEqual(db.list_("e"), [])
+
+    def test_update_with_a_method_confirms_a_candidate(self):
+        f = self.record(reproduction=self.REPRO)
+        got = self.update(f["id"], method="source-review", priority="P1", root_cause="string concatenation")
+        self.assertEqual((got["status"], got["verified_method"], got["priority"], got["root_cause"]),
+                         ("confirmed", "source-review", "P1", "string concatenation"))
+        self.assertEqual(self.validated, [f["id"]])
+        f2 = self.record(title="Debug mode", reproduction=self.REPRO)
+        self.assertEqual(self.update(f2["id"], method="source-review")["status"], "confirmed")   # method alone
+
+    def test_update_that_cannot_confirm_saves_the_rest_and_says_why(self):
+        f = self.record()   # no reproduction
+        got = self.update(f["id"], method="source-review", priority="P1", root_cause="string concatenation")
+        self.assertEqual((got["status"], got["priority"], got["root_cause"]), ("candidate", "P1", "string concatenation"))
+        self.assertTrue(got["note"].startswith(f"NOT CONFIRMED: saved priority, root_cause, and {f['id']} is still "
+                                               "candidate."), got["note"])
+        self.assertIn("needs reproduction", got["note"])
+        self.assertEqual(self.validated, [])
+
+    def test_the_collapsed_run(self):
+        """code-flask-20261115T132718Z: findings recorded with a method and no status, then one update_finding
+        with method, priority and root_cause, refused and resent about 60 times; the run scored 0 of 6. 25 of its
+        refusals were for text in backticks that is not in the evidence, here a data flow written with an arrow.
+        Now the finding is confirmed, the text is listed, and the update that follows is saved."""
+        desc = "The route builds the query by concatenation: `request.args.get(\"name\") -> db.execute`."
+        f = self.record(description=desc, method="source-review", reproduction=self.REPRO)
+        self.assertEqual((f["status"], f["verified_method"]), ("confirmed", "source-review"))
+        self.assertNotIn("note", f)
+        self.assertEqual(f["quotes"]["not_in_evidence"], ['request.args.get("name") -> db.execute'])
+        self.assertLess(list(f).index("quotes"), list(f).index("validation"))
+        got = self.update(f["id"], priority="P1", root_cause="string concatenation")
+        self.assertEqual((got["status"], got["priority"]), ("confirmed", "P1"))
+        self.assertNotIn("quotes", got)            # said once, when it was confirmed
+        self.assertEqual(json.loads(self.t.get_finding("e", f["id"]))["quotes"],
+                         {"not_in_evidence": ['request.args.get("name") -> db.execute']})
+        cited = self.record(title="SQL injection again", method="source-review", reproduction=self.REPRO,
+                            evidence=["/work/e/evidence/runs/r1.txt"],
+                            description="The route builds the query by concatenation: `\" + name + \"`.")
+        self.assertEqual(cited["status"], "confirmed")
+        self.assertNotIn("quotes", cited)          # in the evidence: nothing to list
+
+    def test_quotes_not_in_the_evidence_are_a_warning_before_delivery(self):
+        import delivery
+        self.record(description="The page shows `uid=0(root) gid=0(root)`.", method="source-review",
+                    reproduction=self.REPRO)
+        r = delivery.readiness("e")
+        self.assertTrue(any("F-001: 1 text(s) in backticks are not in its cited evidence" in w for w in r["warnings"]),
+                        r["warnings"])
+        self.assertFalse(any("backticks" in b["issue"] for b in r["blocking"]))
+
+    def test_a_source_reference_that_is_not_there_is_still_refused(self):
+        os.makedirs(os.path.join(self.tmp.name, "src", "app"))
+        with open(os.path.join(self.tmp.name, "src", "app", "app.py"), "w") as f:
+            f.write("a\nb\nc\n")
+        f = self.record(description="The sink is at /src/app/app.py:90.", method="source-review",
+                        reproduction=self.REPRO)
+        self.assertEqual(f["status"], "candidate")
+        self.assertIn("refers to source that isn't there", f["note"])
+        self.assertIn("the file has 4 lines", f["note"])
+
+    def test_a_method_alone_that_cannot_confirm_is_refused(self):
+        f = self.record()
+        out = self.update(f["id"], method="source-review")
+        self.assertTrue(out.startswith(f"REFUSED: {f['id']} is candidate") and "needs reproduction" in out, out)
+        self.assertEqual(self.update(f["id"], method="source-review"), out)   # a repeat: the same answer
+        got = self.update(f["id"], method="source-review", reproduction=self.REPRO)
+        self.assertEqual(got["status"], "confirmed")
+
+    def test_coverage_evidence_with_a_note_or_a_line_number(self):
+        """106 of 142 "no such file" refusals in the saved runs were paths that exist, with a note after them."""
+        import workspace
+        pid = workspace.plan_add("e", "agent:planner", [{"title": "SQL injection in /user", "area": "injection"}])[0]
+        out = json.loads(self.t.update_coverage("e", pid, "tested", evidence=[
+            "evidence/runs/r1.txt (no injection: the query is parameterised)", "evidence/runs/r1.txt:1"]))
+        self.assertEqual(out["state"], "tested")
+        self.assertEqual(out["evidence"], ["evidence/runs/r1.txt", "evidence/runs/r1.txt"])
+        out = self.t.update_coverage("e", pid, "tested", evidence=["evidence/runs/nope.txt (see above)"])
+        self.assertEqual(out, "REFUSED: evidence/runs/nope.txt: no such file")   # the path alone, without the note
+        # "path: note", the form the planner used in code-flask-20261116T113704Z
+        out = json.loads(self.t.update_coverage("e", pid, "tested", evidence=[
+            "evidence/runs/r1.txt: the query is parameterised", "evidence/runs/r1.txt:1: line one"]))
+        self.assertEqual(out["evidence"], ["evidence/runs/r1.txt", "evidence/runs/r1.txt"])
+        out = self.t.update_coverage("e", pid, "tested", evidence=["evidence/runs/nope.txt: see above"])
+        self.assertEqual(out, "REFUSED: evidence/runs/nope.txt: no such file")
+
+    def test_a_source_file_is_evidence_of_a_planned_test(self):
+        """Refused 4 times in two runs of 2026-11-16 as "not a tool output of this engagement": in a source
+        review the code is what shows the result."""
+        import workspace
+        os.makedirs(os.path.join(self.tmp.name, "src", "app"))
+        with open(os.path.join(self.tmp.name, "src", "app", "app.py"), "w") as f:
+            f.write("a\nb\nc\n")
+        pid = workspace.plan_add("e", "agent:planner", [{"title": "Authentication on every route", "area": "auth"}])[0]
+        out = json.loads(self.t.update_coverage("e", pid, "tested", evidence=[
+            "/src/app/app.py:1-3 (full source read: 3 routes, no auth layer)", "/src/app/app.py",
+            "/src/app/app.py:2: the route", "evidence/runs/r1.txt"]))
+        self.assertEqual(out["evidence"], ["/src/app/app.py:1-3", "/src/app/app.py", "/src/app/app.py:2",
+                                           "evidence/runs/r1.txt"])
+        self.assertEqual(self.t.update_coverage("e", pid, "tested", evidence=["/src/app/nope.py:1"]),
+                         "REFUSED: /src/app/nope.py: no such file")
+        self.assertEqual(self.t.update_coverage("e", pid, "tested", evidence=["/src/app/app.py:9"]),
+                         "REFUSED: /src/app/app.py:9: the file has 4 lines")
+        out = self.t.update_coverage("e", pid, "tested", evidence=["/src/app/../../e/findings.db"])
+        self.assertTrue(out.startswith("REFUSED: /src/app/../../e/findings.db: no such file"), out)
+        out = self.t.update_coverage("e", pid, "tested", evidence=["/etc/passwd"])
+        self.assertIn("not a tool output of this engagement", out)
+
+    def test_evidence_moved_after_confirming_is_found_again(self):
+        """code-node-20261115T202407Z: eight findings cited one file, the planner moved it into evidence/, and
+        every finding lost its proof."""
+        import pins
+        src = os.path.join(self.tmp.name, "e", "evidence-lines.json")
+        with open(src, "w") as f:
+            f.write('{"server.js:31": "db.all(SELECT ... + req.query.id)"}\n')
+        cite = "/work/e/evidence-lines.json (verbatim source lines)"
+        f1 = self.record(method="source-review", reproduction=self.REPRO, evidence=[cite])
+        f2 = self.record(title="Debug mode", method="source-review", reproduction=self.REPRO,
+                         evidence=["evidence-lines.json:1", "/work/e/evidence/runs/r1.txt"])
+        self.assertEqual((f1["status"], f2["status"]), ("confirmed", "confirmed"))
+        self.assertEqual(pins.repair("e"), [])                                   # nothing moved yet
+        os.rename(src, os.path.join(self.tmp.name, "e", "evidence", "evidence-lines.json"))
+        self.t.list_findings("e")                                                # any later tool call repairs it
+        ev1, ev2 = (json.loads(self.t.get_finding("e", f["id"]))["evidence"] for f in (f1, f2))
+        self.assertEqual(ev1, ["/work/e/evidence/evidence-lines.json (verbatim source lines)"])   # the note is kept
+        self.assertEqual(ev2, ["/work/e/evidence/evidence-lines.json:1", "/work/e/evidence/runs/r1.txt"])
+        last = db.history("e", f1["id"])["decisions"][-1]
+        self.assertEqual(last["actor"], "agent:harness")
+        self.assertIn("was moved; the same content is at evidence/evidence-lines.json", last["reason"])
+        self.assertEqual(pins.repair("e"), [])                                   # once
+        os.remove(os.path.join(self.tmp.name, "e", "evidence", "evidence-lines.json"))
+        self.assertEqual(pins.repair("e"), [])                                   # gone for good: left as it is
+
+    def test_a_disproved_finding_stays_confirmed_and_the_reply_says_what_to_do(self):
+        _, validator = self.mods
+        validator.validate = lambda eng, fid: {"verdict": "disproved", "reason": "the evidence shows a 404",
+                                               "evidence_ref": "evidence/runs/r1.txt", "action": "flagged"}
+        f = self.record(method="source-review", reproduction=self.REPRO)
+        self.assertEqual(f["status"], "confirmed")
+        self.assertIn("is still confirmed", f["validation"]["note"])
+        self.assertIn("do not send this call again", f["validation"]["note"])
+
+    def test_a_demoted_finding_is_not_confirmed_again_by_a_method(self):
+        f = self.record(method="source-review", reproduction=self.REPRO)
+        _, validator = self.mods
+        validator._save("e", f, "disproved", "the evidence shows a 404", "evidence/runs/r1.txt", "m")
+        db.update("e", f["id"], actor="agent:validator", reason="disproved", status="candidate")
+        self.validated.clear()
+        got = self.update(f["id"], method="source-review", root_cause="string concatenation")
+        self.assertEqual((got["status"], got["root_cause"]), ("candidate", "string concatenation"))
+        self.assertIn("the validator disproved it", got["note"])
+        self.assertEqual(self.validated, [])
+        got = self.update(f["id"], status="confirmed", method="source-review")   # said outright: allowed, as before
+        self.assertEqual(got["status"], "confirmed")
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=1)

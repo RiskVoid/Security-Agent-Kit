@@ -253,11 +253,9 @@ def _clean(fields: dict) -> dict:
         if out.get("cvss_score") not in (None, "") and not 0 <= float(out["cvss_score"]) <= 10:
             raise ValueError("cvss_score is 0.0 to 10.0")
     elif out.get("cvss_vector"):
-        score = cvss31(out["cvss_vector"])
-        given = out.get("cvss_score")
-        if given not in (None, "") and abs(float(given) - score) > 0.05:
-            raise ValueError(f"cvss_score {given} doesn't match the vector (CVSS 3.1 base score {score})")
-        out["cvss_score"] = score
+        # the score of a 3.1 vector is computed, so a score given with it is not needed and not trusted: a model
+        # working it out by hand was refused 40 times in the saved benchmark runs for being a few tenths off
+        out["cvss_score"] = cvss31(out["cvss_vector"])
     elif out.get("cvss_score") not in (None, ""):
         s = float(out["cvss_score"])
         if not 0 <= s <= 10:

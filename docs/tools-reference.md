@@ -82,8 +82,11 @@ A result has the typed fields first: `task_id`, `status` (`queued`, `waiting`, `
 harness), `candidates` (each with `title`, `state` `hypothesis` or `reproduced`, `evidence` and `check`; a
 reproduced candidate must cite an evidence file of the engagement or `finish` is refused), `needs`, `errors` and
 the `recorded_findings` ids. Then `elapsed_s`, the `commands` it ran, the `evidence_dir`, the `contract`, the
-`model` that served it (shows when the fallback model was used), `worker_summary` (the worker's prose, marked as
-written by a model that read target content) and `result` (`confidence`, `open_questions`). Secrets are redacted
+`model` that served it (shows when the fallback model was used), `worker_summary` and `worker_notes` (the worker's
+prose, marked as written by a model that read target content; the notes are what it wrote outside `finish`, or
+where its reasoning had got to when it stalled) and `result` (`confidence`, `open_questions`). A `plan_item` that
+isn't one class on one mapped endpoint doesn't refuse the task: it runs on its goal, and `contract.plan_item_note`
+says so. Secrets are redacted
 from it. Task files from before these fields load as before; a finished one counts as `completed`.
 
 Things to know:
@@ -131,23 +134,32 @@ the L4 profile.
 | `record_finding` | `engagement`, `title`, `severity`, `asset`, `description`, and optional `impact`, `reproduction`, `remediation`, `evidence` (list of paths), `cvss_vector`, `cvss_score`, `cwe`, `status` (`candidate` by default; any of the five statuses is accepted), `notes` | Stores a finding and returns it with its id (`F-001`, `F-002`, …). Severity: `critical`, `high`, `medium`, `low`, `info`. |
 | `update_finding` | `engagement`, `finding_id`, then any field to change, including `status`, `priority` (`P1`-`P4`), `prerequisites`, `root_cause`; `reason`; `method` | Changes only the fields given. Statuses: `candidate`, `confirmed` (with `method`: how it was verified), `false-positive`, `duplicate` (needs `duplicate_of`: the finding to keep), `fixed`, `accepted-risk`. `reason` is required for `false-positive`, `accepted-risk`, a severity change and a change of a set priority; refused without it (`REFUSED: ...`). |
 
-**Quotes must be in the evidence.** When the planner confirms a finding (`record_finding` or `update_finding`
-with `status=confirmed`), text in backticks and code-block lines of its description and reproduction counts as
-quoted and must be found in the cited evidence files or the `/src` files it cites. Each `/src/<file>:<line>` must
-point at a line that exists. Otherwise the confirmation is refused, naming the missing quotes. Not counted as
-quotes: commands and scripts, names, paths and URLs on their own, `file:line` references, placeholders
-(`<id>`, `...`) and spans under 6 characters. Matching ignores whitespace, HTML entities and URL encoding. A
-quote of several words also passes when its words appear in order close together; a single token (a hash, a
-flag) must match exactly. `[REDACTED ...]` and `{{cred:NAME}}` match any value. People confirming in the console
-or with `./rvkit` are not checked. `python3 harness/quotecheck.py <engagements dir>` replays the check over
-past confirmations.
+**Quotes are compared with the evidence.** When the planner confirms a finding (`record_finding` or
+`update_finding` with `status=confirmed`), text in backticks and code-block lines of its description and
+reproduction counts as quoted and is looked up in the cited evidence files and the `/src` files it cites. Quotes
+that are not there are listed in the reply (`quotes.not_in_evidence`), in `get_finding` and as a warning before
+delivery; the finding is confirmed all the same. Until 16 November 2026 they refused the confirmation: in 48
+saved benchmark runs that happened 79 times, and the texts were example attack inputs, protections named as
+missing and lines of code cited by another file. Whether the evidence shows what the finding says is the
+[validator's](#the-validator) call. One thing still refuses: a `/src/<file>:<line>` in the text that points at a
+file or a line that doesn't exist. Not counted as quotes: commands and scripts, names, paths and URLs on their
+own, `file:line` references, placeholders (`<id>`, `...`) and spans under 6 characters. Matching ignores
+whitespace, HTML entities and URL encoding. A quote of several words also matches when its words appear in order
+close together; a single token (a hash, a flag) must match exactly. `[REDACTED ...]` and `{{cred:NAME}}` match
+any value. People confirming in the console or with `./rvkit` are not checked.
+`python3 harness/quotecheck.py <engagements dir>` lists the confirmed findings of past engagements with quotes
+that are not in their evidence.
 
 <a id="the-validator"></a>**The validator tries to disprove each confirmation.** When the planner confirms a finding,
 a separate model call (`validator`: `VALIDATOR_MODEL`, a different model from the planner) gets only the finding,
 its cited evidence files, its oracle records with the responses they judged, and how each oracle works: not the
-conversation. Its only job is to disprove the finding. It answers `stands` or `disproved` with a reason tied to one
-of the cited files; a disproval that names no cited file counts as `unclear`. `disproved` sends the finding back to
-`candidate` with the reason (a decision by `agent:validator` in its history), and the tool result says so. When the
+conversation. It also gets the source lines the finding refers to (`/src/<repo>/<file>:<line>`, 25 lines each
+side), and a long evidence file is shown around the text the finding quotes (`VALIDATOR_FILE_CHARS`). Its only job
+is to disprove the finding. It answers `stands` or `disproved` with a reason tied to one of the cited files; a
+disproval that names no cited file counts as `unclear`. A disproved finding stays confirmed and is flagged: the
+tool result gives the planner the reason, the console and the report show it, and the report can't be delivered
+until the finding is corrected, marked false-positive or excepted by a person (readiness check `review:<id>`).
+With `VALIDATOR_DISPROVE=demote` a disproved finding goes back to `candidate` instead. When the
 engagement's Client data rule refuses the validator's model, the same call goes to `planner` in a fresh context;
 when no model can be used, the verdict is `not_run` and the confirmation stands. Evidence is given as data, never
 as instructions. The console shows the verdict on the finding and in its history, the report shows it as
