@@ -36,8 +36,8 @@ is weaker than described here.
 3. **Kit services can reach the internet.** `web-mcp`, `intel-mcp`, `kali-mcp` (for its own updates and rule
    downloads, not agent commands), LiteLLM and SearXNG have outbound access. The two agent-facing containers,
    OpenHands and the worker, are on an internal network without it.
-4. **IPv6 targets are not supported.** All IPv6 traffic from engagement commands is dropped, and IPv6 scope
-   entries are ignored with a warning.
+4. **IPv6 targets are not supported.** All IPv6 traffic from engagement commands is dropped, and an IPv6 scope
+   entry is an error: `./rvkit scope` doesn't apply a scope that has one.
 5. **An excluded name can share an address with an in-scope host.** Scope is enforced by address and port. A
    tool that sets the `Host` header itself can reach an excluded virtual host on an in-scope address; exclude the
    address too if that matters. `./rvkit policy <eng>` lists what the kit can't enforce for a given scope.
@@ -75,9 +75,10 @@ is weaker than described here.
    in their own engagement folder. kali-mcp (root) refuses to write through a link that leads out of the folder and
    doesn't follow one at the final file, but a link swapped in between its check and its write isn't fully
    excluded. The control volume and the state folder (`.rv/`) aren't writable from commands.
-13. **Tested platforms.** CI runs every suite on Linux amd64 (Ubuntu 24.04, Docker Engine); the kit is developed
-   on macOS (Apple Silicon) with OrbStack and Docker Desktop. Linux arm64 images are built but the suites don't
-   run there yet. Windows isn't supported.
+13. **Tested platforms.** CI runs the unit tests and the 15 integration suites on Linux amd64 (Ubuntu 24.04,
+   Docker Engine); the kit is developed on macOS (Apple Silicon) with OrbStack and Docker Desktop. Linux arm64
+   images are built, and each release installs them on a clean arm64 runner and runs the policy suite there; the
+   other suites don't run on arm64 yet. Windows isn't supported.
 
 ### How the agent's network access is limited in this release
 
@@ -113,7 +114,7 @@ is weaker than described here.
   bound to the exact command, and expires after 24 hours. `./rvkit halt <eng>` stops everything for an engagement:
   commands, worker tasks, bound conversations and their model calls.
 - **Where client data goes.** `Client data:` in `RULES.md` limits which model destinations (local, Colab, an API,
-  OpenRouter, Anthropic, OpenAI) may receive calls about an engagement; the model gateway refuses the others and
+  OpenRouter, Anthropic, OpenAI, Amazon Bedrock) may receive calls about an engagement; the model gateway refuses the others and
   drops fallbacks that aren't allowed. Content the agent reads can't change which engagement a call is about.
 - **Credentials by reference.** The model uses stored credentials as `$RV_CRED_<NAME>` or `{{cred:NAME}}` without
   seeing them; values are encrypted in the control volume, a command gets only the ones it names, and literal
@@ -187,8 +188,8 @@ Out of scope:
 | `main` | Yes |
 | Anything else | No |
 
-There are no releases yet. Fixes go to `main`; update with `git pull` and `./rvkit up`, and rebuild the images
-when a fix touches them.
+The only release so far is `v0.1.0` (see [CHANGELOG.md](CHANGELOG.md)). Fixes go to `main` and reach a release
+with the next version; update with `git pull` and `./rvkit up`, and rebuild the images when a fix touches them.
 
 ---
 

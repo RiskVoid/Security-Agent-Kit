@@ -122,8 +122,8 @@ The full list, with the tier of each tool (passive, active or intrusive), is in
 | &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; | Requirement | Notes |
 |:-:|---|---|
 | <img src="docs/img/icons/laptop.svg" width="20" height="20" alt=""> | **A Mac or Linux computer** with **Docker** | Docker Desktop, OrbStack or Docker Engine. 16 GB RAM recommended (8 GB minimum), ~25 GB free disk. No GPU needed |
-| <img src="docs/img/icons/key.svg" width="20" height="20" alt=""> | **An [OpenRouter](https://openrouter.ai/keys) key** | Pays for the planner, and for the worker if you have no GPU (see below). A few dollars covers many runs, with a daily cap (default $20) |
-| <img src="docs/img/icons/cpu.svg" width="20" height="20" alt=""> | **Somewhere for the worker to run** | Pick one of five options [below](#where-the-worker-model-runs), from "no GPU at all" to "fully on your own hardware" |
+| <img src="docs/img/icons/key.svg" width="20" height="20" alt=""> | **An [OpenRouter](https://openrouter.ai/keys) key** | Pays for the planner, and for the worker if you have no GPU (see below). A few dollars covers many runs, with a daily cap (default $20). With AWS credits, the planner and the worker can run on Amazon Bedrock instead, with no OpenRouter key ([Models](docs/models.md#amazon-bedrock)) |
+| <img src="docs/img/icons/cpu.svg" width="20" height="20" alt=""> | **Somewhere for the worker to run** | Pick one of six options [below](#where-the-worker-model-runs), from "no GPU at all" to "fully on your own hardware" |
 | <img src="docs/img/icons/terminal.svg" width="20" height="20" alt=""> | `python3`, `curl`, `perl`, `openssl` | Already on most Macs and Linux machines |
 
 > [!TIP]
@@ -135,7 +135,7 @@ The full list, with the tier of each tool (passive, active or intrusive), is in
 |---|---|
 | Linux amd64, Docker Engine (Ubuntu 24.04) | A fresh machine in CI: `./rvkit setup` and all 15 integration suites, nightly and before every release |
 | macOS on Apple Silicon, OrbStack or Docker Desktop | Where the kit is developed: all suites, by hand before each change |
-| Linux arm64 | Images are built for it; the suites aren't run there yet |
+| Linux arm64 | Images are built for it. Before every release, a clean arm64 runner installs them and runs the policy suite; the other suites aren't run there yet |
 | Windows | Not supported yet (WSL2 is on the [roadmap](ROADMAP.md)) |
 
 ### Where the worker model runs
@@ -146,6 +146,7 @@ any time with one command:
 | &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; | Option | You need | Client data goes to | Command |
 |:-:|---|---|---|---|
 | <img src="docs/img/icons/globe.svg" width="20" height="20" alt=""> | **Hosted model, no GPU** (simplest) | only your OpenRouter key | OpenRouter, zero-data-retention providers only | `./rvkit worker openrouter` |
+| <img src="docs/img/icons/globe.svg" width="20" height="20" alt=""> | **Amazon Bedrock, no GPU** | a Bedrock API key (AWS credits can pay for it) | AWS | `./rvkit worker bedrock` |
 | <img src="docs/img/icons/cpu.svg" width="20" height="20" alt=""> | **Google Colab** (default) | Colab Pro (about $10/month) | Google, on your Colab account | `/rv-start` in Claude Code, or [by hand](docs/models.md#option-1-google-colab-default) |
 | <img src="docs/img/icons/server.svg" width="20" height="20" alt=""> | **Rented GPU**: RunPod, Vast.ai, Lambda, Modal… | a GPU running vLLM, llama.cpp or Ollama | the GPU you rent | `./rvkit worker api <url> <model> [key]` |
 | <img src="docs/img/icons/laptop.svg" width="20" height="20" alt=""> | **Your own GPU** (~24 GB VRAM for Qwen 27B; smaller models work on less) | Ollama, LM Studio, llama.cpp or vLLM | **nowhere: it stays on your machine** | `./rvkit worker local` |
@@ -363,8 +364,8 @@ Known limitations and how to report a vulnerability: [SECURITY.md](SECURITY.md).
 
 | Part | Sees | Runs on |
 |---|---|---|
-| **Worker model** | tool output, client code, evidence | wherever you [chose](#where-the-worker-model-runs): OpenRouter (zero-data-retention), Colab (your Google account), a rented GPU, **or your own GPU** |
-| **Planner** | task descriptions, redacted summaries, findings | OpenRouter (zero-data-retention providers only), or Anthropic / OpenAI directly |
+| **Worker model** | tool output, client code, evidence | wherever you [chose](#where-the-worker-model-runs): OpenRouter (zero-data-retention), Amazon Bedrock, Colab (your Google account), a rented GPU, **or your own GPU** |
+| **Planner** | task descriptions, redacted summaries, findings | OpenRouter (zero-data-retention providers only), or Anthropic / OpenAI / Amazon Bedrock directly |
 | **Everything else** | findings, evidence, audit log, reports | **your machine** |
 
 > [!NOTE]
@@ -377,8 +378,9 @@ Known limitations and how to report a vulnerability: [SECURITY.md](SECURITY.md).
 ## Practice lab & benchmarks
 
 `./rvkit lab up` starts deliberately vulnerable targets on an **isolated network with no internet**:
-OWASP Juice Shop, DVWA, VAmPI (REST), DVGA (GraphQL), a RiskVoid LLM lab (AI agent + MCP) and Ledgerly, a
-multi-tenant Laravel app with a fixed build to retest against.
+OWASP Juice Shop, DVWA, VAmPI (REST), DVGA (GraphQL), a RiskVoid LLM lab (AI agent + MCP), Ledgerly, a
+multi-tenant Laravel app with a fixed build to retest against, and Parcel Tracker, a target that attacks the agent
+testing it.
 
 `./rvkit bench <name>` runs the agent unattended against a known target and scores it on evidence: a finding
 counts only if it names the right place and has the required proof, and confirmed findings on a clean control

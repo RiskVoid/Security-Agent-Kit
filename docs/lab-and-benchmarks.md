@@ -414,7 +414,7 @@ The `evals/` folder also holds the kit's own tests. All but the first run agains
 | `evals/delivery_test.py` | report revisions, readiness and exceptions, approval, verify and rebuild, retests, cleanup, notices, exports | the stack |
 | `evals/regression_test.py` | concurrent writers and finding ids, cross-engagement access, hostile tool output, secrets in exports, tampered and changed revisions ([regression matrix](regression-matrix.md)) | the stack |
 | `evals/authn_test.sh` | identities, captures, sessions, the authorization matrix | the stack |
-| `evals/oracle_test.sh` | the verification oracles (marker, identity difference, read-back): a passing lab case with a clean control and a clean case each | `./rvkit lab up` |
+| `evals/oracle_test.sh` | the verification oracles (marker, identity difference, read-back, browser XSS, timing): a passing lab case with a clean control and a clean case each; the read-back pass case writes, so it needs an approval and a second run | `./rvkit lab up` |
 | `evals/laravel_test.sh` | the Laravel application map, PHP profile and playbook | the stack, `./rvkit lab up` |
 | `evals/lab_test.sh` | lab isolation: only in-scope engagements reach a lab target, the lab has no internet and can't reach the kit | `./rvkit lab up` |
 | `evals/planner_smoke.py` | each planner route answers code-review, web-app and external-network briefs with a plan, not a refusal; records latency and tokens | an OpenRouter key |

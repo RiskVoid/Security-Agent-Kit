@@ -84,7 +84,8 @@ The agent runs real attack tools, so the kit puts limits around it that the agen
 - **Human approval.** Intrusive commands (exploitation, brute force, fuzzing that changes data) wait for you to
   approve them. An approval is single-use, bound to the exact command, and expires after 24 hours.
 - **Halt.** `./rvkit halt <engagement>` kills everything running for an engagement and blocks new commands.
-- **Testing window.** `RULES.md` can limit testing to set UTC hours.
+- **Testing window.** `RULES.md` can limit testing to set hours, dates and weekdays, in UTC or the `Timezone` it
+  names.
 - **Audit log.** Every command, refusal, approval, halt and scope change is logged, in a control volume only
   `./rvkit` can change.
 - **Contained agent.** The OpenHands agent container has no direct internet access. It reaches package
