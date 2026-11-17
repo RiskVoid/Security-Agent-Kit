@@ -434,6 +434,7 @@ The `evals/` folder also holds the kit's own tests. All but the first run agains
 | `evals/console_contract_test.py` | the console contract: validation, conflicts, audit attribution, event stream, inert content, isolation | the stack |
 | `evals/policy_test.sh` | scope and rules enforcement with real DNS and the firewall, the request tool, bound and stale approvals, controlled execution, offline source analysis, budgets | the stack, internet access |
 | `evals/model_stub_test.sh` | the deterministic model stub through LiteLLM, streaming and error classification, no GPU or provider | the stack |
+| `evals/loop_limit_test.sh` | the gateway's loop limit through a second LiteLLM proxy with a scripted model: the note, the withheld tool and the ended turn, for one repeated call and for a cycle of two; no provider | the stack |
 | `evals/loop_limit_test.sh` | the gateway's loop limit with a scripted planner that repeats a call, then one that alternates two: the note, the withheld tool, the turn ended without a model call, the model asked again after a user message, the stages in the model log; a second proxy in the LiteLLM container, no provider | the stack |
 | `evals/agent_loop_test.sh` | the worker's agent loop with a scripted model (`evals/mock_llm.py`, no GPU or API key): tools sent, kali command run in the sandbox, candidate recorded citing the verified output, task saved | the stack, `/src/rv-demo-app` |
 | `evals/execution_state_test.sh` | worker task recovery after a restart, uncertain writes, halt during a run | the stack |

@@ -22,7 +22,10 @@ open(_o.path.join(D, "config.yaml"), "w").write(
     "api_key: x}\nlitellm_settings:\n  drop_params: true\n  callbacks: [\"rv_events.handler\"]\n" % STUB)
 EVENTS = _o.path.join(D, "events.jsonl")
 env = {k: v for k, v in _o.environ.items() if k not in ("DATABASE_URL", "LITELLM_MASTER_KEY", "STORE_MODEL_IN_DB")}
-env.update(RV_EVENTS_FILE=EVENTS, RV_ROUTES_FILE=_o.path.join(D, "no-routes.json"), REPEAT_COLLAPSE="1")
+# LiteLLM refuses to start with no master key; this one exists only for this throwaway proxy
+KEY = "sk-loop-limit-test"
+env.update(RV_EVENTS_FILE=EVENTS, RV_ROUTES_FILE=_o.path.join(D, "no-routes.json"), REPEAT_COLLAPSE="1",
+           LITELLM_MASTER_KEY=KEY)
 cli = [_sh.which("litellm")] if _sh.which("litellm") else [_s.executable, "-m", "litellm.proxy.proxy_cli"]
 log = open(_o.path.join(D, "proxy.log"), "w")
 proxy = _sp.Popen(cli + ["--config", _o.path.join(D, "config.yaml"), "--port", str(PROXY)], env=env, cwd=D,
@@ -33,7 +36,7 @@ res = {}
 
 def post(body):
     req = _u.Request(f"http://127.0.0.1:{PROXY}/v1/chat/completions", data=_j.dumps(body).encode(),
-                     headers={"Content-Type": "application/json"})
+                     headers={"Content-Type": "application/json", "Authorization": "Bearer " + KEY})
     return _u.urlopen(req, timeout=120)
 
 

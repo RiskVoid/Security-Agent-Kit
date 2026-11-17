@@ -75,7 +75,7 @@ is weaker than described here.
    in their own engagement folder. kali-mcp (root) refuses to write through a link that leads out of the folder and
    doesn't follow one at the final file, but a link swapped in between its check and its write isn't fully
    excluded. The control volume and the state folder (`.rv/`) aren't writable from commands.
-13. **Tested platforms.** CI runs the unit tests and the 15 integration suites on Linux amd64 (Ubuntu 24.04,
+13. **Tested platforms.** CI runs the unit tests and the 16 integration suites on Linux amd64 (Ubuntu 24.04,
    Docker Engine); the kit is developed on macOS (Apple Silicon) with OrbStack and Docker Desktop. Linux arm64
    images are built, and each release installs them on a clean arm64 runner and runs the policy suite there; the
    other suites don't run on arm64 yet. Windows isn't supported.
