@@ -223,11 +223,18 @@ planned tests open, candidates untriaged or no plan at all, and it has time and 
 back to work, at most three times; the result records each time under `continued`. The same goes for a run that
 OpenHands stops as stuck, which happens when the agent repeats one call, usually one a tool keeps refusing: the
 harness quotes the refusal back to it and tells it not to send that call again. If it is stopped as stuck a second
-time, or the model gateway ended its turn because one call came six times in a row (`REPEAT_COLLAPSE` in
-[configuration.md](configuration.md)), the run goes on in a new conversation, at most twice: its first message
-says which call was repeated and tells the agent to read `get_handover` and `get_coverage` and not to plan again.
-The result records them under `conversations` and `restarts`, and `conversation.json` holds the events of all of
-them in order.
+time, or the model gateway ended its turn because one call came six times in a row, or a cycle of two or three
+calls came round six times (`REPEAT_COLLAPSE` in [configuration.md](configuration.md)), the run goes on in a new
+conversation, at most twice: its first message says which call was repeated and tells the agent to read
+`get_handover` and `get_coverage` and not to plan again. The result records them under `conversations` and
+`restarts`, and `conversation.json` holds the events of all of them in order.
+
+The result says how often the gateway's loop limit acted during the run, under `loop_limit`, read from the model
+log (`.rvkit/events/model-events.jsonl`) for the run's engagement and time: `note` (a repeated call left out of
+what the planner reads, with a note in its place), `withhold` (the planner sent it again and its tool was left out
+of the next request), `cut` (the gateway ended the turn without calling the model) and `cycles` (how many of these
+were about calls made in turn rather than one call). Each counts planner replies that went on with the loop. The
+run's summary prints the same line. Results from before this have no `loop_limit`.
 
 The result also records findings marked false
 positive or duplicate, wall time, tokens by role (below), automatic approvals, the agent, the worker model and
@@ -427,6 +434,7 @@ The `evals/` folder also holds the kit's own tests. All but the first run agains
 | `evals/console_contract_test.py` | the console contract: validation, conflicts, audit attribution, event stream, inert content, isolation | the stack |
 | `evals/policy_test.sh` | scope and rules enforcement with real DNS and the firewall, the request tool, bound and stale approvals, controlled execution, offline source analysis, budgets | the stack, internet access |
 | `evals/model_stub_test.sh` | the deterministic model stub through LiteLLM, streaming and error classification, no GPU or provider | the stack |
+| `evals/loop_limit_test.sh` | the gateway's loop limit with a scripted planner that repeats a call, then one that alternates two: the note, the withheld tool, the turn ended without a model call, the model asked again after a user message, the stages in the model log; a second proxy in the LiteLLM container, no provider | the stack |
 | `evals/agent_loop_test.sh` | the worker's agent loop with a scripted model (`evals/mock_llm.py`, no GPU or API key): tools sent, kali command run in the sandbox, candidate recorded citing the verified output, task saved | the stack, `/src/rv-demo-app` |
 | `evals/execution_state_test.sh` | worker task recovery after a restart, uncertain writes, halt during a run | the stack |
 | `evals/workspace_test.py` | observations, imports, coverage, handover, notifications | the stack |

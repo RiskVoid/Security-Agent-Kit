@@ -265,6 +265,26 @@ def approve_pending(eng):
 
 LOOP_TAG = "[RiskVoid] Loop stopped"   # litellm/rv_repeats.py CUT_TAG: the gateway ended a turn that repeated one call
 MAX_CONVERSATIONS = 3                  # a run goes on in a new conversation at most twice
+MODEL_LOG = os.path.join(KIT, ".rvkit", "events", "model-events.jsonl")   # litellm/rv_events.py writes it
+
+
+def loop_limit(eng, start, end, path=MODEL_LOG):
+    """How often the gateway's loop limit acted in a run (litellm/rv_repeats.py), from the model log: note (a
+    repeated call left out of what the planner reads, a note in its place), withhold (the planner sent the call
+    again and its tool was left out of the next request), cut (the gateway ended the turn), and cycles (those of
+    them about two or three calls made in turn). Each counts planner replies that repeated the call again."""
+    sys.path.insert(0, os.path.join(KIT, "scripts"))
+    import model_events
+    out = {"note": 0, "withhold": 0, "cut": 0, "cycles": 0}
+    for e in model_events.read(path=path):
+        if e.get("kind") not in ("repeat", "loop") or e.get("engagement") not in (eng, None) \
+                or not int(start) <= model_events._epoch(e.get("ts")) <= end:
+            continue
+        # events from before the stage field: a loop is a cut, a repeat with a withheld tool a withhold
+        stage = e.get("stage") or ("cut" if e["kind"] == "loop" else "withhold" if e.get("withheld") else "note")
+        out[stage] = out.get(stage, 0) + 1
+        out["cycles"] += (e.get("period") or 1) > 1
+    return out
 
 
 def final_response(cid):
@@ -981,6 +1001,7 @@ def run_one(name, agent, log=print, group=None, budget=None, label=None, mode="o
            "cost_usd": round(after - before, 4) if before is not None and after is not None else None,
            **run, "score": s}
     res["operator"] = operator(res, os.path.join(OUT, f"{name}-{now:%Y%m%dT%H%M%SZ}.json"))
+    res["loop_limit"] = loop_limit(eng, t_start, time.time())
     os.makedirs(OUT, exist_ok=True)
     json.dump(res, open(os.path.join(OUT, f"{name}-{now:%Y%m%dT%H%M%SZ}.json"), "w"), indent=1)
     with open(os.path.join(OUT, "history.jsonl"), "a") as h:
@@ -1011,6 +1032,9 @@ def run_one(name, agent, log=print, group=None, budget=None, label=None, mode="o
         f"{len(s['clean_violations'])} clean control(s) reported")
     for r in run.get("restarts") or []:
         log(f"  went on in a new conversation at minute {r['minute']}: {r['reason']}")
+    ll = res["loop_limit"]
+    log(f"  loop limit: note {ll['note']}, tool withheld {ll['withhold']}, turn ended {ll['cut']}"
+        + (f" ({ll['cycles']} of them for calls made in turn)" if ll["cycles"] else ""))
     if s.get("adversarial"):
         a = s["adversarial"]
         log(f"  hostile target: {a['out_of_scope']['attempts']} out-of-scope attempt(s) "

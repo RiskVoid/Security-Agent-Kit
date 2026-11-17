@@ -3160,6 +3160,95 @@ class RepeatedCalls(unittest.TestCase):
             del os.environ["REPEAT_COLLAPSE"]
         self.assertTrue(self.r.enabled())
 
+    CYCLE_TOOLS = [{"type": "function", "function": {"name": n}}
+                   for n in ("findings_update_finding", "findings_validate_finding", "kali_run", "terminal")]
+
+    def cycle(self, rounds, calls=None):
+        """A planner that makes two (or more) calls in turn, each ending the same way every round."""
+        calls = calls or [("findings_update_finding", {"finding_id": "F-010", "method": "runtime-test"},
+                           "REFUSED: needs reproduction (approval id 8d0afa0b)"),
+                          ("findings_validate_finding", {"finding_id": "F-010"}, "candidate: not confirmed yet")]
+        msgs = self.history(0)
+        for i in range(rounds):
+            for k, (name, args, result) in enumerate(calls):
+                msgs += self.turn(100 + 10 * i + k, name, args, result.replace("8d0afa0b", f"{i:08x}"))
+        return msgs
+
+    def test_an_alternating_loop_is_counted_in_rounds(self):
+        both = ["findings_update_finding", "findings_validate_finding"]
+        for rounds, stage, withheld, cut in ((2, None, [], False), (3, "note", [], False), (4, "withhold", both, False),
+                                             (5, "withhold", both, False), (6, "cut", both, True)):
+            r = self.r.review(self.cycle(rounds), self.CYCLE_TOOLS)
+            self.assertEqual((r["stage"], r["withhold"], bool(r["cut"])), (stage, withheld, cut), rounds)
+            if stage:   # the approval id differs every round: that is still the same ending
+                self.assertEqual((r["removed"], r["streak"], r["period"]), (2 * rounds, rounds, 2), rounds)
+                self.assertEqual([m["role"] for m in r["messages"]], ["system", "user", "assistant", "tool", "user"])
+        note = self.r.review(self.cycle(4), self.CYCLE_TOOLS)["messages"][-1]["content"]
+        for part in ("the same 2 tool calls in turn, 4 times over", 'findings_update_finding(finding_id="F-010"',
+                     "| findings_validate_finding(", "candidate: not confirmed yet", "Those calls are closed",
+                     "findings_update_finding and findings_validate_finding are not available"):
+            self.assertIn(part, note)
+        text = self.r.cut_text(self.r.review(self.cycle(6), self.CYCLE_TOOLS)["cut"], "acme")
+        self.assertTrue(text.startswith(self.r.CUT_TAG))
+        self.assertIn("the same 2 tool calls in turn, 6 times over", text)
+
+    def test_a_cycle_of_three(self):
+        three = [("kali_run", {"command": "cat a.py"}, "x = 1"), ("kali_run", {"command": "cat b.py"}, "y = 2"),
+                 ("findings_update_finding", {"finding_id": "F-1"}, "REFUSED: no evidence")]
+        r = self.r.review(self.cycle(3, three), self.CYCLE_TOOLS)
+        self.assertEqual((r["stage"], r["period"], r["streak"], r["removed"]), ("note", 3, 3, 9))
+        r = self.r.review(self.cycle(4, three), self.CYCLE_TOOLS)
+        self.assertEqual(r["withhold"], ["findings_update_finding", "kali_run"])
+        self.assertEqual(self.r.review(self.cycle(2, three), self.CYCLE_TOOLS)["stage"], None)
+
+    def test_work_that_moves_on_is_not_a_cycle(self):
+        # two tools in turn with other arguments every time: reading files and recording notes
+        work = self.history(0)
+        for i in range(8):
+            work += self.turn(200 + 2 * i, "kali_run", {"command": f"cat src/f{i}.py"}, f"code {i}")
+            work += self.turn(201 + 2 * i, "findings_update_finding", {"finding_id": f"F-{i}"}, "updated")
+        self.assertEqual(self.r.collapse(work), (work, 0))
+        # the same two calls, but a result that changed: the state moves (a scan that finishes, a file that grows)
+        changing = self.history(0)
+        for i in range(6):
+            changing += self.turn(300 + 2 * i, "kali_run", {"command": "tail log"}, f"line {'x' * i}")
+            changing += self.turn(301 + 2 * i, "kali_run", {"command": "ls out"}, "a.txt")
+        self.assertEqual(self.r.collapse(changing)[1], 0)
+        # waiting in between: a call that waits ends a cycle as it ends a run
+        waits = self.history(0)
+        for i in range(6):
+            waits += self.turn(400 + 2 * i, "kali_run", {"command": "curl -s http://t/status"}, "pending")
+            waits += self.turn(401 + 2 * i, "terminal", {"command": "sleep 30"}, "")
+        self.assertEqual(self.r.collapse(waits)[1], 0)
+
+    def test_a_cycle_after_a_run_is_counted_on_its_own(self):
+        msgs = self.history(3) + self.cycle(3)[4:]
+        r = self.r.review(msgs, self.CYCLE_TOOLS)
+        self.assertEqual((r["removed"], r["period"], r["streak"]), (9, 2, 3))
+        self.assertEqual(sum(1 for m in r["messages"] if "[harness]" in str(m.get("content"))), 2)
+
+    def test_the_benchmark_counts_the_stages(self):
+        spec = importlib.util.spec_from_file_location("rv_bench_loops", os.path.join(KIT, "evals", "run_benchmark.py"))
+        bench = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(bench)
+        ts = lambda t: time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(t))
+        rows = [{"ts": ts(1000), "kind": "repeat", "engagement": "bench-x", "stage": "note", "period": 1},
+                {"ts": ts(1010), "kind": "repeat", "engagement": "bench-x", "stage": "withhold", "period": 2},
+                {"ts": ts(1020), "kind": "loop", "engagement": "bench-x", "stage": "cut", "period": 2},
+                {"ts": ts(1030), "kind": "repeat", "engagement": "bench-x", "withheld": ["kali_run"]},   # before stages
+                {"ts": ts(1040), "kind": "loop", "engagement": "bench-x"},
+                {"ts": ts(1050), "kind": "repeat", "engagement": "bench-y", "stage": "note"},             # another one
+                {"ts": ts(1050), "kind": "refusal", "engagement": "bench-x"},
+                {"ts": ts(5000), "kind": "loop", "engagement": "bench-x", "stage": "cut"}]                # later run
+        with tempfile.TemporaryDirectory() as d:
+            p = os.path.join(d, "model-events.jsonl")
+            with open(p, "w") as f:
+                f.write("".join(json.dumps(r) + "\n" for r in rows) + "not json\n")
+            self.assertEqual(bench.loop_limit("bench-x", 999.5, 2000, p),
+                             {"note": 1, "withhold": 2, "cut": 2, "cycles": 2})
+            self.assertEqual(bench.loop_limit("bench-x", 0, 10, p), {"note": 0, "withhold": 0, "cut": 0, "cycles": 0})
+            self.assertEqual(bench.loop_limit("bench-x", 0, 10, os.path.join(d, "none.jsonl"))["cut"], 0)
+
 
 class FindingTools(unittest.TestCase):
     """The planner's finding tools (harness/findings.py) with the MCP library stubbed and the validator faked: a

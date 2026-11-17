@@ -22,6 +22,13 @@ count again, any other tool call does.
                 ends the planner's turn, so the loop costs nothing from here. The next message from the user or
                 the benchmark runner goes to the model again, with the call still withheld.
 
+A cycle of two or three different calls made in turn (A, B, A, B, ...) is counted the same way, in rounds: the
+note at the third round, the tools of the cycle withheld at the fourth, the turn ended at the sixth. A round counts
+only when each of its calls is the same as in the round before and came back with the same result (ids and
+numbers aside), so work that moves on (other arguments, a result that changed) is never a cycle. In 48 saved
+benchmark runs (3,260 planner turns) no two calls alternated for even two rounds, so the rule changed nothing
+there: it is for the loop nothing else stops.
+
 The conversation OpenHands keeps is not changed. Calls that wait for something (a task, an approval, a sleep) are
 left alone: repeating those is the point.
 
@@ -29,22 +36,26 @@ REPEAT_COLLAPSE=0 turns all of it off.
 """
 import json, os, re
 
-RUN, WITHHOLD, CUT = 3, 4, 6
+RUN, WITHHOLD, CUT = 3, 4, 6     # rounds; for one call a round is one turn
+CYCLES = (2, 3)                  # cycles of this many different calls are counted too
 WAITS = re.compile(r"get_task|list_tasks|approval_status|wait|sleep", re.I)
-NOTE = ("[harness] After this you made the same tool call {n} times in a row: {calls}. It ended the same way every "
-        "time, and those turns are not shown. The last result was:\n{result}\n\nThat call is closed: sending it "
-        "again will not change the result. Do one of two things now: make a call that differs in the way the result "
-        "asks (other arguments, or the step it names first), or leave this item as it is and go on with the next "
-        "step of your plan.")
-WITHHELD = ("\n\nYou were told this before and sent the call again, so {tools} is not available for your next step. "
+IDS = re.compile(r"\b[0-9a-f]{6,}\b|\d+")   # results that differ only in ids, times or counts end the same way
+NOTE = ("[harness] After this you made {what}. It ended the same way every time, and those turns are not shown. "
+        "The last result was:\n{result}\n\nThat call is closed: sending it again will not change the result. Do one of "
+        "two things now: make a call that differs in the way the result asks (other arguments, or the step it names "
+        "first), or leave this item as it is and go on with the next step of your plan.")
+CYCLE_NOTE = ("[harness] After this you made {what}. They ended the same way every time, and those turns are not "
+              "shown. The last results were:\n{result}\n\nThose calls are closed: making them again will not change "
+              "the results. Do one of two things now: make a call that differs in the way the results ask, or leave "
+              "this item as it is and go on with the next step of your plan.")
+WITHHELD = ("\n\nYou were told this before and sent the call again, so {tools} {be} not available for your next step. "
             "Go on with the next step of your plan. The tool is back after you make a different call.")
 CUT_TAG = "[RiskVoid] Loop stopped"
-CUT_TEXT = (CUT_TAG + ": the planner sent the same tool call {n} times in a row ({calls}) and it ended the same way "
-            "every time, so the model gateway ended this turn instead of spending more on it. Nothing is lost: the "
-            "findings, the plan and the evidence are saved in the engagement.\n\nThe last result was: {result}\n\n"
-            "To go on, send a message here (that call stays unavailable until the planner makes a different one), or "
-            "start a new conversation that picks up from the records: ./rvkit conversation {engagement} new "
-            "\"continue from the handover\".")
+CUT_TEXT = (CUT_TAG + ": the planner sent {what}, and it ended the same way every time, so the model gateway ended "
+            "this turn instead of spending more on it. Nothing is lost: the findings, the plan and the evidence are "
+            "saved in the engagement.\n\nThe last result was: {result}\n\nTo go on, send a message here (that call "
+            "stays unavailable until the planner makes a different one), or start a new conversation that picks up "
+            "from the records: ./rvkit conversation {engagement} new \"continue from the handover\".")
 RESULT_CHARS = 1500
 
 
@@ -95,12 +106,6 @@ def _result(group, chars=RESULT_CHARS):
     return "\n".join(_text(m) for m in group[1:]).strip()[:chars] or "(no result)"
 
 
-def _note(sig, group, n):
-    """The user message that stands in for a run of identical turns: what was called, how often, and what the
-    last one returned."""
-    return {"role": "user", "content": NOTE.format(n=n, calls=_shown(sig), result=_result(group))}
-
-
 def _turns(messages):
     """[(kind, signature, messages)]: "call" for an assistant turn with tool calls and its results (signature None
     when it waits for something), "other" for every other message."""
@@ -117,57 +122,110 @@ def _turns(messages):
     return turns
 
 
+class Run:
+    """Call turns that repeat: one call made again and again (period 1), or a cycle of 2 or 3 different calls made
+    in turn. idx: indexes into the turns, oldest first."""
+
+    def __init__(self, period, idx, turns):
+        self.period, self.idx, self.turns = period, idx, turns
+        self.last = idx[-period:]                     # the last round, in the order it was made
+        self.rounds = len(idx) // period
+
+    def calls(self):
+        return " | ".join(_shown(self.turns[i][1]) for i in self.last)
+
+    def what(self):
+        if self.period == 1:
+            return f"the same tool call {self.rounds} times in a row: {self.calls()}"
+        return f"the same {self.period} tool calls in turn, {self.rounds} times over: {self.calls()}"
+
+    def names(self):
+        return sorted({name for i in self.last for name, _ in self.turns[i][1]})
+
+    def result(self, chars=RESULT_CHARS):
+        if self.period == 1:
+            return _result(self.turns[self.idx[-1]][2], chars)
+        each = max(chars // self.period, 100)
+        return "\n".join(f"{_shown(self.turns[i][1])}: {_result(self.turns[i][2], each)}" for i in self.last)
+
+    def note(self):
+        """The user message that stands in for the run: what was called, how often, and what it returned."""
+        return {"role": "user", "content": (NOTE if self.period == 1 else CYCLE_NOTE).format(what=self.what(),
+                                                                                            result=self.result())}
+
+
 def _runs(turns):
-    """Runs of identical call turns: [(signature, [index into turns, ...])], messages without a call in between
-    are skipped over."""
-    runs = []
-    for i, (kind, sig, _) in enumerate(turns):
-        if kind != "call":
-            continue
-        if sig is not None and runs and runs[-1][0] == sig:
-            runs[-1][1].append(i)
-        else:
-            runs.append((sig, [i]))
+    """The runs worth a note (RUN rounds or more), oldest first. Messages without a call in between are skipped
+    over; any other call, or a call that waits for something, ends a run. In a cycle each call must also come back
+    with the same result as the round before. A turn belongs to one run at most, the one that started first (on
+    the same turn, the shorter period)."""
+    calls = [i for i, (kind, _, _) in enumerate(turns) if kind == "call"]
+    sig = [turns[i][1] for i in calls]
+    out = [IDS.sub("#", _result(turns[i][2], 10 ** 6)) for i in calls]
+
+    def same(j, p):   # the call at j repeats the one p calls before it
+        return sig[j] is not None and sig[j] == sig[j - p] and (p == 1 or out[j] == out[j - p])
+
+    found = []
+    for p in (1,) + CYCLES:
+        j = p
+        while j < len(calls):
+            if not same(j, p):
+                j += 1
+                continue
+            k = j
+            while k + 1 < len(calls) and same(k + 1, p):
+                k += 1
+            if len(set(sig[j - p:j])) == p:            # p different calls (fewer: a shorter period covers it)
+                found.append((j - p, k, p))
+            j = k + 1
+    runs, taken = [], -1
+    for start, end, p in sorted(found, key=lambda f: (f[0], f[2])):
+        start = max(start, taken + 1)
+        if (end - start + 1) // p >= RUN:
+            runs.append(Run(p, [calls[x] for x in range(start, end + 1)], turns))
+            taken = end
     return runs
 
 
 def review(messages, tools=None):
     """What the gateway does with a planner request. Returns a dict:
-      messages  the messages to send: each run of RUN or more identical call turns replaced by a note
+      messages  the messages to send: each run of RUN or more rounds replaced by a note
       removed   how many turns that left out
-      streak    how long the run at the end of the conversation is (0 when the last call was not a repeat)
-      calls     that call as text, for messages and the event log
+      streak    rounds of the run at the end of the conversation (0 when the last call was not a repeat)
+      period    1 when that run is one call, 2 or 3 for a cycle (0 when streak is 0)
+      calls     its call (or the calls of the cycle) as text, for messages and the event log
+      what      the same in words: "the same tool call 4 times in a row: ..."
+      stage     what this request does about that run: "note", "withhold" or "cut" (None when streak is 0)
       withhold  tool names left out of this request (streak of WITHHOLD or more)
       tools     the tool list without them (the list as given when nothing is withheld)
-      cut       the text the gateway answers with instead of calling the model, or None
+      cut       {"what", "result"} for the text the gateway answers with instead of calling the model, or None
     """
     turns = _turns(messages)
     runs = _runs(turns)
-    drop, notes, removed = set(), {}, 0
-    for sig, idx in runs:
-        if sig is not None and len(idx) >= RUN:
-            drop.update(idx)
-            notes[idx[-1]] = _note(sig, turns[idx[-1]][2], len(idx))
-            removed += len(idx)
-    out = {"messages": messages, "removed": removed, "streak": 0, "calls": "", "withhold": [], "tools": tools,
-           "cut": None}
-    if not removed:
+    drop, notes = set(), {}
+    for run in runs:
+        drop.update(run.idx)
+        notes[run.idx[-1]] = run.note()
+    out = {"messages": messages, "removed": len(drop), "streak": 0, "period": 0, "calls": "", "what": "",
+           "stage": None, "withhold": [], "tools": tools, "cut": None}
+    if not runs:
         return out
-    sig, idx = runs[-1]
-    last = sig is not None and len(idx) >= RUN
-    if last:
-        out["streak"], out["calls"] = len(idx), _shown(sig)
-    if last and len(idx) >= WITHHOLD:
-        names = sorted({name for name, _ in sig})
-        left = [t for t in tools or [] if ((t.get("function") or {}).get("name") if isinstance(t, dict) else None) not in names]
-        if left and len(left) < len(tools or []):       # never a request without tools
-            out["withhold"], out["tools"] = names, left
-            notes[idx[-1]] = dict(notes[idx[-1]])
-            notes[idx[-1]]["content"] += WITHHELD.format(tools=" and ".join(names))
-        # the model was not asked since this call came back: answer for it. After a message from the user it is
-        # asked again.
-        if len(idx) >= CUT and idx[-1] == len(turns) - 1:
-            out["cut"] = {"n": len(idx), "calls": _shown(sig), "result": _result(turns[idx[-1]][2], 400)}
+    run = runs[-1]
+    if run.idx[-1] == max(i for i, (kind, _, _) in enumerate(turns) if kind == "call"):
+        out.update(streak=run.rounds, period=run.period, calls=run.calls(), what=run.what(), stage="note")
+        if run.rounds >= WITHHOLD:
+            names = run.names()
+            left = [t for t in tools or [] if ((t.get("function") or {}).get("name") if isinstance(t, dict) else None) not in names]
+            if left and len(left) < len(tools or []):       # never a request without tools
+                out["withhold"], out["tools"], out["stage"] = names, left, "withhold"
+                notes[run.idx[-1]] = dict(notes[run.idx[-1]])
+                notes[run.idx[-1]]["content"] += WITHHELD.format(tools=" and ".join(names),
+                                                                 be="is" if len(names) == 1 else "are")
+            # the model was not asked since this call came back: answer for it. After a message from the user it
+            # is asked again.
+            if run.rounds >= CUT and run.idx[-1] == len(turns) - 1:
+                out["stage"], out["cut"] = "cut", {"what": run.what(), "result": run.result(400)}
     msgs = []
     for i, (_, _, group) in enumerate(turns):
         if i in notes:
@@ -179,10 +237,12 @@ def review(messages, tools=None):
 
 
 def cut_text(cut, engagement=None):
-    return CUT_TEXT.format(engagement=engagement or "<engagement>", **cut)
+    """cut: {"what", "result"} from review(), or {"n", "calls", "result"} for one call."""
+    what = cut.get("what") or f"the same tool call {cut.get('n')} times in a row: {cut.get('calls')}"
+    return CUT_TEXT.format(engagement=engagement or "<engagement>", what=what, result=cut.get("result", ""))
 
 
 def collapse(messages):
-    """(messages with each run of identical tool-call turns replaced by a note, number of turns removed)."""
+    """(messages with each run of repeated tool-call turns replaced by a note, number of turns removed)."""
     r = review(messages)
     return r["messages"], r["removed"]

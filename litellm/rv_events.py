@@ -265,19 +265,22 @@ class RvEvents(CustomLogger):
                     choice = data.get("tool_choice")
                     if isinstance(choice, dict) and (choice.get("function") or {}).get("name") in r["withhold"]:
                         data["tool_choice"] = "auto"
+                # stage: "note", "withhold" or "cut", what this request did about the loop at its end (the
+                # benchmark runner counts them per run); period 1 is one call, 2 or 3 a cycle of calls
                 if r["cut"]:
                     # LiteLLM answers with this text itself and calls no provider; a text reply ends the turn
                     data["mock_response"] = rv_repeats.cut_text(r["cut"], eng)
-                    record("loop", group, f"the model sent the same tool call {r['streak']} times in a row "
-                           f"({r['calls'][:200]}): the gateway ended the turn without calling the model",
-                           engagement=eng, streak=r["streak"])
+                    record("loop", group, f"the model sent {r['what'][:250]}: the gateway ended the turn without "
+                           "calling the model", engagement=eng, streak=r["streak"], period=r["period"], stage="cut")
                 elif r["removed"] > REPEATS_SEEN.get(eng, 0):   # once per growth, not on every later call
-                    record("repeat", group, f"the model repeated a tool call it had already made: {r['removed']} "
-                           "identical turn(s) were left out of what it reads, with a note telling it to change the "
-                           "call or move on" + (f"; it had read the note and sent the call again, so "
-                                                f"{' and '.join(r['withhold'])} is withheld for its next step"
-                                                if r["withhold"] else ""),
-                           engagement=eng, removed=r["removed"], streak=r["streak"], withheld=r["withhold"])
+                    record("repeat", group, ("the model repeated a tool call it had already made" if r["period"] < 2
+                                             else "the model made the same tool calls in turn again") +
+                           f": {r['removed']} repeated turn(s) were left out of what it reads, with a note telling it "
+                           "to change the call or move on" + (f"; it had read the note and sent the call again, so "
+                                                              f"{' and '.join(r['withhold'])} is withheld for its "
+                                                              "next step" if r["withhold"] else ""),
+                           engagement=eng, removed=r["removed"], streak=r["streak"], period=r["period"],
+                           withheld=r["withhold"], stage=r["stage"])
                 REPEATS_SEEN[eng] = r["removed"]
         return data
 
