@@ -1,0 +1,16 @@
+{
+ "id": "P-005",
+ "created": "2026-11-16",
+ "cause": "worker/",
+ "kind": "prompt",
+ "file": "prompts/planner.md",
+ "change": "The planner prompt says which work goes to the worker: scanner and review runs (static analysis, secret, dependency and SBOM scans, recon, crawling), also on a small target, sent as independent tasks with wait_s=0 and collected with get_task. The sentence allowing the Kali tools for small checks is replaced by a list of what stays with the planner. The delegate_task description no longer calls the worker a local Qwen model or says tasks run one at a time.",
+ "targets": [
+  "code-node-20261115T201729Z",
+  "code-flask-20261115T193533Z",
+  "api-vampi-20261115T012259Z"
+ ],
+ "read": 34,
+ "status": "proposed",
+ "judgement": null
+}

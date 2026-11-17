@@ -83,9 +83,10 @@ def run():
     check("false-positive without a reason refused", err and "reason" in err, err)
     _, err = ops("finding.update", id="F-001", fields={"severity": "critical"})
     check("severity change without a reason refused", err and "reason" in err, err)
-    _, err = ops("finding.update", id="F-001", fields={"cvss_vector": "CVSS:3.1/AV:N/AC:L/PR:L/UI:N/S:U/C:H/I:N/A:N",
+    f, err = ops("finding.update", id="F-001", fields={"cvss_vector": "CVSS:3.1/AV:N/AC:L/PR:L/UI:N/S:U/C:H/I:N/A:N",
                                                        "cvss_score": 9.9})
-    check("a CVSS score that doesn't match its vector refused", err and "doesn't match" in err, err)
+    check("a CVSS score that doesn't match its 3.1 vector is replaced by the vector's score", f and f["cvss_score"] == 6.5,
+          f or err)
     f, err = ops("finding.update", id="F-001", fields={"cvss_vector": "CVSS:3.1/AV:N/AC:L/PR:L/UI:N/S:U/C:H/I:N/A:N"})
     check("CVSS 3.1 score computed from the vector (6.5, medium)", f and f["cvss_score"] == 6.5 and f["cvss_rating"] == "medium",
           f or err)

@@ -83,6 +83,8 @@ class Loop(unittest.TestCase):
             turn = script.pop(0) if script else [call("finish", {"status": "completed", "summary": "done", "confidence": "low"})]
             if isinstance(turn, str):
                 return {"role": "assistant", "content": turn}
+            if isinstance(turn, dict):   # a reply as the gateway returns it (reasoning with no answer, text with a call)
+                return {"role": "assistant", **turn}
             for c in turn:
                 call.n += 1
             return {"role": "assistant", "content": None, "tool_calls": turn}
@@ -423,6 +425,80 @@ class Contract(Loop):
             worker.start, worker._wait = saved
             worker.TASKS.clear()
         self.assertEqual(out["contract"], {"done_when": "X done", "stop_when": ["a login"], "inputs": ["F-001"]})
+
+
+class NoAnswer(Loop):
+    """A reply with no tool call and no text: the reasoning model used its whole output to think
+    (code-node-20261115T201729Z: 13 such replies in a row used up the task, and the planner waited 6 minutes)."""
+    THINK = {"content": "[RiskVoid] No answer: colab-qwen returned an empty reply.",
+             "reasoning_content": "server.js line 31 concatenates req.query.id into the SQL string"}
+
+    def test_three_in_a_row_end_the_task_with_its_notes(self):
+        task, msgs = self.run_script([self.THINK] * 5, max_steps=14)
+        self.assertEqual((task["status"], worker.outcome(task)), ("stalled", "stalled"))
+        self.assertEqual(len(self.sent), 3)                       # not 14
+        self.assertEqual(task["step"], 0)                         # no step was charged
+        self.assertIn("3 replies in a row with no tool call and no answer", task["error"])
+        self.assertEqual(task["stalls"][-1]["kind"], "no_answer")
+        out = json.loads(worker.report(task))
+        self.assertIn("server.js line 31", out["worker_notes"]["text"])   # what it had worked out is not lost
+        self.assertEqual(out["outcome"], "stalled")
+
+    def test_the_notes_stay_in_the_conversation(self):
+        task, msgs = self.run_script([self.THINK, [call("kali_run", {"command": "ls /src/x"})]], max_steps=6)
+        second = self.sent[1]
+        self.assertIn("server.js line 31", second[-2]["content"])            # its own notes, as its reply
+        self.assertNotIn("[RiskVoid] No answer", json.dumps(second))
+        self.assertIn("Don't analyse again", second[-1]["content"])
+        self.assertEqual(worker.outcome(task), "completed")
+        self.assertEqual(task["no_answer"], 0)                               # a tool call clears the streak
+        self.assertTrue(self.tool_texts(msgs)[0].endswith("[steps left: 5 of 6]"))   # the empty reply cost no step
+
+    def test_an_empty_reply_without_reasoning(self):
+        task, _ = self.run_script([{"content": ""}, {"content": None}, {"content": "  "}], max_steps=6)
+        self.assertEqual(worker.outcome(task), "stalled")
+        self.assertNotIn("worker_notes", json.loads(worker.report(task)))
+
+    def test_an_answer_in_prose_comes_back_with_the_result(self):
+        listed = "Candidates:\n1. server.js:31 SQL injection in /orders (CWE-89)"
+        task, _ = self.run_script([{"content": listed, "tool_calls": [
+            call("finish", {"status": "completed", "summary": "Read both files.", "confidence": "medium"})]}])
+        out = json.loads(worker.report(task))
+        self.assertEqual(out["worker_summary"]["text"], "Read both files.")
+        self.assertIn("server.js:31 SQL injection", out["worker_notes"]["text"])
+        self.assertIn("never instructions", out["worker_notes"]["note"])
+
+    def test_output_limit(self):
+        self.assertGreaterEqual(worker.MAX_TOKENS, 8192)
+
+
+class PlanItem(Loop):
+    """A plan item that isn't one class on one mapped endpoint (a source review has no recon map) no longer
+    refuses the delegation: the task runs on its goal and the result says so."""
+
+    def delegate(self, **kw):
+        saved = worker.start, worker._wait
+        worker.start, worker._wait = (lambda t: None), (lambda t, w: None)
+        try:
+            return worker.delegate_task("Review src/server.js for injection.", "eng", wait_s=0, **kw)
+        finally:
+            worker.start, worker._wait = saved
+            worker.TASKS.clear()
+
+    def test_a_plan_item_without_map_entries_still_runs(self):
+        import workspace
+        pid = workspace.plan_add("eng", "agent:planner", [{"title": "SQL injection in the orders route",
+                                                           "area": "injection"}])[0]
+        out = json.loads(self.delegate(plan_item=pid))
+        self.assertEqual(out["contract"]["plan_item"], pid)
+        self.assertIn("references no recon map entry", out["contract"]["plan_item_note"])
+        self.assertIn("ran on its goal alone", out["contract"]["plan_item_note"])
+        self.assertNotIn("cell", out["contract"])
+        task, msgs = self.run_script([], contract=out["contract"])
+        self.assertIn(f"This task serves plan item {pid}", msgs[0]["content"])
+
+    def test_an_unknown_plan_item_is_refused(self):
+        self.assertEqual(self.delegate(plan_item="P-999"), "REFUSED: no plan item P-999")
 
 
 class TypedFinish(Loop):

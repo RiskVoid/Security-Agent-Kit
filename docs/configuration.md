@@ -48,6 +48,7 @@ Set these with `./rvkit connect` and `./rvkit worker` ([models.md](models.md)), 
 | `WORKER_ADVISOR` | `1` | A worker task that stalls (the same call or error three times, or `WORKER_STALL_CALLS` calls with nothing new) first gets a nudge, then asks the planner model for advice, at most twice, before it stops as `stalled`. Only the goal and one line per recent step are sent, through the model gateway, which applies the engagement's client data rule; a private worker never asks. `0` turns the advice off. |
 | `WORKER_STALL_CALLS` | `8` | Worker calls with no new output and no candidate before a task counts as stalled. |
 | `WORKER_CONTEXT_CHARS` | `90000` | Characters of task context the worker keeps (about 25K tokens, for a 32K-context model). Raise it for a model with a longer context. Past it, the oldest tool results shrink to one line each (tool, command, exit status, digest summary, evidence path). |
+| `WORKER_MAX_TOKENS` | `8192` | Output tokens per worker model call, reasoning included. With too few, a reasoning model spends the whole reply thinking and returns neither a tool call nor an answer; three such replies in a row end the task as `stalled`. |
 | `WORKER_KEEP_RESULTS` | `5` | The latest tool results a worker task always keeps whole. |
 
 ### Planner model and spend
@@ -59,7 +60,9 @@ Set these with `./rvkit connect` and `./rvkit worker` ([models.md](models.md)), 
 | `PLANNER_FALLBACK_MODEL` | `openrouter/deepseek/deepseek-v4-pro` | Used when the planner call fails, refuses or returns nothing. |
 | `VALIDATOR_MODEL` | the planner's fallback model | The disprove-only validator: reviews each finding the planner confirms ([tools reference](tools-reference.md#the-validator)). |
 | `VALIDATOR` | `1` | `0`: confirmed findings are not sent to the validator. |
-| `PLANNER_REPEAT_GUARD` | `1` | The planner's finding tools point out a refused call that comes back with the same arguments: the second time the reply says so and names the arguments the refusal asks for; from the third it opens with STOP. A call that isn't refused but returns the same result three times in a row gets a note. The call still runs every time. `0` turns it off. |
+| `VALIDATOR_DISPROVE` | `flag` | What a validator disprove does. `flag`: the finding stays confirmed, the verdict is shown in the console and the report, and the report can't be delivered until the finding is corrected, withdrawn or excepted by a person. `demote`: the finding goes back to candidate. |
+| `VALIDATOR_FILE_CHARS` | `30000` | Characters of each cited evidence file the validator reads (four times that in total). A longer file is shown around the text the finding quotes, with its head and tail. |
+| `REPEAT_COLLAPSE` | `1` | What the model gateway does when the planner sends the same tool call again and again. From the third in a row it leaves those turns out of what the model reads and puts one note in their place: what was called, how often and the last result. From the fourth the tool of that call is left out of the request until the planner makes a different call. At the sixth the gateway answers itself with a `[RiskVoid] Loop stopped` text and does not call the model, which ends the planner's turn. The conversation itself is unchanged. `0` turns all of it off. |
 | `ANTHROPIC_API_KEY`, `OPENAI_API_KEY` | empty | Only for a planner on Anthropic or OpenAI directly (`./rvkit planner --direct`). |
 | `OPENROUTER_DAILY_BUDGET` | `20` | USD per 24 hours, per provider: OpenRouter, and Anthropic / OpenAI when used directly (`./rvkit budget`). |
 

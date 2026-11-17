@@ -15,6 +15,7 @@ import datetime, hashlib, json, os, re
 
 import findings_db as db
 import observations as obsparse
+import quotecheck
 
 MAX_IMPORT = 50 * 1024 * 1024
 REF_RX = re.compile(r"^(ASVS V\d{1,2}(\.\d{1,2}){0,2}|WSTG-[A-Z]{4}-\d{2}|API\d{1,2}:2023|LLM\d{2}:2025|"
@@ -33,14 +34,64 @@ def _next_id(con, table, prefix):
 DENIED = {"report", "MANIFEST.sha256", "SCOPE.md", "RULES.md"}
 
 
+def _path_only(base, path):
+    """An evidence entry as its path: agents write "evidence/runs/x.txt (no WAF seen)", "x.txt: no WAF seen" or
+    "x.txt:12". When the text as given isn't a file, the note after the path, the punctuation that ends it and a
+    trailing line number are dropped. Refusing such an entry with "no such file" made agents move or re-create
+    files that were there all along."""
+    p = str(path or "").strip()
+    is_file = lambda x: bool(x) and os.path.isfile(x if x.startswith("/") else os.path.join(base, x))  # noqa: E731
+    if is_file(p):
+        return p
+    head = re.split(r"\s", p, maxsplit=1)[0] if p else p
+    for cand in (head, head.rstrip(":,;"), re.sub(r":\d+(?:-\d+)?$", "", head.rstrip(":,;"))):
+        if is_file(cand):
+            return cand
+    return head.rstrip(":,;") or head or p
+
+
+SRC_ENTRY = re.compile(r"(/src/[^\s:`'\"()<>]+?)[:,;]?(?::(\d+)(?:-(\d+))?)?[:,;]?(?=\s|$)")
+
+
+def _source(path):
+    """A source file as evidence of a planned test: "/src/<repo>/<file>", with or without ":<line>" or
+    ":<from>-<to>" and a note after it. Returns the entry without the note, or None when it isn't a source path.
+    In a source review the code is what shows a test's result ("no auth layer in app.py"); refusing it as "not a
+    tool output" sent the planner looking for a tool output to cite instead. The file and the lines must exist
+    (unchecked where /src isn't mounted)."""
+    m = SRC_ENTRY.match(str(path or "").strip())
+    if not m:
+        return None
+    file, a, b = m.groups()
+    entry = file + (f":{a}" + (f"-{b}" if b else "") if a else "")
+    root = quotecheck.SRC
+    if not os.path.isdir(root):
+        return entry
+    full = os.path.realpath(os.path.join(root, file[len("/src/"):]))
+    if not full.startswith(os.path.realpath(root) + os.sep) or not os.path.isfile(full):
+        raise ValueError(f"{file}: no such file")
+    if a:
+        n = quotecheck._read(full).count("\n") + 1
+        if int(a) < 1 or int(b or a) > n:
+            raise ValueError(f"{entry}: the file has {n} lines")
+    return entry
+
+
+def _evidence(eng, path):
+    """An evidence entry of a plan item or a hand-written observation as it is stored: a tool output of the
+    engagement (its path in the engagement folder) or a source file under /src."""
+    return _source(path) or _rel(eng, path)[0]
+
+
 def _rel(eng, path):
     base = db.engagement_dir(eng)
+    path = _path_only(base, path)
     rel = os.path.relpath(os.path.normpath(path if path.startswith("/") else os.path.join(base, path)), base)
     parts = rel.split(os.sep)
     if rel.startswith("..") or any(p.startswith(".") for p in parts) or parts[0] in DENIED \
             or parts[0].startswith(("findings.db", "audit")):
-        raise ValueError(f"{path}: not a tool output of this engagement (a file under /work/{eng}/, not the "
-                         "findings database, the audit log, the report or a hidden file)")
+        raise ValueError(f"{path}: not a tool output of this engagement (a file under /work/{eng}/ or a source "
+                         "file under /src/, not the findings database, the audit log, the report or a hidden file)")
     full = os.path.join(base, rel)
     # the agent can make links in its folder: what the link leads to must pass the same checks
     real = os.path.relpath(os.path.realpath(full), os.path.realpath(base))
@@ -112,7 +163,7 @@ def add_manual(eng, actor, title, location, detail="", severity="info", evidence
         raise ValueError("tool: a short lower-case name")
     ev = []
     for p in evidence or []:
-        ev.append(_rel(eng, p)[0])
+        ev.append(_evidence(eng, p))
     fp = obsparse.fingerprint(tool, "manual", location, title)
     with db._db(eng) as con:
         con.execute("BEGIN IMMEDIATE")
@@ -307,7 +358,7 @@ def plan_update(eng, actor, pid, expected_revision=None, **f):
         if st not in db.COVERAGE:
             raise ValueError(f"state must be one of {db.COVERAGE}")
         if "evidence" in f:
-            new["evidence"] = [_rel(eng, p)[0] for p in f["evidence"] or []]
+            new["evidence"] = [_evidence(eng, p) for p in f["evidence"] or []]
         if "refs" in f:
             new["refs"] = _refs(f["refs"])
             _map_refs(eng, new["refs"])

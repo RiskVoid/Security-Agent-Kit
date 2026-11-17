@@ -222,7 +222,12 @@ An unattended run must start with a test plan and give every planned test an out
 planned tests open, candidates untriaged or no plan at all, and it has time and budget left, the harness sends it
 back to work, at most three times; the result records each time under `continued`. The same goes for a run that
 OpenHands stops as stuck, which happens when the agent repeats one call, usually one a tool keeps refusing: the
-harness quotes the refusal back to it and tells it not to send that call again.
+harness quotes the refusal back to it and tells it not to send that call again. If it is stopped as stuck a second
+time, or the model gateway ended its turn because one call came six times in a row (`REPEAT_COLLAPSE` in
+[configuration.md](configuration.md)), the run goes on in a new conversation, at most twice: its first message
+says which call was repeated and tells the agent to read `get_handover` and `get_coverage` and not to plan again.
+The result records them under `conversations` and `restarts`, and `conversation.json` holds the events of all of
+them in order.
 
 The result also records findings marked false
 positive or duplicate, wall time, planner tokens, automatic approvals, the agent, the worker model and endpoint.

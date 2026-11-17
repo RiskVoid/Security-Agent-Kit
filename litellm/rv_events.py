@@ -21,6 +21,7 @@ import asyncio, json, os, re, sys, time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import rv_routes  # noqa: E402  (data destinations and halt for model calls, RW-006/RW-007)
+import rv_repeats  # noqa: E402  (a repeated tool call: left out of what the planner reads, withheld, turn ended)
 
 try:
     from litellm.integrations.custom_logger import CustomLogger
@@ -229,6 +230,9 @@ def env_now():
     return dict(os.environ)
 
 
+REPEATS_SEEN = {}   # engagement -> identical turns left out on its last call (rv_repeats)
+
+
 class RvEvents(CustomLogger):
     async def async_pre_call_hook(self, user_api_key_dict, cache, data, call_type):
         group = data.get("model")
@@ -243,6 +247,34 @@ class RvEvents(CustomLogger):
             raise HTTPException(status_code=403, detail=POLICY_TAG + d["reason"])
         if not d["fallbacks"]:
             data["disable_fallbacks"] = True
+        # the worker has its own stall detection (harness/worker.py) and marks its calls with x-rv-task
+        if rv_repeats.enabled() and not rv_routes.header(headers, "x-rv-task"):
+            try:
+                r = rv_repeats.review(data.get("messages") or [], data.get("tools"))
+            except Exception:  # noqa: BLE001  the request goes out as it came
+                r = None
+            if r and r["removed"]:
+                eng = engagement_of(data)
+                data["messages"] = r["messages"]
+                if r["withhold"]:
+                    data["tools"] = r["tools"]
+                    choice = data.get("tool_choice")
+                    if isinstance(choice, dict) and (choice.get("function") or {}).get("name") in r["withhold"]:
+                        data["tool_choice"] = "auto"
+                if r["cut"]:
+                    # LiteLLM answers with this text itself and calls no provider; a text reply ends the turn
+                    data["mock_response"] = rv_repeats.cut_text(r["cut"], eng)
+                    record("loop", group, f"the model sent the same tool call {r['streak']} times in a row "
+                           f"({r['calls'][:200]}): the gateway ended the turn without calling the model",
+                           engagement=eng, streak=r["streak"])
+                elif r["removed"] > REPEATS_SEEN.get(eng, 0):   # once per growth, not on every later call
+                    record("repeat", group, f"the model repeated a tool call it had already made: {r['removed']} "
+                           "identical turn(s) were left out of what it reads, with a note telling it to change the "
+                           "call or move on" + (f"; it had read the note and sent the call again, so "
+                                                f"{' and '.join(r['withhold'])} is withheld for its next step"
+                                                if r["withhold"] else ""),
+                           engagement=eng, removed=r["removed"], streak=r["streak"], withheld=r["withhold"])
+                REPEATS_SEEN[eng] = r["removed"]
         return data
 
     async def async_post_call_streaming_iterator_hook(self, user_api_key_dict, response, request_data):

@@ -3,12 +3,12 @@
 The planner records, confirms, rejects and lists findings. The worker can only add candidates
 (it writes through findings_db directly with status=candidate).
 """
-import functools, inspect, json, os
+import json, os
 from mcp.server.fastmcp import FastMCP
 import findings_db as db
 import ops
+import pins
 import quotecheck
-import repeatguard
 import validator
 import verification
 
@@ -19,59 +19,78 @@ ACTOR = "agent:planner"  # changes made through this server are attributed to th
 mcp = FastMCP("findings", host="0.0.0.0", port=8092, stateless_http=True)
 
 
-def tool():
-    """mcp.tool() with the repeat guard (repeatguard.py): the tool runs as it is, and a call that comes back with
-    the same arguments and is turned down for the same reason gets a reply that says so."""
-    def register(fn):
-        sig = inspect.signature(fn)
-
-        @functools.wraps(fn)
-        def run(*a, **k):
-            reply = fn(*a, **k)
-            try:
-                args = dict(sig.bind(*a, **k).arguments)
-            except TypeError:
-                return reply
-            return repeatguard.observe(args.get("engagement"), fn.__name__, args, reply, params=list(sig.parameters),
-                                       problem=_not_done(reply))
-        return mcp.tool()(run)
-    return register
-
-
 NOT_CONFIRMED = "NOT CONFIRMED: "
-
-
-def _not_done(reply):
-    """The reason in a reply that saved something without confirming the finding (its note), else None. The row
-    around it changes with every save, so the guard compares the reason, not the reply."""
-    if not isinstance(reply, str) or not reply.startswith('{\n "note": "' + NOT_CONFIRMED):
-        return None
-    try:
-        note = json.loads(reply)["note"]
-    except (ValueError, KeyError, TypeError):
-        return None
-    return note.split(". ", 1)[-1]   # without "saved <fields>": the same reason whatever was saved with it
 
 
 def _out(x) -> str:
     return json.dumps(x, indent=1)
 
 
+ACK_VALUE = 200   # a field longer than this is acknowledged by its length: the model wrote it, it needn't read it back
+
+
+def _ack(row, sent=(), head=("id", "title", "severity", "status", "verified_method", "revision")):
+    """What a write returns: the row's identity and state, and the fields this call sent (long ones by length).
+    Returning the whole finding after every update made these replies a third of the planner's context;
+    get_finding still returns everything."""
+    if not isinstance(row, dict):
+        return row
+    out = {k: row[k] for k in ("note",) if k in row}
+    out.update({k: row.get(k) for k in head if k in row})
+    for k in sent:
+        v = row.get(k)
+        if k in out or v is None:
+            continue
+        text = v if isinstance(v, str) else json.dumps(v)
+        out[k] = v if len(text) <= ACK_VALUE else f"saved ({len(text)} characters)"
+    for k in ("quotes", "validation", "previous_revision"):
+        if k in row:
+            out[k] = row[k]
+    return out
+
+
+def _repin(engagement):
+    """Findings whose cited evidence was moved since they were confirmed are pointed at the moved file."""
+    try:
+        return pins.repair(engagement)
+    except Exception:  # noqa: BLE001
+        return []
+
+
 def _validated(engagement, row):
     """A finding the planner just confirmed goes to the disprove-only validator (validator.py). The verdict is added
-    to what the tool returns; disproved has already sent the finding back to candidate."""
+    to what the tool returns. A disproved finding stays confirmed and is flagged for the person (the default), or
+    has already gone back to candidate (VALIDATOR_DISPROVE=demote)."""
     if not isinstance(row, dict) or row.get("status") != "confirmed":
         return row
+    try:
+        pins.pin(engagement, row)   # what it cites, by content: a file moved later is found again (pins.py)
+    except Exception:  # noqa: BLE001  a pin is a convenience; the confirmation doesn't depend on it
+        pass
+    quotes = _quotes(engagement, row)
     try:
         v = validator.validate(engagement, row["id"])
     except Exception as e:  # noqa: BLE001  the confirmation stands; the validation is just missing
         v = {"verdict": "not_run", "reason": f"the validator failed: {type(e).__name__}: {e}"}
-    if v.get("verdict") == "disproved":
+    if v.get("verdict") == "disproved" and v.get("action") == "back to candidate":
         row = db.get(engagement, row["id"])
         v["note"] = ("the finding is back to candidate. Look at the reason and the evidence: test again, then confirm "
                      "it with update_finding(status=\"confirmed\", method=..., evidence=[the new evidence]), or mark "
                      "it false-positive. Don't confirm it again with the same evidence.")
-    return {**row, "validation": v}
+    elif v.get("verdict") == "disproved":
+        v["note"] = (f"{row['id']} is still confirmed, and the reviewer's objection is on record for the person who "
+                     "signs the report. Read the reason once. If it is right, correct the finding (cite the evidence "
+                     "that shows it, narrow the claim, or mark it false-positive). If the evidence already shows "
+                     "what the finding says, leave it and go on with the plan: do not send this call again.")
+    return {**row, **({"quotes": quotes} if quotes else {}), "validation": v}
+
+
+def _quotes(engagement, row):
+    """Quotes of a confirmed finding that are not in its evidence (quotecheck.py): listed, never a refusal."""
+    try:
+        return quotecheck.flag(engagement, row.get("description"), row.get("reproduction"), row.get("evidence"))
+    except Exception:  # noqa: BLE001  a list for the reader; the confirmation doesn't depend on it
+        return None
 
 
 def _disproved(engagement, finding_id):
@@ -104,7 +123,7 @@ def _confirm_call(finding_id, method):
             f"is missing above")
 
 
-@tool()
+@mcp.tool()
 def record_finding(engagement: str, title: str, severity: str, asset: str, description: str,
                    impact: str = "", reproduction: str = "", remediation: str = "", evidence: list[str] | None = None,
                    cvss_vector: str = "", cvss_score: float | None = None, cwe: str = "",
@@ -116,8 +135,9 @@ def record_finding(engagement: str, title: str, severity: str, asset: str, descr
     source-review, tool-output, retest) and reproduction (the steps that show it: requests or commands, and what
     each returns). oracle: cite the evidence/verify/ record of a kali verify run that passed
     with a clean control (the strongest method; prefer it when an oracle fits). runtime-reproduction, replay, authorization-matrix and tool-output also
-    need the evidence file that shows it. Text in backticks or code blocks (other than commands) is a quote:
-    confirming is refused when a quote isn't in the cited evidence, or a /src/<file>:<line> doesn't exist.
+    need the evidence file that shows it. Confirming is refused when a /src/<file>:<line> in the text doesn't
+    exist. Text in backticks or code blocks (other than commands) that isn't in the cited evidence is listed in
+    the reply (quotes): the finding is confirmed all the same.
     A method without status that can't be confirmed is saved as a candidate, and the reply's note says why.
     evidence: file paths under /work/<engagement>/evidence/. Returns the stored finding with its id (F-001...)."""
     note = None
@@ -142,10 +162,10 @@ def record_finding(engagement: str, title: str, severity: str, asset: str, descr
     if note:
         row = {"note": (f"{NOT_CONFIRMED}saved as candidate {row['id']}. {note.rstrip('.')}. Don't record it again: to confirm "
                         f"it, call {_confirm_call(row['id'], method)}."), **row}
-    return _out(_validated(engagement, row))
+    return _out(_ack(_validated(engagement, row), ("asset", "cwe", "cvss_vector", "cvss_score", "evidence")))
 
 
-@tool()
+@mcp.tool()
 def update_finding(engagement: str, finding_id: str, status: str | None = None, severity: str | None = None,
                    title: str | None = None, description: str | None = None, impact: str | None = None,
                    reproduction: str | None = None, remediation: str | None = None,
@@ -156,7 +176,7 @@ def update_finding(engagement: str, finding_id: str, status: str | None = None, 
     """Update a finding. Use status=confirmed after verifying a candidate, with method = how you verified it
     (runtime-reproduction, replay, authorization-matrix, source-review, tool-output, retest; required, and
     runtime-reproduction, replay, authorization-matrix and tool-output also need the evidence file that shows
-    it; quotes in backticks must be in the cited evidence, as for record_finding) and reproduction (kept from
+    it; quotes in backticks that aren't in the cited evidence are listed, as for record_finding) and reproduction (kept from
     before when not given). A method without status on a candidate is read as status=confirmed and gets the same
     checks: when they fail, the other fields are saved and the reply's note says why it is still a candidate.
     status=false-positive when it doesn't hold; status=duplicate with duplicate_of=<id of the finding to keep>; fixed or accepted-risk
@@ -226,30 +246,33 @@ def update_finding(engagement: str, finding_id: str, status: str | None = None, 
         return f"REFUSED: {e}"
     if note:
         row = {"note": note, **row}
-    return _out(_validated(engagement, row) if status == "confirmed" else row)
+    sent = [k for k, v in fields.items() if v is not None and k != "status"]
+    return _out(_ack(_validated(engagement, row) if status == "confirmed" else row, sent))
 
 
-@tool()
+@mcp.tool()
 def validate_finding(engagement: str, finding_id: str) -> str:
     """Send a confirmed finding to the disprove-only validator again (it runs on its own when you confirm one): a
-    separate model with only the finding, its cited evidence and its oracle records tries to disprove it. Returns
-    stands, disproved (the finding goes back to candidate, with the reason), unclear or not_run, and the reason."""
+    separate model with only the finding, its cited evidence and source lines and its oracle records tries to
+    disprove it. Returns stands, disproved (the finding stays confirmed and is flagged for the person, with the
+    reason), unclear or not_run, and the reason."""
     try:
         return _out(validator.validate(engagement, finding_id))
     except ValueError as e:
         return f"REFUSED: {e}"
 
 
-@tool()
+@mcp.tool()
 def list_findings(engagement: str, status: str | None = None, severity: str | None = None) -> str:
     """List findings, most severe first. Filter by status (candidate|confirmed|false-positive|duplicate|fixed|accepted-risk)
     and/or severity. Returns id, title, severity, status, asset for each."""
+    _repin(engagement)
     rows = db.list_(engagement, status, severity)
     return _out([{k: r[k] for k in ("id", "title", "severity", "status", "asset", "source")} for r in rows]
                 or "no findings")
 
 
-@tool()
+@mcp.tool()
 def get_finding(engagement: str, finding_id: str, history: bool = False) -> str:
     """Get one finding with all fields (verification, verified_by and method, priority, instances). history=true
     adds every earlier revision and the decisions made about it, with reasons."""
@@ -257,6 +280,9 @@ def get_finding(engagement: str, finding_id: str, history: bool = False) -> str:
     v = validator.history(engagement, finding_id)
     if v:
         f["validation"] = v[0]
+    quotes = _quotes(engagement, f) if f.get("status") == "confirmed" else None
+    if quotes:
+        f["quotes"] = {"not_in_evidence": quotes["not_in_evidence"]}
     if history:
         f["history"] = db.history(engagement, finding_id)
         f["validations"] = v
@@ -265,13 +291,14 @@ def get_finding(engagement: str, finding_id: str, history: bool = False) -> str:
 
 # ---------------------------------------------------------------- investigation workspace (RW-015 to RW-018)
 def _call(name, **req):
+    _repin(req.get("engagement"))
     try:
         return _out(ops.call(name, {"engagement": req.pop("engagement"), "actor": ACTOR, **req})[0])
     except ValueError as e:
         return f"REFUSED: {e}"
 
 
-@tool()
+@mcp.tool()
 def import_observations(engagement: str, path: str, tool: str = "") -> str:
     """Turn a tool's output (a file of the engagement: semgrep.json, evidence/...) into observations: Semgrep,
     osv-scanner, pip-audit, bandit or gitleaks JSON, an authorization-matrix run (evidence/authz), a Laravel map (evidence/appmap) or an HTTP exchange
@@ -280,7 +307,7 @@ def import_observations(engagement: str, path: str, tool: str = "") -> str:
     return _call("observation.import", engagement=engagement, path=path, tool=tool or None)
 
 
-@tool()
+@mcp.tool()
 def add_observation(engagement: str, title: str, location: str, detail: str = "", severity: str = "info",
                     evidence: list[str] | None = None) -> str:
     """Record something you noticed by hand (not from a tool output) as an observation to triage."""
@@ -288,7 +315,7 @@ def add_observation(engagement: str, title: str, location: str, detail: str = ""
                  severity=severity, evidence=evidence or [])
 
 
-@tool()
+@mcp.tool()
 def list_observations(engagement: str, status: str = "new", tool: str = "") -> str:
     """Observations (status new, linked, duplicate, dismissed; empty for all), the imports with their parser
     errors, and grouping suggestions (observations that may share a root cause)."""
@@ -298,7 +325,7 @@ def list_observations(engagement: str, status: str = "new", tool: str = "") -> s
     return _out(r)
 
 
-@tool()
+@mcp.tool()
 def triage_observations(engagement: str, ids: list[str], action: str, finding_id: str = "", of: str = "",
                         reason: str = "") -> str:
     """Decide about observations. action: link (they are instances of finding_id: record the finding first),
@@ -315,7 +342,7 @@ def triage_observations(engagement: str, ids: list[str], action: str, finding_id
     return "REFUSED: action is link, duplicate, dismiss or reopen"
 
 
-@tool()
+@mcp.tool()
 def plan_tests(engagement: str, items: list[dict] | None = None, playbook: str = "") -> str:
     """Add planned tests (coverage items). playbook: add one item per checklist line of that playbook (once).
     items: [{"title", "area", "refs": ["ASVS V8.2.2", "WSTG-ATHZ-04", "API1:2023"], "hypothesis",
@@ -326,20 +353,29 @@ def plan_tests(engagement: str, items: list[dict] | None = None, playbook: str =
     return _call("plan.add", engagement=engagement, items=items or [])
 
 
-@tool()
+@mcp.tool()
 def update_coverage(engagement: str, item: str, state: str, rationale: str = "", evidence: list[str] | None = None,
                     finding_id: str = "", build: str = "", policy_revision: str = "") -> str:
-    """Record a planned test's outcome. state: tested (ran, no issue: evidence required), failed (an issue: the
+    """Record a planned test's outcome. state: tested (ran, no issue: evidence required, a tool output under
+    /work/<engagement>/ or the source that shows it, /src/<repo>/<file>:<line>), failed (an issue: the
     finding_id it produced), blocked (couldn't run: rationale, and what would unblock it), excluded (out of scope
     or agreed not to test: rationale), not-applicable (rationale), planned. build: the source digest or deployed
     build it ran on; policy_revision: the engagement's policy revision (engagement_info)."""
     fields = {"state": state, "rationale": rationale or None, "evidence": evidence, "finding_id": finding_id or None,
               "build": build or None, "policy_revision": policy_revision or None}
-    return _call("plan.update", engagement=engagement, id=item, fields={k: v for k, v in fields.items()
-                                                                         if v is not None})
+    _repin(engagement)
+    try:
+        row = ops.call("plan.update", {"engagement": engagement, "actor": ACTOR, "id": item,
+                                       "fields": {k: v for k, v in fields.items() if v is not None}})[0]
+    except ValueError as e:
+        return f"REFUSED: {e}"
+    if not isinstance(row, dict):
+        return _out(row)
+    return _out({k: row[k] for k in ("id", "title", "state", "evidence", "finding_id", "stale", "warning", "note")
+                 if row.get(k) not in (None, "", [], False)})
 
 
-@tool()
+@mcp.tool()
 def get_coverage(engagement: str, state: str = "", matrix: bool = False) -> str:
     """Planned tests and their outcomes, counts per state and per standard, stale items (the build or policy
     changed since they ran), blocked items with the reason. matrix=true: the coverage matrix instead: each recon
@@ -362,7 +398,7 @@ def get_coverage(engagement: str, state: str = "", matrix: bool = False) -> str:
     return _out(r)
 
 
-@tool()
+@mcp.tool()
 def skip_coverage_cells(engagement: str, cells: list[dict], state: str, rationale: str) -> str:
     """Record coverage-matrix cells you won't test, in one call (the gap-fill pass, #47). cells: [{"entry":
     "E-1a2b3c", "class": "ssrf"}] from get_coverage(matrix=true) gaps. state: not-applicable (the class can't apply
@@ -389,7 +425,7 @@ def skip_coverage_cells(engagement: str, cells: list[dict], state: str, rational
     return _out({"recorded": ids, "state": state})
 
 
-@tool()
+@mcp.tool()
 def get_map(engagement: str, host: str = "", path: str = "", auth: str = "", limit: int = 200) -> str:
     """The recon map (built from recon_map, laravel_map, imported captures and your own requests): each entry is a
     method and path template with its parameters, whether it needs authentication (required | none | unknown, and
@@ -412,13 +448,13 @@ def get_map(engagement: str, host: str = "", path: str = "", auth: str = "", lim
     return _out(out)
 
 
-@tool()
+@mcp.tool()
 def set_objective(engagement: str, text: str) -> str:
     """The engagement's current objective: what it must answer (shown in the handover and the console)."""
     return _call("workspace.objective", engagement=engagement, text=text)
 
 
-@tool()
+@mcp.tool()
 def get_handover(engagement: str) -> str:
     """Where the investigation stands, from the records: objective, findings, material ones, observations to
     triage, coverage, blocked and stale tests, pending decisions and the next useful actions, plus the
@@ -439,7 +475,7 @@ WRITABLE = re.compile(r"(PLAN\.md|NOTES\.md|notes/[A-Za-z0-9._-]+\.(md|txt)|"
 MAX_WRITE = 1_000_000
 
 
-@tool()
+@mcp.tool()
 def write_file(engagement: str, path: str, content: str, append: bool = False) -> str:
     """Write a working file in the engagement folder (your workspace sees /work read-only, so use this tool).
     path is relative to /work/<engagement>/ and must be one of: PLAN.md, NOTES.md, notes/<name>.md|.txt,
@@ -463,7 +499,7 @@ def write_file(engagement: str, path: str, content: str, append: bool = False) -
 PLAYBOOKS = os.path.join(os.path.dirname(os.path.abspath(__file__)), "playbooks")
 
 
-@tool()
+@mcp.tool()
 def list_playbooks() -> str:
     """Methodology playbooks (phases, required checks with exact commands, what "done" means). Pick the ones
     matching the engagement scope before writing PLAN.md."""
@@ -476,7 +512,7 @@ def list_playbooks() -> str:
     return "\n".join(out)
 
 
-@tool()
+@mcp.tool()
 def get_playbook(name: str) -> str:
     """Full text of one playbook (name from list_playbooks). Copy its checklist into PLAN.md and tick items off."""
     name = os.path.basename(name).removesuffix(".md")
@@ -484,7 +520,7 @@ def get_playbook(name: str) -> str:
     return open(p).read() if os.path.exists(p) else f"unknown playbook {name!r}; see list_playbooks"
 
 
-@tool()
+@mcp.tool()
 async def generate_report(engagement: str) -> str:
     """Build a new report revision (R-001, R-002...): a web page (.html), .docx + PDF and findings register
     (.xlsx) in /work/<eng>/report/revisions/<R-id>/, with the latest copied to /work/<eng>/report/. Its inputs
@@ -502,17 +538,18 @@ async def generate_report(engagement: str) -> str:
         return f"ERROR: {e}"
 
 
-@tool()
+@mcp.tool()
 def report_readiness(engagement: str) -> str:
     """What blocks delivery now (and what a person excepted, with the rationale), plus warnings: coverage without
     outcomes, stale results, reported findings missing fields or a verification method, fixed findings without a
     retest, untriaged candidates, open cleanup obligations. The report revisions and their states."""
+    _repin(engagement)
     r = ops.call("report.revisions", {"engagement": engagement})[0]
     return _out({"readiness": r["readiness"], "revisions": [{k: v[k] for k in ("id", "state", "created",
                                                                              "approved_by")} for v in r["revisions"]]})
 
 
-@tool()
+@mcp.tool()
 def record_retest(engagement: str, finding_id: str, retest_build: str, outcome: str, cases: list[dict],
                   reauthorization: str = "", note: str = "") -> str:
     """Record a retest of a confirmed or fixed finding on a new build. outcome: resolved (every case passes: the
@@ -524,7 +561,7 @@ def record_retest(engagement: str, finding_id: str, retest_build: str, outcome: 
                  outcome=outcome, cases=cases, reauthorization=reauthorization, note=note)
 
 
-@tool()
+@mcp.tool()
 def cleanup(engagement: str, action: str, kind: str = "", what: str = "", item: str = "", state: str = "",
             note: str = "") -> str:
     """Cleanup obligations: what has to be undone or decided before close-out. action=add with kind (fixture,
@@ -540,7 +577,7 @@ def cleanup(engagement: str, action: str, kind: str = "", what: str = "", item: 
     return "REFUSED: action is add, update or list"
 
 
-@tool()
+@mcp.tool()
 def prepare_notice(engagement: str, finding_id: str) -> str:
     """Draft a notice of a material finding (confirmed, critical or high) for the researcher to review before it
     is shared with the client: report/notices/N-NNN-<id>.md, tied to the finding's current revision. Nothing is
@@ -548,7 +585,7 @@ def prepare_notice(engagement: str, finding_id: str) -> str:
     return _call("notice.prepare", engagement=engagement, finding_id=finding_id)
 
 
-@tool()
+@mcp.tool()
 def export_findings(engagement: str, draft: bool = False) -> str:
     """Structured exports of the reported findings from the approved report revision: findings.json,
     findings.sarif (SARIF 2.1.0) and issues/<id>.md (issue-ready text) in report/exports/<R-id>/, each naming the

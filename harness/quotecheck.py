@@ -1,18 +1,30 @@
-"""What a confirmed finding quotes must be in its evidence (epic #52, issue #41).
+"""What a confirmed finding quotes, compared with its evidence (epic #52, issue #41).
 
-The cheapest guard against a hallucinated finding: an agent that confirms a finding quoting a response, a header or
-a line of code that isn't in the evidence it cites. When the planner confirms a finding, every quote in its
-description and reproduction (inline code and code-block lines) must be found in the cited evidence files, and
-every /src/<repo>/<file>:<line> must point at a line that exists. Otherwise the confirmation is refused and the
-missing quotes are named.
+When the planner confirms a finding, every quote in its description and reproduction (inline code and code-block
+lines) is looked up in the cited evidence files and the source files it refers to, and every
+/src/<repo>/<file>:<line> must point at a line that exists.
 
-Not quotes, so not checked: commands (a line or span that starts with a program or "$ "), spans shorter than
+  A source reference that doesn't exist   the confirmation is refused. It is a fact with one fix (the right file
+                                          or line), and in 48 saved benchmark runs it was never the reason.
+  A quote that isn't in the evidence      the finding is confirmed and the quotes are listed in what the tool
+                                          returns, in get_finding and as a warning before delivery.
+
+Missing quotes were a refusal until 2026-11-16. In 48 saved benchmark runs that refusal came 79 times, in 23 of the
+runs, and named 76 different texts. A reading of 60 of them found example attack inputs (`' OR 1=1 --`,
+`../../../etc/passwd`), names of protections that are missing (`@login_required`), data flows written with arrows,
+and lines of the code under review that the finding cited by another file. It found no response that the target
+clearly never gave, which is what the check was built to catch. Each refusal cost the planner a turn or more, one
+run that ended with 0 of 6 found had 25 of them, and the fix the planner was given ("no backticks") makes the
+report worse. The disprove-only validator (validator.py) reads the same
+files with judgement and is the guard against a finding whose evidence doesn't show what it says.
+
+Not quotes, so not looked up: commands (a line or span that starts with a program or "$ "), spans shorter than
 MIN_QUOTE characters, and spans with placeholders (<id>, {{cred:NAME}}, ...). Whitespace is normalised and HTML
 entities are decoded on both sides; a redaction marker ([REDACTED ...]) and a credential reference ({{cred:NAME}})
 in a quote match any text in the evidence.
 
 Run as a script to replay past runs: python3 harness/quotecheck.py <engagements dir> [--json]
-lists the confirmed findings it would have refused.
+lists the confirmed findings with quotes that are not in their evidence.
 """
 import html, json, os, re, sys, urllib.parse
 
@@ -167,34 +179,53 @@ def corpus(engagement, evidence, text=""):
     return norm, _loose(norm)
 
 
-def problems(engagement, description, reproduction, evidence):
-    """What a confirmed finding quotes that isn't in its evidence, as readable strings (empty: it may be confirmed)."""
+def _list(evidence):
     if isinstance(evidence, str):
         try:
             evidence = json.loads(evidence)
         except ValueError:
             evidence = [evidence]
+    return evidence or []
+
+
+def unverified(engagement, description, reproduction, evidence):
+    """The quotes of a finding's text that are in none of its cited evidence or source files."""
     text = f"{description or ''}\n{reproduction or ''}"
-    out = src_problems(text)
     qs = quotes(text)
     if not qs:
-        return out
-    hay = corpus(engagement, evidence, text)
-    for q in qs:
-        if not found(q, hay):
-            out.append(f"`{q[:120]}` is not in the cited evidence")
-    return out
+        return []
+    hay = corpus(engagement, _list(evidence), text)
+    return [q for q in qs if not found(q, hay)]
 
 
-def refusal(engagement, description, reproduction, evidence):
-    """The REFUSED message for a confirmation, or None."""
-    p = problems(engagement, description, reproduction, evidence)
+def problems(engagement, description, reproduction, evidence):
+    """Everything the check has to say about a finding, as readable strings: source references that don't exist
+    (these refuse a confirmation) and quotes that aren't in its evidence (these are listed, not refused)."""
+    return src_problems(f"{description or ''}\n{reproduction or ''}") + [
+        f"`{q[:120]}` is not in the cited evidence" for q in unverified(engagement, description, reproduction, evidence)]
+
+
+def refusal(engagement, description, reproduction, evidence=None):
+    """The REFUSED message for a confirmation, or None. Only a source reference that doesn't exist refuses."""
+    p = src_problems(f"{description or ''}\n{reproduction or ''}")
     if not p:
         return None
-    return ("status=confirmed refused: the finding quotes text its evidence doesn't contain. " + "; ".join(p[:8])
-            + (f"; and {len(p) - 8} more" if len(p) > 8 else "") + ". Quote the evidence exactly (copy from the "
-            "evidence file), cite the evidence file that has it, or mark the text as a description rather than a "
-            "quote (no backticks).")
+    return ("status=confirmed refused: the finding refers to source that isn't there. " + "; ".join(p[:8])
+            + (f"; and {len(p) - 8} more" if len(p) > 8 else "") + ". Give the file and line as they are under /src.")
+
+
+QUOTES_NOTE = ("These texts in backticks are not in the cited evidence. An example input, or a protection named as "
+               "missing, needs nothing. If one is something the target returned or a line of its code, add the file "
+               "that has it to evidence when you next update this finding. Go on with the plan.")
+
+
+def flag(engagement, description, reproduction, evidence, limit=8):
+    """What a confirmation returns about quotes that aren't in the evidence, or None when all are."""
+    q = unverified(engagement, description, reproduction, evidence)
+    if not q:
+        return None
+    return {"not_in_evidence": [x[:120] for x in q[:limit]], **({"more": len(q) - limit} if len(q) > limit else {}),
+            "note": QUOTES_NOTE}
 
 
 def replay(root):
@@ -218,8 +249,8 @@ def replay(root):
             continue
         for r in rows:
             p = problems(eng, r["description"], r["reproduction"], r["evidence"])
-            out.append({"engagement": eng, "finding": r["id"], "title": r["title"], "refused": bool(p),
-                        "problems": p})
+            out.append({"engagement": eng, "finding": r["id"], "title": r["title"], "flagged": bool(p),
+                        "refused": bool(refusal(eng, r["description"], r["reproduction"])), "problems": p})
     return out
 
 
@@ -231,6 +262,8 @@ if __name__ == "__main__":
         print(json.dumps(rows, indent=1))
     else:
         for r in rows:
-            if r["refused"]:
+            if r["flagged"]:
                 print(f"{r['engagement']} {r['finding']} {r['title'][:60]}: " + "; ".join(r["problems"][:3]))
-        print(f"{sum(r['refused'] for r in rows)} of {len(rows)} confirmed finding(s) would be refused")
+        print(f"{sum(r['flagged'] for r in rows)} of {len(rows)} confirmed finding(s) have quotes or source references "
+              f"that are not in their evidence; {sum(r['refused'] for r in rows)} would be refused (a source "
+              "reference that doesn't exist)")

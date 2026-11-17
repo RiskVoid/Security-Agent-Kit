@@ -69,7 +69,8 @@ services:
     # rv_events.py: model-problem callback (streaming fallback, reasons in the chat); events: its log, read on the host
     # rv_routes.py + kali-routes: data destinations and halt per engagement (routing table written by kali-mcp)
     volumes: ["./.rvkit/litellm.yaml:/app/config.yaml:ro", "./litellm/rv_events.py:/app/rv_events.py:ro",
-              "./litellm/rv_routes.py:/app/rv_routes.py:ro", "./.rvkit/events:/rv-events",
+              "./litellm/rv_routes.py:/app/rv_routes.py:ro", "./litellm/rv_repeats.py:/app/rv_repeats.py:ro",
+              "./.rvkit/events:/rv-events",
               "kali-routes:/rv-routes:ro"]
     extra_hosts: ["host.docker.internal:host-gateway"]
     environment:   # traces of model calls when ./rvkit tracing on (names, models, tokens, timings; never messages)
@@ -162,6 +163,7 @@ services:
       WORKER_MODEL: colab-qwen
       WORKER_CONTEXT_CHARS: ${WORKER_CONTEXT_CHARS:-90000}   # task context budget; raise for bigger model contexts
       WORKER_PARALLEL_TASKS: ${WORKER_PARALLEL_TASKS:-1}     # tasks at once; raise only if the endpoint serves parallel requests
+      WORKER_MAX_TOKENS: ${WORKER_MAX_TOKENS:-8192}          # output tokens per worker model call, reasoning included
       RV_TRACING: ${RV_TRACING:-off}                        # ./rvkit tracing on: spans of tasks, model and tool calls
       RV_TRACE_ENDPOINT: http://otel-collector:4318   # the bundled collector on rvtrace: the worker has no route out
       RV_TRACE_CONTENT: ${RV_TRACE_CONTENT:-off}            # on: content too, where the Client data rule allows it
@@ -186,7 +188,8 @@ services:
       ORG_NAME: ${ORG_NAME:-}                   # "Prepared by" default; plain/custom: the name in the report
       LITELLM_MASTER_KEY: ${LITELLM_MASTER_KEY}   # the disprove-only validator (validator.py) calls the gateway
       VALIDATOR: ${VALIDATOR:-1}                # 0: confirmed findings are not sent to the validator
-      PLANNER_REPEAT_GUARD: ${PLANNER_REPEAT_GUARD:-1}   # 0: a repeated refused call gets the same reply every time
+      VALIDATOR_DISPROVE: ${VALIDATOR_DISPROVE:-flag}   # flag: a disproved finding stays confirmed and is flagged; demote: back to candidate
+      VALIDATOR_FILE_CHARS: ${VALIDATOR_FILE_CHARS:-30000}
     volumes:
       - ${ENGAGEMENTS_DIR:-~/riskvoid/engagements}:/work
       - ${PROJECTS_DIR:-~/riskvoid/projects}:/src:ro   # checks the /src file:line a confirmed finding cites

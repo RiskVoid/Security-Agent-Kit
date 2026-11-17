@@ -203,3 +203,144 @@ introduced, and the traces show it plainly. No candidate runs were spent on it.
 - With the corrected scores, P-001's held-out difference is −0.50 per item, and it is still dropped. The run-level
   permutation test gives p = 0.67 for that difference, though: one collapsed run decides it. `--compare` already
   requires both tests; the judge's held-out check uses only the per-item interval.
+
+### Round 3 (2026-11-15): P-003, dropped; P-004, merged as a fix
+
+**Cause.** `retry/`: the planner resends a call that was turned down, unchanged (Round 2, "Next"). 62 records read
+in the three collapsed runs of Round 1.
+
+**Change.** Two changes ran together under the label `p003`:
+
+- P-003, a repeat guard on the planner's finding tools (`harness/repeatguard.py`). The second identical refused
+  call got a reply naming the arguments sent and the ones the refusal asks for, and from the third the reply opened
+  with STOP. The call still ran.
+- P-004, `record_finding` and `update_finding` read a `method` without `status` as a confirmation attempt. A failed
+  attempt saves the finding and the other fields and says why it is still a candidate. Scores count an expected
+  item matched only by a candidate as "left as a candidate".
+
+**Runs.** `code-flask` ×3 and `code-node` ×2 against `post-epic`. `api-vampi` was not run: the daily model budget
+was used up.
+
+| Benchmark | Baseline, with evidence | Candidate, with evidence |
+|---|---|---|
+| `code-flask` | 89% | 100% (6 of 6 in all three runs; no loop started) |
+| `code-node` | 89% | 17% |
+
+- `code-node-20261115T201729Z` (budget, 1 of 9): the validator disproved the weak-JWT-secret finding, which is
+  real. The planner then sent the same `update_finding(method, priority, root_cause)` 46 times and got the STOP
+  reply 43 times without changing the call. In the same run a call with `method` alone confirmed the SQL injection
+  finding.
+- `code-node-20261115T202407Z` (budget after 6 minutes, 9 of 9 found, 2 with evidence): the findings cite
+  `evidence-lines.json`, which existed when they were confirmed. An `update_coverage` call was then refused with
+  "no such file" because its evidence entry carried a note after the path, the planner moved the file into
+  `evidence/` (step 84) and never updated the findings. Neither change is involved.
+
+**Verdict.** P-003 dropped: the cause didn't shrink (`code-flask` had no `retry/` records on either side) and
+held-out strict recall fell by 0.72 per item. The guard is removed. A reply that changes on a repeat doesn't stop
+GLM-5.3 copying its last call. P-004 is kept as a fix (see [Fixes](#fixes)): it ran with P-003, so it has no judge
+numbers of its own.
+
+**Limits.** The `post-epic` baseline predates P-002 and the `jwt_tool` fix, and the tuning side is one benchmark.
+The verdict on the guard rests on the trace, not on the judge's numbers.
+
+**Next.**
+- A repeat has to be stopped outside the reply text: the conversation paused and the planner told what to do
+  differently, as a benchmark run stopped as stuck already is.
+- Evidence a finding cites is pinned when it is confirmed (path and hash) and checked again at the end of the run,
+  and an evidence entry with a note after the path is accepted.
+- The validator disproved a real finding. Over all saved runs, 40 of its 41 disproves were on findings the
+  benchmark counts as real. It sees at most 6,000 characters of each cited file and no `/src` files.
+- A new baseline on main, three runs per benchmark, before the next judged change.
+
+### Round 4 (2026-11-16): fixes from the review of all saved runs; P-005 proposed
+
+A review of the 45 saved runs (34 with GLM-5.3 as planner) looked at delegation, the verification gates, the
+planner's memory and what its context holds. What it found, and what was changed on its evidence:
+
+| Found | Evidence | Change |
+|---|---|---|
+| The worker is not used, and broke when it was | GLM-5.3 delegated in 1 of 34 runs, gpt-6.1-sol in 9 of 10 on the same prompt. In that one run three delegations were refused (a source review's plan item has no recon map entry) and the worker gave 13 replies with no tool call: a call was capped at 2,048 output tokens and the model used them all to reason | 8,192 tokens per call, a reply with no call and no answer keeps its notes and costs no step, three in a row end the task, the result returns the worker's notes, and a plan item without map entries no longer refuses the task |
+| The validator disputes real findings | 40 of 41 disproves were on findings the benchmark counts as real. It saw 6,000 characters of each cited file and no source files | It gets the cited source lines and 30,000 characters per file around the quoted text. A disprove flags the finding and blocks delivery; it no longer sends the finding back |
+| The planner repeats a call that was turned down | Six runs hold 335 of 503 exact repeats and all six ended on budget or stuck. The benchmark's "stopped as stuck" message was followed by the same call in 3 of 5 cases | The model gateway leaves a run of three or more identical calls out of the request and puts a note in its place. At a fourth it withholds that tool for a step, and at a sixth it ends the turn without calling the model. A benchmark run then goes on in a new conversation |
+| Evidence paths break | 106 of 142 "no such file" refusals were paths that exist, with a note after them. One such refusal made the planner move a file that eight confirmed findings cited | The path is taken from such an entry, and evidence is recorded by content at confirmation: a moved file is found again |
+| Every step re-reads a large context | About 79,000 tokens per model call: 26,000 to 29,000 fixed, a third of the rest finding rows returned after each write | The skills catalogue and browser tools are off, and writes return a short acknowledgement |
+
+**Checked before it was built.** The repeat fix was replayed against GLM-5.3 at the point where two collapsed
+runs were mid-loop (`code-node-20261115T201729Z` after 95 steps, `code-flask-20261115T132718Z` after 90):
+
+| History sent | Same call again |
+|---|---|
+| As it was | 5 of 5 tries |
+| The run reduced to its last call, with a note in its result | 2 of 3 |
+| The run replaced by a note | 4 of 15, three of them through the live gateway (9 more tries were cut off by the replay's own output limit while the model reasoned) |
+| The note, and the tool of that call left out of the request | 0 of 12, at the fourth call of four loops (`code-node-20261115T201729Z`, two in `code-flask-20261115T132718Z`, `api-vampi-20261115T004952Z`), all through the live gateway |
+
+The note alone leaves a loop possible, so the gateway has two more steps (`litellm/rv_repeats.py`). In 44 saved
+runs 198 of 3,104 planner turns were a call sent a fourth time or later, 193 of them in five runs that found 9
+of 42 expected issues. Four of those five loops began with `update_finding` carrying a method and no status,
+which now counts as a confirmation attempt; the fifth began with a confirmation whose quotes were not in the
+evidence. Withholding the tool takes away the corrected call too, for one step: in 2 of the 12 tries the model
+recorded the finding again instead of going on. At a sixth identical call the gateway answers for the model, at
+no cost, and the benchmark runner continues the run in a new conversation from the handover. That step has unit
+tests and was checked on the live gateway with a made-up history (answered in 0.3 s); no saved run reached it
+in the replays, and no benchmark run has gone through it.
+
+**First runs (label `r4-fixes`, 16 November).** Four runs finished before the OpenRouter balance ran out. The other
+five (two Node, three VAmPI) were not run under this label: three tool defects were fixed first (below), and the
+set runs again under a new label. Five runs that started without credits never reached a model and are
+kept apart in `evals/results/bench/_invalid/`.
+
+| Benchmark | Runs | Found | With evidence | Planner turns | Prompt tokens per turn | Delegated | Cost per run |
+|---|---|---|---|---|---|---|---|
+| `code-flask`, `p003` (before) | 3 | 6 of 6 each | 100% | 81, 46, 43 | 85K, 85K, 79K | in 0 of 3 | $0.83 |
+| `code-flask`, `r4-fixes` | 3 | 6 of 6 each | 100% | 22, 53, 38 | 41K, 68K, 61K | in 2 of 3 | $0.67 |
+| `code-node`, `p001` and `p003` (before) | 4 | 9, 0, 1 and 9 of 9 | 78%, 0%, 11%, 22% | 31, 60, 118, 115 | 57K to 89K | in 1 of 4 | $0.70 |
+| `code-node`, `r4-fixes` | 1 | 9 of 9 | 78% | 40 | 74K | 4 tasks, sent at once | $1.20 |
+
+No run repeated a call three times, so the gateway's loop steps did not act in these runs. The Node run found all
+nine issues in 40 turns and then stopped on the missing credits, so its plan was not finished. Four runs are too
+few to call a difference in recall or cost; the drop in prompt tokens per turn on Flask is the clearest change.
+
+One scorer defect showed up: an evidence entry written as `semgrep.json: note` counted as a missing file, which
+scored one Flask run at 50% with evidence although every file was there. The scorer now takes the path the way
+the tools do, and saved runs were scored again (`--rescore`).
+
+**What the four runs showed (read on 16 November).** Compared with the ten Flask and Node runs labelled `p001`
+and `p003`:
+
+| | Before (10 runs) | `r4-fixes` (4 runs) |
+|---|---|---|
+| Runs that ended in a loop | 3 (found 0, 0 and 1) | 0 |
+| Runs that used the worker | 1 | 3 |
+| Flask planner turns, average | 60 | 38 |
+| Flask cost per run | $0.79 ($0.13 to $1.08) | $0.67 ($0.11 to $1.15) |
+| Planner turns that only update records | 72% (Flask) | 67% (Flask) |
+| Refused calls per run without a loop | 4 to 23 | 5 to 9 |
+
+Cost did not drop. On Flask the same six findings cost $0.11 with a plan of 8 items and $1.15 with one of 45, so
+the size of the plan drives the cost, and two thirds of the planner's turns are record keeping. A run saves one
+cost figure, so the worker's share is not known. These are open: coverage updates for several items in one call,
+a plan sized to the target, and cost saved per role.
+
+Three defects in the tools were fixed after reading these runs, so the next set runs under a new label:
+
+| Defect | Evidence | Fix |
+|---|---|---|
+| A quote that is not in the evidence refuses the confirmation | 13 of the 27 refused calls in the four runs, 79 refusals in 23 of 48 saved runs. The texts are example attack inputs, protections named as missing, lines of code cited by another file | The quotes are listed in the reply and as a delivery warning; the finding is confirmed. A `/src` reference that doesn't exist still refuses (`harness/quotecheck.py`). All 79 calls confirm when replayed |
+| A source file is refused as the evidence of a planned test | 4 refusals in two of the four runs, 29 entries in the saved runs | `/src/<repo>/<file>[:line]` is accepted when it exists (`harness/workspace.py`) |
+| `path: note` is not read as a path in coverage evidence | No refusal in the saved runs: the form showed up in finding evidence, which the scorer misread | The colon after the path is dropped, as the note after a space already was |
+
+The replay uses each run's engagement folder as it was at the end of the run, not at the time of the call.
+
+**Not judged.** These are fixes ([Fixes](#fixes)): each repairs a defect visible in the traces. Only the runs
+above are behind them so far. P-005, the prompt change that tells the planner what to delegate, is a change in wording whose
+effect is uncertain, so it is a proposal and needs a judge round.
+
+**Next.**
+- A baseline with these fixes: all nine benchmarks, three runs each, including `web-hostile`, which is the only
+  one that can show whether the validator's flags catch wrong findings.
+- Judge P-005 against that baseline. Watch planner tokens per run and strict recall, and whether tasks sent with
+  `wait_s=0` are collected before the run ends.
+- The hard benchmarks (`api-graphql-dvga`, `laravel-ledgerly`, `web-juice-shop`) have two or three runs each and
+  none on the current harness. One of them scored 0 of 9 because its lab target never answered: a run should check
+  that the target responds before it starts.

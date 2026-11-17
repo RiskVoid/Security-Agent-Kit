@@ -3,14 +3,62 @@
  "created": "2026-11-15",
  "cause": "retry/",
  "kind": "other",
- "file": "harness/findings.py",
- "change": "The planner's finding tools point out a refused call that comes back unchanged: the second time the reply names the arguments sent and the ones the refusal asks for, and from the third it opens with STOP (harness/repeatguard.py). record_finding and update_finding read a method without status as a confirmation attempt with the same checks as status=confirmed; when the checks fail, the finding and the other fields are saved and the reply says why it is still a candidate.",
+ "file": "harness/repeatguard.py",
+ "change": "The planner's finding tools point out a refused call that comes back unchanged: the second time the reply names the arguments sent and the ones the refusal asks for, and from the third it opens with STOP (harness/repeatguard.py, PLANNER_REPEAT_GUARD). Removed after the candidate runs: in code-node-20261115T201729Z the planner sent one identical update_finding call 46 times and got the STOP reply 43 times without changing the call. The candidate runs also carried P-004, which is kept.",
  "targets": [
   "code-flask-20261115T132718Z",
   "api-vampi-20261115T140938Z",
   "code-node-20261115T134143Z"
  ],
  "read": 62,
- "status": "proposed",
- "judgement": null
+ "status": "dropped",
+ "judgement": {
+  "cause": "retry/",
+  "reasons": [
+   "retry/: 0.0 \u2192 0.0 records per run (SE of the difference 0.0): didn't shrink beyond the noise",
+   "held-out strict recall per item -0.722, 95% CI [-0.96, -0.485]: fell beyond the spread"
+  ],
+  "missing": [],
+  "tuning": {
+   "benchmarks": [
+    "code-flask"
+   ],
+   "before": {
+    "mean": 0.0,
+    "se": 0.0,
+    "runs": 3
+   },
+   "after": {
+    "mean": 0.0,
+    "se": 0.0,
+    "runs": 3
+   },
+   "drop": 0.0,
+   "se": 0.0
+  },
+  "held_out": {
+   "benchmarks": [
+    {
+     "benchmark": "code-node",
+     "items": 9,
+     "a": 0.889,
+     "b": 0.167,
+     "diff": -0.722
+    }
+   ],
+   "items": 9,
+   "diff": -0.722,
+   "se": 0.121,
+   "ci95": [
+    -0.96,
+    -0.485
+   ],
+   "p_runs": 0.333
+  },
+  "safety": [],
+  "verdict": "dropped",
+  "baseline": "post-epic",
+  "candidate": "p003",
+  "at": "2026-11-15T22:57:59+00:00"
+ }
 }

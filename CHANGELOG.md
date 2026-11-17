@@ -22,21 +22,24 @@ changes to the harness are measured.
   returns a typed status and candidates with their proof.
 - The planner sees the engagement's rules that tools can't enforce restated on every Kali action result.
 - `./rvkit doctor --models` checks that the worker model makes well-formed tool calls.
-- The planner's finding tools point out a refused call that comes back unchanged: the second time the reply says
-  so and names the arguments the refusal asks for, and from the third it opens with STOP. The call still runs every
-  time (`PLANNER_REPEAT_GUARD=0` turns it off).
 - `record_finding` and `update_finding` read a `method` without `status` as a confirmation attempt, with the same
   checks as `status="confirmed"`. When the checks fail, the finding and the other fields are saved and the reply
   says why it is still a candidate. Before, the finding was recorded as a candidate without a word.
 
 ### Verification
-- A confirmed finding's quotes must appear in its evidence files.
+- A confirmed finding's quotes are compared with its evidence files. Quotes that are not there are listed in the
+  reply, in `get_finding` and as a warning before delivery. A `/src/<file>:<line>` that doesn't exist refuses the
+  confirmation.
 - Oracles prove a finding with a check the kit runs itself: a response marker, the difference between two
   identities, a read-back, script execution in the sandboxed browser, and timing. Each runs a negative control, and
   the report shows the oracle and its control for each verified finding.
 - A validator on a separate model (`VALIDATOR_MODEL`) tries to disprove each confirmed finding from its evidence
-  alone. A finding it disproves goes back to candidate. The console and the report show its verdict as
-  "Independent review"; `VALIDATOR=0` turns it off.
+  and the source lines it cites. A finding it disproves stays confirmed and is flagged: the report can't be
+  delivered until the finding is corrected, withdrawn or excepted by a person (`VALIDATOR_DISPROVE=demote` sends
+  it back to candidate instead). The console and the report show its verdict as "Independent review";
+  `VALIDATOR=0` turns it off.
+- The evidence a finding cites is recorded by content when it is confirmed. If the file is moved later, the
+  finding is pointed at its new place.
 
 ### Coverage
 - `recon_map` builds a map of the target before testing: crawled pages and scripts, API schemas, GraphQL, and
@@ -89,6 +92,55 @@ changes to the harness are measured.
   that missed it. `./rvkit bench --rescore` adds the count to saved runs.
 
 ### Fixed
+- Worker delegation didn't work with a reasoning model as the worker. A model call was capped at 2,048 output
+  tokens, reasoning included, so the model spent the whole reply thinking and returned neither a tool call nor an
+  answer; the worker dropped the reasoning, charged a step and asked again, up to the task's step limit. The cap is
+  now 8,192 (`WORKER_MAX_TOKENS`), such a reply keeps its notes and costs no step, three in a row end the task as
+  `stalled`, and the result returns what the worker had worked out (`worker_notes`).
+- `delegate_task` refused a `plan_item` that had no recon map entry, which is every plan item of a source review.
+  The task now runs on its goal and the result says the plan item set no scope limit.
+- The planner prompt told the planner to delegate tool work and, two paragraphs later, to call the Kali tools
+  itself for small checks. One planner model took the second as the rule and delegated in 1 of 34 runs. The prompt
+  now says which work goes to the worker (scanner and review runs, also on a small target) and which stays.
+- The validator disproved real findings: 40 of its 41 disproves in the saved benchmark runs. It saw at most 6,000
+  characters of each cited file and none of the source files a source review cites. It now gets the cited source
+  lines and up to 30,000 characters per file, shown around the text the finding quotes, and it is told to judge a
+  finding by its verification method.
+- A planner model that repeats a tool call that was turned down no longer reads its own repeats. From the third
+  identical call in a row, the model gateway leaves those turns out of the request and puts one note in their
+  place (`litellm/rv_repeats.py`, `REPEAT_COLLAPSE=0` turns it off). Replayed at a point where the model had sent a
+  call 20 times, it sent it again in 5 of 5 tries with the history as it was, and in 4 of 15 with the note.
+- A repeated tool call now has a hard limit. When the planner has read that note and sends the call a fourth
+  time, the gateway leaves that tool out of its next request, so it can't send it; the tool is back after any
+  other call. Replayed at the fourth call of four saved loops, the model made a different call in 12 of 12
+  tries. At a sixth identical call the gateway answers the request itself with a `[RiskVoid] Loop stopped` text
+  and calls no model, which ends the planner's turn at no cost; the text says how to go on (a message in the
+  conversation, or `./rvkit conversation <engagement> new`). A user message or a text reply between two
+  identical calls no longer starts the count again.
+- The benchmark scorer counted an evidence entry with a note after a colon (`semgrep.json: rule x at app.py:13`)
+  as a missing file. It takes the path the way the tools do.
+- A benchmark run whose turn the gateway ended, or that OpenHands stopped as stuck a second time, goes on in a
+  new conversation that starts from the engagement's records (`get_handover`, `get_coverage`), at most twice per
+  run. The result lists them under `conversations` and `restarts`, and the saved conversation holds the events
+  of all of them.
+- An evidence entry with a note after the path (`evidence/runs/x.txt (no WAF)`) or a line number was refused with
+  "no such file". The path is now taken from it, also when the note follows a colon (`x.txt: no WAF`).
+- A quote that is not in the cited evidence no longer refuses a confirmation. In 48 saved benchmark runs that
+  refusal came 79 times, in 23 of the runs, for example attack inputs, protections named as missing and lines of
+  code cited by another file; one run that scored 0 of 6 had 25 of them. The texts are now listed in the reply
+  (`quotes.not_in_evidence`), in `get_finding` and as a delivery warning, and the validator judges whether the
+  evidence shows what the finding says. Replayed, all 79 refused calls confirm.
+- `update_coverage` refused a source file as the evidence of a planned test ("not a tool output of this
+  engagement"). In a source review the code is the evidence: `/src/<repo>/<file>`, with or without a line or a
+  line range, is accepted when the file and the lines exist. Replayed over the saved runs, 29 of 75 refused
+  evidence entries are accepted; the other 46 name files that are not in the engagement folder.
+- A `cvss_score` that differed from the score of its CVSS 3.1 vector was refused. The score is computed from the
+  vector.
+- `record_finding`, `update_finding` and `update_coverage` returned the whole row after every write, which made
+  up a third of the planner's context. They return the row's state and the fields the call sent; `get_finding`
+  returns everything.
+- The planner's context carried OpenHands' public skills catalogue (about 6,500 tokens) and 14 browser tools on
+  every model call. Both are off in the kit's agent profiles.
 - nmap failed in the sandbox with "Operation not permitted": Kali's nmap ships with file capabilities beyond the
   `CAP_NET_RAW` the sandbox allows, so Linux refused to start it. The Kali image now strips file capabilities, and
   `evals/tools_smoke.sh` checks that nmap starts with the sandbox's privileges.

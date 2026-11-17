@@ -222,6 +222,7 @@ model is connected.
 | Tool output shown to the model | a digest for semgrep, OSV-Scanner, pip-audit, bandit, gitleaks, nmap, sqlmap and nuclei output; otherwise the first 4,000 and the last 2,000 characters, with the cut marked |
 | Malformed tool calls | not run: the model gets the parser error and sends the call again; three in a row stop the task (`tool_failure`) |
 | Stalls | the same call or error three times, or 8 calls with nothing new: a nudge, then advice from the planner model (at most twice, `WORKER_ADVISOR`), then the task stops (`stalled`) |
+| Replies with no tool call and no answer | the model's output ran out while it was reasoning (`WORKER_MAX_TOKENS`, 8192 by default), or it returned nothing. The end of its reasoning is kept as its reply and the step isn't charged; three in a row stop the task (`stalled`), and the result carries those notes |
 
 The planner sets `max_steps` and `timeout_min` per task. Each task's state is saved next to its evidence
 (`evidence/tasks/<task_id>/task.json`), so results survive a `worker-mcp` restart. A task that was running during

@@ -87,6 +87,11 @@ def agent_profile(name, llm_ref, mcp_refs, persona):
     base = (cur or {}).get("profile") or {"schema_version": 4, "agent_kind": "openhands", "agent": "CodeActAgent",
                                           "name": name}
     base.update(llm_profile_ref=llm_ref, mcp_server_refs=mcp_refs, persona=persona, system_message_suffix=None)
+    # What every model call carries besides the kit's own prompt and tools. OpenHands' public skills (a catalogue
+    # of some 60 skills such as add-javadoc and gitlab, about 6,500 tokens, plus whichever one a keyword triggers)
+    # and its 14 browser tools have no use here: the kit's tools browse (kali browse) and its prompt is the method.
+    # The planner re-reads all of it on every step, so it is paid for a hundred times a run.
+    base.update(public_skills=[], tools=[{"name": n} for n in LOCAL_TOOLS])
     # Condensation (OpenHands summarizes the middle of a long conversation): the system prompt and the first user
     # message are kept; everything else may be summarized. The rules of engagement survive it because every kali
     # action result restates them (kali-mcp with_rules, epic #52 issue #38), not because of these settings.
@@ -94,6 +99,8 @@ def agent_profile(name, llm_ref, mcp_refs, persona):
     res = api("POST", f"/api/agent-profiles/{name}", base)
     return (res.get("profile") or res).get("id") or api("GET", f"/api/agent-profiles/{name}")["profile"]["id"]
 
+
+LOCAL_TOOLS = ("terminal", "file_editor", "task_tracker")   # OpenHands' default set without browser_tool_set and switch_llm
 
 CONDENSER = {"condenser_kind": "llm_summarizing", "enabled": True, "max_size": 240, "keep_first": 2}
 
