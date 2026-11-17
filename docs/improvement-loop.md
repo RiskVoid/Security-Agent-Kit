@@ -317,10 +317,11 @@ and `p003`:
 | Planner turns that only update records | 72% (Flask) | 67% (Flask) |
 | Refused calls per run without a loop | 4 to 23 | 5 to 9 |
 
-Cost did not drop. On Flask the same six findings cost $0.11 with a plan of 8 items and $1.15 with one of 45, so
-the size of the plan drives the cost, and two thirds of the planner's turns are record keeping. A run saves one
-cost figure, so the worker's share is not known. These are open: coverage updates for several items in one call,
-a plan sized to the target, and cost saved per role.
+Cost did not drop. On Flask the same six findings cost $0.11, $0.73 and $1.15, with plans of 20, 20 and 45 items.
+The cheapest run was the one that did not use the worker, and the dearest made 52 `update_coverage` calls for its
+45 items, out of 125 tool calls. Three runs don't show which of the two drives the cost, and a run saves one cost
+figure, so the worker's share is not known. These are open: coverage updates for several items in one call, and
+cost saved per role (#78).
 
 Three defects in the tools were fixed after reading these runs, so the next set runs under a new label:
 
