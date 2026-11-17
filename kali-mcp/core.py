@@ -369,53 +369,11 @@ def apply_network():
     reg = registry()
     blocked = ALWAYS_BLOCKED + _local_subnets()  # other Docker services (LiteLLM, OpenHands, ...) included
     blocked += _host_addrs(blocked)  # the host itself (the console, other local services)
-    online_infra = infra_domains()
-    sets, chains, vmap, nat = [], [], [], []
+    engs = []
     for eng, uid in sorted(reg.items(), key=lambda x: x[1]):
         _ensure_user(uid)
-        i = info(eng)
-        pol = policy_of(eng)
-        dns_ip = f"127.0.1.{uid - UID_BASE}"
-        # Raw commands reach: nets (by address, optionally ports) and host names (addresses added when the
-        # engagement's resolver answers, one set per port list). Exclusions and hosts with URL-level rules (only
-        # the request tool can enforce a path) are dropped first.
-        drop = pol["exclude"]["nets"] + [u + "/32" for u in rvpolicy.url_hosts(pol) if rvpolicy._is_ip(u)]
-        allnets = [n["cidr"] for n in pol["nets"] if n["ports"] is None]
-        sets.append(f"  set e{uid}_net4 {{ type ipv4_addr; flags interval; auto-merge; "
-                    + (f"elements = {{ {', '.join(allnets)} }}; " if allnets else "") + "}")
-        # Loopback 127.0.0.1 on unprivileged ports, except this MCP server's own port: tools that start a helper
-        # and talk to it over localhost (gowitness drives Chromium through its DevTools port) need it. Docker's
-        # DNS (127.0.0.11) and the other engagements' resolvers (127.0.1.x) stay blocked.
-        rules = [f"    ip daddr {dns_ip} meta l4proto {{ tcp, udp }} th dport 53 accept",
-                 f"    oifname \"lo\" ip daddr 127.0.0.1 tcp dport {{ 1024-{MCP_PORT - 1}, {MCP_PORT + 1}-65535 }} accept",
-                 f"    ip daddr {{ {', '.join(blocked)} }} counter drop"]
-        if drop:
-            rules.append(f"    ip daddr {{ {', '.join(drop)} }} counter drop")
-        rules.append(f"    ip daddr @e{uid}_net4 accept")
-        for n in pol["nets"]:
-            if n["ports"] is not None:
-                rules.append(f"    ip daddr {n['cidr']} meta l4proto {{ tcp, udp }} th dport {{ {_nft_ports(n['ports'])} }} accept")
-        for k, ports in enumerate(_host_groups(pol)):
-            sets.append(f"  set e{uid}_h{k} {{ type ipv4_addr; flags timeout; timeout 2h; }}")
-            rules.append(f"    ip daddr @e{uid}_h{k} " + (f"meta l4proto {{ tcp, udp }} th dport {{ {_nft_ports(list(ports))} }} "
-                                                         if ports else "") + "accept")
-        if i["rules"]["network"] == "online":
-            rules.append("    ip daddr @infra4 tcp dport { 80, 443 } accept")
-        chains.append(f"  chain e{uid} {{\n" + "\n".join(rules) + "\n    counter drop\n  }")
-        vmap.append(f"{uid} : jump e{uid}")
-        nat.append(f"    meta skuid {uid} meta l4proto {{ tcp, udp }} th dport 53 dnat to {dns_ip}:53")
-    script = "\n".join([
-        "table inet rvkit", "delete table inet rvkit", "table ip rvkit_nat", "delete table ip rvkit_nat",
-        "table inet rvkit {",
-        "  set infra4 { type ipv4_addr; flags timeout; timeout 2h; }", *sets,
-        "  chain out {", "    type filter hook output priority 0; policy accept;",
-        f"    meta skuid {UID_BASE + 1}-{UID_BASE + 254} jump eng", "  }",
-        "  chain eng {", "    ct state established,related accept", "    meta nfproto ipv6 drop",
-        *([f"    meta skuid vmap {{ {', '.join(vmap)} }}"] if vmap else []), "    counter drop", "  }",
-        *chains, "}",
-        "table ip rvkit_nat {", "  chain out {", "    type nat hook output priority -150; policy accept;",
-        *nat, "  }", "}", ""])
-    p = subprocess.run(["nft", "-f", "-"], input=script, capture_output=True, text=True)
+        engs.append((uid, policy_of(eng), info(eng)["rules"]["network"] == "online"))
+    p = subprocess.run(["nft", "-f", "-"], input=_nft_script(engs, blocked), capture_output=True, text=True)
     if p.returncode:
         raise RuntimeError("nft failed: " + p.stderr[-2000:])
     subprocess.run(["pkill", "-f", "dnsmasq.*rvkit-dns"], capture_output=True)
@@ -430,6 +388,59 @@ def apply_network():
             args += [f"--server=/{d}/127.0.0.11", f"--nftset=/{d}/4#inet#rvkit#infra4"]
         # daemonises; refuses every name not listed. DEVNULL: a daemon holding a pipe would block run().
         subprocess.run(args, check=True, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+
+def _nft_script(engs, blocked):
+    """The nftables script for engagements [(uid, policy, online)]: a firewall chain per engagement user, and
+    its DNS redirected to its own resolver (127.0.1.x)."""
+    sets, chains, vmap, nat, lo_vmap = [], [], [], [], []
+    for uid, pol, online in engs:
+        dns_ip = f"127.0.1.{uid - UID_BASE}"
+        # Raw commands reach: nets (by address, optionally ports) and host names (addresses added when the
+        # engagement's resolver answers, one set per port list). Exclusions and hosts with URL-level rules (only
+        # the request tool can enforce a path) are dropped first.
+        drop = pol["exclude"]["nets"] + [u + "/32" for u in rvpolicy.url_hosts(pol) if rvpolicy._is_ip(u)]
+        allnets = [n["cidr"] for n in pol["nets"] if n["ports"] is None]
+        sets.append(f"  set e{uid}_net4 {{ type ipv4_addr; flags interval; auto-merge; "
+                    + (f"elements = {{ {', '.join(allnets)} }}; " if allnets else "") + "}")
+        # Loopback 127.0.0.1 on unprivileged ports, except this MCP server's own port: tools that start a helper
+        # and talk to it over localhost (gowitness drives Chromium through its DevTools port) need it. Docker's
+        # DNS (127.0.0.11) and the other engagements' resolvers (127.0.1.x) stay blocked.
+        loopback = [f"    ip daddr {dns_ip} meta l4proto {{ tcp, udp }} th dport 53 accept",
+                    f"    oifname \"lo\" ip daddr 127.0.0.1 tcp dport {{ 1024-{MCP_PORT - 1}, {MCP_PORT + 1}-65535 }} accept"]
+        # Loopback is checked on every packet, not only a flow's first: a query whose source port matches a live
+        # conntrack entry (this server's own lookups through Docker's DNS) would otherwise follow that entry
+        # past the redirect to Docker's resolver, which answers any name, excluded ones included.
+        chains.append(f"  chain e{uid}_lo {{\n" + "\n".join(loopback) + "\n    counter drop\n  }")
+        lo_vmap.append(f"{uid} : jump e{uid}_lo")
+        rules = loopback + [f"    ip daddr {{ {', '.join(blocked)} }} counter drop"]
+        if drop:
+            rules.append(f"    ip daddr {{ {', '.join(drop)} }} counter drop")
+        rules.append(f"    ip daddr @e{uid}_net4 accept")
+        for n in pol["nets"]:
+            if n["ports"] is not None:
+                rules.append(f"    ip daddr {n['cidr']} meta l4proto {{ tcp, udp }} th dport {{ {_nft_ports(n['ports'])} }} accept")
+        for k, ports in enumerate(_host_groups(pol)):
+            sets.append(f"  set e{uid}_h{k} {{ type ipv4_addr; flags timeout; timeout 2h; }}")
+            rules.append(f"    ip daddr @e{uid}_h{k} " + (f"meta l4proto {{ tcp, udp }} th dport {{ {_nft_ports(list(ports))} }} "
+                                                         if ports else "") + "accept")
+        if online:
+            rules.append("    ip daddr @infra4 tcp dport { 80, 443 } accept")
+        chains.append(f"  chain e{uid} {{\n" + "\n".join(rules) + "\n    counter drop\n  }")
+        vmap.append(f"{uid} : jump e{uid}")
+        nat.append(f"    meta skuid {uid} meta l4proto {{ tcp, udp }} th dport 53 dnat to {dns_ip}:53")
+    return "\n".join([
+        "table inet rvkit", "delete table inet rvkit", "table ip rvkit_nat", "delete table ip rvkit_nat",
+        "table inet rvkit {",
+        "  set infra4 { type ipv4_addr; flags timeout; timeout 2h; }", *sets,
+        "  chain out {", "    type filter hook output priority 0; policy accept;",
+        f"    meta skuid {UID_BASE + 1}-{UID_BASE + 254} jump eng", "  }",
+        "  chain eng {", *([f"    ip daddr 127.0.0.0/8 meta skuid vmap {{ {', '.join(lo_vmap)} }}"] if lo_vmap else []),
+        "    ct state established,related accept", "    meta nfproto ipv6 drop",
+        *([f"    meta skuid vmap {{ {', '.join(vmap)} }}"] if vmap else []), "    counter drop", "  }",
+        *chains, "}",
+        "table ip rvkit_nat {", "  chain out {", "    type nat hook output priority -150; policy accept;",
+        *nat, "  }", "}", ""])
 
 
 def _nft_ports(ports):

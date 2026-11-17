@@ -1,7 +1,10 @@
 # Full-stack regression tests: builds every image, starts the kit and runs the policy, console, tool, worker
-# agent-loop (scripted model), end-to-end and lab tests (no model or API key needed). It takes 15-20 minutes, so it doesn't run on every pull request:
+# agent-loop (scripted model), end-to-end and lab tests (no model or API key needed). It takes 15-20 minutes. It runs:
+#   - on a pull request that changes what the suites cover: harness/, kali-mcp/, litellm/, scripts/, egress/,
+#     gateway/, php-runner/, prompts/, searxng/, evals/ (not evals/improvement/ or evals/results/), rvkit,
+#     docker-compose.yml or this workflow. The "changes" job works that out; docs-only pull requests skip it.
+#   - on any pull request that has the "full-ci" label (adding the label starts a run; new pushes re-run it)
 #   - on demand: Actions > Integration > Run workflow (pick a branch)
-#   - on a pull request that has the "full-ci" label (add the label to run it; new pushes re-run it while it's there)
 #   - nightly on main
 #   - before every release (release.yml calls it and publishes only if it passes)
 # Image layers are cached between runs (GitHub Actions cache), so a run that changes little rebuilds little.
@@ -15,16 +18,45 @@ on:
     types: [opened, synchronize, reopened, labeled]
 permissions:
   contents: read
-concurrency:
-  group: integration-${{ github.ref }}
-  cancel-in-progress: true
 
 jobs:
+  # Does the pull request change files the suites cover? Compares the merge commit GitHub tests with the base
+  # branch (its first parent). Not run for other events, nor when a label is added: only "full-ci" starts a run then.
+  changes:
+    if: github.event_name == 'pull_request' && github.event.action != 'labeled'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      covered: ${{ steps.paths.outputs.covered }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 2
+          persist-credentials: false
+      - id: paths
+        run: |
+          files="$(git diff --name-only --no-renames HEAD^1 HEAD)"
+          echo "$files"
+          covered=false
+          if grep -vE '^evals/(improvement|results)/' <<< "$files" | grep -qE \
+              '^((harness|kali-mcp|litellm|scripts|egress|gateway|php-runner|prompts|searxng|evals)/|rvkit$|docker-compose\.yml$|\.github/workflows/integration\.yml$)'; then
+            covered=true
+          fi
+          echo "covered=$covered" | tee -a "$GITHUB_OUTPUT"
+
   integration:
+    needs: changes
+    # !cancelled(): run even though "changes" was skipped (every event but a pull request, and the label event).
     if: >-
-      github.event_name != 'pull_request' ||
-      (contains(github.event.pull_request.labels.*.name, 'full-ci') &&
-       (github.event.action != 'labeled' || github.event.label.name == 'full-ci'))
+      !cancelled() && (
+        github.event_name != 'pull_request' ||
+        (github.event.action == 'labeled' && github.event.label.name == 'full-ci') ||
+        (github.event.action != 'labeled' && (needs.changes.outputs.covered == 'true' ||
+                                              contains(github.event.pull_request.labels.*.name, 'full-ci'))))
+    # On the job, not the workflow: an event that runs nothing (another label added) doesn't cancel a run.
+    concurrency:
+      group: integration-${{ github.ref }}
+      cancel-in-progress: true
     runs-on: ubuntu-24.04
     timeout-minutes: 75
     env:

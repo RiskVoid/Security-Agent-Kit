@@ -4,9 +4,10 @@ Each risk the kit has to control, and the test that fails if the control breaks.
 stack with a scripted model or none, so they need no GPU and no API key. How to run them:
 [CONTRIBUTING.md](../CONTRIBUTING.md#tests).
 
-**Platforms.** CI runs every suite on Linux (GitHub's Ubuntu runners, Docker Engine) on each pull request. The
-suites also pass on macOS with Docker Desktop, where the kit is developed, but nothing runs them there
-automatically. Windows is not tested.
+**Platforms.** CI runs every suite on Linux (GitHub's Ubuntu runners, Docker Engine): on each pull request that
+changes code the suites cover (a docs-only one skips them), nightly on `main` and before every release
+([CONTRIBUTING.md](../CONTRIBUTING.md#ci-and-releases) lists the paths). The suites also pass on macOS with Docker
+Desktop, where the kit is developed, but nothing runs them there automatically. Windows is not tested.
 
 | Risk | What must hold | Test (check names as the suite prints them) |
 |---|---|---|

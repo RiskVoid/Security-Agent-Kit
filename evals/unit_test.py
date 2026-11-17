@@ -347,6 +347,24 @@ class Scope(unittest.TestCase):
         for bad in ("", "-x", "../x", "a/b", "x" * 65):
             self.assertFalse(core._name_ok(bad), bad)
 
+    def test_nft_loopback_before_conntrack(self):
+        """A DNS query that matches a live conntrack entry skips the redirect to the engagement's resolver. Loopback
+        must be checked before 'established' lets it through, or Docker's DNS answers names the scope excludes."""
+        pol = policy.effective("- example.com\n- *.example.io:443\n- !x.example.io", "")
+        script = core._nft_script([(20001, pol, True), (20002, pol, False)], policy.ALWAYS_BLOCKED)
+        eng = script.split("chain eng {")[1].split("\n  }")[0].splitlines()
+        eng = [line.strip() for line in eng if line.strip()]
+        self.assertEqual(eng[0], "ip daddr 127.0.0.0/8 meta skuid vmap { 20001 : jump e20001_lo, 20002 : jump e20002_lo }")
+        self.assertEqual(eng[1], "ct state established,related accept")
+        lo = script.split("chain e20001_lo {")[1].split("\n  }")[0].strip().splitlines()
+        self.assertEqual([line.strip() for line in lo], [
+            "ip daddr 127.0.1.1 meta l4proto { tcp, udp } th dport 53 accept",
+            'oifname "lo" ip daddr 127.0.0.1 tcp dport { 1024-8089, 8091-65535 } accept',
+            "counter drop"])  # Docker's DNS (127.0.0.11) and the other engagement's resolver (127.0.1.2) refused
+        self.assertIn("meta skuid 20002 meta l4proto { tcp, udp } th dport 53 dnat to 127.0.1.2:53", script)
+        self.assertIn("@infra4", script.split("chain e20001 {")[1].split("\n  }")[0])
+        self.assertNotIn("@infra4", script.split("chain e20002 {")[1].split("\n  }")[0])  # offline
+
 
 class Approvals(unittest.TestCase):
     """RW-005: approvals are bound to the action and the policy revision, and are used exactly once."""

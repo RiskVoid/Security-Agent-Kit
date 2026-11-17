@@ -232,9 +232,12 @@ Actions are pinned to a commit SHA, with the release tag in a comment.
 - `.github/workflows/integration.yml` builds every image and runs the full-stack suites: `evals/ci_prepare.sh`,
   then the 15 suites listed in [Tests](#tests) (amd64, no model or API key needed). Image layers are cached
   between runs, so a run that changes little takes much less than the first one (15–20 minutes). It runs:
+  - on a pull request that changes `harness/`, `kali-mcp/`, `litellm/`, `scripts/`, `egress/`, `gateway/`,
+    `php-runner/`, `prompts/`, `searxng/`, `evals/` (not `evals/improvement/` or `evals/results/`), `rvkit`,
+    `docker-compose.yml` or the workflow itself, on every push. A docs-only pull request skips it;
+  - on any pull request with the **`full-ci`** label (adding the label starts a run; later pushes re-run it while
+    the label is on);
   - on demand: **Actions > Integration > Run workflow**, on any branch;
-  - on a pull request with the **`full-ci`** label (add it when a change touches the Kali image, the sandbox,
-    `rvkit`, `docker-compose.yml` or the MCP servers; later pushes re-run it while the label is on);
   - nightly on `main`;
   - before every release (the release workflow publishes nothing unless it passes).
 
