@@ -236,7 +236,7 @@ and add `*.` entries where you meant subdomains.
 | `Target content approval:` | `on` or `off`: an active call whose path or host only a target's content named needs an approval ([below](#hostile-targets)) | `off` |
 | `Worker model:` | `private` or `auto` | `auto` |
 | `Browser support:` | domain names the browser tool may load page assets from (fonts, CDNs) although they aren't in scope; GET page assets only ([authenticated-testing.md](authenticated-testing.md#the-browser)) | none |
-| `Client data:` | `any`, or where model calls about this engagement may go: any of `local`, `colab`, `api`, `openrouter`, `anthropic`, `openai` ([below](#where-client-data-may-go)) | `any` |
+| `Client data:` | `any`, or where model calls about this engagement may go: any of `local`, `colab`, `api`, `openrouter`, `anthropic`, `openai`, `bedrock` ([below](#where-client-data-may-go)) | `any` |
 | `Stop condition:` | free text, one per line: shown to the agent with the rules, kept in each policy revision | none |
 | `Note:` | free text kept with the rules | none |
 
@@ -252,7 +252,7 @@ worker endpoint only, never the OpenRouter fallback, even when you have turned t
 
 `Client data:` limits where model calls about this engagement are sent. The model gateway (LiteLLM) knows where
 each model route goes: `local` (a model on your machine or network), `colab` (the Colab tunnel), `api` (another
-remote endpoint), or a provider (`openrouter`, `anthropic`, `openai`). A call is tied to the engagement when it
+remote endpoint), or a provider (`openrouter`, `anthropic`, `openai`, `bedrock`). A call is tied to the engagement when it
 comes from a conversation bound to it ([below](#conversations)), from one of its worker tasks, or when its tool
 calls or your messages name the engagement or its `/work/<eng>` or in-scope `/src` paths. Tool results don't
 count, so a page or file the agent reads can't tie a call to an engagement or untie it.

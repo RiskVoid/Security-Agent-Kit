@@ -64,10 +64,11 @@ Set these with `./rvkit connect` and `./rvkit worker` ([models.md](models.md)), 
 | `VALIDATOR_FILE_CHARS` | `30000` | Characters of each cited evidence file the validator reads (four times that in total). A longer file is shown around the text the finding quotes, with its head and tail. |
 | `REPEAT_COLLAPSE` | `1` | What the model gateway does when the planner sends the same tool call again and again. From the third in a row it leaves those turns out of what the model reads and puts one note in their place: what was called, how often and the last result. From the fourth the tool of that call is left out of the request until the planner makes a different call. At the sixth the gateway answers itself with a `[RiskVoid] Loop stopped` text and does not call the model, which ends the planner's turn. The conversation itself is unchanged. `0` turns all of it off. |
 | `ANTHROPIC_API_KEY`, `OPENAI_API_KEY` | empty | Only for a planner on Anthropic or OpenAI directly (`./rvkit planner --direct`). |
-| `OPENROUTER_DAILY_BUDGET` | `20` | USD per 24 hours, per provider: OpenRouter, and Anthropic / OpenAI when used directly (`./rvkit budget`). |
+| `AWS_BEARER_TOKEN_BEDROCK`, `AWS_REGION_NAME` | empty | Only for models on Amazon Bedrock (`./rvkit planner --direct bedrock/...`, `./rvkit worker bedrock`): a Bedrock API key and its region. |
+| `OPENROUTER_DAILY_BUDGET` | `20` | USD per 24 hours, per provider: OpenRouter, and Anthropic / OpenAI / Bedrock when used directly (`./rvkit budget`). |
 
-All OpenRouter calls ask for zero-data-retention providers that don't collect prompts. Direct Anthropic / OpenAI
-calls follow that provider's own API data terms ([Models](models.md#anthropic-or-openai-directly)).
+All OpenRouter calls ask for zero-data-retention providers that don't collect prompts. Direct Anthropic / OpenAI /
+Bedrock calls follow that provider's own API data terms ([Models](models.md#anthropic-or-openai-directly)).
 
 ### Reports and branding
 

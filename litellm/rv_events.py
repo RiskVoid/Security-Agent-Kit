@@ -74,6 +74,10 @@ def classify(group, exc=None, status=None, text=""):
         return "credits", (f"{who}: the OpenRouter balance is too low for this call. Top up at "
                            "https://openrouter.ai/settings/credits, then continue the conversation.")
     if status in (401, 403) or "authenticationerror" in low or "invalid api key" in low or "unauthorized" in low:
+        hosted = {"bedrock": "AWS_BEARER_TOKEN_BEDROCK", "openrouter": "OPENROUTER_API_KEY"}.get(
+            os.environ.get("WORKER_MODEL_ID", "").split("/", 1)[0])
+        if worker and hosted:  # ./rvkit worker bedrock|openrouter: a provider key, not a Colab connect line
+            return "auth", f"{who}: the API key was rejected. Check {hosted} in .env, then run ./rvkit up."
         if worker:
             return "auth", (f"{who}: the worker endpoint rejected the API key. Run the ./rvkit connect line the Colab "
                             "notebook printed (it carries the key), or ./rvkit worker to point at another endpoint.")

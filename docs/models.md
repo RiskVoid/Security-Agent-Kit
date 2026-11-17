@@ -187,6 +187,33 @@ that worker is a cloud model. For work where nothing may leave your machine, use
 
 Every `worker` command recreates LiteLLM and sends a test prompt.
 
+### Option 5: no GPU (a model on Amazon Bedrock)
+
+If you have AWS credits (AWS Activate, for example), the worker can be a model on Amazon Bedrock, and the credits
+pay for it instead of OpenRouter:
+
+```sh
+./rvkit worker bedrock                                 # Qwen3 Coder Next (qwen.qwen3-coder-next, the default)
+./rvkit worker bedrock minimax.minimax-m2.5            # or another Bedrock model id
+```
+
+The first time, it asks for a Bedrock API key (AWS console: **Bedrock > API keys**; hidden input) and the AWS region,
+and keeps both in `.env` (`AWS_BEARER_TOKEN_BEDROCK`, `AWS_REGION_NAME`). Model ids are Bedrock's, as LiteLLM
+names them: `qwen.qwen3-coder-next`, `minimax.minimax-m2.5`, `moonshotai.kimi-k2.5`, `deepseek.v3.2`, or with a
+cross-region prefix such as `us.deepseek.v3.2`. Not every model is in every region: the Bedrock console's model
+catalogue lists them. Its spend counts toward the daily budget (`./rvkit budget`), as provider `bedrock`.
+
+These Bedrock models haven't been through the kit's benchmarks yet: run `./rvkit bench smoke` before relying on one.
+
+Check that your credits cover it: AWS credits generally pay for Bedrock, including models from other companies
+(billed through AWS Marketplace), but the terms of your credit say which services they apply to (AWS console:
+**Billing > Credits**). New AWS accounts often have low Bedrock quotas (tokens per minute), which an agent reaches
+quickly; ask for an increase in **Service Quotas** before a long engagement.
+
+**The trade-off is the same as Option 4: tool output and client code then go to AWS**, also for engagements with
+`Worker model: private` and the `riskvoid-local` agent. Bedrock doesn't keep prompts or use them for training, under
+AWS's service terms.
+
 ### Which model
 
 | Choice | Served as | Weights | Notes |
@@ -320,6 +347,31 @@ What changes:
   spend, but not spend on a direct OpenAI model.
 - The worker and its fallback are unchanged.
 
+### Amazon Bedrock
+
+With AWS credits, the planner, its fallback and the validator can run on Amazon Bedrock, so the credits pay for them
+instead of OpenRouter:
+
+```sh
+./rvkit planner --direct bedrock/us.zai.glm-5.3 bedrock/us.deepseek.v3.2   # GLM-5.3, fallback DeepSeek V3.2
+./rvkit planner --direct bedrock/global.anthropic.claude-opus-5-5           # Claude on Bedrock
+```
+
+The first time, it asks for a Bedrock API key (AWS console: **Bedrock > API keys**) and the AWS region, and keeps them
+in `.env` (`AWS_BEARER_TOKEN_BEDROCK`, `AWS_REGION_NAME`). Set `VALIDATOR_MODEL` in `.env` to a `bedrock/` id as well
+if you want the validator off OpenRouter too (by default it uses the planner's fallback model), then `./rvkit up`.
+With the worker on Bedrock too ([Option 5](#option-5-no-gpu-a-model-on-amazon-bedrock)), you don't need an
+OpenRouter key at all, as long as the worker fallback stays off.
+
+- **Model ids** are Bedrock's: `us.` / `eu.` / `global.` prefixes are cross-region inference profiles, which spread
+  load across regions and are needed for some models. The Bedrock model catalogue lists what your region has. The
+  Bedrock versions can lag OpenRouter's (DeepSeek V3.2 on Bedrock against V4 Pro on OpenRouter, November 2026).
+- **Access and quotas.** If a call fails with an access error, open the model in the Bedrock console and accept its
+  terms (Anthropic models ask for a short use-case form once). Raise low token-per-minute quotas in **Service
+  Quotas**.
+- **Budget.** Bedrock gets a provider budget, like Anthropic. A model whose price LiteLLM doesn't know counts as $0,
+  so check spend in AWS Cost Explorer too.
+
 ## When a model call fails
 
 OpenHands always streams model replies. A refusal arrives inside a reply that has already started, so LiteLLM's own
@@ -360,8 +412,8 @@ visible:
 ## Costs and budget
 
 **OpenRouter.** Spend on OpenRouter (the planner, plus the worker fallback when it's on) is capped per 24 hours.
-The default is **$20**. The same cap applies separately to Anthropic or OpenAI when the planner uses them
-directly ([above](#anthropic-or-openai-directly)).
+The default is **$20**. The same cap applies separately to Anthropic, OpenAI or Amazon Bedrock when the kit uses
+them directly ([above](#anthropic-or-openai-directly)).
 
 ```sh
 ./rvkit budget            # the cap and what's been spent in the current period
@@ -392,9 +444,9 @@ off, and use the L4 unless you need the longer context.
 
 | Part | Sees | Where it runs |
 |---|---|---|
-| Worker model (`colab-qwen`, `private-llm`) | tool output, client code, evidence | **Colab** (default): processed by Google on your Colab account. **Local / your own endpoint**: stays with you |
+| Worker model (`colab-qwen`, `private-llm`) | tool output, client code, evidence | **Colab** (default): processed by Google on your Colab account. **Local / your own endpoint**: stays with you. **OpenRouter / Bedrock** (Options 4 and 5): that provider |
 | Worker fallback (off by default) | the same as the worker, while the endpoint is down | OpenRouter, zero-data-retention providers only |
-| Planner (`riskvoid-planner` agent) | task descriptions, the worker's redacted summaries, findings, files it chooses to open | OpenRouter, zero-data-retention providers only; or Anthropic / OpenAI directly under their API terms (`--direct`) |
+| Planner (`riskvoid-planner` agent) | task descriptions, the worker's redacted summaries, findings, files it chooses to open | OpenRouter, zero-data-retention providers only; or Anthropic / OpenAI / Amazon Bedrock directly under their API terms (`--direct`) |
 | Web search and page fetch (`web` tool) | search queries, public URLs | SearXNG's upstream search engines; the public site |
 | Vulnerability intel, package installs | CVE and package ids, package names | NVD, EPSS, CISA KEV, OSV; package registries (through the egress proxy) |
 | Everything else (findings, evidence, audit log, reports) | everything | your machine |

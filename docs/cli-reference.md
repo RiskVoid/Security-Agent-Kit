@@ -164,6 +164,7 @@ end with "Model reachable".
 ./rvkit worker local [url] [model] [key]               # a server on this machine
 ./rvkit worker api <url> <model> [key]                 # any OpenAI-compatible endpoint
 ./rvkit worker openrouter [model]                      # no GPU: a hosted model with your OpenRouter key
+./rvkit worker bedrock [model]                         # no GPU: a model on Amazon Bedrock (AWS credits)
 ./rvkit worker fallback [show|on|off|<openrouter-model>]
 ```
 
@@ -173,6 +174,9 @@ end with "Model reachable".
 - `api` takes a base URL ending in `/v1` and the model name the server expects. The key defaults to `none`.
 - `openrouter` makes the worker a hosted model on OpenRouter (default DeepSeek V4.1 Flash), with zero-data-retention
   providers and the daily budget. Tool output and client code then go to OpenRouter ([Models](models.md#option-4-no-gpu-at-all-a-hosted-model-on-openrouter)).
+- `bedrock` makes the worker a model on Amazon Bedrock (default Qwen3 Coder Next, `qwen.qwen3-coder-next`), with the
+  daily budget. It asks for the Bedrock API key and region once. Tool output and client code then go to AWS
+  ([Models](models.md#option-5-no-gpu-a-model-on-amazon-bedrock)).
 - `fallback on` lets worker calls go to an OpenRouter model while the endpoint is down (default model DeepSeek V4.1
   Flash). `fallback <model>` sets the model and turns it on; `fallback off` turns it off (the default). While the
   fallback is in use, **that model sees tool output and client code**.
@@ -184,13 +188,13 @@ Every change recreates LiteLLM and sends a test prompt.
 ```sh
 ./rvkit planner                                  # show
 ./rvkit planner <openrouter-model> [fallback]    # set, e.g. z-ai/glm-5.3 deepseek/deepseek-v4-pro
-./rvkit planner --direct anthropic/<model> [fallback]   # Anthropic or OpenAI directly, without OpenRouter
+./rvkit planner --direct anthropic/<model> [fallback]   # Anthropic, OpenAI or Bedrock directly, without OpenRouter
 ```
 
 Shows or sets the planner model and its fallback (OpenRouter ids; the `openrouter/` prefix is optional). Setting
-recreates LiteLLM and sends a test prompt. With `--direct`, ids start with `anthropic/`, `openai/` or
-`openrouter/`, and the command asks for `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` if it isn't set
-([Models](models.md#anthropic-or-openai-directly)).
+recreates LiteLLM and sends a test prompt. With `--direct`, ids start with `anthropic/`, `openai/`, `bedrock/` or
+`openrouter/`, and the command asks for `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` (or, for Bedrock,
+`AWS_BEARER_TOKEN_BEDROCK` and `AWS_REGION_NAME`) if it isn't set ([Models](models.md#anthropic-or-openai-directly)).
 
 ### budget
 

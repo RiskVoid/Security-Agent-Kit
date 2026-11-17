@@ -62,6 +62,9 @@ changes to the harness are measured.
   Jaeger. Content goes into spans only when switched on, and then only for engagements whose Client data rule
   allows it.
 - Intel lookups retry the public vulnerability sources and name the ones that didn't answer.
+- Amazon Bedrock as a model provider, so AWS credits can pay for the models: `./rvkit planner --direct
+  bedrock/<model>` for the planner, `./rvkit worker bedrock [model]` for the worker. It takes a Bedrock API key,
+  has its own daily budget, and `bedrock` is a destination in an engagement's Client data rule.
 
 ### Console and operation
 - Console: an **Agent** section shows a conversation bound to the engagement, read-only, in the console's own
