@@ -3235,6 +3235,65 @@ class FindingTools(unittest.TestCase):
         out = self.t.update_coverage("e", pid, "tested", evidence=["evidence/runs/nope.txt: see above"])
         self.assertEqual(out, "REFUSED: evidence/runs/nope.txt: no such file")
 
+    def test_coverage_of_several_items_in_one_call(self):
+        """#112: update_coverage was 21 of 59, 52 of 125 and 22 of 102 tool calls in three runs, one item each."""
+        import workspace
+        ids = workspace.plan_add("e", "agent:planner", [{"title": f"t{n}", "area": "injection"} for n in range(4)])
+        out = self.t.update_coverage("e", updates=[
+            {"item": ids[0], "state": "tested", "evidence": ["evidence/runs/r1.txt (parameterised)"]},
+            {"item": ids[1], "state": "tested", "evidence": ["evidence/runs/nope.txt"]},
+            {"item": ids[2], "state": "not-applicable", "rationale": "no file upload"},
+            {"item": "P-999", "state": "blocked", "rationale": "r"}])
+        self.assertEqual(out.split("\n"), [
+            "REFUSED 2 of 4 (the others are saved; send only the refused ones again):", f"{ids[0]}: tested",
+            f"{ids[1]}: REFUSED: evidence/runs/nope.txt: no such file", f"{ids[2]}: not-applicable",
+            "P-999: REFUSED: no plan item P-999"])
+        got = {i["id"]: i for i in workspace.plan_list("e")}
+        self.assertEqual([got[i]["state"] for i in ids], ["tested", "planned", "not-applicable", "planned"])
+        self.assertEqual(got[ids[0]]["evidence"], ["evidence/runs/r1.txt"])
+        # failure mining sees each refusal, and the runner's count sees a refused call
+        spec = importlib.util.spec_from_file_location("rv_failures_batch", os.path.join(KIT, "evals", "failures.py"))
+        failures = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(failures)
+        self.assertEqual(failures.tool_classes("findings_update_coverage", out),
+                         ["refused: no such file", "refused: no plan item"])
+        self.assertEqual(failures.tool_class("findings_update_coverage", out), "refused: no such file")
+        self.assertEqual(failures.refusal_line(out, "refused: no plan item"), "P-999: REFUSED: no plan item P-999")
+        ok = self.t.update_coverage("e", updates=[{"item": ids[1], "state": "excluded", "rationale": "agreed"},
+                                                  {"item": ids[3], "state": "excluded", "rationale": "agreed"}])
+        self.assertEqual(ok, f"saved 2 of 2:\n{ids[1]}: excluded\n{ids[3]}: excluded")
+        self.assertEqual(failures.tool_classes("findings_update_coverage", ok), [])
+        self.assertIsNone(failures.tool_class("findings_update_coverage", ok))
+
+    def test_coverage_batch_of_one_is_the_single_form(self):
+        import workspace
+        a, b = workspace.plan_add("e", "agent:planner", [{"title": "a", "area": "x"}, {"title": "b", "area": "x"}])
+        one = self.t.update_coverage("e", updates=[{"item": a, "state": "excluded", "rationale": "out of scope"}])
+        self.assertEqual(one, self.t.update_coverage("e", b, "excluded", rationale="out of scope").replace(b, a)
+                         .replace('"b"', '"a"'))
+        self.assertEqual(json.loads(one)["state"], "excluded")
+        self.assertEqual(self.t.update_coverage("e", updates=[{"item": a, "state": "tested"}]),
+                         self.t.update_coverage("e", a, "tested"))
+        self.assertTrue(self.t.update_coverage("e", a, "tested").startswith("REFUSED: tested needs evidence"))
+
+    def test_coverage_batch_that_cannot_be_read_is_refused(self):
+        import workspace
+        a = workspace.plan_add("e", "agent:planner", [{"title": "a", "area": "x"}])[0]
+        for bad, why in (([], "updates is empty"), ([{"state": "tested"}], "no item or no state"),
+                         (["P-001"], "not an object"), ([{"item": a, "state": "excluded", "rationale": "r",
+                                                          "reason": "r"}], "unknown keys reason"),
+                         ([{"item": a, "state": "tested", "evidence": "evidence/runs/r1.txt"}], "not a list of paths")):
+            out = self.t.update_coverage("e", updates=bad)
+            self.assertTrue(out.startswith(f"REFUSED: {why}") or why in out, out)
+            self.assertIn('updates: [{"item": "P-001", "state": "tested"', out)   # what to send
+        out = self.t.update_coverage("e", updates=[{"item": a, "state": "excluded", "rationale": "r"}, 5])
+        self.assertIn("nothing was saved", out)
+        self.assertEqual(workspace.plan_list("e")[0]["state"], "planned")
+        self.assertTrue(self.t.update_coverage("e", a, "excluded", rationale="r",
+                                               updates=[{"item": a, "state": "excluded"}]).startswith(
+            "REFUSED: send item and state, or updates, not both"))
+        self.assertTrue(self.t.update_coverage("e").startswith("REFUSED: send item and state, or updates"))
+
     def test_a_source_file_is_evidence_of_a_planned_test(self):
         """Refused 4 times in two runs of 2026-11-16 as "not a tool output of this engagement": in a source
         review the code is what shows the result."""

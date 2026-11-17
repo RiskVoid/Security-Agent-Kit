@@ -245,6 +245,22 @@ def run():
         check(f"{extra} is merged away again", '"status": "duplicate"' in out, out)
     out = tool(f"findings.update_coverage('{ENG}', '{pb['ids'][2]}', 'excluded')")
     check("update_coverage refuses excluded without a rationale", out.startswith("REFUSED"), out)
+    batch = [{"item": pb["ids"][3], "state": "tested", "evidence": ["evidence/http/y.txt (200 for the anonymous GET)"]},
+             {"item": pb["ids"][4], "state": "excluded"},
+             {"item": pb["ids"][5], "state": "not-applicable", "rationale": "no file upload in this app"}]
+    out = tool(f"findings.update_coverage('{ENG}', updates={batch!r})")
+    lines = out.split("\n")
+    check("update_coverage takes several items: the refused one is named, the others are saved",
+          lines[0].startswith("REFUSED 1 of 3 (") and lines[1] == f"{pb['ids'][3]}: tested"
+          and lines[2].startswith(f"{pb['ids'][4]}: REFUSED: excluded needs a rationale")
+          and lines[3] == f"{pb['ids'][5]}: not-applicable", out)
+    items = {i["id"]: i for i in (ops("plan.list")[0] or {}).get("items", [])}
+    check("... and stored the two it took, not the refused one",
+          items.get(pb["ids"][3], {}).get("state") == "tested" and items.get(pb["ids"][5], {}).get("state") ==
+          "not-applicable" and items.get(pb["ids"][4], {}).get("state") == "planned", out)
+    out = tool(f"findings.update_coverage('{ENG}', updates=[])")
+    check("update_coverage refuses an empty list and shows what to send",
+          out.startswith("REFUSED: updates is empty") and '"item": "P-001"' in out, out)
     out = tool(f"findings.get_handover('{ENG}')")
     check("get_handover returns the handover text", out.startswith(f"# Handover: {ENG}"), out[:200])
 

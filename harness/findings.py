@@ -353,26 +353,89 @@ def plan_tests(engagement: str, items: list[dict] | None = None, playbook: str =
     return _call("plan.add", engagement=engagement, items=items or [])
 
 
+COVERAGE_KEYS = ("item", "state", "rationale", "evidence", "finding_id", "build", "policy_revision")
+COVERAGE_SHAPE = ('updates: [{"item": "P-001", "state": "tested", "evidence": ["evidence/runs/x.txt"]}, {"item": '
+                  '"P-002", "state": "not-applicable", "rationale": "..."}], each with item and state and what that '
+                  'state needs (rationale, evidence, finding_id; optional build, policy_revision); or item and '
+                  'state alone for one update')
+
+
+def _coverage_one(engagement, item, state, rationale="", evidence=None, finding_id="", build="", policy_revision=""):
+    """One update: the saved row, or the refusal reason (a str)."""
+    fields = {"state": state, "rationale": rationale or None, "evidence": evidence, "finding_id": finding_id or None,
+              "build": build or None, "policy_revision": policy_revision or None}
+    try:
+        return ops.call("plan.update", {"engagement": engagement, "actor": ACTOR, "id": item,
+                                        "fields": {k: v for k, v in fields.items() if v is not None}})[0]
+    except ValueError as e:
+        return str(e)
+
+
+def _malformed_update(u):
+    """Why an entry of updates can't be read (None: it can)."""
+    if not isinstance(u, dict):
+        return "an entry is not an object"
+    extra = sorted(set(u) - set(COVERAGE_KEYS))
+    if extra:
+        return f"unknown keys {', '.join(extra)}"
+    if not (isinstance(u.get("item"), str) and u["item"].strip() and isinstance(u.get("state"), str) and u["state"]):
+        return "an entry has no item or no state"
+    ev = u.get("evidence")
+    if ev is not None and not (isinstance(ev, list) and all(isinstance(p, str) for p in ev)):
+        return f"evidence of {u['item']} is not a list of paths"
+    if any(u.get(k) is not None and not isinstance(u[k], str) for k in ("rationale", "finding_id", "build",
+                                                                         "policy_revision")):
+        return f"rationale, finding_id, build and policy_revision of {u['item']} must be text"
+    return None
+
+
 @mcp.tool()
-def update_coverage(engagement: str, item: str, state: str, rationale: str = "", evidence: list[str] | None = None,
-                    finding_id: str = "", build: str = "", policy_revision: str = "") -> str:
+def update_coverage(engagement: str, item: str = "", state: str = "", rationale: str = "",
+                    evidence: list[str] | None = None, finding_id: str = "", build: str = "",
+                    policy_revision: str = "", updates: list[dict] | None = None) -> str:
     """Record a planned test's outcome. state: tested (ran, no issue: evidence required, a tool output under
     /work/<engagement>/ or the source that shows it, /src/<repo>/<file>:<line>), failed (an issue: the
     finding_id it produced), blocked (couldn't run: rationale, and what would unblock it), excluded (out of scope
     or agreed not to test: rationale), not-applicable (rationale), planned. build: the source digest or deployed
-    build it ran on; policy_revision: the engagement's policy revision (engagement_info)."""
-    fields = {"state": state, "rationale": rationale or None, "evidence": evidence, "finding_id": finding_id or None,
-              "build": build or None, "policy_revision": policy_revision or None}
+    build it ran on; policy_revision: the engagement's policy revision (engagement_info).
+    Several items in one call: leave item and state out and send updates, a list with one object per item and the
+    same fields, e.g. updates=[{"item": "P-001", "state": "tested", "evidence": ["evidence/runs/x.txt"]},
+    {"item": "P-002", "state": "not-applicable", "rationale": "no file upload"}]. Each one is checked and saved
+    by itself: a refused one doesn't stop the others. The reply has one line per item, its state or REFUSED and
+    why; send only the refused ones again."""
     _repin(engagement)
-    try:
-        row = ops.call("plan.update", {"engagement": engagement, "actor": ACTOR, "id": item,
-                                       "fields": {k: v for k, v in fields.items() if v is not None}})[0]
-    except ValueError as e:
-        return f"REFUSED: {e}"
-    if not isinstance(row, dict):
-        return _out(row)
-    return _out({k: row[k] for k in ("id", "title", "state", "evidence", "finding_id", "stale", "warning", "note")
-                 if row.get(k) not in (None, "", [], False)})
+    if updates is None:
+        if not (item and state):
+            return f"REFUSED: send item and state, or {COVERAGE_SHAPE}"
+        row = _coverage_one(engagement, item, state, rationale, evidence, finding_id, build, policy_revision)
+        if isinstance(row, str):
+            return f"REFUSED: {row}"
+        if not isinstance(row, dict):
+            return _out(row)
+        return _out({k: row[k] for k in ("id", "title", "state", "evidence", "finding_id", "stale", "warning", "note")
+                     if row.get(k) not in (None, "", [], False)})
+    if item or state:
+        return f"REFUSED: send item and state, or updates, not both. {COVERAGE_SHAPE}"
+    if not isinstance(updates, list) or not updates:
+        return f"REFUSED: updates is empty. {COVERAGE_SHAPE}"
+    problem = next((p for p in map(_malformed_update, updates) if p), None)
+    if problem:
+        return f"REFUSED: {problem}; nothing was saved. {COVERAGE_SHAPE}"
+    if len(updates) == 1:   # a batch of one answers as the single form does
+        return update_coverage(engagement, **updates[0])
+    # Each update is its own write, as if sent alone: a refusal (or a revision conflict) leaves the others saved.
+    lines, refused = [], 0
+    for u in updates:
+        row = _coverage_one(engagement, **u)
+        if isinstance(row, str):
+            refused += 1
+            lines.append(f"{u['item']}: REFUSED: {row}")
+        else:
+            lines.append(f"{row.get('id', u['item'])}: {row.get('state')}" + (" (stale)" if row.get("stale") else ""))
+    n = len(updates)
+    head = (f"saved {n} of {n}:" if not refused else f"REFUSED {n} of {n} (nothing was saved):" if refused == n
+            else f"REFUSED {refused} of {n} (the others are saved; send only the refused ones again):")
+    return "\n".join([head] + lines)
 
 
 @mcp.tool()
