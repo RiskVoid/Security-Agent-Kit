@@ -3143,15 +3143,14 @@ class RepeatedCalls(unittest.TestCase):
     TOOLS = [{"type": "function", "function": {"name": n}} for n in ("findings_update_finding", "kali_run", "terminal")]
 
     def test_three_steps(self):
-        for n, withheld, cut in ((3, [], False), (4, ["findings_update_finding"], False),
-                                 (5, ["findings_update_finding"], False), (6, ["findings_update_finding"], True)):
+        for n, withheld, cut in ((3, [], False), (4, [], False),
+                                 (5, [], False), (6, [], True)):
             r = self.r.review(self.history(n), self.TOOLS)
             self.assertEqual((r["removed"], r["streak"], r["withhold"], bool(r["cut"])), (n, n, withheld, cut), n)
             names = [t["function"]["name"] for t in r["tools"]]
             self.assertEqual("findings_update_finding" in names, not withheld, n)   # it can't send the call
         note = self.r.review(self.history(4), self.TOOLS)["messages"][-1]["content"]
-        self.assertIn("findings_update_finding is not available for your next step", note)
-        self.assertNotIn("not available", self.r.review(self.history(3), self.TOOLS)["messages"][-1]["content"])
+        self.assertNotIn("not available", self.r.review(self.history(4), self.TOOLS)["messages"][-1]["content"])
         text = self.r.cut_text(self.r.review(self.history(6), self.TOOLS)["cut"], "acme")
         self.assertTrue(text.startswith(self.r.CUT_TAG))
         for part in ("6 times in a row", "REFUSED: needs reproduction", "./rvkit conversation acme new"):
@@ -3161,14 +3160,14 @@ class RepeatedCalls(unittest.TestCase):
         again = self.turn(30, "findings_update_finding", {"finding_id": "F-002", "method": "source-review"}, "REFUSED: x")
         msgs = self.history(3) + [{"role": "user", "content": "The run was stopped as stuck"}] + again
         r = self.r.review(msgs, self.TOOLS)
-        self.assertEqual((r["removed"], r["streak"], r["withhold"]), (4, 4, ["findings_update_finding"]))
+        self.assertEqual((r["removed"], r["streak"], r["withhold"]), (4, 4, []))
         self.assertEqual([m["role"] for m in r["messages"]][-2:], ["user", "user"])   # the user's message stays
         self.assertIn("stopped as stuck", r["messages"][-2]["content"])
 
     def test_the_user_is_heard_after_a_cut(self):
         msgs = self.history(6) + [{"role": "assistant", "content": self.r.CUT_TAG}, {"role": "user", "content": "go on"}]
         r = self.r.review(msgs, self.TOOLS)
-        self.assertEqual((r["streak"], r["withhold"], r["cut"]), (6, ["findings_update_finding"], None))
+        self.assertEqual((r["streak"], r["withhold"], r["cut"]), (6, [], None))
         self.assertEqual(r["messages"][-1]["content"], "go on")
         more = msgs + self.turn(40, "findings_update_finding", {"finding_id": "F-002", "method": "source-review"}, "REFUSED: x")
         self.assertTrue(self.r.review(more, self.TOOLS)["cut"])                 # and the same call again is cut at once
@@ -3208,8 +3207,8 @@ class RepeatedCalls(unittest.TestCase):
 
     def test_an_alternating_loop_is_counted_in_rounds(self):
         both = ["findings_update_finding", "findings_validate_finding"]
-        for rounds, stage, withheld, cut in ((2, None, [], False), (3, "note", [], False), (4, "withhold", both, False),
-                                             (5, "withhold", both, False), (6, "cut", both, True)):
+        for rounds, stage, withheld, cut in ((2, None, [], False), (3, "note", [], False), (4, "withhold", [], False),
+                                             (5, "withhold", [], False), (6, "cut", [], True)):
             r = self.r.review(self.cycle(rounds), self.CYCLE_TOOLS)
             self.assertEqual((r["stage"], r["withhold"], bool(r["cut"])), (stage, withheld, cut), rounds)
             if stage:   # the approval id differs every round: that is still the same ending
@@ -3217,8 +3216,7 @@ class RepeatedCalls(unittest.TestCase):
                 self.assertEqual([m["role"] for m in r["messages"]], ["system", "user", "assistant", "tool", "user"])
         note = self.r.review(self.cycle(4), self.CYCLE_TOOLS)["messages"][-1]["content"]
         for part in ("the same 2 tool calls in turn, 4 times over", 'findings_update_finding(finding_id="F-010"',
-                     "| findings_validate_finding(", "candidate: not confirmed yet", "Those calls are closed",
-                     "findings_update_finding and findings_validate_finding are not available"):
+                     "| findings_validate_finding(", "candidate: not confirmed yet", "Those calls are closed"):
             self.assertIn(part, note)
         text = self.r.cut_text(self.r.review(self.cycle(6), self.CYCLE_TOOLS)["cut"], "acme")
         self.assertTrue(text.startswith(self.r.CUT_TAG))
@@ -3230,7 +3228,7 @@ class RepeatedCalls(unittest.TestCase):
         r = self.r.review(self.cycle(3, three), self.CYCLE_TOOLS)
         self.assertEqual((r["stage"], r["period"], r["streak"], r["removed"]), ("note", 3, 3, 9))
         r = self.r.review(self.cycle(4, three), self.CYCLE_TOOLS)
-        self.assertEqual(r["withhold"], ["findings_update_finding", "kali_run"])
+        self.assertEqual(r["withhold"], [])
         self.assertEqual(self.r.review(self.cycle(2, three), self.CYCLE_TOOLS)["stage"], None)
 
     def test_work_that_moves_on_is_not_a_cycle(self):

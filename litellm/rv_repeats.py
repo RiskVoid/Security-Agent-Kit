@@ -15,8 +15,9 @@ count again, any other tool call does.
   RUN (3)       The run is replaced by one note that says what was called, how often and what the last result was.
                 Keeping the last of them in place was not enough: replayed at a point where the model had sent a
                 call 20 times, it sent it again in 2 of 3 tries. With the note it was 4 of 15.
-  WITHHOLD (4)  The model read the note and sent the call again. The tools of that call are left out of the
-                request, so it can't send it; they are back after it makes any other call.
+  WITHHOLD (4)  The model read the note and sent the call again. The call is closed and the note now says so;
+                the tool stays offered, so a call with changed arguments can still go through, while the exact
+                repeat is ended at the cut stage. The tool is back to normal once a different call is made.
   CUT (6)       The call came all the same (a model can name a tool it was not offered). The gateway answers the
                 request itself, with a text that says what happened, and the model is not called. A text reply
                 ends the planner's turn, so the loop costs nothing from here. The next message from the user or
@@ -197,7 +198,8 @@ def review(messages, tools=None):
       calls     its call (or the calls of the cycle) as text, for messages and the event log
       what      the same in words: "the same tool call 4 times in a row: ..."
       stage     what this request does about that run: "note", "withhold" or "cut" (None when streak is 0)
-      withhold  tool names left out of this request (streak of WITHHOLD or more)
+      withhold  tool names of the closed call (streak of WITHHOLD or more); no tool is removed from the
+                request, so a call with changed arguments can still go through
       tools     the tool list without them (the list as given when nothing is withheld)
       cut       {"what", "result"} for the text the gateway answers with instead of calling the model, or None
     """
@@ -215,13 +217,11 @@ def review(messages, tools=None):
     if run.idx[-1] == max(i for i, (kind, _, _) in enumerate(turns) if kind == "call"):
         out.update(streak=run.rounds, period=run.period, calls=run.calls(), what=run.what(), stage="note")
         if run.rounds >= WITHHOLD:
-            names = run.names()
-            left = [t for t in tools or [] if ((t.get("function") or {}).get("name") if isinstance(t, dict) else None) not in names]
-            if left and len(left) < len(tools or []):       # never a request without tools
-                out["withhold"], out["tools"], out["stage"] = names, left, "withhold"
-                notes[run.idx[-1]] = dict(notes[run.idx[-1]])
-                notes[run.idx[-1]]["content"] += WITHHELD.format(tools=" and ".join(names),
-                                                                 be="is" if len(names) == 1 else "are")
+            # The exact call is closed, but the tool stays offered: a call with changed arguments (a different
+            # step, different inputs) can still go through, while the exact repeat is caught at the cut stage
+            # (6 rounds). Withholding the whole tool name blocked those too, and left the model unable to make
+            # progress except by repeating the finding (issue #113). Nothing is removed from the request here.
+            out["stage"] = "withhold"
             # the model was not asked since this call came back: answer for it. After a message from the user it
             # is asked again.
             if run.rounds >= CUT and run.idx[-1] == len(turns) - 1:
