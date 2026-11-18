@@ -85,6 +85,9 @@ changes to the harness are measured.
 - `./rvkit bench --improve`: error analysis from failure records, one proposal per cause, and a judge that keeps a
   change only when its cause shrinks, held-out benchmarks don't fall beyond the spread, and no safety cause rises.
   Kept and dropped changes go into `docs/harness-changelog.md`.
+- The improvement loop's judge counts a drop on the held-out benchmarks as a fall only when the per-item interval
+  and the run-level permutation test both say so, as `--compare` does. The judgement says which test decided,
+  with p. Before, one collapsed run could decide the verdict through the interval alone.
 - Every benchmark run keeps its failures (missed and weakly proven findings, unexpected ones, refused and failed
   tool calls, early stops, worker tasks that didn't finish), each with a cause built from fixed rules.
   `./rvkit bench --failures` groups them by cause across runs; `--rebuild` derives them from saved runs.
