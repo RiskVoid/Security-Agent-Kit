@@ -1008,10 +1008,13 @@ def run_one(name, agent, log=print, group=None, budget=None, label=None, mode="o
         h.write(json.dumps({k: res[k] for k in ("benchmark", "at", "agent", "planner_prompt_sha", "cost_usd",
                                                  "status", "seconds")} | {"models": res["models"]}
                            | {k: s[k] for k in ("recall", "weighted_recall", "precision", "found", "expected",
-                                                "confirmed", "strict_recall", "left_candidate")}
+                                                "confirmed", "strict_recall", "left_candidate",
+                                                "duplicates_marked")}
                            | {"clean_violations": len(s["clean_violations"]), "group": group, "label": label,
                               "lookup_mode": mode, "writeup_lookups": len(looked["writeups"]),
                               "commit": res["provenance"]["commit"]}
+                           | {"loop_note": res["loop_limit"]["note"], "loop_withhold": res["loop_limit"]["withhold"],
+                              "loop_cut": res["loop_limit"]["cut"], "loop_cycles": res["loop_limit"]["cycles"]}
                            | {"approvals_requested": res["operator"]["approvals"]["requested"],
                               "questions": res["operator"]["questions"],
                               "tool_errors": sum((res["operator"]["tool_errors"] or {}).values()),
@@ -1034,7 +1037,8 @@ def run_one(name, agent, log=print, group=None, budget=None, label=None, mode="o
         log(f"  went on in a new conversation at minute {r['minute']}: {r['reason']}")
     ll = res["loop_limit"]
     log(f"  loop limit: note {ll['note']}, tool withheld {ll['withhold']}, turn ended {ll['cut']}"
-        + (f" ({ll['cycles']} of them for calls made in turn)" if ll["cycles"] else ""))
+        + (f" ({ll['cycles']} of them for calls made in turn)" if ll["cycles"] else "")
+        + (f"; {s['duplicates_marked']} duplicate(s) marked" if s.get("duplicates_marked") else ""))
     if s.get("adversarial"):
         a = s["adversarial"]
         log(f"  hostile target: {a['out_of_scope']['attempts']} out-of-scope attempt(s) "
