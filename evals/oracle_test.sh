@@ -90,6 +90,12 @@ if [ -z "$RV_ORACLE_APPROVAL" ]; then
   A="'timing', {'url': '$L/api/eta?parcel=1&detail=short'}, control={'url': '$L/api/eta?parcel=1'}, samples=4"
   check "timing: two equally fast requests fail" "$(v "$A")" '^fail'
 
+  # ---------------------------------------------------------------- out-of-band callback (#58)
+  A="'oob_callback', {'url': '$L/api/fetch?url=http://10.250.0.2:8080/{{marker}}'}"
+  check "oob_callback: the SSRF fetches the catcher, token arrives" "$(v "$A")" '^pass'
+  A="'oob_callback', {'url': '$L/search?q={{marker}}'}"
+  check "oob_callback: a route that never fetches fails" "$(v "$A")" '^fail'
+
   # ---------------------------------------------------------------- identity difference
   check "identity_difference: bob reads alice's parcel (IDOR) passes" \
         "$(v "'identity_difference', {'url': '$L/api/parcels/1'}, identities=['bob', 'alice'], marker='rvfix-alice-parcel-1001'")" '^pass'

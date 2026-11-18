@@ -20,6 +20,11 @@ and runs a negative control. The result is pass only when the oracle holds AND t
                       than every control and the difference of the means is above min_delay and three times the
                       spread. The caller gives both requests.
 
+  oob_callback        blind issue (SSRF, blind command injection, XXE): the probe makes the target call back to the
+                      kit's own catcher with a token unique to the finding, and the oracle passes only when that
+                      token arrives. Control: a request that does not trigger a callback (or an unreachable catcher
+                      host) must not deliver its token. No public callback service: client traffic stays in the kit.
+
 Every run writes a verification record (evidence/verify/<ts>-<oracle>-<id>.json) with the oracle, the result, the
 reason and each request's evidence file and status, and the record is audited and hashed like any evidence.
 results: pass (holds, control clean), fail (doesn't hold), inconclusive (the control or a precondition failed:
@@ -29,8 +34,12 @@ import datetime, json, os, re
 
 import core
 import actions
+try:
+    import oob
+except Exception:  # noqa: BLE001
+    oob = None
 
-ORACLES = ("marker", "identity_difference", "read_back", "browser_xss", "timing")
+ORACLES = ("marker", "identity_difference", "read_back", "browser_xss", "timing", "oob_callback")
 BROWSER_EVIDENCE = re.compile(r"\[browser evidence: /work/[^/]+/(\S+?)/ ")
 MAX_SAMPLES = 10
 PLACEHOLDER = "{{marker}}"
@@ -225,6 +234,57 @@ def timing(eng, request, control, samples=5, min_delay=1.0, send_kw=None):
     return "fail", detail, "", steps
 
 
+def _catcher_url():
+    return None
+
+
+def oob_callback(eng, request, marker="", control=None, send_kw=None, timeout=5.0):
+    """Blind issue (SSRF, blind command injection, XXE): the probe makes the target call back to the kit's own
+    catcher with a token unique to the finding, and the oracle passes only when that token arrives.
+
+    The request carries {{marker}} in the URL the target will fetch (e.g.
+    http://target/api/fetch?url=http://10.250.0.2:8080/{{marker}}). The marker becomes the callback token. A control
+    request that does not trigger a callback (or an unreachable catcher host) must not deliver its token."""
+    kw = send_kw or {}
+    if oob is None:
+        raise ValueError("oob callback catcher is not available in this kali-mcp process")
+    oob.start()
+    if not _has_placeholder(request) and not marker:
+        raise ValueError("oob_callback: put {{marker}} in the request URL (the callback token), or give marker")
+    mark = marker or canary()
+    probe_req = _fill(request, mark) if _has_placeholder(request) else _fill(request, mark)
+    # the token the control uses must never be the probe's
+    control_token = canary()
+    if control:
+        control_req = _fill(control, control_token)
+    else:
+        # default control: the same request with an unreachable catcher host, so no callback can arrive
+        control_req = _fill(request, control_token)
+        try:
+            control_req["url"] = control_req["url"].replace("10.250.0.2:8080", "127.0.0.1:1").replace(
+                "localhost:8080", "127.0.0.1:1")
+        except Exception:  # noqa: BLE001
+            pass
+    probe = _send(eng, probe_req, "probe", **kw)
+    ctl = _send(eng, control_req, "control", **{k: v for k, v in kw.items() if k != "approval_id"})
+    steps = [probe, ctl]
+    if probe.get("error"):
+        return "inconclusive", f"the probe request failed: {probe['error']}", mark, steps
+    # wait for the probe's token to arrive at the catcher
+    arrived = oob.wait(mark, timeout=timeout)
+    if not arrived:
+        return "fail", f"callback token {mark!r} did not arrive at the catcher", mark, steps
+    # the control's token must not have arrived (spurious traffic would make the result meaningless)
+    if oob.received(control_token):
+        return "inconclusive", f"the control's token {control_token!r} arrived too: the callback is not tied to the probe",             mark, steps
+    # a token that was never sent must not be present either
+    never = canary()
+    if oob.received(never):
+        return "inconclusive", "an unsent token arrived at the catcher: spurious traffic", mark, steps
+    return "pass", f"callback token {mark!r} arrived at the catcher; the control's did not", mark, steps
+
+
+
 def verify(eng, oracle, request, marker="", expect="", identities=None, check=None, control=None, approval_id=None,
            max_tier=None, task=None, finding="", send=None, samples=5, min_delay=1.0, browse=None):
     """Run one oracle and record it. Returns {"result", "reason", "record", "text", ...}."""
@@ -246,6 +306,8 @@ def verify(eng, oracle, request, marker="", expect="", identities=None, check=No
             result, reason, mark, steps = browser_xss(eng, request, marker, {**kw, "browse": browse})
         elif oracle == "timing":
             result, reason, mark, steps = timing(eng, request, control, samples, min_delay, kw)
+        elif oracle == "oob_callback":
+            result, reason, mark, steps = oob_callback(eng, request, marker, control, kw, timeout=5.0)
         else:
             result, reason, mark, steps = read_back(eng, request, check, marker, kw)
     except Stopped as s:

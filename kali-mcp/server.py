@@ -9,6 +9,8 @@ import anyio
 from mcp.server.fastmcp import FastMCP
 import core
 import actions
+import oob
+oob.start()
 
 # Stateless: no per-client session, so a conversation that was open when this server restarted keeps working
 # (with sessions, every later tool call failed with "Session terminated" until OpenHands itself was restarted).
