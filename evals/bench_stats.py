@@ -33,6 +33,7 @@ figure is prompt + completion tokens (cached tokens are part of prompt). A figur
 import collections, datetime, itertools, json, math, os, random, re
 
 SEV = ("critical", "high", "medium", "low", "info")
+ALPHA = 0.05   # a run-level permutation p below this, with the interval clear of zero, is a real difference
 
 
 # ---------------------------------------------------------------- small statistics
@@ -234,7 +235,7 @@ def print_compare(c, la, lb, out=print):
             + (f" ({c['spend'][k]['runs_with_tokens']} of {c['spend'][k]['runs']} runs recorded them)"
                if c['spend'][k]['runs_with_tokens'] < c['spend'][k]['runs'] else "")
             for k, lab in (("a", la), ("b", lb))))
-    sig = c["ci95"] and (c["ci95"][0] > 0 or c["ci95"][1] < 0) and c.get("p_runs") is not None and c["p_runs"] < 0.05
+    sig = c["ci95"] and (c["ci95"][0] > 0 or c["ci95"][1] < 0) and c.get("p_runs") is not None and c["p_runs"] < ALPHA
     out(f"mean difference per item (found with evidence, {lb} minus {la}): {c['diff']:+.3f}, SE "
         f"{fmt(c['se'])}, 95% CI {c['ci95']} over {c['items']} items, run-level permutation p {fmt(c.get('p_runs'))}: "
         f"{'a real difference' if sig else 'within the noise'}")
