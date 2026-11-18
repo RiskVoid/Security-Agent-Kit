@@ -65,6 +65,8 @@ changes to the harness are measured.
 - Amazon Bedrock as a model provider, so AWS credits can pay for the models: `./rvkit planner --direct
   bedrock/<model>` for the planner, `./rvkit worker bedrock [model]` for the worker. It takes a Bedrock API key,
   has its own daily budget, and `bedrock` is a destination in an engagement's Client data rule.
+- The integration suites run on every pull request that changes code they cover. Docs-only pull requests still
+  skip them, and the `full-ci` label still starts a run.
 
 ### Console and operation
 - Console: an **Agent** section shows a conversation bound to the engagement, read-only, in the console's own
@@ -93,6 +95,13 @@ changes to the harness are measured.
 - Scores count expected issues that were recorded as a candidate and never confirmed on their own ("left as a
   candidate", and recorded recall), so a run that detected an issue and failed to confirm it doesn't read as a run
   that missed it. `./rvkit bench --rescore` adds the count to saved runs.
+- Every benchmark result counts tokens for the planner, the worker, the advisor and the validator, with their
+  total. `--history` prints the total and `--compare` shows it next to the cost. Runs saved before show `n/a`.
+- Each benchmark result says how often the gateway's loop limit acted (`loop_limit`: note, withhold, cut).
+  `evals/loop_limit_test.sh` checks each stage through LiteLLM with a scripted model, with no model spend.
+- `code-node` moved from the held-out to the tuning benchmarks. Its runs were read while fixing the harness, so it
+  no longer tests a change on failures nobody read. P-001 and P-003 keep their recorded verdicts, which used it as
+  held out.
 
 ### Fixed
 - Worker delegation didn't work with a reasoning model as the worker. A model call was capped at 2,048 output
@@ -171,6 +180,20 @@ changes to the harness are measured.
 - Saved benchmark scores went stale when the scorer changed, and the failure records and the improvement loop's
   judge read them. `./rvkit bench --rescore` scores every saved run again from the engagement it kept, keeps the old
   score in `score_at_run`, and rebuilds the failure records.
+- A sandboxed DNS lookup that happened to reuse the source port of one of kali-mcp's own recent lookups was
+  answered by Docker's resolver, not the engagement's, so a name the scope excludes could resolve. The firewall now
+  checks an engagement's loopback traffic on every packet, and the policy suite tests this case on purpose.
+- The model gateway's loop limit also catches a planner that makes two or three calls in turn, each ending the
+  same way: the note comes at the third round, the tools are withheld at the fourth and the turn is ended at the
+  sixth.
+- `update_coverage` takes several plan items in one call (`updates=[...]`): each is checked and saved by itself,
+  and the reply names each item with its state or its refusal. Failure mining counts each refused item of such a
+  reply as its own cause.
+- The worker's `fetch_url` takes `start`, so it can read a long page past the first 100,000 characters. The hint
+  at the end of each part names `fetch_url`.
+- Docs now match the code on releases, IPv6 scope entries (an error, not ignored), approval attribution, the
+  testing window's time zone, Amazon Bedrock as a model option, the arm64 release check, the optional services
+  and lab targets, and the five verification oracles.
 
 ## [0.1.0]
 

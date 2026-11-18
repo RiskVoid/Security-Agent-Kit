@@ -556,6 +556,106 @@ class TypedFinish(Loop):
                          ("completed", [], {"observations": ["o"], "confidence": "high"}))
 
 
+class TokenUse(Loop):
+    """#78: each worker model call adds its usage to the task, so task.json holds the worker's total. The real
+    chat() runs here, against a scripted model behind a fake gateway."""
+
+    REPLIES = [({"prompt_tokens": 1200, "completion_tokens": 80, "prompt_tokens_details": {"cached_tokens": 1000}},
+                [call("kali_run", {"command": "ls /src/x"}, cid="u1")]),
+               ({"prompt_tokens": 1500, "completion_tokens": 40},
+                [call("finish", {"status": "completed", "summary": "Listed it."}, cid="u2")])]
+
+    def setUp(self):
+        super().setUp()
+        self.urlopen = worker.urllib.request.urlopen
+        script = list(self.REPLIES)
+
+        class R:
+            def __init__(s, body):
+                s.body = body
+
+            def read(s):
+                return json.dumps(s.body).encode()
+
+        def fake(req, timeout=None):
+            usage, calls = script.pop(0)
+            return R({"model": "colab-qwen", "usage": usage,
+                      "choices": [{"finish_reason": "tool_calls",
+                                   "message": {"role": "assistant", "content": None, "tool_calls": calls}}]})
+        worker.urllib.request.urlopen = fake
+
+    def tearDown(self):
+        worker.urllib.request.urlopen = self.urlopen
+        super().tearDown()
+
+    def test_the_task_total_is_the_sum_of_its_calls(self):
+        chat = self.saved["chat"]
+        task = worker._defaults({"id": "t1", "goal": "List it.", "engagement": "eng", "tier": "passive",
+                                 "info": worker.engagement_info("eng"), "max_steps": 6, "timeout_min": 5,
+                                 "status": "running", "started": time.time(), "tokens": dict(worker.NO_TOKENS)})
+        worker.chat = chat
+        os.makedirs(worker.task_dir(task), exist_ok=True)
+        with open(os.devnull, "w") as log:
+            self.assertEqual(worker._loop(task, log), "done")
+        want = {"prompt_tokens": 2700, "completion_tokens": 120, "cached_tokens": 1000, "calls": 2}
+        self.assertEqual(task["tokens"], want)
+        worker.save(task)
+        saved = json.load(open(os.path.join(worker.task_dir(task), "task.json")))
+        self.assertEqual(saved["tokens"], want)                     # in task.json, where the benchmark reads it
+
+    def test_a_task_without_a_total_gets_one(self):   # a task saved before #78 and resumed
+        t = {"id": "old"}
+        worker.add_usage(t, {"prompt_tokens": 10, "completion_tokens": 2})
+        worker.add_usage(t, None)                                   # a reply with no usage: a call, no tokens
+        self.assertEqual(t["tokens"], {"prompt_tokens": 10, "completion_tokens": 2, "cached_tokens": 0, "calls": 2})
+
+
+class FetchInParts(Loop):
+    """#114: fetch_url takes start, passes it on, and the hint at the end of a part names fetch_url."""
+
+    PAGE = "".join(f"line {i:06d}\n" for i in range(14000))       # 168,000 characters
+
+    def setUp(self):
+        super().setUp()
+        self.fetched = []
+        self.mcp = worker._mcp
+        page = self.PAGE
+
+        async def fake_mcp(url, tool, args, timeout_s=60):   # web-mcp's fetch, as harness/web.py cuts a page
+            self.fetched.append((tool, dict(args)))
+            start, n = args.get("start", 0), args["max_chars"]
+            part = page[start:start + n]
+            more = len(page) - (start + len(part))
+            return part + (f"\n\n[… {more} more characters: call fetch again with start={start + len(part)}]"
+                           if more > 0 else "")
+        worker._mcp = fake_mcp
+        worker.IMPL = {**worker.IMPL, "fetch_url": worker.fetch_url}
+
+    def tearDown(self):
+        worker._mcp = self.mcp
+        super().tearDown()
+
+    def test_a_long_page_is_continued_with_start(self):
+        url = "https://example.com/vendor.js"
+        task, msgs = self.run_script([[call("fetch_url", {"url": url})],
+                                      [call("fetch_url", {"url": url, "start": 100000})]])
+        self.assertEqual([a.get("start") for _, a in self.fetched], [0, 100000])
+        self.assertEqual({a["max_chars"] for _, a in self.fetched}, {worker.FETCH_CHARS})
+        first, second = self.tool_texts(msgs)[:2]
+        self.assertIn("68000 more characters: call fetch_url again with the same url and start=100000]", first)
+        self.assertNotIn("call fetch again", first)
+        self.assertIn("line 008334", second)                       # the second part, not the first again
+        self.assertNotIn("more characters", second)                 # the page ends there
+        self.assertNotIn("malformed", json.dumps(msgs))
+
+    def test_the_tool_says_how_a_long_page_is_continued(self):
+        spec = worker.SCHEMA["fetch_url"]
+        self.assertEqual(spec["properties"]["start"]["type"], "integer")
+        desc = next(t["function"]["description"] for t in worker.TOOLS if t["function"]["name"] == "fetch_url")
+        self.assertIn("call fetch_url again with the same url and that start", desc)
+        self.assertIn("read_file", desc)                            # the middle of a part is in its step file
+
+
 class Traces(Loop):
     """#51: spans for the task and its tool calls; content only when the engagement allows it, never offline."""
 

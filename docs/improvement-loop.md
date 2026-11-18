@@ -21,11 +21,13 @@ benchmark runs themselves, which cost OpenRouter spend: see [Benchmarks](lab-and
 
 | Set | Benchmarks | Used for |
 |---|---|---|
-| Tuning | `web-dvwa`, `api-vampi`, `code-flask`, `ai-llm-lab` | reading failures and writing proposals |
-| Held-out | `web-juice-shop`, `api-graphql-dvga`, `code-node`, `laravel-ledgerly`, `web-hostile` | checking that a change didn't make the kit worse |
+| Tuning | `web-dvwa`, `api-vampi`, `code-flask`, `code-node`, `ai-llm-lab` | reading failures and writing proposals |
+| Held-out | `web-juice-shop`, `api-graphql-dvga`, `laravel-ledgerly`, `web-hostile` | checking that a change didn't make the kit worse |
 
-Each kind of target (web, API, code) is on both sides. `web-hostile` is held out so that no change is tuned to its
-planted instructions. Don't read held-out failures while writing a proposal: once you have, they are tuning data.
+Each kind of target (web, API, code) is on both sides; `laravel-ledgerly` (source and a running build) is the
+held-out code benchmark. `web-hostile` is held out so that no change is tuned to its planted instructions. Don't
+read held-out failures while writing a proposal: once you have, they are tuning data. `code-node` was held out
+until 17 November 2026 ([below](#2026-11-17-code-node-moved-to-tuning)).
 
 ```sh
 ./rvkit bench --improve split
@@ -317,10 +319,11 @@ and `p003`:
 | Planner turns that only update records | 72% (Flask) | 67% (Flask) |
 | Refused calls per run without a loop | 4 to 23 | 5 to 9 |
 
-Cost did not drop. On Flask the same six findings cost $0.11 with a plan of 8 items and $1.15 with one of 45, so
-the size of the plan drives the cost, and two thirds of the planner's turns are record keeping. A run saves one
-cost figure, so the worker's share is not known. These are open: coverage updates for several items in one call,
-a plan sized to the target, and cost saved per role.
+Cost did not drop. On Flask the same six findings cost $0.11, $0.73 and $1.15, with plans of 20, 20 and 45 items.
+The cheapest run was the one that did not use the worker, and the dearest made 52 `update_coverage` calls for its
+45 items, out of 125 tool calls. Three runs don't show which of the two drives the cost, and a run saves one cost
+figure, so the worker's share is not known. These are open: coverage updates for several items in one call, and
+cost saved per role (#78).
 
 Three defects in the tools were fixed after reading these runs, so the next set runs under a new label:
 
@@ -344,3 +347,26 @@ effect is uncertain, so it is a proposal and needs a judge round.
 - The hard benchmarks (`api-graphql-dvga`, `laravel-ledgerly`, `web-juice-shop`) have two or three runs each and
   none on the current harness. One of them scored 0 of 9 because its lab target never answered: a run should check
   that the target responds before it starts.
+
+### 2026-11-17: `code-node` moved to tuning
+
+**What was read.** `code-node` was held out, but its runs were read. P-003 names
+`code-node-20261115T134143Z` among its targets and quotes `code-node-20261115T201729Z`. Rounds 1 and 3 read the
+`code-node` conversations to explain their verdicts, and Round 4 replayed one of them. Between 15 and 17 November
+`code-node` runs were read in detail while fixing the harness (pull request 111), and issue 114 was written from
+one of them.
+
+**Why that disqualifies it.** The held-out check is meant to show how a change does on failures nobody looked at
+while writing it. Once a benchmark's failures have been read, later changes can be shaped by them, and its runs no
+longer test that.
+
+**What changed.** In `evals/improvement/split.json`, `code-node` moved from `held_out` to `tuning`. Held out are now
+`web-juice-shop`, `api-graphql-dvga`, `laravel-ledgerly` and `web-hostile`.
+
+**Judgements already recorded.** P-001 and P-003 were dropped on a held-out check that used `code-node`, and their
+recorded numbers stay as they are. P-003 was written partly from a `code-node` run, so its held-out check was not
+independent of the change. Neither verdict is changed here; P-001 is judged again against the next baseline
+anyway (Round 2).
+
+**To avoid it.** Before reading a run, check which side of the split its benchmark is on
+(`./rvkit bench --improve split`).

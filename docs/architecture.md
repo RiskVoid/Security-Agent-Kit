@@ -54,15 +54,18 @@ GPU, a local server or any OpenAI-compatible endpoint).
 | `agent-canvas` | `ghcr.io/openhands/agent-canvas` (pinned, `AGENT_CANVAS_TAG`) | OpenHands: agent runtime, UI, conversations. Runs the `riskvoid-planner` and `riskvoid-local` agents | `rvagent` only. No published port | `openhands-data`; `/src` and `/work` **read-only** |
 | `gateway` | `caddy` (pinned) | Publishes the UI on `127.0.0.1:8000`, proxies to OpenHands (websockets included), serves the start page at `/` | `default`, `rvagent`; **127.0.0.1:8000** | `gateway/Caddyfile`, `gateway/start.html` |
 | `egress-proxy` | kit image `-egress` (tinyproxy) | The agent container's only way out: allowlisted domains, deny by default | `default`, `rvagent` | built from `egress/` |
-| `litellm` | `ghcr.io/berriai/litellm` (pinned) | Model gateway: `planner`, `planner-fallback`, `colab-qwen`, `private-llm`, `colab-qwen-fallback`; daily OpenRouter budget | `default`, `rvagent`; **127.0.0.1:4000** | `.rvkit/litellm.yaml` (rendered), `.env` |
+| `litellm` | `ghcr.io/berriai/litellm` (pinned) | Model gateway: `planner`, `planner-fallback`, `validator`, `colab-qwen`, `private-llm`, `colab-qwen-fallback`; daily OpenRouter budget | `default`, `rvagent`, `rvtrace`; **127.0.0.1:4000** | `.rvkit/litellm.yaml` (rendered), `.env` |
 | `redis` | `valkey/valkey` (pinned) | Stores LiteLLM's OpenRouter spend so the budget survives restarts | `default` | `litellm-spend` |
 | `searxng` | `searxng/searxng` (pinned) | Private metasearch for web research | `default`; **127.0.0.1:8888** | `searxng/settings.yml` |
 | `web-mcp` | kit image `-harness` | `web_search` and `fetch` for the planner; fetch refuses engagement targets and non-public addresses | `default`, `rvagent` | none |
 | `kali-mcp` | kit image `-kali` | Kali toolbox as MCP; per-engagement scope firewall, sandbox, tiers, approvals, audit log | `default`, `rvagent`, `rvlab` (10.250.0.2) | `/work` (read-write), `/src` (read-only), `kali-control`, `semgrep-rules` |
-| `worker-mcp` | kit image `-harness` | `delegate_task`: runs a tool-calling loop on the worker model; search and fetch go through `web-mcp` | `rvagent` only (no internet) | `/work` (read-write), `/src` (read-only) |
+| `worker-mcp` | kit image `-harness` | `delegate_task`: runs a tool-calling loop on the worker model; search and fetch go through `web-mcp` | `rvagent`, `rvtrace` (no internet) | `/work` (read-write), `/src` (read-only) |
 | `findings-mcp` | kit image `-report` | Findings database, playbooks, `write_file`, branded report (python-docx, Chromium for the PDF, LibreOffice as its fallback) | `default`, `rvagent` | `/work` (read-write), your brand folder at `/brand-custom` (read-only) |
 | `intel-mcp` | kit image `-harness` | OSV, NVD, EPSS and CISA KEV lookups, cached | `default`, `rvagent` | `intel-cache` |
-| `lab-*` (profile `lab`) | Juice Shop, DVWA + MariaDB, VAmPI, DVGA, `riskvoid-lab-llm` | Deliberately vulnerable practice targets | `rvlab` only | none |
+| `otel-collector` (profile `tracing`) | `jaegertracing/all-in-one` (pinned) | Trace collector with an OTLP receiver, started by `./rvkit tracing on` | `default`, `rvtrace`; **127.0.0.1:16686** | none |
+| `plain-mcp` (profile `baseline`) | kit image `-harness` | Plain-agent baseline for benchmarks: only the sandboxed run tool and `record_finding`. Started by `./rvkit bench --agent riskvoid-plain` | `default`, `rvagent` | `/work` (read-write) |
+| `php-runner` (profile `php`) | built from `php-runner/` | The optional PHP profile, started only by `./rvkit php` | no network | the project's source at `/src` (read-only), `evidence/php/` of the engagement at `/out` |
+| `lab-*` (profile `lab`) | Juice Shop, DVWA + MariaDB, VAmPI, DVGA, `riskvoid-lab-llm`, Ledgerly (`riskvoid-lab-laravel`, and `riskvoid-lab-laravel-fixed` with the fixes), Parcel Tracker (`riskvoid-lab-hostile`) | Deliberately vulnerable practice targets | `rvlab` only | none |
 
 Kit images are published as `ghcr.io/riskvoid/security-agent-kit-{egress,harness,kali,report}:<VERSION>`
 (`RVKIT_REGISTRY` and `RVKIT_VERSION` override them). See [Design decisions](#design-decisions).
@@ -71,9 +74,10 @@ Kit images are published as `ghcr.io/riskvoid/security-agent-kit-{egress,harness
 
 | Network | Type | Members | Purpose |
 |---|---|---|---|
-| `default` | normal bridge, has internet | every service except `agent-canvas`, `worker-mcp` and the lab | the kit's services talk to each other and to model providers, SearXNG engines and vulnerability databases |
-| `rvagent` | `internal: true` | `agent-canvas`, `gateway`, `egress-proxy`, `litellm` and the five MCP servers | everything OpenHands and the worker are allowed to talk to. No route to the internet or the host |
+| `default` | normal bridge, has internet | every service except `agent-canvas`, `worker-mcp`, `php-runner` and the lab | the kit's services talk to each other and to model providers, SearXNG engines and vulnerability databases |
+| `rvagent` | `internal: true` | `agent-canvas`, `gateway`, `egress-proxy`, `litellm` and the five MCP servers (and `plain-mcp` when started) | everything OpenHands and the worker are allowed to talk to. No route to the internet or the host |
 | `rvlab` | `internal: true`, `10.250.0.0/24` | `kali-mcp` (10.250.0.2) and the lab targets | practice targets. No internet, no host, and no other kit service |
+| `rvtrace` | `internal: true`, `10.250.1.0/24` | `litellm`, `worker-mcp`, `otel-collector` | trace export (`./rvkit tracing on`). The agent's sandbox can't read traces |
 
 ### Host ports
 
@@ -84,6 +88,7 @@ All published ports bind to `127.0.0.1` only:
 | 8000 | `gateway` | the UI: http://localhost:8000/ |
 | 4000 | `litellm` | used by `./rvkit` (`test`, `budget`, `status`, `doctor`) |
 | 8888 | `searxng` | the search engine, if you want to use it yourself |
+| 16686 | `otel-collector` | the Jaeger trace UI, only with `./rvkit tracing on` |
 
 ### Volumes and folders
 
@@ -197,7 +202,7 @@ every worker task and the console share them. `Max parallel` limits concurrent n
 
 LiteLLM runs a pre-call hook (`litellm/rv_events.py`, which calls the pure module `litellm/rv_routes.py`) on every
 model call. It works out where the call's route goes (`local`, `colab`, `api`, `openrouter`, `anthropic`,
-`openai`, from `.env`: the worker endpoint, the planner models and the fallbacks), and which engagements the call
+`openai`, `bedrock`, from `.env`: the worker endpoint, the planner models and the fallbacks), and which engagements the call
 is about:
 
 - the engagement the OpenHands conversation is bound to (OpenHands sends the conversation id as

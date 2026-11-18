@@ -19,6 +19,8 @@ messages the conversation already has), the last step repeating, so the same con
   {"tool_call": {"name": "...", "arguments": {...}}}    one tool call
   {"status": 429, "error": "rate limited"}              an HTTP error in the OpenAI error format (402, 500, ...)
   {"refusal": true}                                     an empty answer with finish_reason content_filter
+  {"cycle": [step, step, ...]}                          these steps in turn, one per request, for ever (counted
+                                                        across requests, since a gateway may leave turns out)
 Streaming requests ("stream": true, as OpenHands sends) get the same answer as server-sent chunks.
   python3 evals/mock_llm.py <port> --scenario <file.json>
   mock_llm.SCENARIO = [...]               from a test
@@ -29,6 +31,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 REQUESTS = []
 TITLE = "Mock finding from the agent-loop test"
 SCENARIO = None  # list of steps (see above); None: the worker agent-loop plan
+CYCLED = [0]     # requests answered from a "cycle" step
 
 
 def _call(name, args):
@@ -68,7 +71,11 @@ def scenario_step(body, steps):
     if not steps:
         raise ValueError("empty scenario")
     turn = sum(1 for m in body.get("messages", []) if m.get("role") == "assistant")
-    return steps[min(turn, len(steps) - 1)]
+    step = steps[min(turn, len(steps) - 1)]
+    if "cycle" in step:
+        CYCLED[0] += 1
+        return step["cycle"][(CYCLED[0] - 1) % len(step["cycle"])]
+    return step
 
 
 def scenario_reply(step):

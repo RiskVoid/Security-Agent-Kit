@@ -29,7 +29,8 @@ of engagement, a task, and the expected findings. Each run:
        tool outcomes  commands run, failed, timed out and refused (from the audit log); "must_not_run" patterns
                       that ran anyway; "expected_refusals" that the policy refused
        decisions      candidates left, findings confirmed without a method, observations not triaged
-     plus OpenRouter cost (usage delta of your key), wall time, planner tokens and the versions of the kit, prompt,
+     plus OpenRouter cost (usage delta of your key), wall time, tokens by role (planner, worker, advisor,
+     validator: bench_stats.token_use) and the versions of the kit, prompt,
      playbooks, tool images and models, and the operator load: approvals asked, questions to the user, worker
      tasks by status, tool-call errors and cost per verified finding. --repeat runs a benchmark N times (model
      output varies) and reports, per expected finding, found in k of n runs, then pass^k and pass@k, and every
@@ -264,6 +265,26 @@ def approve_pending(eng):
 
 LOOP_TAG = "[RiskVoid] Loop stopped"   # litellm/rv_repeats.py CUT_TAG: the gateway ended a turn that repeated one call
 MAX_CONVERSATIONS = 3                  # a run goes on in a new conversation at most twice
+MODEL_LOG = os.path.join(KIT, ".rvkit", "events", "model-events.jsonl")   # litellm/rv_events.py writes it
+
+
+def loop_limit(eng, start, end, path=MODEL_LOG):
+    """How often the gateway's loop limit acted in a run (litellm/rv_repeats.py), from the model log: note (a
+    repeated call left out of what the planner reads, a note in its place), withhold (the planner sent the call
+    again and its tool was left out of the next request), cut (the gateway ended the turn), and cycles (those of
+    them about two or three calls made in turn). Each counts planner replies that repeated the call again."""
+    sys.path.insert(0, os.path.join(KIT, "scripts"))
+    import model_events
+    out = {"note": 0, "withhold": 0, "cut": 0, "cycles": 0}
+    for e in model_events.read(path=path):
+        if e.get("kind") not in ("repeat", "loop") or e.get("engagement") not in (eng, None) \
+                or not int(start) <= model_events._epoch(e.get("ts")) <= end:
+            continue
+        # events from before the stage field: a loop is a cut, a repeat with a withheld tool a withhold
+        stage = e.get("stage") or ("cut" if e["kind"] == "loop" else "withhold" if e.get("withheld") else "note")
+        out[stage] = out.get(stage, 0) + 1
+        out["cycles"] += (e.get("period") or 1) > 1
+    return out
 
 
 def final_response(cid):
@@ -713,6 +734,7 @@ def validation(b, allf, eng):
         con = sqlite3.connect(f"file:{db_file(eng)}?mode=ro", uri=True)
         con.row_factory = sqlite3.Row
         rows = [dict(r) for r in con.execute("SELECT * FROM validations ORDER BY id")]
+        cols = {r[1] for r in con.execute("PRAGMA table_info(validations)")}
         con.close()
     except sqlite3.Error:
         return None   # no validator table: an engagement from before #45, or it never confirmed anything
@@ -731,7 +753,16 @@ def validation(b, allf, eng):
             "disproved_expected": [{"id": f["id"], "title": f["title"], "expected": real(f)} for f in dis
                                    if real(f) and not decoy(f)],
             "reasons": [{"id": k, "verdict": r["verdict"], "reason": (r["reason"] or "")[:300]}
-                        for k, r in last.items() if r["verdict"] != "stands"][:10]}
+                        for k, r in last.items() if r["verdict"] != "stands"][:10],
+            "tokens": validator_tokens(rows, cols)}
+
+
+def validator_tokens(rows, cols):
+    """Tokens of every verdict (not only the latest), or None when the database didn't record them: an engagement
+    from before the token columns (#78), or a verdict saved before they were added."""
+    if "prompt_tokens" not in cols or any(r.get("prompt_tokens") is None for r in rows):
+        return None
+    return {k: sum(int(r.get(f"{k}_tokens") or 0) for r in rows) for k in ("prompt", "completion", "cached")}
 
 
 def rescore_saved(path):
@@ -970,6 +1001,7 @@ def run_one(name, agent, log=print, group=None, budget=None, label=None, mode="o
            "cost_usd": round(after - before, 4) if before is not None and after is not None else None,
            **run, "score": s}
     res["operator"] = operator(res, os.path.join(OUT, f"{name}-{now:%Y%m%dT%H%M%SZ}.json"))
+    res["loop_limit"] = loop_limit(eng, t_start, time.time())
     os.makedirs(OUT, exist_ok=True)
     json.dump(res, open(os.path.join(OUT, f"{name}-{now:%Y%m%dT%H%M%SZ}.json"), "w"), indent=1)
     with open(os.path.join(OUT, "history.jsonl"), "a") as h:
@@ -983,7 +1015,9 @@ def run_one(name, agent, log=print, group=None, budget=None, label=None, mode="o
                            | {"approvals_requested": res["operator"]["approvals"]["requested"],
                               "questions": res["operator"]["questions"],
                               "tool_errors": sum((res["operator"]["tool_errors"] or {}).values()),
-                              "cost_per_verified": res["operator"]["cost_per_verified"]}) + "\n")
+                              "cost_per_verified": res["operator"]["cost_per_verified"]}
+                           | {"token_use": {k: v for k, v in res["operator"]["token_use"].items() if k != "detail"}})
+                + "\n")
     try:   # failure mining (evals/failures.py): a problem there must not cost the result
         import failures
         res["failures"] = len(failures.record(os.path.join(OUT, f"{name}-{now:%Y%m%dT%H%M%SZ}.json")))
@@ -998,6 +1032,9 @@ def run_one(name, agent, log=print, group=None, budget=None, label=None, mode="o
         f"{len(s['clean_violations'])} clean control(s) reported")
     for r in run.get("restarts") or []:
         log(f"  went on in a new conversation at minute {r['minute']}: {r['reason']}")
+    ll = res["loop_limit"]
+    log(f"  loop limit: note {ll['note']}, tool withheld {ll['withhold']}, turn ended {ll['cut']}"
+        + (f" ({ll['cycles']} of them for calls made in turn)" if ll["cycles"] else ""))
     if s.get("adversarial"):
         a = s["adversarial"]
         log(f"  hostile target: {a['out_of_scope']['attempts']} out-of-scope attempt(s) "
@@ -1013,6 +1050,7 @@ def run_one(name, agent, log=print, group=None, budget=None, label=None, mode="o
     if b.get("note"):
         log(f"  note: {b['note']}")
     log(f"  operator: {stats.operator_line(res['operator'])}")
+    log(f"  tokens: {stats.tokens_line(res['operator']['token_use'])}")
     log(f"  lookups ({mode}): {looked['searches']} search(es), {looked['fetches']} fetch(es), {looked['refused']} refused"
         + (f"; WENT FOR A WRITE-UP {len(looked['writeups'])} time(s): "
            + "; ".join((w.get('query') or w.get('url') or '')[:80] for w in looked['writeups'][:3])
@@ -1036,12 +1074,16 @@ def history():
     p = os.path.join(OUT, "history.jsonl")
     rows = [json.loads(l) for l in open(p)] if os.path.exists(p) else []
     print(f"{'when (UTC)':17} {'benchmark':15} {'agent':17} {'planner':28} {'prompt':12} {'recall':>7} "
-          f"{'wtd':>5} {'prec':>5} {'cost':>7} {'$/ver':>6} {'appr':>4} {'q':>2} {'err':>4} {'min':>4} status")
+          f"{'wtd':>5} {'prec':>5} {'cost':>7} {'tokens':>7} {'$/ver':>6} {'appr':>4} {'q':>2} {'err':>4} {'min':>4} "
+          "status")
     for r in rows:
         f = lambda x, p="{:.2f}": p.format(x) if x is not None else "n/a"
+        # total tokens of every role (#78); n/a for a run from before, or one that didn't record a role
+        tok = stats.fmt_tokens((r.get("token_use") or {}).get("total"))
         print(f"{r['at'][:16]:17} {r['benchmark']:15} {r['agent']:17} {str(r['models']['planner'])[-28:]:28} "
               f"{r['planner_prompt_sha']:12} {r['found']}/{r['expected']:<5} {f(r['weighted_recall']):>5} "
-              f"{f(r['precision']):>5} {f(r['cost_usd'], '${:.2f}'):>7} {f(r.get('cost_per_verified'), '${:.2f}'):>6} "
+              f"{f(r['precision']):>5} {f(r['cost_usd'], '${:.2f}'):>7} {tok:>7} "
+              f"{f(r.get('cost_per_verified'), '${:.2f}'):>6} "
               f"{f(r.get('approvals_requested'), '{}'):>4} {f(r.get('questions'), '{}'):>2} "
               f"{f(r.get('tool_errors'), '{}'):>4} {r['seconds'] // 60:>4} {r['status']}"
               + (f" +{r['left_candidate']} left candidate" if r.get("left_candidate") else "")

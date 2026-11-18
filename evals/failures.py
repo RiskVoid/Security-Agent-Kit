@@ -114,9 +114,35 @@ def slug(text):
     return re.sub(r"\s+", " ", s).strip(" .:,")[:70] or "unspecified"
 
 
+BATCH_HEAD = re.compile(r"REFUSED \d+ of \d+ \(")          # update_coverage with several items (#112)
+BATCH_LINE = re.compile(r"^\S+: REFUSED: (.*)$", re.M)      # one line per refused item of such a reply
+
+
+def tool_classes(tool, body, is_error=False):
+    """The failure classes of a tool result: one per refused item of a batch reply, else tool_class's one (or
+    none when the call worked)."""
+    text = (body or "").strip()
+    if BATCH_HEAD.match(text):
+        return ["refused: " + slug(m) for m in BATCH_LINE.findall(text)] or ["refused: unspecified"]
+    cls = tool_class(tool, body, is_error)
+    return [cls] if cls else []
+
+
+def refusal_line(body, cls):
+    """The line of a tool result that gives this class: the item's own line in a batch reply, else the first."""
+    lines = (body or "").strip().split("\n")
+    if BATCH_HEAD.match(lines[0]):
+        return next((l for l in lines[1:] if BATCH_LINE.match(l) and "refused: " + slug(BATCH_LINE.match(l).group(1))
+                     == cls), lines[0])
+    return lines[0]
+
+
 def tool_class(tool, body, is_error=False):
-    """The failure class of a tool result, or None when the call worked."""
+    """The failure class of a tool result, or None when the call worked. A batch reply with refused items is
+    classed by its first refusal (tool_classes gives every one)."""
     first = (body or "").strip().split("\n")[0]
+    if BATCH_HEAD.match(first):
+        return tool_classes(tool, body, is_error)[0]
     if first.startswith("REFUSED"):
         return "refused: " + slug(first.split(":", 1)[-1])
     if re.match(r"MCP tool '[^']+' timed out", first):
@@ -246,12 +272,11 @@ def collect(res, bench, data):
 
     failed = collections.OrderedDict()   # (tool, class) -> the failing calls, in order
     for c in (data or {}).get("calls", []):
-        cls = tool_class(c["tool"], c["body"], c["is_error"])
-        if cls:
+        for cls in dict.fromkeys(tool_classes(c["tool"], c["body"], c["is_error"])):
             failed.setdefault((c["tool"], cls), []).append(c)
     for (tool, cls), cs in failed.items():
         add("tool", f"{tool}/{cls}", tool, n=len(cs), examples=[_short_args(c["args"]) for c in cs[:2]],
-            message=cs[0]["body"].split("\n")[0][:200])
+            message=refusal_line(cs[0]["body"], cls)[:200])
         again = collections.Counter(c["args"] for c in cs)
         repeats = sum(n - 1 for n in again.values() if n > 1)
         if repeats:
@@ -415,9 +440,11 @@ def engagement_items(eng, data):
             yield item(kind, "failed", at=r.get("ts"), what=what, why=f"exit code {r.get('exit')}", tier=r.get("tier"))
     seen = collections.Counter()
     for c in data.get("calls", []):
-        cls = tool_class(c["tool"], c["body"].replace(eng, "<eng>"), c["is_error"])
-        if cls and not (AUDITED.match(c["tool"]) and cls.startswith(("refused", "command-"))):
-            show = {"what": f"{c['tool']} {_short_args(c['args'], 300)}", "why": c["body"].split("\n")[0][:300]}
+        body = c["body"].replace(eng, "<eng>")
+        for cls in dict.fromkeys(tool_classes(c["tool"], body, c["is_error"])):
+            if AUDITED.match(c["tool"]) and cls.startswith(("refused", "command-")):
+                continue
+            show = {"what": f"{c['tool']} {_short_args(c['args'], 300)}", "why": refusal_line(body, cls)[:300]}
             yield item("tool", f"{c['tool']}/{cls}", **show)
             seen[(c["tool"], cls, c["args"])] += 1
             if seen[(c["tool"], cls, c["args"])] > 1:

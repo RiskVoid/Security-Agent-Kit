@@ -347,6 +347,24 @@ class Scope(unittest.TestCase):
         for bad in ("", "-x", "../x", "a/b", "x" * 65):
             self.assertFalse(core._name_ok(bad), bad)
 
+    def test_nft_loopback_before_conntrack(self):
+        """A DNS query that matches a live conntrack entry skips the redirect to the engagement's resolver. Loopback
+        must be checked before 'established' lets it through, or Docker's DNS answers names the scope excludes."""
+        pol = policy.effective("- example.com\n- *.example.io:443\n- !x.example.io", "")
+        script = core._nft_script([(20001, pol, True), (20002, pol, False)], policy.ALWAYS_BLOCKED)
+        eng = script.split("chain eng {")[1].split("\n  }")[0].splitlines()
+        eng = [line.strip() for line in eng if line.strip()]
+        self.assertEqual(eng[0], "ip daddr 127.0.0.0/8 meta skuid vmap { 20001 : jump e20001_lo, 20002 : jump e20002_lo }")
+        self.assertEqual(eng[1], "ct state established,related accept")
+        lo = script.split("chain e20001_lo {")[1].split("\n  }")[0].strip().splitlines()
+        self.assertEqual([line.strip() for line in lo], [
+            "ip daddr 127.0.1.1 meta l4proto { tcp, udp } th dport 53 accept",
+            'oifname "lo" ip daddr 127.0.0.1 tcp dport { 1024-8089, 8091-65535 } accept',
+            "counter drop"])  # Docker's DNS (127.0.0.11) and the other engagement's resolver (127.0.1.2) refused
+        self.assertIn("meta skuid 20002 meta l4proto { tcp, udp } th dport 53 dnat to 127.0.1.2:53", script)
+        self.assertIn("@infra4", script.split("chain e20001 {")[1].split("\n  }")[0])
+        self.assertNotIn("@infra4", script.split("chain e20002 {")[1].split("\n  }")[0])  # offline
+
 
 class Approvals(unittest.TestCase):
     """RW-005: approvals are bound to the action and the policy revision, and are used exactly once."""
@@ -1792,6 +1810,49 @@ class BenchStats(unittest.TestCase):
         self.assertIsNone(old["figures"]["recorded_recall"]["mean"])
         self.st.print_group(old, lines.append)
 
+    def test_tokens_by_role(self):   # #78: every role's tokens in the result, missing ones not shown as 0
+        res = {"tokens": {"prompt_tokens": 1000, "completion_tokens": 100, "cache_read_tokens": 800},
+               "score": {"validation": {"validated": 1, "tokens": {"prompt": 300, "completion": 30, "cached": 0}}}}
+        tasks = [{"status": "done", "tokens": {"prompt_tokens": 5000, "completion_tokens": 500, "cached_tokens": 0,
+                                               "calls": 4},
+                  "advisor": [{"kind": "repeat", "tokens": {"prompt_tokens": 200, "completion_tokens": 20}},
+                              {"kind": "repeat", "error": "URLError: down"}]},
+                 {"status": "blocked", "tokens": {"prompt_tokens": 0, "completion_tokens": 0, "cached_tokens": 0,
+                                                  "calls": 0}}]
+        tu = self.st.token_use(res, tasks)
+        self.assertEqual({r: tu[r] for r in self.st.ROLES}, {"planner": 1100, "worker": 5500, "advisor": 220,
+                                                             "validator": 330})
+        self.assertEqual(tu["total"], 7150)
+        self.assertEqual(tu["detail"]["planner"], {"prompt": 1000, "completion": 100, "cached": 800})
+        self.assertEqual(self.st.tokens_line(tu), "total 7k (planner 1k, worker 6k, advisor 220, validator 330)")
+        # no worker task and no validator verdict: those roles used nothing, and the total holds
+        none = self.st.token_use({"tokens": res["tokens"], "score": {"validation": None}}, [])
+        self.assertEqual((none["worker"], none["advisor"], none["validator"], none["total"]), (0, 0, 0, 1100))
+        # a run saved before #78: tasks and verdicts without token figures are not recorded, not 0
+        old_tasks = [{"status": "done", "advisor": [{"tokens": {"prompt_tokens": 50, "completion_tokens": 5}}]}]
+        old = self.st.token_use({"tokens": res["tokens"], "score": {"validation": {"validated": 2}}}, old_tasks)
+        self.assertEqual((old["planner"], old["worker"], old["advisor"], old["validator"], old["total"]),
+                         (1100, None, 55, None, None))
+        self.assertIn("worker n/a", self.st.tokens_line(old))
+        # a saved result read back: with the figures in operator, else what the result itself holds
+        saved = {**self.run_([1, 0, 0], label="new"), "operator": {"token_use": tu}}
+        legacy = {**self.run_([1, 0, 0], label="old"), "tokens": res["tokens"]}
+        self.assertEqual(self.st.run_tokens(saved)["total"], 7150)
+        self.assertEqual((self.st.run_tokens(legacy)["planner"], self.st.run_tokens(legacy)["total"]), (1100, None))
+        g = self.st.group_summary([saved, saved])
+        self.assertEqual(g["figures"]["tokens_total"]["mean"], 7150)
+        lines = []
+        self.st.print_group(g, lines.append)
+        self.assertIn("cost $1.00 ±0.00, tokens 7k", lines[0])
+        self.assertIsNone(self.st.group_summary([legacy])["figures"]["tokens_total"]["mean"])
+        c = self.st.compare([legacy, legacy], [saved, saved])        # the total next to the billed cost
+        self.assertEqual(c["spend"]["b"], {"cost_usd": 1.0, "tokens": 7150, "runs_with_tokens": 2, "runs": 2})
+        self.assertIsNone(c["spend"]["a"]["tokens"])
+        lines = []
+        self.st.print_compare(c, "old", "new", out=lines.append)
+        self.assertIn("old cost $1.00, tokens n/a (0 of 2 runs recorded them); new cost $1.00, tokens 7k", lines[-2])
+        json.dumps(tu)
+
 
 class RulesPinned(unittest.TestCase):
     """Epic #52, issue #38: the rules the kit can't enforce (stop conditions, window, budgets, client data) end every
@@ -2102,6 +2163,31 @@ class Validator(unittest.TestCase):
         c = db.record("acme", actor="agent:planner", title="maybe", severity="low", status="candidate")
         self.assertEqual(self.v.validate("acme", c["id"], chat=self.chat([]))["verdict"], "not_run")
         self.assertEqual(self.calls, [])
+
+    def test_a_verdict_keeps_its_tokens_and_model(self):   # #78; a validations table from before keeps opening
+        import sqlite3
+        with sqlite3.connect(db.db_path("acme")) as con:     # the table as validator.py made it before the columns
+            con.execute("""CREATE TABLE validations (id INTEGER PRIMARY KEY AUTOINCREMENT, finding_id TEXT NOT NULL,
+                revision INTEGER, verdict TEXT NOT NULL, reason TEXT, evidence_ref TEXT, model TEXT, at TEXT)""")
+            con.execute("INSERT INTO validations (finding_id, verdict, reason, model) VALUES (?,?,?,?)",
+                        (self.f["id"], "stands", "old verdict", "m"))
+        self.assertEqual(self.v.history("acme")[0]["prompt_tokens"], None)      # opens; not recorded, not 0
+        answers = [("[RiskVoid] No answer: empty reply.", "validator-id", {"prompt_tokens": 900, "completion_tokens": 400}),
+                   ('{"verdict": "stands", "reason": "ok", "evidence_ref": ""}', "planner-id",
+                    {"prompt_tokens": 1000, "completion_tokens": 50, "prompt_tokens_details": {"cached_tokens": 600}})]
+        self.v.validate("acme", self.f["id"], chat=lambda m, e, msgs: answers.pop(0))
+        row = self.v.history("acme")[0]
+        self.assertEqual((row["model"], row["prompt_tokens"], row["completion_tokens"], row["cached_tokens"]),
+                         ("planner-id", 1900, 450, 600))                 # the empty answer's tokens count too
+        spec = importlib.util.spec_from_file_location("rv_bench", os.path.join(KIT, "evals", "run_benchmark.py"))
+        run_benchmark = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(run_benchmark)
+        rows = [dict(r) for r in self.v.history("acme")]
+        cols = set(rows[0])
+        self.assertIsNone(run_benchmark.validator_tokens(rows, cols))     # one verdict from before: not recorded
+        self.assertEqual(run_benchmark.validator_tokens(rows[:1], cols), {"prompt": 1900, "completion": 450,
+                                                                          "cached": 600})
+        self.assertIsNone(run_benchmark.validator_tokens([{"verdict": "stands"}], {"verdict"}))
 
 
 class ReconMap(unittest.TestCase):
@@ -3074,6 +3160,95 @@ class RepeatedCalls(unittest.TestCase):
             del os.environ["REPEAT_COLLAPSE"]
         self.assertTrue(self.r.enabled())
 
+    CYCLE_TOOLS = [{"type": "function", "function": {"name": n}}
+                   for n in ("findings_update_finding", "findings_validate_finding", "kali_run", "terminal")]
+
+    def cycle(self, rounds, calls=None):
+        """A planner that makes two (or more) calls in turn, each ending the same way every round."""
+        calls = calls or [("findings_update_finding", {"finding_id": "F-010", "method": "runtime-test"},
+                           "REFUSED: needs reproduction (approval id 8d0afa0b)"),
+                          ("findings_validate_finding", {"finding_id": "F-010"}, "candidate: not confirmed yet")]
+        msgs = self.history(0)
+        for i in range(rounds):
+            for k, (name, args, result) in enumerate(calls):
+                msgs += self.turn(100 + 10 * i + k, name, args, result.replace("8d0afa0b", f"{i:08x}"))
+        return msgs
+
+    def test_an_alternating_loop_is_counted_in_rounds(self):
+        both = ["findings_update_finding", "findings_validate_finding"]
+        for rounds, stage, withheld, cut in ((2, None, [], False), (3, "note", [], False), (4, "withhold", both, False),
+                                             (5, "withhold", both, False), (6, "cut", both, True)):
+            r = self.r.review(self.cycle(rounds), self.CYCLE_TOOLS)
+            self.assertEqual((r["stage"], r["withhold"], bool(r["cut"])), (stage, withheld, cut), rounds)
+            if stage:   # the approval id differs every round: that is still the same ending
+                self.assertEqual((r["removed"], r["streak"], r["period"]), (2 * rounds, rounds, 2), rounds)
+                self.assertEqual([m["role"] for m in r["messages"]], ["system", "user", "assistant", "tool", "user"])
+        note = self.r.review(self.cycle(4), self.CYCLE_TOOLS)["messages"][-1]["content"]
+        for part in ("the same 2 tool calls in turn, 4 times over", 'findings_update_finding(finding_id="F-010"',
+                     "| findings_validate_finding(", "candidate: not confirmed yet", "Those calls are closed",
+                     "findings_update_finding and findings_validate_finding are not available"):
+            self.assertIn(part, note)
+        text = self.r.cut_text(self.r.review(self.cycle(6), self.CYCLE_TOOLS)["cut"], "acme")
+        self.assertTrue(text.startswith(self.r.CUT_TAG))
+        self.assertIn("the same 2 tool calls in turn, 6 times over", text)
+
+    def test_a_cycle_of_three(self):
+        three = [("kali_run", {"command": "cat a.py"}, "x = 1"), ("kali_run", {"command": "cat b.py"}, "y = 2"),
+                 ("findings_update_finding", {"finding_id": "F-1"}, "REFUSED: no evidence")]
+        r = self.r.review(self.cycle(3, three), self.CYCLE_TOOLS)
+        self.assertEqual((r["stage"], r["period"], r["streak"], r["removed"]), ("note", 3, 3, 9))
+        r = self.r.review(self.cycle(4, three), self.CYCLE_TOOLS)
+        self.assertEqual(r["withhold"], ["findings_update_finding", "kali_run"])
+        self.assertEqual(self.r.review(self.cycle(2, three), self.CYCLE_TOOLS)["stage"], None)
+
+    def test_work_that_moves_on_is_not_a_cycle(self):
+        # two tools in turn with other arguments every time: reading files and recording notes
+        work = self.history(0)
+        for i in range(8):
+            work += self.turn(200 + 2 * i, "kali_run", {"command": f"cat src/f{i}.py"}, f"code {i}")
+            work += self.turn(201 + 2 * i, "findings_update_finding", {"finding_id": f"F-{i}"}, "updated")
+        self.assertEqual(self.r.collapse(work), (work, 0))
+        # the same two calls, but a result that changed: the state moves (a scan that finishes, a file that grows)
+        changing = self.history(0)
+        for i in range(6):
+            changing += self.turn(300 + 2 * i, "kali_run", {"command": "tail log"}, f"line {'x' * i}")
+            changing += self.turn(301 + 2 * i, "kali_run", {"command": "ls out"}, "a.txt")
+        self.assertEqual(self.r.collapse(changing)[1], 0)
+        # waiting in between: a call that waits ends a cycle as it ends a run
+        waits = self.history(0)
+        for i in range(6):
+            waits += self.turn(400 + 2 * i, "kali_run", {"command": "curl -s http://t/status"}, "pending")
+            waits += self.turn(401 + 2 * i, "terminal", {"command": "sleep 30"}, "")
+        self.assertEqual(self.r.collapse(waits)[1], 0)
+
+    def test_a_cycle_after_a_run_is_counted_on_its_own(self):
+        msgs = self.history(3) + self.cycle(3)[4:]
+        r = self.r.review(msgs, self.CYCLE_TOOLS)
+        self.assertEqual((r["removed"], r["period"], r["streak"]), (9, 2, 3))
+        self.assertEqual(sum(1 for m in r["messages"] if "[harness]" in str(m.get("content"))), 2)
+
+    def test_the_benchmark_counts_the_stages(self):
+        spec = importlib.util.spec_from_file_location("rv_bench_loops", os.path.join(KIT, "evals", "run_benchmark.py"))
+        bench = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(bench)
+        ts = lambda t: time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(t))
+        rows = [{"ts": ts(1000), "kind": "repeat", "engagement": "bench-x", "stage": "note", "period": 1},
+                {"ts": ts(1010), "kind": "repeat", "engagement": "bench-x", "stage": "withhold", "period": 2},
+                {"ts": ts(1020), "kind": "loop", "engagement": "bench-x", "stage": "cut", "period": 2},
+                {"ts": ts(1030), "kind": "repeat", "engagement": "bench-x", "withheld": ["kali_run"]},   # before stages
+                {"ts": ts(1040), "kind": "loop", "engagement": "bench-x"},
+                {"ts": ts(1050), "kind": "repeat", "engagement": "bench-y", "stage": "note"},             # another one
+                {"ts": ts(1050), "kind": "refusal", "engagement": "bench-x"},
+                {"ts": ts(5000), "kind": "loop", "engagement": "bench-x", "stage": "cut"}]                # later run
+        with tempfile.TemporaryDirectory() as d:
+            p = os.path.join(d, "model-events.jsonl")
+            with open(p, "w") as f:
+                f.write("".join(json.dumps(r) + "\n" for r in rows) + "not json\n")
+            self.assertEqual(bench.loop_limit("bench-x", 999.5, 2000, p),
+                             {"note": 1, "withhold": 2, "cut": 2, "cycles": 2})
+            self.assertEqual(bench.loop_limit("bench-x", 0, 10, p), {"note": 0, "withhold": 0, "cut": 0, "cycles": 0})
+            self.assertEqual(bench.loop_limit("bench-x", 0, 10, os.path.join(d, "none.jsonl"))["cut"], 0)
+
 
 class FindingTools(unittest.TestCase):
     """The planner's finding tools (harness/findings.py) with the MCP library stubbed and the validator faked: a
@@ -3234,6 +3409,65 @@ class FindingTools(unittest.TestCase):
         self.assertEqual(out["evidence"], ["evidence/runs/r1.txt", "evidence/runs/r1.txt"])
         out = self.t.update_coverage("e", pid, "tested", evidence=["evidence/runs/nope.txt: see above"])
         self.assertEqual(out, "REFUSED: evidence/runs/nope.txt: no such file")
+
+    def test_coverage_of_several_items_in_one_call(self):
+        """#112: update_coverage was 21 of 59, 52 of 125 and 22 of 102 tool calls in three runs, one item each."""
+        import workspace
+        ids = workspace.plan_add("e", "agent:planner", [{"title": f"t{n}", "area": "injection"} for n in range(4)])
+        out = self.t.update_coverage("e", updates=[
+            {"item": ids[0], "state": "tested", "evidence": ["evidence/runs/r1.txt (parameterised)"]},
+            {"item": ids[1], "state": "tested", "evidence": ["evidence/runs/nope.txt"]},
+            {"item": ids[2], "state": "not-applicable", "rationale": "no file upload"},
+            {"item": "P-999", "state": "blocked", "rationale": "r"}])
+        self.assertEqual(out.split("\n"), [
+            "REFUSED 2 of 4 (the others are saved; send only the refused ones again):", f"{ids[0]}: tested",
+            f"{ids[1]}: REFUSED: evidence/runs/nope.txt: no such file", f"{ids[2]}: not-applicable",
+            "P-999: REFUSED: no plan item P-999"])
+        got = {i["id"]: i for i in workspace.plan_list("e")}
+        self.assertEqual([got[i]["state"] for i in ids], ["tested", "planned", "not-applicable", "planned"])
+        self.assertEqual(got[ids[0]]["evidence"], ["evidence/runs/r1.txt"])
+        # failure mining sees each refusal, and the runner's count sees a refused call
+        spec = importlib.util.spec_from_file_location("rv_failures_batch", os.path.join(KIT, "evals", "failures.py"))
+        failures = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(failures)
+        self.assertEqual(failures.tool_classes("findings_update_coverage", out),
+                         ["refused: no such file", "refused: no plan item"])
+        self.assertEqual(failures.tool_class("findings_update_coverage", out), "refused: no such file")
+        self.assertEqual(failures.refusal_line(out, "refused: no plan item"), "P-999: REFUSED: no plan item P-999")
+        ok = self.t.update_coverage("e", updates=[{"item": ids[1], "state": "excluded", "rationale": "agreed"},
+                                                  {"item": ids[3], "state": "excluded", "rationale": "agreed"}])
+        self.assertEqual(ok, f"saved 2 of 2:\n{ids[1]}: excluded\n{ids[3]}: excluded")
+        self.assertEqual(failures.tool_classes("findings_update_coverage", ok), [])
+        self.assertIsNone(failures.tool_class("findings_update_coverage", ok))
+
+    def test_coverage_batch_of_one_is_the_single_form(self):
+        import workspace
+        a, b = workspace.plan_add("e", "agent:planner", [{"title": "a", "area": "x"}, {"title": "b", "area": "x"}])
+        one = self.t.update_coverage("e", updates=[{"item": a, "state": "excluded", "rationale": "out of scope"}])
+        self.assertEqual(one, self.t.update_coverage("e", b, "excluded", rationale="out of scope").replace(b, a)
+                         .replace('"b"', '"a"'))
+        self.assertEqual(json.loads(one)["state"], "excluded")
+        self.assertEqual(self.t.update_coverage("e", updates=[{"item": a, "state": "tested"}]),
+                         self.t.update_coverage("e", a, "tested"))
+        self.assertTrue(self.t.update_coverage("e", a, "tested").startswith("REFUSED: tested needs evidence"))
+
+    def test_coverage_batch_that_cannot_be_read_is_refused(self):
+        import workspace
+        a = workspace.plan_add("e", "agent:planner", [{"title": "a", "area": "x"}])[0]
+        for bad, why in (([], "updates is empty"), ([{"state": "tested"}], "no item or no state"),
+                         (["P-001"], "not an object"), ([{"item": a, "state": "excluded", "rationale": "r",
+                                                          "reason": "r"}], "unknown keys reason"),
+                         ([{"item": a, "state": "tested", "evidence": "evidence/runs/r1.txt"}], "not a list of paths")):
+            out = self.t.update_coverage("e", updates=bad)
+            self.assertTrue(out.startswith(f"REFUSED: {why}") or why in out, out)
+            self.assertIn('updates: [{"item": "P-001", "state": "tested"', out)   # what to send
+        out = self.t.update_coverage("e", updates=[{"item": a, "state": "excluded", "rationale": "r"}, 5])
+        self.assertIn("nothing was saved", out)
+        self.assertEqual(workspace.plan_list("e")[0]["state"], "planned")
+        self.assertTrue(self.t.update_coverage("e", a, "excluded", rationale="r",
+                                               updates=[{"item": a, "state": "excluded"}]).startswith(
+            "REFUSED: send item and state, or updates, not both"))
+        self.assertTrue(self.t.update_coverage("e").startswith("REFUSED: send item and state, or updates"))
 
     def test_a_source_file_is_evidence_of_a_planned_test(self):
         """Refused 4 times in two runs of 2026-11-16 as "not a tool output of this engagement": in a source

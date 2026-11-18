@@ -23,6 +23,12 @@ shuffled among the runs of each benchmark, p = the share of shuffles with a mean
 Operator load (in every result as "operator"): approvals requested, granted, denied and stale (audit log, within
 the run's time window); questions the agent asked the user; worker tasks by status; tool-call errors (malformed
 arguments, refused, failed, timed out); cost per strictly verified finding.
+
+Token use by role (in "operator" as "token_use", #78): planner from the OpenHands conversation (the result's
+"tokens"), worker from each task's task.json ("tokens", added up by every worker model call), advisor from the advice
+records in task.json, validator from the token columns of the validations table (score.validation.tokens). A role's
+figure is prompt + completion tokens (cached tokens are part of prompt). A figure the run didn't record is None
+("n/a"), never 0, and the total is None when any role's is.
 """
 import collections, datetime, itertools, json, math, os, random, re
 
@@ -94,6 +100,7 @@ def group_summary(runs):
                      ("recorded_recall", lambda r: r["score"].get("recorded_recall")),
                      ("precision", lambda r: r["score"].get("precision")),
                      ("cost_usd", lambda r: r.get("cost_usd")),
+                     ("tokens_total", lambda r: run_tokens(r)["total"]),
                      ("minutes", lambda r: (r.get("seconds") or 0) / 60),
                      ("cost_per_verified", lambda r: (r.get("operator") or {}).get("cost_per_verified")),
                      ("approvals_requested", lambda r: ((r.get("operator") or {}).get("approvals") or {}).get("requested")),
@@ -128,7 +135,8 @@ def print_group(g, out=print):
         + (f"recorded (confirmed or left as a candidate) {fmt(rec['mean'], rec['se'], pct=True)}, "
            if rec.get("mean") is not None and rec["mean"] != f["recall"]["mean"] else "") +
         f"precision {fmt(f['precision']['mean'], f['precision']['se'])}, "
-        f"cost {fmt(f['cost_usd']['mean'], f['cost_usd']['se'], money=True)}")
+        f"cost {fmt(f['cost_usd']['mean'], f['cost_usd']['se'], money=True)}, "
+        f"tokens {fmt_tokens((f.get('tokens_total') or {}).get('mean'))}")
     out(f"    pass^k (with evidence) {'  '.join(f'k={k} {fmt(v, pct=True)}' for k, v in g['pass_hat_k'].items())};"
         f"  pass@{n} {fmt(g['pass_at_k'][str(n)], pct=True)}; every item in "
         f"{g['all_found_strict']['runs']} of {n} runs")
@@ -172,8 +180,17 @@ def compare(runs_a, runs_b):
     # cluster-robust SE of the mean difference: items of one benchmark are not independent
     se = (sum(sum(d - m for d in c) ** 2 for c in clusters) / n ** 2) ** 0.5 if len(clusters) > 1 else \
         mean_se(alld)[1]
+    shared_runs = lambda runs: [r for r in runs if r.get("benchmark") in {x["benchmark"] for x in rows}]  # noqa: E731
     return {"benchmarks": rows, "items": n, "diff": _r(m), "se": _r(se),
-            "ci95": [_r(m - 1.96 * se), _r(m + 1.96 * se)] if se is not None else None, "p_runs": p_runs}
+            "ci95": [_r(m - 1.96 * se), _r(m + 1.96 * se)] if se is not None else None, "p_runs": p_runs,
+            "spend": {"a": spend(shared_runs(runs_a)), "b": spend(shared_runs(runs_b))}}
+
+
+def spend(runs):
+    """Mean billed cost and mean total tokens per run (None when no run recorded it)."""
+    cost, tok = mean_se(r.get("cost_usd") for r in runs)[0], mean_se(run_tokens(r)["total"] for r in runs)[0]
+    return {"cost_usd": round(cost, 4) if cost is not None else None, "tokens": round(tok) if tok is not None else None,
+            "runs_with_tokens": sum(1 for r in runs if run_tokens(r)["total"] is not None), "runs": len(runs)}
 
 
 def permutation_p(groups, limit=20000, seed=0):
@@ -211,6 +228,12 @@ def print_compare(c, la, lb, out=print):
     for r in c["benchmarks"]:
         out(f"{r['benchmark']:20} {r['items']:>5} {fmt(r['a'], pct=True):>14} {fmt(r['b'], pct=True):>14} "
             f"{r['diff']:+.2f}")
+    if c.get("spend"):   # what each set cost: billed, and in tokens (counts roles on endpoints not billed per token)
+        out("mean per run: " + "; ".join(
+            f"{lab} cost {fmt(c['spend'][k]['cost_usd'], money=True)}, tokens {fmt_tokens(c['spend'][k]['tokens'])}"
+            + (f" ({c['spend'][k]['runs_with_tokens']} of {c['spend'][k]['runs']} runs recorded them)"
+               if c['spend'][k]['runs_with_tokens'] < c['spend'][k]['runs'] else "")
+            for k, lab in (("a", la), ("b", lb))))
     sig = c["ci95"] and (c["ci95"][0] > 0 or c["ci95"][1] < 0) and c.get("p_runs") is not None and c["p_runs"] < 0.05
     out(f"mean difference per item (found with evidence, {lb} minus {la}): {c['diff']:+.3f}, SE "
         f"{fmt(c['se'])}, 95% CI {c['ci95']} over {c['items']} items, run-level permutation p {fmt(c.get('p_runs'))}: "
@@ -298,7 +321,8 @@ def operator_load(res, eng, audit_path, events=None, tasks=None, calls=None, too
     cost = res.get("cost_usd")
     return {"approvals": approvals, "questions": questions, "worker_tasks": worker, "worker_stalls": stalls,
             "tool_errors": errors,
-            "tokens": res.get("tokens"), "cost_usd": cost, "verified_findings": verified,
+            "tokens": res.get("tokens"), "token_use": token_use(res, tasks), "cost_usd": cost,
+            "verified_findings": verified,
             "cost_per_verified": round(cost / verified, 4) if cost is not None and verified else None}
 
 
@@ -313,3 +337,68 @@ def operator_line(op):
             f"question(s) to the user, worker tasks {', '.join(f'{k} {v}' for k, v in sorted(wt.items())) or 'none'}, "
             f"tool errors {', '.join(f'{k} {v}' for k, v in te.items() if v) or 'none'}, cost per verified finding "
             f"{fmt(op.get('cost_per_verified'), money=True)}")
+
+
+# ---------------------------------------------------------------- token use by role (#78)
+ROLES = ("planner", "worker", "advisor", "validator")
+
+
+def _usage(u):
+    """(prompt, completion, cached) of one model reply's usage, as the gateway returns it."""
+    u = u or {}
+    cached = (u.get("prompt_tokens_details") or {}).get("cached_tokens") or u.get("cache_read_input_tokens") or 0
+    return int(u.get("prompt_tokens") or 0), int(u.get("completion_tokens") or 0), int(cached or 0)
+
+
+def _sum(parts):
+    p = [sum(x[i] for x in parts) for i in range(3)]
+    return {"prompt": p[0], "completion": p[1], "cached": p[2]}
+
+
+def token_use(res, tasks=None):
+    """Tokens of one run by role: {planner, worker, advisor, validator, total, detail}. res: the result (its
+    "tokens" and score.validation); tasks: the task.json records the run kept, or None when it kept none.
+    A figure the run didn't record is None: a run saved before #78 has no worker or validator figures."""
+    detail = dict.fromkeys(ROLES)
+    t = res.get("tokens")
+    if isinstance(t, dict):   # OpenHands' accumulated usage, every conversation of the run
+        detail["planner"] = _sum([(int(t.get("prompt_tokens") or 0), int(t.get("completion_tokens") or 0),
+                                   int(t.get("cache_read_tokens") or 0))])
+    if tasks is not None:
+        # every task since #78 has "tokens" (0 when it never reached the model); no task before had it
+        if all(isinstance(x.get("tokens"), dict) for x in tasks):
+            detail["worker"] = _sum([(int(x["tokens"].get("prompt_tokens") or 0),
+                                      int(x["tokens"].get("completion_tokens") or 0),
+                                      int(x["tokens"].get("cached_tokens") or 0)) for x in tasks])
+        # each advice record holds its usage since the advisor exists (#37); a failed call used none
+        detail["advisor"] = _sum([_usage(a.get("tokens")) for x in tasks for a in x.get("advisor") or []])
+    s = res.get("score") or {}
+    if "validation" in s:
+        v = s["validation"]
+        if v is None:   # no validations table: the validator gave no verdict
+            detail["validator"] = _sum([])
+        elif isinstance(v.get("tokens"), dict):
+            detail["validator"] = {k: int(v["tokens"].get(k) or 0) for k in ("prompt", "completion", "cached")}
+    out = {r: (d["prompt"] + d["completion"] if d else None) for r, d in detail.items()}
+    out["total"] = sum(out.values()) if all(x is not None for x in out.values()) else None
+    out["detail"] = detail
+    return out
+
+
+def run_tokens(res):
+    """A saved result's token use by role. A result from before #78 gets what can be read from it: the planner's
+    figure, the rest None."""
+    tu = (res.get("operator") or {}).get("token_use")
+    return tu if isinstance(tu, dict) else token_use(res)
+
+
+def fmt_tokens(n):
+    if n is None:
+        return "n/a"
+    n = float(n)
+    return f"{n / 1e6:.2f}M" if n >= 1e6 else f"{n / 1e3:.0f}k" if n >= 1e3 else f"{n:.0f}"
+
+
+def tokens_line(tu):
+    """'total 1.23M (planner 1.10M, worker 120k, advisor 2k, validator 8k)', n/a where a role was not recorded."""
+    return f"total {fmt_tokens(tu.get('total'))} (" + ", ".join(f"{r} {fmt_tokens(tu.get(r))}" for r in ROLES) + ")"

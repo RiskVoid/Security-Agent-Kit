@@ -223,14 +223,22 @@ planned tests open, candidates untriaged or no plan at all, and it has time and 
 back to work, at most three times; the result records each time under `continued`. The same goes for a run that
 OpenHands stops as stuck, which happens when the agent repeats one call, usually one a tool keeps refusing: the
 harness quotes the refusal back to it and tells it not to send that call again. If it is stopped as stuck a second
-time, or the model gateway ended its turn because one call came six times in a row (`REPEAT_COLLAPSE` in
-[configuration.md](configuration.md)), the run goes on in a new conversation, at most twice: its first message
-says which call was repeated and tells the agent to read `get_handover` and `get_coverage` and not to plan again.
-The result records them under `conversations` and `restarts`, and `conversation.json` holds the events of all of
-them in order.
+time, or the model gateway ended its turn because one call came six times in a row, or a cycle of two or three
+calls came round six times (`REPEAT_COLLAPSE` in [configuration.md](configuration.md)), the run goes on in a new
+conversation, at most twice: its first message says which call was repeated and tells the agent to read
+`get_handover` and `get_coverage` and not to plan again. The result records them under `conversations` and
+`restarts`, and `conversation.json` holds the events of all of them in order.
+
+The result says how often the gateway's loop limit acted during the run, under `loop_limit`, read from the model
+log (`.rvkit/events/model-events.jsonl`) for the run's engagement and time: `note` (a repeated call left out of
+what the planner reads, with a note in its place), `withhold` (the planner sent it again and its tool was left out
+of the next request), `cut` (the gateway ended the turn without calling the model) and `cycles` (how many of these
+were about calls made in turn rather than one call). Each counts planner replies that went on with the loop. The
+run's summary prints the same line. Results from before this have no `loop_limit`.
 
 The result also records findings marked false
-positive or duplicate, wall time, planner tokens, automatic approvals, the agent, the worker model and endpoint.
+positive or duplicate, wall time, tokens by role (below), automatic approvals, the agent, the worker model and
+endpoint.
 
 Every result carries its **provenance**, so you can tell which change moved a score: the kit commit and whether
 the tree had local changes, hashes of `prompts/planner.md` and `prompts/local.md`, each playbook's version, the
@@ -240,6 +248,24 @@ finding ids and titles from the kit's own targets, never client data.
 **Cost** is the change in your OpenRouter key's total usage between the start and the end of the run. Don't use
 the same key for anything else during a run, or the number will include that too. Without an OpenRouter key, cost
 is `n/a`.
+
+**Tokens** are counted for every role that calls a model, so a change that moves work from the planner to the
+worker, or adds reviewer calls, can't look cheaper than it is. Tokens also count a role that runs on an endpoint
+not billed per token (a Colab or local worker), which the cost leaves out.
+
+| Role | Where its figure comes from |
+|---|---|
+| planner | the OpenHands conversation's accumulated usage, every conversation of the run (the result's `tokens`) |
+| worker | `tokens` in each task's `task.json`: every worker model call adds its prompt, completion and cached tokens |
+| advisor | the advice records in each task's `task.json` (`advisor[].tokens`) |
+| validator | the token columns of each verdict in the `validations` table, summed in `score.validation.tokens` |
+
+A role's figure is prompt plus completion tokens; cached tokens are part of prompt. The result holds the four
+figures, their total and the detail under `operator.token_use`, and the line in `history.jsonl` holds the four and
+the total under `token_use`. `--history` prints the total, `--groups` its mean, and `--compare` the mean total next
+to the mean billed cost of each set. A run saved before tokens were counted by role has only the planner's figure:
+the others and the total show as `n/a`, not 0. A run with no worker task or no validator verdict shows 0 for that
+role.
 
 ### Plain-agent baseline
 
@@ -408,13 +434,15 @@ The `evals/` folder also holds the kit's own tests. All but the first run agains
 | `evals/console_contract_test.py` | the console contract: validation, conflicts, audit attribution, event stream, inert content, isolation | the stack |
 | `evals/policy_test.sh` | scope and rules enforcement with real DNS and the firewall, the request tool, bound and stale approvals, controlled execution, offline source analysis, budgets | the stack, internet access |
 | `evals/model_stub_test.sh` | the deterministic model stub through LiteLLM, streaming and error classification, no GPU or provider | the stack |
+| `evals/loop_limit_test.sh` | the gateway's loop limit through a second LiteLLM proxy with a scripted model: the note, the withheld tool and the ended turn, for one repeated call and for a cycle of two; no provider | the stack |
+| `evals/loop_limit_test.sh` | the gateway's loop limit with a scripted planner that repeats a call, then one that alternates two: the note, the withheld tool, the turn ended without a model call, the model asked again after a user message, the stages in the model log; a second proxy in the LiteLLM container, no provider | the stack |
 | `evals/agent_loop_test.sh` | the worker's agent loop with a scripted model (`evals/mock_llm.py`, no GPU or API key): tools sent, kali command run in the sandbox, candidate recorded citing the verified output, task saved | the stack, `/src/rv-demo-app` |
 | `evals/execution_state_test.sh` | worker task recovery after a restart, uncertain writes, halt during a run | the stack |
 | `evals/workspace_test.py` | observations, imports, coverage, handover, notifications | the stack |
 | `evals/delivery_test.py` | report revisions, readiness and exceptions, approval, verify and rebuild, retests, cleanup, notices, exports | the stack |
 | `evals/regression_test.py` | concurrent writers and finding ids, cross-engagement access, hostile tool output, secrets in exports, tampered and changed revisions ([regression matrix](regression-matrix.md)) | the stack |
 | `evals/authn_test.sh` | identities, captures, sessions, the authorization matrix | the stack |
-| `evals/oracle_test.sh` | the verification oracles (marker, identity difference, read-back): a passing lab case with a clean control and a clean case each | `./rvkit lab up` |
+| `evals/oracle_test.sh` | the verification oracles (marker, identity difference, read-back, browser XSS, timing): a passing lab case with a clean control and a clean case each; the read-back pass case writes, so it needs an approval and a second run | `./rvkit lab up` |
 | `evals/laravel_test.sh` | the Laravel application map, PHP profile and playbook | the stack, `./rvkit lab up` |
 | `evals/lab_test.sh` | lab isolation: only in-scope engagements reach a lab target, the lab has no internet and can't reach the kit | `./rvkit lab up` |
 | `evals/planner_smoke.py` | each planner route answers code-review, web-app and external-network briefs with a plan, not a refusal; records latency and tokens | an OpenRouter key |

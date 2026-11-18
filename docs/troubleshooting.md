@@ -50,9 +50,9 @@ symptom below.
 | `approval was for a different command` | The agent changed the command. Approvals match the exact text; approve the new request instead. |
 | `approval expired (24 h)` | Approvals must be used within 24 hours. Ask the agent to request it again. |
 | `engagement is halted` | `./rvkit resume <eng>` (closed engagements are halted too). |
-| `outside the testing window` | `Window (UTC)` in `RULES.md` doesn't include now. Times are UTC. |
+| `outside the testing window` | `Window` in `RULES.md` doesn't include now. Times are in the `Timezone` set in `RULES.md` (UTC if it has none); the message names the zone. |
 | `exceeds the engagement max rate` | The command set a rate above `Max rate` in `RULES.md`. Remove the flag (the kit adds the max) or raise the limit. |
-| A Kali command can't resolve or reach a host that is in scope | Check `./rvkit show <eng>` (was the entry ignored? IPv6 isn't supported). Domains resolve through the engagement's own DNS; hosts reached only by IP need the IP or CIDR in scope. |
+| A Kali command can't resolve or reach a host that is in scope | Check `./rvkit show <eng>`. IPv6 isn't supported: an IPv6 scope entry is an error, and `./rvkit scope` doesn't apply a scope with errors. Domains resolve through the engagement's own DNS; hosts reached only by IP need the IP or CIDR in scope. |
 | Package downloads fail inside a Kali command | The engagement is `Network: offline`, or the site isn't an infrastructure domain ([configuration.md](configuration.md#other-files-you-can-change)). |
 | The agent can't install a package in its own terminal | Its container has no direct internet. Add the domain to `EGRESS_EXTRA_DOMAINS` in `.env`, then `./rvkit up`. |
 | `fetch` refuses a URL | The web tool never fetches engagement targets or private addresses. Test targets with the `kali` tool. |
@@ -79,7 +79,8 @@ turn on the OpenRouter fallback, keeping in mind that model then sees tool outpu
 
 **Can I use it without OpenRouter?**
 Yes: use the `riskvoid-local` agent, which runs everything on your worker model. Results are weaker with a 27B
-model than with a frontier planner.
+model than with a frontier planner. With AWS credits, the planner and the worker can both run on Amazon Bedrock,
+and then no OpenRouter key is needed while the worker fallback is off ([models.md](models.md#amazon-bedrock)).
 
 **Does client data leave my machine?**
 It depends on your model choices: see the data table in [models.md](models.md). For "nothing leaves", use a local
@@ -96,8 +97,9 @@ Yes. Each has its own sandbox user, firewall chain and DNS. Worker tasks run one
 conversations queue on the worker (`WORKER_PARALLEL_TASKS` raises it for endpoints that allow it).
 
 **Can several people use one installation?**
-It's built for one operator: the UI and ports are on `127.0.0.1`, there are no user accounts, and approvals don't
-record who approved. Each consultant should run their own copy.
+It's built for one operator: the UI and ports are on `127.0.0.1`, there are no user accounts, and an approval
+records only the channel and the login name of the host user running it (`console:<login>` or `cli:<login>`), not
+a verified person. Each consultant should run their own copy.
 
 **Can I use another agent UI instead of OpenHands?**
 The tools are standard MCP servers on the internal network, so another MCP client inside that network could use

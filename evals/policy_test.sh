@@ -33,6 +33,29 @@ setscope() { # setscope <scope-text> <rules-text>: apply through rvctl like the 
 }
 resolves() { run "getent hosts $1 >/dev/null && echo RESOLVES || echo NORESOLVE"; }
 reach() { run "curl -s -o /dev/null -m 8 -w code=%{http_code} $1 || echo BLOCKED"; }
+# collide <name>: kali-mcp itself looks up a name through Docker's DNS from a source port, then the engagement's
+# user asks for <name> from the same port while that conntrack entry is live. The redirect to the engagement's
+# resolver applies only to a new flow, so this must still not resolve (it did by chance once in CI, 2026-11-17).
+COLLIDE='
+import json, random, socket, struct, subprocess, sys
+def query(name, port):
+    q = struct.pack(">HHHHHH", random.randrange(65536), 0x0100, 1, 0, 0, 0)
+    q += b"".join(bytes([len(p)]) + p.encode() for p in name.split(".")) + b"\0\0\1\0\1"
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        s.bind(("127.0.0.1", port)); s.settimeout(3); s.sendto(q, ("127.0.0.11", 53)); r = s.recv(4096)
+        return "RESOLVES" if r[3] & 15 == 0 and r[6:8] != b"\0\0" else "NORESOLVE"
+    except OSError:
+        return "NORESOLVE"
+if len(sys.argv) == 3:  # the engagement user: <name> <port>
+    print(query(sys.argv[1], int(sys.argv[2])))
+else:  # root: <engagement> <name> <this code>
+    uid, port = json.load(open("/control/registry.json"))[sys.argv[1]], random.randint(40000, 50000)
+    print("kit lookup:", query("example.org", port))
+    print(subprocess.run([sys.executable, "-c", sys.argv[3], sys.argv[2], str(port)], user=uid, group=uid,
+                         extra_groups=[], capture_output=True, text=True).stdout.strip())
+'
+collide() { docker compose exec -T kali-mcp python3 -c "$COLLIDE" "$ENG" "$1" "$COLLIDE" 2>&1; }
 
 DIR="$(grep -E '^ENGAGEMENTS_DIR=' .env | cut -d= -f2- | sed "s|^~|$HOME|")"
 ctl halt "$ENG" >/dev/null 2>&1; ctl close "$ENG" >/dev/null 2>&1; ctl delete "$ENG" --force >/dev/null 2>&1
@@ -62,6 +85,7 @@ check "subdomain of an exact host doesn't"        'NORESOLVE'                   
 check "wildcard covers a subdomain"               'RESOLVES'                     "$(resolves www.iana.org)"
 check "wildcard doesn't cover the apex"           'NORESOLVE'                    "$(resolves iana.org)"
 check "excluded name doesn't resolve"             'NORESOLVE'                    "$(resolves data.iana.org)"
+check "... nor past a live conntrack entry"       'kit lookup: RESOLVES.*NORESOLVE' "$(collide data.iana.org | tr '\n' ' ')"
 check "path-limited host doesn't resolve for run" 'NORESOLVE'                    "$(resolves example.net)"
 check "excluded name refused before running"      'targets not in scope'         "$(run 'curl -s https://data.iana.org/')"
 check "path-limited host refused for run"         'targets not in scope'         "$(run 'curl -s https://example.net/api/')"

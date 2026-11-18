@@ -6,7 +6,8 @@ structured result. Raw tool output stays in /work/<engagement>/evidence/tasks/<t
 Tools the worker model gets:
   kali_run        a command in the Kali container (through kali-mcp: scope-checked and audit-logged)
   web_search      SearXNG
-  fetch_url       read a public web page (research: advisories, docs); in-scope targets must go through kali_run
+  fetch_url       read a public web page (research: advisories, docs), a long one in parts (start); in-scope
+                  targets must go through kali_run
   read_file       read files under /src (client code, read-only) or the engagement folder
   record_candidate  store a candidate finding (the planner confirms or rejects it)
   finish          return the result
@@ -50,6 +51,7 @@ NOTES_CHARS = 6000                   # how much of the worker's own text the pla
 # What the model sees of a tool result: a digest for outputs the kit can read, else the head and the tail
 # (digest.py; 4,000 + 2,000 characters). The full output is always in the evidence file and the step file.
 TIERS = ("passive", "active", "intrusive")
+FETCH_CHARS = 100000                 # one part of a fetched page (web-mcp's most)
 
 # Stateless: no per-client session, so a conversation that was open when this server restarted keeps working
 # (with sessions, every later tool call failed with "Session terminated" until OpenHands itself was restarted).
@@ -133,8 +135,14 @@ TOOLS = [
     {"type": "function", "function": {"name": "web_search", "description": "Search the web (SearXNG).",
         "parameters": {"type": "object", "properties": {"query": {"type": "string"}}, "required": ["query"]}}},
     {"type": "function", "function": {"name": "fetch_url", "description":
-        "Fetch a public web page as text for research (advisories, CVE pages, docs). Not for testing targets.",
-        "parameters": {"type": "object", "properties": {"url": {"type": "string"}}, "required": ["url"]}}},
+        "Fetch a public web page as text for research (advisories, CVE pages, docs). Not for testing targets. "
+        f"A long page comes in parts of {FETCH_CHARS:,} characters. You see the head and the tail of a part; the "
+        "whole part is in the step file the cut names (read it with read_file). When more follows, the reply ends "
+        "with the start of the next part: call fetch_url again with the same url and that start.",
+        "parameters": {"type": "object", "properties": {
+            "url": {"type": "string"},
+            "start": {"type": "integer", "default": 0, "description": "character offset to read from"}},
+            "required": ["url"]}}},
     {"type": "function", "function": {"name": "read_file", "description":
         "Read a text file under /src or the engagement folder. Lines are numbered.",
         "parameters": {"type": "object", "properties": {
@@ -246,10 +254,16 @@ def web_search(task, query):
     return _arun(_mcp(WEB_MCP, "web_search", {"query": query, "max_results": 8}))
 
 
-def fetch_url(task, url):
+MORE_RX = re.compile(r"\[… (\d+) more characters: call fetch again with start=(\d+)\]\s*$")
+
+
+def fetch_url(task, url, start=0):
     """Public pages only, through web-mcp: it refuses every engagement's targets (not only this one's) and
-    non-public addresses. Targets are tested with kali_run."""
-    return _arun(_mcp(WEB_MCP, "fetch", {"url": url, "max_chars": 100000}))
+    non-public addresses. Targets are tested with kali_run. A long page is read in parts: start is passed on, and
+    web-mcp's hint at the end names this tool, so the worker can follow it."""
+    out = _arun(_mcp(WEB_MCP, "fetch", {"url": url, "start": max(0, int(start or 0)), "max_chars": FETCH_CHARS}))
+    return MORE_RX.sub(lambda m: f"[… {m.group(1)} more characters: call fetch_url again with the same url and "
+                                 f"start={m.group(2)}]", out)
 
 
 def read_file(task, path, start=1, lines=200):
@@ -325,6 +339,8 @@ def chat(messages, model=WORKER_MODEL, task=None):
             raise ModelRefused(e.code, str(detail)) from None
         msg = r["choices"][0]["message"]
         u = r.get("usage") or {}
+        if task is not None:
+            add_usage(task, u)
         sp.set("gen_ai.response.model", r.get("model")).set("gen_ai.usage.input_tokens", u.get("prompt_tokens")) \
           .set("gen_ai.usage.output_tokens", u.get("completion_tokens")) \
           .set("gen_ai.response.finish_reasons", [str(r["choices"][0].get("finish_reason") or "")]) \
@@ -333,6 +349,25 @@ def chat(messages, model=WORKER_MODEL, task=None):
                                                      "tool_calls": msg.get("tool_calls")}])
         sp.content_attr("gen_ai.input.messages", messages[-1:])   # the newest message: the rest was in earlier spans
     return {**msg, "_served_by": r.get("model")}
+
+
+def usage_counts(u):
+    """(prompt, completion, cached) tokens of one model reply's usage. cached is the part of prompt read from the
+    provider's cache."""
+    u = u or {}
+    cached = (u.get("prompt_tokens_details") or {}).get("cached_tokens") or u.get("cache_read_input_tokens") or 0
+    return int(u.get("prompt_tokens") or 0), int(u.get("completion_tokens") or 0), int(cached or 0)
+
+
+def add_usage(task, u):
+    """Add one worker model call to the task's token total (task.json "tokens"; the benchmark sums it by role)."""
+    t = task.setdefault("tokens", dict(NO_TOKENS))
+    p, c, x = usage_counts(u)
+    t.update(prompt_tokens=t.get("prompt_tokens", 0) + p, completion_tokens=t.get("completion_tokens", 0) + c,
+             cached_tokens=t.get("cached_tokens", 0) + x, calls=t.get("calls", 0) + 1)
+
+
+NO_TOKENS = {"prompt_tokens": 0, "completion_tokens": 0, "cached_tokens": 0, "calls": 0}
 
 
 class ModelRefused(Exception):
@@ -1199,6 +1234,7 @@ def delegate_task(goal: str, engagement: str, tier: str = "passive", max_steps: 
                       **({"contract": contract} if contract else {}),
                       "engagement": engagement, "tier": tier, "info": einfo, "max_steps": max(1, min(max_steps, 40)),
                       "timeout_min": max(1, min(timeout_min, 180)), "depends_on": deps,
+                      "tokens": dict(NO_TOKENS),   # a task that never reaches the model still shows 0
                       "status": "waiting" if deps else "queued", "started": time.time()})
     TASKS[task["id"]] = task
     save(task)
