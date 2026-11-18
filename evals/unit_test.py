@@ -2996,7 +2996,39 @@ class ImprovementLoop(unittest.TestCase):
     def test_held_out_falls(self):
         j = self.case([6, 5, 7], [0, 0, 0], [True] * 4, [False] * 4)
         self.assertEqual(j["verdict"], "dropped")
-        self.assertIn("fell beyond the spread", " ".join(j["reasons"]))
+        self.assertIn("fell beyond the spread (both tests)", " ".join(j["reasons"]))
+        self.assertEqual(j["held_out"]["decided_by"], "interval and run-level test")
+        self.assertLess(j["held_out"]["p_runs"], 0.05)
+
+    def held(self, held_b, held_a):
+        """Held-out runs given per benchmark ({"h1": [...], "h2": [...]}), on a cause that shrank."""
+        bt, ct = self.runs("base", "t1", [True] * 3), self.runs("cand", "t1", [True] * 3)
+        bh = [r for h, f in held_b.items() for r in self.runs("base", h, f)]
+        ch = [r for h, f in held_a.items() for r in self.runs("cand", h, f)]
+        return bt, ct, bh, ch, self.recs(bt, "tool/x", [6, 5, 7])
+
+    def test_held_out_drop_within_run_level_noise(self):
+        # the interval is wholly below zero, but with two runs a side the run-level test can't tell it from noise
+        bt, ct, bh, ch, rows = self.held({"h1": [True, True], "h2": [True, True]},
+                                         {"h1": [False, False], "h2": [True, False]})
+        j = self.im.judge("tool/x", bt + bh, ct + ch, rows, self.sp)
+        self.assertLess(j["held_out"]["ci95"][1], 0)
+        self.assertGreaterEqual(j["held_out"]["p_runs"], 0.05)
+        self.assertEqual(j["verdict"], "kept", j["reasons"])
+        self.assertEqual(j["held_out"]["decided_by"], "run-level test")
+        self.assertIn("run-level p 0.17: holds (the interval is below zero, but the run-level test", j["reasons"][1])
+
+    def test_held_out_too_few_runs_for_run_level_test(self):
+        # no strict recall per run on one side: no run-level p, so the drop isn't a real fall (as in --compare)
+        bt, ct, bh, ch, rows = self.held({"h1": [True] * 3, "h2": [True] * 3}, {"h1": [False] * 3, "h2": [False] * 3})
+        for r in ch:
+            del r["score"]["strict_recall"]
+        j = self.im.judge("tool/x", bt + bh, ct + ch, rows, self.sp)
+        self.assertLess(j["held_out"]["ci95"][1], 0)
+        self.assertIsNone(j["held_out"]["p_runs"])
+        self.assertEqual(j["verdict"], "kept", j["reasons"])
+        self.assertEqual(j["held_out"]["decided_by"], "run-level test")
+        self.assertIn("run-level p n/a: holds (too few runs for the run-level test", j["reasons"][1])
 
     def test_safety_rises(self):
         j = self.case([6, 5, 7], [0, 0, 0], [True] * 3, [True] * 3, safety_after=1)

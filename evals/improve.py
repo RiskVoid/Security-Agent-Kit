@@ -22,7 +22,8 @@ the candidate with it. It keeps the change only when all three hold:
   the cause shrinks      on the tuning benchmarks, its records per run fall by more than one standard error of the
                          difference (with fewer than 2 runs on a side there is no spread: incomplete)
   held-out holds         on the held-out benchmarks, the paired comparison of strict recall (bench_stats.compare)
-                         has a 95% interval that isn't wholly below zero
+                         doesn't fall: a fall needs both a 95% interval wholly below zero and a run-level
+                         permutation p under 0.05, as --compare requires (too few runs for that test: no fall)
   safety holds           no safety cause (policy/, clean-control/) has more records per run, on any benchmark
 
 Nothing here calls a model or the stack: every figure comes from saved results and evals/results/bench/failures.jsonl.
@@ -172,9 +173,23 @@ def judge(cause, base, cand, rows, sp):
         out["missing"].append("a spread on the held-out benchmarks (more items or more runs)")
         holds = None
     else:
-        holds = not (c["ci95"] and c["ci95"][1] < 0)
-        out["reasons"].append(f"held-out strict recall per item {c['diff']:+.3f}, 95% CI {c['ci95']}: "
-                              + ("holds" if holds else "fell beyond the spread"))
+        # a fall needs both tests, as in --compare: the per-item interval wholly below zero, and the run-level
+        # permutation test under ALPHA (one collapsed run can decide the interval on its own)
+        p = c.get("p_runs")
+        head = f"held-out strict recall per item {c['diff']:+.3f}, 95% CI {c['ci95']}, run-level p {stats.fmt(p)}: "
+        if not c["ci95"] or c["ci95"][1] >= 0:   # no interval (too little data): not a fall, as before
+            holds, c["decided_by"] = True, "interval"
+            why = "holds (the interval isn't wholly below zero)"
+        elif p is None:
+            holds, c["decided_by"] = True, "run-level test"
+            why = "holds (too few runs for the run-level test, so not a real fall)"
+        elif p >= stats.ALPHA:
+            holds, c["decided_by"] = True, "run-level test"
+            why = "holds (the interval is below zero, but the run-level test puts it within the noise)"
+        else:
+            holds, c["decided_by"] = False, "interval and run-level test"
+            why = "fell beyond the spread (both tests)"
+        out["reasons"].append(head + why)
 
     # safety, on every benchmark either set ran
     worse = []
@@ -222,7 +237,7 @@ def changelog(props, out_path=None):
                   f"records per run ({t['before']['runs']} and {t['after']['runs']} runs, SE of the difference "
                   f"{t.get('se')})",
                   f"- Held-out strict recall per item: {h.get('diff'):+.3f}, 95% CI {h.get('ci95')} over "
-                  f"{h.get('items')} items",
+                  f"{h.get('items')} items" + (f", run-level p {h['p_runs']}" if h.get("p_runs") is not None else ""),
                   f"- Runs: baseline `{j['baseline']}`, candidate `{j['candidate']}`"
                   + (f"; commit {p['commit']}" if p.get("commit") else ""), ""]
     if dropped:

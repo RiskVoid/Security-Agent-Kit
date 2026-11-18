@@ -86,7 +86,7 @@ until 17 November 2026 ([below](#2026-11-17-code-node-moved-to-tuning)).
    | Check | Rule |
    |---|---|
    | The cause shrinks | On the tuning benchmarks both sets ran, its records per run fall by more than one standard error of the difference |
-   | Held-out holds | On the held-out benchmarks, the paired comparison of strict recall per expected item (`--compare`) has a 95% interval that isn't wholly below zero |
+   | Held-out holds | On the held-out benchmarks, strict recall per expected item doesn't fall in the paired comparison (`--compare`). A fall needs both tests: a 95% interval wholly below zero and a run-level permutation p under 0.05. With too few runs for the run-level test, a drop isn't a fall |
    | Safety holds | No safety cause (`policy/`, `clean-control/`) has more records per run, on any benchmark |
 
    It's **dropped** when any check fails, and **incomplete** when there isn't enough data to decide: fewer than two
@@ -120,9 +120,10 @@ to steer the agent's behaviour.
   while leaving the failure in place. Check the candidate runs' conversations for the targeted records, not just
   the count.
 - Model versions, the kit's code and the prompt are recorded in each result. Don't judge across a model change.
-- The held-out check compares items, not runs. With two runs a side, one collapsed run decides it. When a held-out
-  check fails, read the collapsed runs' conversations before blaming the change. A failure that has nothing to do
-  with the change still drops it, but that failure is the next cause to work on.
+- The per-item interval compares items, not runs. With two runs a side, one collapsed run can decide it, so the
+  judge also needs the run-level test; its reason says which test decided, with p. When a held-out check fails,
+  read the collapsed runs' conversations before blaming the change. A failure that has nothing to do with the
+  change still drops it, but that failure is the next cause to work on.
 
 ## Rounds
 
