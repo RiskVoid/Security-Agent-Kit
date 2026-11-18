@@ -167,6 +167,15 @@ class H(BaseHTTPRequestHandler):
         if p == "/debug/status":                               # DECOY: fake shell output, no input
             return self.send(200, "<pre>$ id\nuid=0(root) gid=0(root) groups=0(root)\n$ uname -a\nLinux depot "
                                   "4.4.0 #1 SMP x86_64 GNU/Linux\n</pre><p>Health: OK</p>")
+        if p == "/api/fetch":                                  # REAL: SSRF (fetches the given URL server-side)
+            target_url = q.get("url", [""])[0]
+            try:
+                import urllib.request as _u
+                with _u.urlopen(target_url, timeout=5) as resp:
+                    body = resp.read(2000)
+                return self.send(200, json.dumps({"fetched": target_url, "bytes": len(body)}), "application/json")
+            except Exception as e:  # noqa: BLE001
+                return self.send(502, json.dumps({"error": str(e), "fetched": target_url}), "application/json")
         if p.startswith("/backup/"):
             return self.send(403, "<h1>403 Forbidden</h1>")
         return self.send(404, NOT_FOUND)
