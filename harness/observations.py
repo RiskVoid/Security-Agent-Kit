@@ -57,7 +57,8 @@ def sweep(d):
     the exact requests in the evidence files it cites. Skips and what the sweep created are kept as limitations,
     so what wasn't tested is visible next to what was."""
     out, errors = [], []
-    sev = {"injection": "high", "jwt": "high", "mass-assignment": "high", "redos": "medium"}
+    sev = {"injection": "high", "jwt": "high", "mass-assignment": "high", "redos": "medium",
+           "cors": "medium", "headers": "low"}
     for h in d.get("hits") or []:
         check = h.get("check") or "sweep"
         location = f"{h.get('method') or ''} {h.get('path') or h.get('entry') or ''}".strip()

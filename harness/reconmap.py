@@ -49,6 +49,7 @@ CLASSES = {
     "graphql-depth": "a GraphQL operation (nesting without a limit)",
     "graphql-batching": "a GraphQL operation (several can be sent in one request)",
     "graphql-field-suggestions": "a GraphQL endpoint whose errors suggest field names",
+    "oauth": "an OAuth2 or OIDC endpoint: an authorize or token route, a callback, or redirect_uri / client_id parameters",
 }
 CLASS_REFS = {"access-control": ("WSTG-ATHZ", "API1:2023", "API5:2023", "CWE-639", "CWE-284", "idor", "bola",
                                  "authorization", "authz"),
@@ -74,13 +75,19 @@ CLASS_REFS = {"access-control": ("WSTG-ATHZ", "API1:2023", "API5:2023", "CWE-639
               "security-headers": ("CWE-693", "security header", "missing header", "csp", "hsts"),
               "graphql-depth": ("CWE-400", "depth", "nesting", "deep"),
               "graphql-batching": ("CWE-770", "batch", "alias", "batching"),
-              "graphql-field-suggestions": ("CWE-209", "field suggestion", "suggestions", "did you mean")}
+              "graphql-field-suggestions": ("CWE-209", "field suggestion", "suggestions", "did you mean"),
+              "oauth": ("CWE-351", "CWE-308", "CWE-384", "oauth", "oidc", "redirect_uri", "pkce",
+                        "authorization code", "state validation", "state parameter", "token substitution",
+                        "refresh token", "code reuse")}
 URL_PARAM = re.compile(r"(^|_)(url|uri|link|href|callback|webhook|endpoint|image_url|feed|host|proxy|fetch)$", re.I)
 DEST_PARAM = re.compile(r"^(to|next|return|returnto|return_to|redirect|redirect_uri|redirect_url|continue|goto|dest|"
                         r"destination|target|back|r|u)$", re.I)
 ID_PARAM = re.compile(r"(^|_)(id|uuid|uid|key|ref|number|no)$|^(user|account|order|parcel|basket|item)s?$", re.I)
 FILE_PARAM = re.compile(r"file|upload|attachment|avatar|image|document", re.I)
 AUTH_PATH = re.compile(r"log-?in|sign-?in|auth|token|password|session|register|signup|reset|otp|2fa|mfa", re.I)
+OAUTH_PATH = re.compile(r"oauth|oidc|/authorize|/authorization|/token|/callback|/connect/|\.well-known/openid", re.I)
+OAUTH_PARAM = re.compile(r"^(redirect_uri|redirect_url|client_id|client_secret|response_type|grant_type|"
+                         r"scope|state|code_challenge|code_verifier|nonce|access_token|refresh_token)$", re.I)
 USER_PATH = re.compile(r"user|account|profile|member|customer|username", re.I)
 INFO_PATH = re.compile(r"debug|verbose|trace|dump|config|backup|\.env|metrics|health|status|version|phpinfo|"
                        r"graphiql|actuator|server-status|\.git$", re.I)
@@ -323,6 +330,8 @@ def applicable(e):
         out.append("security-headers")
     if e["operations"] or re.search(r"graphql", e["path"], re.I):
         out += ["graphql-depth", "graphql-batching", "graphql-field-suggestions"]
+    if OAUTH_PATH.search(e["path"]) or any(OAUTH_PARAM.match(n) for n in names):
+        out.append("oauth")
     return out
 
 
@@ -338,7 +347,7 @@ def _class_of(item):
 ORDER = ["planned", "blocked", "not-applicable", "excluded", "tested", "failed"]   # a cell takes its best item
 DONE = ("tested", "failed", "excluded", "not-applicable")
 SWEEP_CLASS = {"injection": "injection", "mass-assignment": "mass-assignment", "redos": "redos",
-               "jwt": "authentication"}
+               "jwt": "authentication", "cors": "cors-misconfig", "headers": "security-headers"}
 
 
 def swept(eng):

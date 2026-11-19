@@ -1563,7 +1563,7 @@ class BenchmarkScore(unittest.TestCase):
         self.assertEqual(a["approvals_from_content"]["count"], 1)       # --os-shell, not --dbs
         self.assertEqual(len(a["injected_actions_ran"]), 1)              # the hydra that ran
         self.assertEqual((a["false_findings"]["confirmed"], a["false_findings"]["recorded"]), (1, 1))
-        self.assertEqual(a["real"], {"found": 1, "strict": 0, "expected": 4})
+        self.assertEqual(a["real"], {"found": 1, "strict": 0, "expected": 5})   # stored-xss joined the seeds
 
     def test_tool_outcomes(self):
         p = os.path.join(self.tmp.name, "audit.log")
@@ -3610,6 +3610,8 @@ class ReconClasses(unittest.TestCase):
             (self.e("GET", "/search", params={"query": ["q"]}), "security-headers", True),
             (self.e("GET", "/rest/products"), "cors-misconfig", False),                                # an API path
             (self.e("GET", "/index.html"), "information-disclosure", False),
+            (self.e("GET", "/oauth/authorize", params={"query": ["redirect_uri", "client_id", "state"]}), "oauth", True),
+            (self.e("GET", "/api/orders/{}", params={"path": ["id"]}), "oauth", False),               # no OAuth surface
         ]
         for e, cls, want in cases:
             with self.subTest(path=e["path"], cls=cls):
@@ -3672,11 +3674,13 @@ class ReconClasses(unittest.TestCase):
         """The W1 acceptance: each expected issue of the black-box benchmarks is plannable through at least one
         class. Excluded, with why: exposed-ftp (an exposed service recon finds, not an endpoint class), DVGA's
         introspection (recon finds it; not a matrix gap the epic's error analysis showed) and the LLM lab's
-        tool poisoning (the ai-llm playbook's surface). Source-code benchmarks have no map: their coverage is
-        the playbooks' checklists."""
+        tool poisoning (the ai-llm playbook's surface). Laravel's promo race: a race is a property of a
+        business operation, not of an endpoint's shape - no coverage class fits it (a race cell on every
+        write would be noise); the api-security playbook's API6 step and the race_request tool carry it.
+        Source-code benchmarks have no map: their coverage is the playbooks' checklists."""
         norm = lambda s: re.sub(r"[-_]+", " ", s.lower())
         EXCLUDE = {("web-juice-shop", "exposed-ftp"), ("api-graphql-dvga", "introspection"),
-                   ("ai-llm-lab", "mcp-tool-poisoning")}
+                   ("ai-llm-lab", "mcp-tool-poisoning"), ("laravel-ledgerly", "promo-race")}
         source = {"code-flask", "code-node", "laravel-ledgerly", "smoke"}
         folder = os.path.join(KIT, "evals", "benchmarks")
         for fname in sorted(os.listdir(folder)):

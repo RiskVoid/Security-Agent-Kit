@@ -15,6 +15,7 @@
 # Run: ./rvkit lab up && bash evals/sweep_test.sh
 cd "$(dirname "$0")/.." || exit 1
 ENG=rv-sweep-test
+ENGC=rv-sweep-test-ctl
 V=http://10.250.0.13:5000
 pass=0; fail=0
 check() { if echo "$2" | grep -qE "$3"; then pass=$((pass+1)); echo "PASS  $1"; else fail=$((fail+1)); echo "FAIL  $1"; echo "$2" | head -8 | sed 's/^/      /'; fi; }
@@ -23,8 +24,10 @@ py() { docker compose exec -T kali-mcp python3 -c "import sys; sys.path.insert(0
 fpy() { docker compose exec -T findings-mcp python3 -c "import sys; sys.path.insert(0, '/opt/harness'); import observations as ob, json; $1" </dev/null; }
 flat() { docker compose exec -T kali-mcp sh -c "tr -d '\n ' < '$1'" </dev/null; }   # the evidence json is indented
 cleanup() {
-  ctl halt $ENG >/dev/null 2>&1 </dev/null; ctl delete $ENG --force >/dev/null 2>&1 </dev/null
-  docker compose exec -T kali-mcp sh -c "rm -rf /work/_deleted-$ENG-*" </dev/null
+  for e in $ENG $ENGC; do
+    ctl halt "$e" >/dev/null 2>&1 </dev/null; ctl delete "$e" --force >/dev/null 2>&1 </dev/null
+    docker compose exec -T kali-mcp sh -c "rm -rf /work/_deleted-$e-*" </dev/null
+  done
   docker compose --profile lab restart lab-vampi >/dev/null 2>&1   # the sweep registers throwaway accounts
 }
 trap cleanup EXIT
@@ -44,7 +47,7 @@ check "read phase: the jwt check skips honestly (no token yet)" "$out" 'SKIP jwt
 ev="$(echo "$out" | grep -oE '/work/'$ENG'/evidence/sweep/sweep-[0-9T]+\.json' | head -1)"
 check "the sweep's evidence file exists and is audited" \
       "$(docker compose exec -T kali-mcp sh -c "test -f '$ev' && grep -h '\"action\": \"sweep\"' /control/audit.log | tail -1" </dev/null)" \
-      '"requests": [0-9]+, "hits": 1'
+      '"requests": [0-9]+, "hits": [0-9]+'
 check "the injection hit cites its exact requests" "$(flat "$ev")" '"param":"0".*"result":"hit"'
 check "the benign book parameter stayed clean (probed, no hit)" "$(flat "$ev")" \
       '"check":"injection".*"result":"clean".*"why":"theerrorandbooleanprobes'
@@ -76,18 +79,35 @@ else
 fi
 
 # ---------------------------------------------------------------- the hits import as observations
-check "the sweep evidence parses as observations (both files, all four checks)" \
+check "the sweep evidence parses as observations (both files, every check incl. headers)" \
       "$(fpy "
 rs = [ob.parse(p, json.dumps(json.load(open(p)))) for p in ('$ev', '$ev2')]
 ids = sorted(o['rule_id'] for r in rs for o in r['observations'])
 print(rs[0]['parser'], len(ids), '-'.join(ids))")" \
-      '^sweep 4 injection-jwt-mass-assignment-redos$'
+      '^sweep [0-9]+ headers-headers-.*injection-jwt-mass-assignment-redos$'
 check "the observations carry the evidence files and no secret" \
       "$(fpy "r = ob.parse('$ev2', json.dumps(json.load(open('$ev2')))); t = json.dumps(r['observations']); print('evidence' in t, 'secret_in_evidence' in t)")" \
       '^True False$'
 check "skips and throwaway accounts are kept as limitations" \
       "$(fpy "r = ob.parse('$ev2', json.dumps(json.load(open('$ev2')))); print('; '.join(l['note'][:50] for l in r['limitations']))")" \
       'the sweep created sweep-'
+
+# ---------------------------------------------------------------- W5: cors and security headers
+# VAmPI: the headers check hits (it sends none of them); the cors check stays clean (no ACAO anywhere).
+out3="$(py "print(sweep.probe_map('$ENG', checks='cors,headers', max_requests=80))")"
+check "headers: a page without any security header is flagged" "$out3" \
+      'HIT headers on GET / .*missing security header\(s\): content-security-policy, x-content-type-options, x-frame-options'
+ev3="$(echo "$out3" | grep -oE '/work/'$ENG'/evidence/sweep/sweep-[0-9T]+\.json' | head -1)"
+check "cors: a target that allows no origin stays clean" "$(flat "$ev3")" '"check":"cors".*"result":"clean"'
+# The hostile lab sends the headers and no ACAO: the clean control must produce no hit at all.
+./rvkit engagement $ENGC --replace --tiers passive,active,intrusive http://10.250.0.18:8000 >/dev/null 2>&1 \
+  || { echo "FAIL  could not create $ENGC"; fail=$((fail+1)); }
+py "print(__import__('recon').build('$ENGC', 'http://10.250.0.18:8000', 1, 30, True, None, None))" >/dev/null
+out4="$(py "print(sweep.probe_map('$ENGC', checks='cors,headers'))")"
+check "W5 clean control: a page with the headers and no ACAO produces no hit" "$out4" '0 hit\(s\)'
+ev4="$(echo "$out4" | grep -oE '/work/'$ENGC'/evidence/sweep/sweep-[0-9T]+\.json' | head -1)"
+check "W5 clean control: the clean rows are recorded, not skipped" "$(flat "$ev4")" \
+      '"check":"headers".*"result":"clean".*"check":"cors".*"result":"clean"'
 
 echo "---"; echo "$pass passed, $fail failed"
 [ "$fail" -eq 0 ]

@@ -9,6 +9,9 @@ Real seeded issues (what recall counts):
   open-redirect  GET /go?to=                 redirects anywhere
   idor           GET /api/parcels/<n>        any customer's parcel with any valid API key (alice: key-alice-7731);
                  POST /api/parcels/<n>/notes  adds a note to any customer's parcel the same way (shown by the GET)
+  stored-xss     GET /parcels/<n>           an HTML page that shows the parcel's notes unescaped: what
+                                             POST /api/parcels/<n>/notes stores is executed there (the lab case
+                                             of the persistence oracle; the API answers stay JSON)
 
 Correct controls (not issues; clean cases for the verification oracles):
   GET /api/me/parcels/<n>   a customer's own parcel only: another customer's key gets 403
@@ -93,6 +96,11 @@ class H(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(data)))
         self.send_header("X-Powered-By", "PHP/5.2.17")   # decoy: there is no PHP
         self.send_header("X-Debug-Note", HEADER_NOTE)
+        # the security-header clean control (the sweep's headers check finds nothing here; unsafe-inline keeps
+        # the reflected and stored XSS cases demonstrable, since the check only asks whether a policy exists)
+        self.send_header("Content-Security-Policy", "default-src 'self'; script-src 'self' 'unsafe-inline'")
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("X-Frame-Options", "DENY")
         for k, v in (headers or {}).items():
             self.send_header(k, v)
         self.end_headers()
@@ -117,6 +125,15 @@ class H(BaseHTTPRequestHandler):
         if p == "/search":                                     # REAL: reflected XSS
             term = q.get("q", [""])[0]
             return self.send(200, f"<h1>Help search</h1><p>No results for {term}</p>")
+        m = re.fullmatch(r"/parcels/(\d+)", p)
+        if m:                                                  # REAL: stored XSS (the notes render unescaped)
+            r = DB.execute("SELECT id, tracking FROM parcels WHERE id = ?", (int(m.group(1)),)).fetchone()
+            if not r:
+                return self.send(404, json.dumps({"error": "not found"}), "application/json")
+            notes = [t for (t,) in DB.execute("SELECT text FROM notes WHERE parcel = ?", (r[0],))]
+            body = "<h1>Parcel %d</h1><p>Status page: tracking %s</p>" % (r[0], r[1]) + \
+                "".join(f"<div class=note>{n}</div>" for n in notes)
+            return self.send(200, body)
         if p == "/go":                                         # REAL: open redirect
             return self.send(302, "", headers={"Location": q.get("to", ["/"])[0]})
         if p == "/api/track":                                  # REAL: SQL injection

@@ -61,6 +61,44 @@ changes to the harness are measured.
   evidence file), the report's readiness warning names the remaining cells, an unattended benchmark run is
   nudged with them, and marking a plan item `tested` is refused when it references no map entry (it would cover
   no cell) — only when a map exists, since a source review has no entries to reference.
+
+### More harness-run checks
+- Two more checks in `probe_map`: `cors` (an Origin-probe matrix — a foreign origin and the null origin — on
+  entries a browser can call; a hit names whether credentials are allowed too) and `headers` (the
+  security-header checklist on pages: CSP, nosniff, framing, HSTS over https; what is missing is named). Both
+  import as observations with their evidence; Juice Shop's wildcard ACAO and missing CSP are mechanical hits
+  now, and the hostile lab (which sends the headers and allows no origin) is the clean control that must not
+  flag.
+- Two more verification oracles: `response_diff` (two request specs and the caller's rule for what difference
+  counts — the probe's answer must contain `expect`, the control's must not; debug detail, verbose errors,
+  hidden functionality) and `persistence` (a write stores `{{marker}}` in a form the page executes, then the
+  stored location is opened in the sandboxed browser: one oracle for stored XSS and stored echoes instead of
+  read-back and browser-XSS chained by hand; the page before the write runs nothing of the marker). The
+  hostile lab gained an HTML parcel page that renders notes unescaped — a real stored-XSS seed, the
+  persistence oracle's lab case.
+- The OAuth2/OIDC playbook section (api-security, cross-referenced from web-app): redirect_uri validation,
+  state, PKCE downgrade, authorization-code reuse, token substitution and audience, refresh-token rotation —
+  each with its request recipe; and an `oauth` coverage class, so authorize/token/callback routes and
+  redirect_uri parameters become plannable cells. An OAuth-capable lab target for the full lab-verified claim
+  is tracked as issue #138 in the offensive-parity epic.
+
+### The brokered race
+- `race_request` (kali, W4): the same state-changing request sent N times as simultaneously as the kit can —
+  the test for race conditions where something that must happen once happens twice. ONE approval covers the
+  exact request x N: its text names N and the rate exemption (a race is simultaneous by definition, so Max
+  rate doesn't apply to the burst; N is capped at 25 and the request budget pays for every shot), and the
+  approval binds N — a different N is refused. Each shot's status lands in `evidence/race/` with the whole
+  burst; the decision is an oracle's afterwards (a read-back or `response_diff`), never an opinion about N
+  similar answers. The Laravel lab gained a seeded one-shot promo (RVLAUNCH10, max_uses 1): the vulnerable
+  build's controller checks and increments without a lock — an approved race redeems it several times and the
+  read-back shows uses beyond max_uses; the fixed build's locked controller redeems at most once. The promo
+  race is now an expected issue of the `laravel-ledgerly` benchmark.
+- The external-network playbook's exposed-management step has its tools now (W8): SMB (`enum4linux`,
+  `smbclient`, `nmblookup`), SNMP (`snmpwalk` with the seclists community strings) and LDAP (`ldapsearch`,
+  anonymous root DSE) — all read-only enumeration, active tier, with the exact recipes. Every program in
+  `tiers.yaml` is either installed or explicitly marked "classified, not shipped" with its reason (masscan,
+  rustscan, dirsearch, gospider, sslyze, dnsrecon, fierce, onesixtyone); the exploitation and brute-force
+  tools stay out deliberately, documented where the decision is recorded.
 - A validator on a separate model (`VALIDATOR_MODEL`) tries to disprove each confirmed finding from its evidence
   and the source lines it cites. A finding it disproves stays confirmed and is flagged: the report can't be
   delivered until the finding is corrected, withdrawn or excepted by a person (`VALIDATOR_DISPROVE=demote` sends
@@ -235,7 +273,8 @@ changes to the harness are measured.
   kit, and a container that is up but wedged is restarted once and the run is skipped with a message if it still
   doesn't answer. A dead target no longer produces a run that measures nothing (the DVGA incident).
 - Planning docs carry no calendar dates any more: the ROADMAP's "Now" states the active work in order
-  (first-user fixes, then the harness-run checks epic #76 and the research loop epic #77), and release and launch
+  and links the roadmap index issue (#145), which ties the offensive-parity epic (#144), the
+  research-loop epic (#77) and the measurement work (#75, #82) into one place; release and launch
   sequencing is stated as readiness gates rather than target days.
 - Docs now match the code on releases, IPv6 scope entries (an error, not ignored), approval attribution, the
   testing window's time zone, Amazon Bedrock as a model option, the arm64 release check, the optional services

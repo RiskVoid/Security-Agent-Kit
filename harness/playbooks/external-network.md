@@ -22,7 +22,14 @@ tiers: passive, active; intrusive steps need approval
       output, vendor advisories
 - [ ] Rank every CVE with intel `prioritize` (KEV first); check each product with `kev_search`
 - [ ] TLS on every TLS port: `testssl --jsonfile testssl-<host>.json <host:port>`
-- [ ] Exposed management: SSH (auth methods, versions), RDP, SMB, databases, admin panels, VPN portals
+- [ ] Exposed management (enumerate, never exploit: these tools are read-only, active tier): SMB
+      `enum4linux -a <host>`, `smbclient -L //<host> -N`, `nmblookup -A <host>`; SNMP communities from
+      `while read c; do snmpwalk -v2c -c "$c" <host> system >/dev/null 2>&1 && echo "community works: $c"; done
+      < /usr/share/seclists/Discovery/SNMP/common-snmp-community-strings-onesixtyone.txt` (a working community
+      string is itself a finding); LDAP `ldapsearch -x -H ldap://<host> -b "" -s base` (the anonymous root DSE).
+      Brute force stays out deliberately: the tools for it aren't in the image, and lockout-aware policy comes
+      with the AD pack
+- [ ] SSH, RDP, databases, admin panels, VPN portals: versions and auth methods only (banner level)
 
 ## 4. Validation (intrusive, approval required)
 - [ ] Only for high-value leads: safe proof (version banner, harmless check request), never DoS, never data

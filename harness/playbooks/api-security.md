@@ -76,6 +76,32 @@ role (needed for authorisation tests), and which endpoints change real data. Put
       negative/zero amounts, skipping steps
 - [ ] Unsafe consumption (API10): third-party data the API trusts (webhooks, redirects, imported URLs)
 
+## 6. OAuth2 and OIDC (CWE-351, CWE-308, CWE-384)
+
+Applies when the map has an authorize, token, callback or OIDC route, or redirect_uri/client_id parameters (the
+`oauth` coverage class). Test the flow end to end with your own throwaway OAuth client registration if the target
+allows one, and record each check's requests as evidence. Recipes assume `<idp>` is the authorization server and
+`<cb>` your registered redirect URI.
+
+- [ ] redirect_uri validation: send the authorize request with the exact `<cb>`, then with variants:
+      a different host, a subdomain (`evil.<cb-host>`), a suffix path (`<cb>/../evil`), a query or fragment
+      appended, and an IP literal. A 200 redirect with `code` for any variant but the exact match is the finding
+      (authorization-code injection: another site can receive the code)
+- [ ] state: authorize without the state parameter (does the server accept it?), and with one — confirm the
+      callback echoes it back unchanged. No state, or state not validated at the token endpoint, is CSRF in the
+      authorization flow
+- [ ] PKCE downgrade: authorize with `code_challenge` omitted, or `response_type=token` (implicit flow). If the
+      code is issued without PKCE or the implicit flow is live, code interception gets easier
+- [ ] authorization-code reuse: complete a flow, then replay the exact token request (same grant_type=code and
+      code). The second use must fail; a 200 with a fresh token pair is the finding (CWE-384)
+- [ ] token substitution and audience: use A's access token on B's flow (call the resource server directly), and
+      check whether tokens carry an `aud` claim the server verifies. An audience-less token accepted everywhere
+      is the finding; a forged `aud` against the cracked/leaked key proves it
+- [ ] refresh token rotation: use a refresh token twice. If both work and return the SAME refresh token
+      (no rotation), or the old one still works after use, stolen refresh tokens are long-lived — the finding
+- [ ] Token endpoint auth: `client_secret` in the query string or body instead of the Authorization header,
+      and whether the token endpoint rate-limits (it mints tokens: brute force is intrusive — approval)
+
 ## Findings
 - Asset = method + path (+ GraphQL operation). Reproduction = exact curl with tokens replaced by `<token-userB>`.
 - BOLA/BFLA: show both requests (owner and attacker) and both responses (excerpt).

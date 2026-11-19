@@ -4,7 +4,7 @@ Other open-source AI agents also run security tools. This page says how they dif
 pick the right one. Each project's own README is the source. The projects change fast, so check their pages
 before you decide.
 
-**Checked on 2026-11-08** against each project's README. Star counts are from that day.
+**Checked on 2026-11-08** (ARTEX context added 2026-11-19) against each project's README. Star counts are from that day.
 
 ## The short version
 
@@ -46,15 +46,28 @@ If you want the most autonomous agent for a CTF or your own lab, one of the othe
 
 ## Where others are ahead today
 
-- **Exploit validation.** Strix and Shannon only report a finding with a working proof of concept. The kit hashes
-  evidence and supports retests, but proving exploitability is left to the researcher. It's next on the
-  [roadmap](../ROADMAP.md).
+The most capable autonomous frameworks — including ARTEX, which the FBI documented in November 2026 being used
+for real intrusions from reconnaissance to exfiltration, and which its author has since closed — go further in
+raw reach than the kit, and the kit says so plainly:
+
+- **Exploitation and post-compromise.** Strix and Shannon report a finding with a working proof of concept;
+  ARTEX-class frameworks chain web shells, Kerberoasting and cloud permission abuse into full compromise paths.
+  The kit stops at verified: deterministic oracles prove the finding (a canary, a callback, a timing difference,
+  a read-back) and every risky action needs a person. Governed exploitation, AD and cloud packs are the current
+  focus of the [roadmap](../ROADMAP.md) (issues #139, #140, #141) — the reach, without giving up what follows.
+- **Authenticated reach.** The kit's recon and sweeps run unauthenticated by default; most of a real
+  application sits behind a login. Identity-driven recon is issue #135.
+- **Autonomy.** Approvals pause the run by design. If you want an agent that never stops to ask, the kit isn't
+  built for that — and a framework that doesn't stop is precisely what the FBI advisory describes being used
+  against people who didn't ask at all.
 - **Install.** Several of the others install with one package command. The kit needs Docker, 16 GB of RAM
   (8 GB minimum), about 25 GB of disk and an OpenRouter key.
-- **Autonomy.** Approvals pause the run by design. If you want an agent that never stops to ask, the kit isn't
-  built for that.
 - **Coverage.** No Active Directory, cloud account, Kubernetes or mobile playbooks yet. See
   [Capability baselines](capability-baselines.md#not-supported-as-complete-workflows).
 - **Teams.** The kit is for one operator on one machine; there are no accounts or roles yet.
+
+And where the kit is ahead: every finding it reports was decided by a check the kit ran, not the model's
+opinion; every result it publishes names what was actually measured. The frameworks ahead in reach publish no
+benchmark scores at all.
 
 Found something out of date here? Open an issue or a pull request with a link to the source.

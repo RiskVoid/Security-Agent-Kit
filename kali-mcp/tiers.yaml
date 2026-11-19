@@ -52,9 +52,9 @@ intrusive:
 active:
   # port and service scanning
   - nmap
-  - masscan
+  - masscan        # classified, not shipped (W8): naabu and nmap cover it; install when an engagement needs its rate model
   - naabu
-  - rustscan
+  - rustscan       # classified, not shipped (W8)
   - ping
   - traceroute
   - arping
@@ -68,10 +68,10 @@ active:
   - ffuf
   - gobuster
   - feroxbuster
-  - dirsearch
+  - dirsearch       # classified, not shipped (W8): ffuf and feroxbuster cover content discovery
   - dirb
   - katana
-  - gospider
+  - gospider        # classified, not shipped (W8): katana covers crawling
   - wpscan
   - zap-baseline.py
   - arjun
@@ -84,15 +84,15 @@ active:
   - testssl
   - testssl.sh
   - sslscan
-  - sslyze
+  - sslyze          # classified, not shipped (W8): testssl and sslscan cover TLS
   - enum4linux
   - smbclient
   - snmpwalk
-  - onesixtyone
+  - onesixtyone    # classified, not shipped (W8): Kali no longer packages it; snmpwalk with the seclists community strings covers it
   - ldapsearch
   - rpcclient
-  - dnsrecon
-  - fierce
+  - dnsrecon        # classified, not shipped (W8): dnsx and dig cover it
+  - fierce          # classified, not shipped (W8)
   - amass
   # raw clients and multi-mode tools (see subcommands)
   - curl
