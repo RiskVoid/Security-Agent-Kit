@@ -80,7 +80,7 @@ changes to the harness are measured.
   state, PKCE downgrade, authorization-code reuse, token substitution and audience, refresh-token rotation —
   each with its request recipe; and an `oauth` coverage class, so authorize/token/callback routes and
   redirect_uri parameters become plannable cells. An OAuth-capable lab target for the full lab-verified claim
-  is still to build.
+  is tracked as issue #138 in the offensive-parity epic.
 
 ### The brokered race
 - `race_request` (kali, W4): the same state-changing request sent N times as simultaneously as the kit can —
@@ -270,7 +270,8 @@ changes to the harness are measured.
   kit, and a container that is up but wedged is restarted once and the run is skipped with a message if it still
   doesn't answer. A dead target no longer produces a run that measures nothing (the DVGA incident).
 - Planning docs carry no calendar dates any more: the ROADMAP's "Now" states the active work in order
-  (first-user fixes, then the harness-run checks epic #76 and the research loop epic #77), and release and launch
+  and links the roadmap index issue (#145), which ties the offensive-parity epic (#144), the
+  research-loop epic (#77) and the measurement work (#75, #82) into one place; release and launch
   sequencing is stated as readiness gates rather than target days.
 - Docs now match the code on releases, IPv6 scope entries (an error, not ignored), approval attribution, the
   testing window's time zone, Amazon Bedrock as a model option, the arm64 release check, the optional services
