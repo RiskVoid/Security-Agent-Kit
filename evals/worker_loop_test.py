@@ -4,9 +4,13 @@ Covers what the loop decides on its own: malformed tool calls, what a tool resul
 digests), stall and repeat detection, the advisor, and how old results shrink. The real tools and the real model
 path are covered by evals/agent_loop_test.sh.
 
+The epic #77 phase-0 fixtures (issue #81) are here too, each recording the current behaviour as the baseline the
+research-loop phases (A to E) are compared with: a long tool beside a short task, an exhausted provider, and a
+refuted hypothesis.
+
 Run: python3 evals/worker_loop_test.py
 """
-import json, os, sys, tempfile, time, types, unittest, warnings
+import json, os, sys, tempfile, threading, time, types, unittest, warnings
 
 KIT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(KIT, "harness"))
@@ -75,7 +79,7 @@ class Loop(unittest.TestCase):
             setattr(worker, k, v)
         self.tmp.cleanup()
 
-    def run_script(self, turns, max_steps=20, **task_extra):
+    def run_script(self, turns, max_steps=20, id="t1", **task_extra):
         script = list(turns)
 
         def chat(messages, model=None, task=None):
@@ -89,7 +93,7 @@ class Loop(unittest.TestCase):
                 call.n += 1
             return {"role": "assistant", "content": None, "tool_calls": turn}
         worker.chat = chat
-        task = worker._defaults({"id": "t1", "goal": "Test the thing.", "engagement": "eng", "tier": "passive",
+        task = worker._defaults({"id": id, "goal": "Test the thing.", "engagement": "eng", "tier": "passive",
                                  "info": worker.engagement_info("eng"), "max_steps": max_steps, "timeout_min": 5,
                                  "status": "running", "started": time.time(), **task_extra})
         os.makedirs(worker.task_dir(task), exist_ok=True)
@@ -654,6 +658,163 @@ class FetchInParts(Loop):
         desc = next(t["function"]["description"] for t in worker.TOOLS if t["function"]["name"] == "fetch_url")
         self.assertIn("call fetch_url again with the same url and that start", desc)
         self.assertIn("read_file", desc)                            # the middle of a part is in its step file
+
+
+class LongToolBesideAShortTask(Loop):
+    """#81 (epic #77, phase 0): one task's tool runs long while a second, short task is dispatched. Baseline: the
+    short task's first model call waits for the first task's whole loop, because run_task holds MODEL_LOCK across
+    tool calls. The inequality is the baseline; the constant isn't. This is the fixture #106 ("release the model
+    while a tool runs") and #107 ("tasks wait their turn on the target") are judged against."""
+
+    def test_the_short_task_waits_for_the_whole_first_task(self):
+        sleep_s = 0.4
+        tool_started, tool_done = threading.Event(), []
+        chats = []                    # (task id, time) of every model call, in order
+
+        def slow_tool(task, command, timeout_s=600, approval_id=""):
+            tool_started.set()
+            time.sleep(sleep_s)
+            tool_done.append(time.time())
+            self.ran.append(command)
+            return ("exit=0 tier=passive\nthe long scan finished\n"
+                    "[output saved as verified evidence: /work/eng/evidence/runs/001.txt]")
+        worker.IMPL = {**worker.IMPL, "kali_run": slow_tool}
+
+        def chat(messages, model=None, task=None):
+            chats.append((task["id"], time.time()))
+            finish = call("finish", {"status": "completed", "summary": f"{task['id']} done", "confidence": "low"})
+            if task["id"] == "long" and len([1 for tid, _ in chats if tid == "long"]) == 1:
+                return {"role": "assistant", "content": None,
+                        "tool_calls": [call("kali_run", {"command": "slow-scan --hours 2"}, cid="L1")]}
+            return {"role": "assistant", "content": None, "tool_calls": [finish]}
+        worker.chat = chat
+
+        def make(tid):
+            return worker._defaults({"id": tid, "goal": f"Goal {tid}.", "engagement": "eng", "tier": "passive",
+                                     "info": worker.engagement_info("eng"), "max_steps": 6, "timeout_min": 5,
+                                     "status": "running", "started": time.time()})
+        long_t, short_t = make("long"), make("short")
+        for t in (long_t, short_t):
+            os.makedirs(worker.task_dir(t), exist_ok=True)
+        first = threading.Thread(target=worker.run_task, args=(long_t,))
+        first.start()
+        self.assertTrue(tool_started.wait(5), "the long task never reached its tool call")
+        dispatch_at = time.time()
+        second = threading.Thread(target=worker.run_task, args=(short_t,))
+        second.start()
+        first.join(30)
+        second.join(30)
+        self.assertFalse(first.is_alive() or second.is_alive())
+
+        self.assertEqual((long_t["status"], short_t["status"]), ("done", "done"))
+        long_ts = [t for tid, t in chats if tid == "long"]
+        short_ts = [t for tid, t in chats if tid == "short"]
+        self.assertEqual((len(long_ts), len(short_ts)), (2, 1))
+        waited = short_ts[0] - dispatch_at
+        self.assertGreaterEqual(waited, sleep_s)          # it waited at least the tool's duration
+        self.assertGreater(short_ts[0], tool_done[0])    # no model call while the first task's tool ran
+        self.assertGreater(short_ts[0], long_ts[-1])     # and not until the first task had finished: MODEL_LOCK
+        self.assertLess(long_ts[0], tool_done[0])        # (the first task did get the model before its tool ran)
+
+    def tearDown(self):
+        worker.TASKS.clear()   # run_task registers tasks; nothing after this class needs them
+        super().tearDown()
+
+
+class ExhaustedProvider(Loop):
+    """#81 (epic #77, phase 0): the model endpoint returns a quota error mid-task. Baseline: the task ends typed
+    as model_refused (a quota error and a policy refusal are the same type today), the finished call and its result
+    are kept in the on-disk checkpoint, and the task cannot be resumed: only interrupted ones can. A resumable,
+    non-repeating path is what the packet at resume (#84) and the capacity work (#106) build on."""
+
+    def test_quota_error_ends_the_task_typed_with_its_checkpoint_kept(self):
+        import io
+        import urllib.error
+        replies = [call("kali_run", {"command": "curl -s http://x/probe"}, cid="q1")]
+
+        class R:
+            def read(s):
+                return json.dumps({"model": "colab-qwen", "usage": {"prompt_tokens": 100, "completion_tokens": 10},
+                                   "choices": [{"finish_reason": "tool_calls",
+                                                "message": {"role": "assistant", "content": None,
+                                                            "tool_calls": replies}}]}).encode()
+
+        def fake(req, timeout=None):
+            if getattr(fake, "spent", False):
+                body = json.dumps({"error": {"message": "insufficient quota: the billing hard limit is reached"}}).encode()
+                raise urllib.error.HTTPError(req.full_url, 402, "Payment Required", {}, io.BytesIO(body))
+            fake.spent = True
+            return R()
+        fake.spent = False
+        self.urlopen = worker.urllib.request.urlopen
+        worker.urllib.request.urlopen = fake
+        try:
+            task = worker._defaults({"id": "quota", "goal": "Probe it.", "engagement": "eng", "tier": "passive",
+                                      "info": worker.engagement_info("eng"), "max_steps": 6, "timeout_min": 5,
+                                      "status": "running", "started": time.time(),
+                                      "tokens": dict(worker.NO_TOKENS)})
+            os.makedirs(worker.task_dir(task), exist_ok=True)
+            worker.run_task(task)
+        finally:
+            worker.urllib.request.urlopen = self.urlopen
+
+        self.assertEqual(task["status"], "error")
+        self.assertEqual(worker.outcome(task), "model_refused")     # the typed status a failure record reads
+        self.assertIn("the model gateway refused the call", task["error"])
+        self.assertIn("quota", task["error"])
+        self.assertNotIn("402", task["error"])   # baseline: only the gateway's message is kept, not its code
+        self.assertEqual(self.ran, ["curl -s http://x/probe"])       # the finished call ran exactly once
+        saved = json.load(open(os.path.join(worker.task_dir(task), "task.json")))
+        self.assertEqual(saved["status"], "error")                   # the checkpoint keeps the state
+        msgs = worker.load_messages(task)
+        self.assertTrue(any(m.get("role") == "tool" and "ran curl -s http://x/probe" in str(m.get("content"))
+                            for m in msgs))                          # ... and the conversation, finished call included
+        with self.assertRaises(ValueError) as refused:               # today it is not resumable: the gap #84 closes
+            worker.resume(task["id"])
+        self.assertIn("only interrupted tasks can be resumed", str(refused.exception))
+
+    def tearDown(self):
+        worker.TASKS.clear()   # run_task registers tasks; nothing after this class needs them
+        super().tearDown()
+
+
+class RefutedHypothesis(Loop):
+    """#81 (epic #77, phase 0): an attractive hypothesis whose clean control behaves the same as the probe.
+    Baseline: the finish validator never checks the candidate state's enum, so a 'refuted' state passes into the
+    typed result untouched — but the schema the model reads offers only hypothesis and reproduced, so a
+    schema-faithful model cannot even say it — and nothing tells the next task for the same cell. The experiment
+    records (#90) and the packet (#83, #84) are the issues that change the last two parts."""
+    C = {"cell": {"plan_item": "P-004", "class": "injection", "entries": ["E-1a2b3c"],
+                  "endpoints": ["GET lab/search (E-1a2b3c)"]}}
+
+    def test_the_refutation_reaches_the_typed_result_but_not_the_next_task(self):
+        self.outputs["curl -s 'http://x/search?q=1'"] = "exit=0 tier=active\n500 Internal Server Error"
+        self.outputs["curl -s 'http://x/search?q=clean'"] = "exit=0 tier=active\n500 Internal Server Error"
+        cand = {"title": "SQL injection in /search", "state": "refuted",
+                "check": "probe q=1' and the clean control q=clean both got the same 500: refuted on this route"}
+        first, msgs = self.run_script([
+            [call("kali_run", {"command": "curl -s 'http://x/search?q=1'"}),
+             call("kali_run", {"command": "curl -s 'http://x/search?q=clean'"})],
+            [call("finish", {"status": "partial",
+                             "summary": "The control behaves the same as the probe: not confirmed on this route.",
+                             "candidates": [cand], "confidence": "low"})],
+        ], max_steps=6, id="refuted-a", contract=self.C)
+        self.assertEqual(worker.outcome(first), "partial")
+        r = json.loads(worker.report(first))
+        self.assertEqual(r["candidates"][0]["state"], "refuted")          # recorded, with its conditions
+        self.assertIn("both got the same 500", r["candidates"][0]["check"])
+
+        # the schema the model reads never offered that state (the enum is the baseline; the phases widen it)
+        enum = worker.SCHEMA["finish"]["properties"]["candidates"]["items"]["properties"]["state"]["enum"]
+        self.assertEqual(enum, ["hypothesis", "reproduced"])
+
+        # the next task for the same cell: the cell contract is there, the refutation is not (baseline)
+        second, msgs2 = self.run_script([[call("kali_run", {"command": "curl -s 'http://x/search?q=2'"})]],
+                                        max_steps=4, id="refuted-b", contract=self.C)
+        system2 = msgs2[0]["content"]
+        self.assertIn("test only injection on GET lab/search (E-1a2b3c)", system2)
+        self.assertNotIn("refuted", system2)
+        self.assertNotIn("500 Internal Server Error", system2)
 
 
 class Traces(Loop):
