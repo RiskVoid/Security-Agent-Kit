@@ -61,6 +61,26 @@ changes to the harness are measured.
   evidence file), the report's readiness warning names the remaining cells, an unattended benchmark run is
   nudged with them, and marking a plan item `tested` is refused when it references no map entry (it would cover
   no cell) — only when a map exists, since a source review has no entries to reference.
+
+### More harness-run checks
+- Two more checks in `probe_map`: `cors` (an Origin-probe matrix — a foreign origin and the null origin — on
+  entries a browser can call; a hit names whether credentials are allowed too) and `headers` (the
+  security-header checklist on pages: CSP, nosniff, framing, HSTS over https; what is missing is named). Both
+  import as observations with their evidence; Juice Shop's wildcard ACAO and missing CSP are mechanical hits
+  now, and the hostile lab (which sends the headers and allows no origin) is the clean control that must not
+  flag.
+- Two more verification oracles: `response_diff` (two request specs and the caller's rule for what difference
+  counts — the probe's answer must contain `expect`, the control's must not; debug detail, verbose errors,
+  hidden functionality) and `persistence` (a write stores `{{marker}}` in a form the page executes, then the
+  stored location is opened in the sandboxed browser: one oracle for stored XSS and stored echoes instead of
+  read-back and browser-XSS chained by hand; the page before the write runs nothing of the marker). The
+  hostile lab gained an HTML parcel page that renders notes unescaped — a real stored-XSS seed, the
+  persistence oracle's lab case.
+- The OAuth2/OIDC playbook section (api-security, cross-referenced from web-app): redirect_uri validation,
+  state, PKCE downgrade, authorization-code reuse, token substitution and audience, refresh-token rotation —
+  each with its request recipe; and an `oauth` coverage class, so authorize/token/callback routes and
+  redirect_uri parameters become plannable cells. An OAuth-capable lab target for the full lab-verified claim
+  is still to build.
 - A validator on a separate model (`VALIDATOR_MODEL`) tries to disprove each confirmed finding from its evidence
   and the source lines it cites. A finding it disproves stays confirmed and is flagged: the report can't be
   delivered until the finding is corrected, withdrawn or excepted by a person (`VALIDATOR_DISPROVE=demote` sends

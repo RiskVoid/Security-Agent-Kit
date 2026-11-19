@@ -27,6 +27,13 @@ and runs a negative control. The result is pass only when the oracle holds AND t
                       'Out-of-band callbacks: on'; the firewall drops every engagement user's traffic to the
                       catcher, so a token can only arrive from the target itself. No public callback service:
                       client traffic stays in the kit, and every expected callback is evidence with an audit entry.
+  response_diff       two request specs and the caller's rule for what difference counts: the probe's answer
+                      must contain `expect`, the control's must not. identity_difference is the authorization
+                      special case; this is for debug detail, verbose errors, hidden functionality.
+  persistence         a write, then a separate read at the stored location in the sandboxed browser: one oracle
+                      for stored issues (stored XSS, stored injection echoes) instead of read_back and
+                      browser_xss chained by hand. The proof request stores {{marker}}; check: {url} reads it
+                      back. Controls: the page before the write runs nothing of the marker.
 
 Every run writes a verification record (evidence/verify/<ts>-<oracle>-<id>.json) with the oracle, the result, the
 reason and each request's evidence file and status, and the record is audited and hashed like any evidence.
@@ -42,7 +49,8 @@ try:
 except Exception:  # noqa: BLE001
     oob = None
 
-ORACLES = ("marker", "identity_difference", "read_back", "browser_xss", "timing", "oob_callback")
+ORACLES = ("marker", "identity_difference", "read_back", "browser_xss", "timing", "oob_callback",
+           "response_diff", "persistence")
 BROWSER_EVIDENCE = re.compile(r"\[browser evidence: /work/[^/]+/(\S+?)/ ")
 MAX_SAMPLES = 10
 PLACEHOLDER = "{{marker}}"
@@ -207,6 +215,61 @@ def browser_xss(eng, request, marker, send_kw=None):
     return "pass", f"script with {marker!r} ran in the browser; not in the control", marker, steps
 
 
+def response_diff(eng, request, control, expect, send_kw=None):
+    """Two request specs and the caller's rule for what difference counts (#W7): the probe's response must
+    contain `expect`, the control's must not. identity_difference is the authorization special case of this;
+    response_diff is for everything else - debug detail an error page shows, a verbose stack trace, hidden
+    functionality one parameter unlocks."""
+    kw = send_kw or {}
+    if not control or not control.get("url"):
+        raise ValueError("response_diff needs control: the same request without the part that should differ")
+    if not expect:
+        raise ValueError("response_diff needs expect: the text only the probe's answer should contain")
+    probe = _send(eng, _fill(request, ""), "probe", **kw)
+    ctl = _send(eng, _fill(control, ""), "control", **{k: v for k, v in kw.items() if k != "approval_id"})
+    steps = [probe, ctl]
+    if probe.get("error"):
+        return "inconclusive", f"the probe request failed: {probe['error']}", "", steps
+    if expect not in probe["_text"]:
+        return "fail", f"{expect!r} is not in the probe's response", "", steps
+    if expect in ctl["_text"]:
+        return "inconclusive", f"the control's response contains {expect!r} too: it doesn't come from the probe", \
+            "", steps
+    return "pass", (f"{expect!r} is in the probe's answer and not in the control's "
+                    f"(status {probe.get('status')} vs {ctl.get('status')})"), "", steps
+
+
+def persistence(eng, request, check, marker="", send_kw=None):
+    """A write, then a separate read at the stored location in the sandboxed browser: one oracle for stored
+    issues (stored XSS, stored injection echoes), instead of read_back and browser_xss chained by hand (#W7).
+    The proof request stores {{marker}} in a form the page executes; check: {url} reads the location back in
+    the browser, read-only. Controls: the page before the write runs nothing of the marker, and the proof
+    request's evidence is kept like any write."""
+    kw = send_kw or {}
+    if not check or not check.get("url"):
+        raise ValueError("persistence needs check: the page (or request) that reads the stored value back")
+    if not marker and not _has_placeholder(request):
+        raise ValueError("persistence: put {{marker}} in the write's payload (e.g. "
+                         "<script>rvMarker('{{marker}}')</script>), or give marker")
+    mark = marker or canary()
+    page = _fill(check, mark)["url"]
+    before = _browse(eng, page, "control: the page before the write", check.get("identity"),
+                     max_tier=kw.get("max_tier"), task=kw.get("task"))
+    if any(x.split(":", 1)[-1] == mark for x in before.get("executed") or []):
+        return "inconclusive", f"the page already runs {mark!r} before the write: it isn't stored by this " \
+            "request", mark, [before]
+    proof = _send(eng, _fill(request, mark), "proof", **kw)
+    after = _browse(eng, page, "check after the write", check.get("identity"),
+                     max_tier=kw.get("max_tier"), task=kw.get("task"))
+    steps = [before, proof, after]
+    if proof.get("error"):
+        return "inconclusive", f"the proof request failed: {proof['error']}", mark, steps
+    if not any(x.split(":", 1)[-1] == mark for x in after.get("executed") or []):
+        return "fail", f"the page stored the write but nothing ran with {mark!r}", mark, steps
+    return "pass", f"the page ran {mark!r} after the write and not before it: the stored value is executed " \
+        "where it is read back", mark, steps
+
+
 def _stats(xs):
     m = sum(xs) / len(xs)
     return m, (sum((x - m) ** 2 for x in xs) / max(1, len(xs) - 1)) ** 0.5
@@ -305,6 +368,8 @@ def verify(eng, oracle, request, marker="", expect="", identities=None, check=No
     kw = {"approval_id": approval_id or None, "max_tier": max_tier, "task": task, "send": send}
     if not marker and _has_placeholder(request) and oracle in ("marker", "read_back", "browser_xss"):
         marker = canary()   # chosen here so a request that needs an approval can be sent again with the same one
+    if not marker and _has_placeholder(request) and oracle == "persistence":
+        marker = canary()
     if not marker and oracle == "oob_callback":
         marker = oob.token_for(eng) if oob else f"{eng}.{canary()}"
     try:
@@ -318,6 +383,10 @@ def verify(eng, oracle, request, marker="", expect="", identities=None, check=No
             result, reason, mark, steps = timing(eng, request, control, samples, min_delay, kw)
         elif oracle == "oob_callback":
             result, reason, mark, steps = oob_callback(eng, request, marker, control, kw, timeout=timeout)
+        elif oracle == "response_diff":
+            result, reason, mark, steps = response_diff(eng, request, control, expect, kw)
+        elif oracle == "persistence":
+            result, reason, mark, steps = persistence(eng, request, check, marker, kw)
         else:
             result, reason, mark, steps = read_back(eng, request, check, marker, kw)
     except Stopped as s:
