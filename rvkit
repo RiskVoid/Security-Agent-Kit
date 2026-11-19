@@ -216,6 +216,7 @@ write_engagement() { # write_engagement <name> <client> <tiers> <rate> <network>
     echo "# - Execution: controlled         (every network command that isn't a known tool needs an approval)"
     echo "# - Stop condition: the site returns errors or slows down"
     echo "# - Strict tiers: on       (scripts and interpreters, and curl/wget sending data, count as intrusive)"
+    echo "# - Out-of-band callbacks: on   (the kit's own catcher proves blind SSRF/XXE/cmd; verify oracle oob_callback)"
     if [ "$private" = y ]; then echo "- Worker model: private"
     else echo "# - Worker model: private      (never use the OpenRouter fallback model for this engagement's tool work)"; fi
     echo "# Tiers: passive (code review, DNS, research), active (scans, crawling), intrusive (exploitation, brute force;"
