@@ -305,7 +305,7 @@ def check_jwt(eng, ents, ctx):
         except ValueError:
             claims = {}
         forged = _forge(claims, secret)                # the target's own claims, our signature: acceptance proves key control
-        row = _hit("jwt", protected[0] if protected else {}, "", tok[:24],
+        row = _hit("jwt", protected[0] if protected else {}, "", "HS256",
                    "the token's HMAC key is a common secret (redacted here: kept in the sweep evidence); a "
                    "token forged with it was ", [], "confirm by sending the forged token (in the sweep evidence) "
                    "against the authenticated endpoint yourself")

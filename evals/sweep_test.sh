@@ -38,7 +38,7 @@ docker compose --profile lab ps lab-vampi --format '{{.State}}' | grep -q runnin
 py "print(__import__('recon').build('$ENG', '$V', 1, 30, True, None, None))" >/dev/null \
   || { echo "FAIL  recon_map didn't build a map"; exit 1; }
 out="$(py "print(sweep.probe_map('$ENG'))")"
-check "read phase: the path-parameter SQL injection hits" "$out" 'HIT injection on GET /users/v1/{}'
+check "read phase: the path-parameter SQL injection hits" "$out" 'HIT injection on GET /users/v1/[{][}]'
 check "read phase: the write checks only propose a matrix" "$out" 'matrix sweep-[0-9]+'
 check "read phase: the jwt check skips honestly (no token yet)" "$out" 'SKIP jwt.*no JWT was seen'
 ev="$(echo "$out" | grep -oE '/work/'$ENG'/evidence/sweep/sweep-[0-9T]+\.json' | head -1)"
@@ -57,7 +57,7 @@ out2="$(py "print(sweep.probe_map('$ENG', matrix='$name'))")"
 check "mass-assignment: admin=true registers an admin (read back via /me)" "$out2" \
       'HIT mass-assignment on POST /users/v1/register.*admin is true there and false in the control'
 check "redos: the email regex slows with input length, and the ladder stops" "$out2" \
-      'HIT redos on PUT /users/v1/{}/email.*0\.[0-9]+s.*past three times'
+      'HIT redos on PUT /users/v1/[{][}]/email.*0\.[0-9]+s.*past three times'
 check "the redos ladder never sent the sizes that stop the target" \
       "$(docker compose exec -T kali-mcp sh -c "grep -hoE 'a{29}' /work/$ENG/evidence/sweep/*.txt 2>/dev/null | wc -l | tr -d ' '" </dev/null)" \
       '^0$'
