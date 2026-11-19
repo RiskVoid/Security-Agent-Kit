@@ -498,6 +498,14 @@ def open_work(eng, cid, plain=False):
                     f"{', ...' if len(planned) > 12 else ''})")
     if cands:
         todo.append(f"{len(cands)} candidate finding(s) not triaged ({', '.join(cands[:12])})")
+    try:   # #72: coverage-matrix gaps are open work; a run that never opened the matrix never probes those cells
+        import reconmap
+        gaps = len(reconmap.matrix(eng)["gaps"])
+        if gaps:
+            todo.append(f"{gaps} coverage-matrix cell(s) have no plan item and no sweep (get_coverage "
+                        "matrix=true lists them: delegate each or record why it's skipped)")
+    except Exception:  # noqa: BLE001 - no map or a broken one: the delivery check names it at report time
+        pass
     return todo
 
 

@@ -52,6 +52,33 @@ def route_template(url):
 
 
 # ---------------------------------------------------------------- parsers
+def sweep(d):
+    """A probe_map sweep (evidence/sweep): each hit is one observation, named for the check that found it, with
+    the exact requests in the evidence files it cites. Skips and what the sweep created are kept as limitations,
+    so what wasn't tested is visible next to what was."""
+    out, errors = [], []
+    sev = {"injection": "high", "jwt": "high", "mass-assignment": "high", "redos": "medium"}
+    for h in d.get("hits") or []:
+        check = h.get("check") or "sweep"
+        location = f"{h.get('method') or ''} {h.get('path') or h.get('entry') or ''}".strip()
+        ev = [x for x in h.get("evidence") or [] if x]
+        out.append(_obs("sweep", check, f"{check} hit: {(h.get('why') or '').split(';')[0].split('. ')[0]}",
+                        sev.get(check, "medium"), location, h.get("param"),
+                        f"sweep:{check}:{location}", {**{k: v for k, v in h.items()
+                                                         if k not in ("evidence", "secret_in_evidence")}},
+                        ev))
+    rows = d.get("rows") or []
+    skips = [r for r in rows if r.get("result") == "skip"]
+    lim = []
+    if skips:
+        lim.append({"note": f"{len(skips)} check target(s) skipped: " +
+                    "; ".join(sorted({(r.get("why") or "")[:80] for r in skips}))[:400]})
+    if d.get("created"):
+        lim.append({"note": "the sweep created " + ", ".join(d["created"][:20]) +
+                    (" and more (see the evidence file)" if len(d["created"]) > 20 else "")})
+    return out, [], lim
+
+
 def semgrep(d):
     out = []
     for r in d.get("results", []):
@@ -180,7 +207,7 @@ def http(text):
 
 
 PARSERS = {"semgrep": semgrep, "osv-scanner": osv, "pip-audit": pip_audit, "bandit": bandit, "gitleaks": gitleaks,
-           "authz": authz, "laravel_map": appmap}
+           "authz": authz, "laravel_map": appmap, "sweep": sweep}
 
 
 def detect(path, data):
@@ -205,6 +232,8 @@ def detect(path, data):
             return "bandit"
         if "cells" in d and "matrix" in d:
             return "authz"
+        if d.get("sweep") == 1 and "hits" in d:
+            return "sweep"
         if "leads" in d and "routes" in d:
             return "laravel_map"
         if "results" in d and not d["results"]:
@@ -219,8 +248,8 @@ def parse(path, data, tool=None):
     if not tool:
         return {"parser": None, "observations": [], "limitations": [],
                 "errors": [{"type": "unknown-format", "message": "no parser for this file (semgrep, osv-scanner, "
-                            "pip-audit, bandit, gitleaks JSON, an authz run, an app map or an HTTP exchange)",
-                            "path": path}]}
+                            "pip-audit, bandit, gitleaks JSON, an authz run, a sweep, an app map or an HTTP "
+                            "exchange)", "path": path}]}
     try:
         if tool == "http":
             obs, errors, lim = http(data)

@@ -13,6 +13,11 @@ role (needed for authorisation tests), and which endpoints change real data. Put
 ## 1. Discovery and inventory (API9: improper inventory)
 - [ ] Recon map first: kali `recon_map` on the API and its web client (schema, crawl, script API paths, which
       need authentication); `get_map` is the inventory the plan items reference (E-xxxxxx)
+- [ ] Then let the kit check: kali `probe_map` (after `recon_map`) — injection probes on every parameter (path
+      parameters included), JWT keys cracked offline, mass assignment on object-creating writes, timing on
+      validated string fields. Its reads run at once; its writes are one authorization matrix the user approves.
+      `import_observations` its evidence and triage the hits: a hit names the parameter and the exact requests
+      (leads, not findings, until confirmed). The cells it covered count as tested.
 - [ ] Spec: try `/openapi.json`, `/swagger.json`, `/v3/api-docs`, `/api-docs`, `/swagger-ui/`, `/graphql`,
       `/graphiql`, `/.well-known/` with `curl -s -o /dev/null -w '%{http_code} %{url}\n' <url>/<path>`
 - [ ] Routes: `ffuf -u <base>/FUZZ -w /usr/share/seclists/Discovery/Web-Content/api/api-endpoints.txt
@@ -61,6 +66,10 @@ role (needed for authorisation tests), and which endpoints change real data. Put
       missing security headers, TLS (`testssl`)
 
 ## 5. Resources and business flows (API4, API6, API10)
+- [ ] Regex-validated inputs (CWE-1333): on every string field whose malformed value is rejected, send inputs of
+      growing length built to backtrack (`a` × 16/20/24 + `@`) and watch the response time; a clear growth is the
+      finding. `probe_map` runs this ladder for you (and stops before the sizes that stop the API); test what it
+      skipped by hand
 - [ ] Pagination and size limits: `?limit=100000`, huge bodies, deep JSON, GraphQL aliases/batching
       (measure response time; stop at the first sign of impact)
 - [ ] Sensitive business flows (API6): purchase, transfer, invite, voucher: replay, race (parallel requests),

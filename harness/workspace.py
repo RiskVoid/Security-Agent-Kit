@@ -364,6 +364,13 @@ def plan_update(eng, actor, pid, expected_revision=None, **f):
             _map_refs(eng, new["refs"])
         if st == "tested" and not new["evidence"]:
             raise ValueError("tested needs evidence (the files that show the test and its result)")
+        if st == "tested":
+            # #72: an item without map references covers no coverage-matrix cell, so marking it tested would
+            # hide the gap. Only when a recon map exists: a source review has no entries to reference.
+            import reconmap
+            if reconmap.has_map(eng) and not any(reconmap.ENTRY_RX.match(r) for r in new["refs"]):
+                raise ValueError(f"{pid} references no recon map entry, so it covers no coverage-matrix cell: add "
+                                 "refs (E-xxxxxx from get_map) or record it not-applicable with a rationale")
         if st == "failed":
             if not new.get("finding_id"):
                 raise ValueError("failed needs the finding it produced (finding_id)")

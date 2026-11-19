@@ -261,6 +261,17 @@ def run():
     out = tool(f"findings.update_coverage('{ENG}', updates=[])")
     check("update_coverage refuses an empty list and shows what to send",
           out.startswith("REFUSED: updates is empty") and '"item": "P-001"' in out, out)
+
+    print("== coverage needs the cells it claims (#72)")
+    put("evidence/map/map-x.json", json.dumps({"observations": [
+        {"method": "GET", "url": "http://198.51.100.30/api/orders/{id}", "source": "map",
+         "params": {"path": ["id"]}, "auth": "none", "status": 200}]}))
+    last = pb["ids"][-1]           # untouched by the sections above, which use ids[0] to ids[5]
+    _, err = ops("plan.update", id=last, fields={"state": "tested", "evidence": ["evidence/http/y.txt"]})
+    check("tested is refused without map refs once a recon map exists", err and "no coverage-matrix cell" in err, err)
+    it, err = ops("plan.update", id=last, fields={"state": "not-applicable", "rationale": "no file upload here"})
+    check("not-applicable with a rationale still works", it and it["state"] == "not-applicable", it or err)
+
     out = tool(f"findings.get_handover('{ENG}')")
     check("get_handover returns the handover text", out.startswith(f"# Handover: {ENG}"), out[:200])
 

@@ -43,6 +43,24 @@ changes to the harness are measured.
   as timestamped evidence with an audit entry. Lab-verified with a negative control on the hostile lab's SSRF and
   on DVGA's `importPaste` mutation (`evals/oracle_test.sh`, which now also runs in CI; the DVGA probe is a POST,
   so it needs an approval like any write).
+
+### Harness-run checks
+- `probe_map` (kali) runs the kit's fixed checks over the recon map, so the finding of known classes stops
+  depending on the model thinking of every test: `injection` (an error probe and a boolean true/false pair on
+  every parameter of every read, path parameters included — the class the error analysis showed the model
+  skipping on VAmPI), `jwt` (every token seen cracked offline against common secrets, a forged token tried
+  against an authenticated endpoint), `mass-assignment` (a throwaway account carrying one privileged field,
+  read back logged in as it, against a control), and `redos` (validated string fields timed with inputs of
+  growing length, stopping at the first clear growth, never at the sizes that stop the target). Reads run
+  immediately; the writes are proposed as ONE authorization matrix and run only after it is approved, touching
+  only the sweep's own throwaway accounts. Every request goes through the same scope, tier, rate and budget
+  checks; hits go to `evidence/sweep/`, import as observations with the exact requests, and are leads until the
+  planner confirms them. `evals/sweep_test.sh` (no model, in CI) shows all four checks hitting on VAmPI with
+  clean controls, one approval, and the ladder stopping before impact.
+- Coverage-matrix gaps now count as open work everywhere: a sweep hit fills the cell it tested (with its
+  evidence file), the report's readiness warning names the remaining cells, an unattended benchmark run is
+  nudged with them, and marking a plan item `tested` is refused when it references no map entry (it would cover
+  no cell) — only when a map exists, since a source review has no entries to reference.
 - A validator on a separate model (`VALIDATOR_MODEL`) tries to disprove each confirmed finding from its evidence
   and the source lines it cites. A finding it disproves stays confirmed and is flagged: the report can't be
   delivered until the finding is corrected, withdrawn or excepted by a person (`VALIDATOR_DISPROVE=demote` sends
