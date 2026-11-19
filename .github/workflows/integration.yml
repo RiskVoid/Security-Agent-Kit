@@ -135,6 +135,8 @@ jobs:
         run: bash evals/oracle_test.sh   # the approval-gated pass cases stay unverified in CI: it asserts the approval request
       - name: Harness-run checks against VAmPI (no model)
         run: bash evals/sweep_test.sh
+      - name: Brokered race against the Laravel lab (no model)
+        run: bash evals/race_test.sh
       - name: Authenticated testing (identities, captures, browser, authorization matrix) against the Laravel lab
         run: bash evals/authn_test.sh
       - name: Laravel reference engagement (app map, build identity, PHP profile) against the Laravel lab

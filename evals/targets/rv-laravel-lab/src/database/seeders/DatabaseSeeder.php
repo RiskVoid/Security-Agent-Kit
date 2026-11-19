@@ -7,6 +7,7 @@ use App\Models\Export;
 use App\Models\Invoice;
 use App\Models\Organization;
 use App\Models\Payment;
+use App\Models\PromoCode;
 use App\Models\User;
 use Illuminate\Database\Seeder;
 use Illuminate\Support\Facades\Storage;
@@ -42,6 +43,10 @@ class DatabaseSeeder extends Seeder
 
         Payment::create(['organization_id' => $acme->id, 'invoice_id' => $i1->id, 'amount_cents' => 125000,
             'reference' => 'ACME-PAY-5001']);
+
+        // one-shot promo (seeded race case): max_uses 1, no lock in the vulnerable build's controller
+        PromoCode::create(['organization_id' => $acme->id, 'code' => 'RVLAUNCH10', 'max_uses' => 1,
+            'uses_count' => 0]);
         Payment::create(['organization_id' => $globex->id, 'invoice_id' => $i3->id, 'amount_cents' => 990000,
             'reference' => 'GLOBEX-PAY-6001']);
 

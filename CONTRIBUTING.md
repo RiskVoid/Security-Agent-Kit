@@ -94,6 +94,7 @@ bash evals/ci_prepare.sh
 | `lab_test.sh` | lab isolation: an engagement reaches only its own lab target; lab targets have no internet and can't reach the kit's services; DVWA login works | `./rvkit lab up`, `demo-code`, `net-test`; it creates `lab-juice` and `lab-dvwa` itself | `bash evals/lab_test.sh` |
 | `oracle_test.sh` | the verification oracles against the hostile lab (and DVGA's `importPaste` SSRF when up): marker, identity difference, read-back, browser XSS, timing, response difference, persistence (the stored note runs on the parcel page), out-of-band callback; each oracle passes on the vulnerable route with a clean control and fails on the clean one; the write cases and the DVGA probe need approvals (printed; CI asserts the approval request), the out-of-band cases prove the catcher is unreachable from agent commands | `./rvkit lab up` | `bash evals/oracle_test.sh` |
 | `sweep_test.sh` | the harness-run checks (`probe_map`) against VAmPI with no model: the path-parameter SQL injection, the admin mass assignment (read back through `/me`), the email ReDoS timing (the ladder stops before impact sizes), the cracked JWT with a forged token accepted, the missing security headers and the CORS origin matrix — each with clean controls that must not flag (a hostile-lab page with the headers and no ACAO stays clean); the writes run under one approved authorization matrix, touch only the sweep's own throwaway accounts, and the hits import as observations | `./rvkit lab up` | `bash evals/sweep_test.sh` |
+| `race_test.sh` | the brokered race (`race_request`, W4) against the Laravel lab, no model: one approval names N and the rate exemption and binds request x N (a different N is refused); the vulnerable build's one-shot promo (max_uses 1, no lock) redeems more than once and the read-back shows uses beyond max_uses; the fixed build's locked controller redeems at most once (the clean control); races on reads and N out of range are refused | `./rvkit lab up` | `bash evals/race_test.sh` |
 | `planner_smoke.py` | each planner route answers authorised code-review, web-app and external-network briefs with a usable plan, not a refusal; records latency and tokens | `OPENROUTER_API_KEY` (costs a few cents) | `python3 evals/planner_smoke.py [--brief code\|web\|network] [model ...]` |
 
 Results that the suites write go to `evals/results/`, which is git-ignored: results can contain model output about
@@ -234,7 +235,7 @@ Actions are pinned to a commit SHA, with the release tag in a comment.
   guard, the console). It
   builds no images. This is the check a pull request needs.
 - `.github/workflows/integration.yml` builds every image and runs the full-stack suites: `evals/ci_prepare.sh`,
-  then the 18 suites listed in [Tests](#tests) (amd64, no model or API key needed). Image layers are cached
+  then the 19 suites listed in [Tests](#tests) (amd64, no model or API key needed). Image layers are cached
   between runs, so a run that changes little takes much less than the first one (15–20 minutes). It runs:
   - on a pull request that changes `harness/`, `kali-mcp/`, `litellm/`, `scripts/`, `egress/`, `gateway/`,
     `php-runner/`, `prompts/`, `searxng/`, `evals/` (not `evals/improvement/` or `evals/results/`), `rvkit`,
