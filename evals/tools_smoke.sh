@@ -33,6 +33,12 @@ zaproxy|dpkg -s zaproxy | grep Version
 sqlmap|sqlmap --version
 testssl|testssl --version 2>&1 | grep -m1 -iE 'version|[0-9]+\.[0-9]+'
 sslscan|sslscan --version
+enum4linux|dpkg -s enum4linux | grep Version
+smbclient|smbclient --version
+rpcclient|rpcclient --version
+nmblookup|nmblookup --version 2>&1 | grep -i version
+snmpwalk|snmpwalk -V 2>&1
+ldapsearch|ldapsearch -VV 2>&1 | grep -m1 -iE 'version|[0-9]+\.[0-9]+'
 semgrep|/opt/venv/bin/semgrep --version
 joern|ls /opt/joern-cli/lib | grep -m1 -oE "joern-cli-[0-9.]+[0-9]"
 semgrep offline rules|ls /opt/semgrep-rules | wc -l | sed 's/$/.0 dirs/'

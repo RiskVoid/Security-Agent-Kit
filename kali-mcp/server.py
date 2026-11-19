@@ -299,6 +299,28 @@ async def probe_map(engagement: str, matrix: str = "", max_requests: int = 400, 
 
 
 @mcp.tool()
+@with_rules
+async def race_request(engagement: str, method: str, url: str, n: int = 10, headers: dict | None = None,
+                      body: str = "", identity: str = "", approval_id: str = "", task: str = "") -> str:
+    """Send the SAME state-changing request N times, as simultaneously as the kit can (W4): the test for
+    race conditions where something that must happen once happens twice (a one-shot voucher, the last item in
+    stock, a balance transfer, a vote).
+    One approval covers the exact request x N: its text names N and the rate exemption - a race is
+    simultaneous by definition, so Max rate doesn't apply to the burst; N is capped at 25 and the request
+    budget pays for every shot. The request must be the same for all N (that is what makes it a race).
+    Returns each shot's status and a saved evidence file with all responses. The decision is an oracle's
+    afterwards: read back what changed (the count, the status of the voucher) or run response_diff - if more
+    than one shot succeeded where the operation must happen once, that is the finding to verify.
+    A race is intrusive: it needs the operator's approval, exactly as any state-changing request."""
+    import actions
+    try:
+        return await _thread(actions.race, engagement, method, url, headers or {}, body, n,
+                             approval_id or None, identity or None, task or None)
+    except ValueError as e:
+        return f"REFUSED: {e}"
+
+
+@mcp.tool()
 async def laravel_map(engagement: str, path: str, build_url: str = "", routes_file: str = "", max_tier: str = "",
                       task: str = "") -> str:
     """Map a Laravel application from its source (RW-012) without running any of it: framework and PHP versions,

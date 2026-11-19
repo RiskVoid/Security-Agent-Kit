@@ -81,6 +81,24 @@ changes to the harness are measured.
   each with its request recipe; and an `oauth` coverage class, so authorize/token/callback routes and
   redirect_uri parameters become plannable cells. An OAuth-capable lab target for the full lab-verified claim
   is still to build.
+
+### The brokered race
+- `race_request` (kali, W4): the same state-changing request sent N times as simultaneously as the kit can —
+  the test for race conditions where something that must happen once happens twice. ONE approval covers the
+  exact request x N: its text names N and the rate exemption (a race is simultaneous by definition, so Max
+  rate doesn't apply to the burst; N is capped at 25 and the request budget pays for every shot), and the
+  approval binds N — a different N is refused. Each shot's status lands in `evidence/race/` with the whole
+  burst; the decision is an oracle's afterwards (a read-back or `response_diff`), never an opinion about N
+  similar answers. The Laravel lab gained a seeded one-shot promo (RVLAUNCH10, max_uses 1): the vulnerable
+  build's controller checks and increments without a lock — an approved race redeems it several times and the
+  read-back shows uses beyond max_uses; the fixed build's locked controller redeems at most once. The promo
+  race is now an expected issue of the `laravel-ledgerly` benchmark.
+- The external-network playbook's exposed-management step has its tools now (W8): SMB (`enum4linux`,
+  `smbclient`, `nmblookup`), SNMP (`snmpwalk` with the seclists community strings) and LDAP (`ldapsearch`,
+  anonymous root DSE) — all read-only enumeration, active tier, with the exact recipes. Every program in
+  `tiers.yaml` is either installed or explicitly marked "classified, not shipped" with its reason (masscan,
+  rustscan, dirsearch, gospider, sslyze, dnsrecon, fierce, onesixtyone); the exploitation and brute-force
+  tools stay out deliberately, documented where the decision is recorded.
 - A validator on a separate model (`VALIDATOR_MODEL`) tries to disprove each confirmed finding from its evidence
   and the source lines it cites. A finding it disproves stays confirmed and is flagged: the report can't be
   delivered until the finding is corrected, withdrawn or excepted by a person (`VALIDATOR_DISPROVE=demote` sends

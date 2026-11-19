@@ -3,6 +3,7 @@
 use App\Http\Controllers\Api\InvoiceApiController;
 use App\Http\Controllers\Api\PaymentController;
 use App\Http\Controllers\Api\ProfileController;
+use App\Http\Controllers\Api\PromoController;
 use Illuminate\Support\Facades\Route;
 
 Route::middleware('auth:api')->group(function () {
@@ -16,4 +17,7 @@ Route::middleware('auth:api')->group(function () {
     Route::post('/invoices/{invoice}/send', [InvoiceApiController::class, 'send']);
 
     Route::get('/payments/{payment}', [PaymentController::class, 'show']);
+
+    Route::post('/promo/redeem', [PromoController::class, 'redeem']);
+    Route::get('/promo/{code}', [PromoController::class, 'status']);
 });

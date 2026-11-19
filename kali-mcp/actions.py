@@ -9,7 +9,7 @@ the level of the action rather than of a shell line.
 
 Raw commands through core.run stay available; Execution: controlled in RULES.md narrows them (see core.run).
 """
-import base64, datetime, hashlib, http.client, json, os, re, socket, ssl, time, urllib.parse
+import base64, datetime, hashlib, http.client, json, os, re, socket, ssl, threading, time, urllib.parse
 
 import core
 import policy as rvpolicy
@@ -143,6 +143,14 @@ def exchange(eng, method, url, headers, data=b"", timeout_s=30, purpose="request
     if why:
         raise Refused(why)
     core.rate_wait(eng, rules["max_rate"])
+    return _shot(eng, method, url, headers, data, ip, timeout_s, purpose)
+
+
+def _shot(eng, method, url, headers, data, ip, timeout_s=30, purpose="request"):
+    """One pinned request: no policy, budget or rate here (the caller enforced them, or the race paid once for
+    its whole burst). Returns exchange's result shape; raises Refused on network errors."""
+    u = urllib.parse.urlsplit(url)
+    host, port = u.hostname.lower().rstrip("."), u.port or (443 if u.scheme == "https" else 80)
     conn = (_PinnedTLS if u.scheme == "https" else _Pinned)(host, port, ip, min(int(timeout_s or 30), 120))
     path = (u.path or "/") + (f"?{u.query}" if u.query else "")
     t0 = time.time()
@@ -161,6 +169,125 @@ def exchange(eng, method, url, headers, data=b"", timeout_s=30, purpose="request
     core._audit({"engagement": eng, "action": purpose, "method": method, "url": core.scrub(eng, url), "ip": ip,
                  "status": out["status"]})
     return out
+
+
+RACE_MAX = 25
+
+
+def race(eng, method, url, headers=None, body="", n=10, approval_id=None, identity=None, task=None,
+         timeout_s=30):
+    """W4 (#76): N identical requests fired as simultaneously as the kit can, to test whether something that
+    must happen once happens N times (a one-shot voucher redeemed twice, one item in stock sold twice).
+
+    One approval covers the exact request x N: its text names N and the rate exemption (a race is simultaneous
+    by definition, so Max rate doesn't apply to the burst; N is capped at RACE_MAX and the request budget pays
+    for every shot). The decision afterwards is an oracle's - response_diff or a read-back on what changed -
+    not an opinion about N similar answers. Returns each shot's status, its evidence file and a summary of the
+    distribution; {"approval": id, "text": ...} when the approval is still needed."""
+    i = core.info(eng)
+    rules = i["rules"]
+    method = (method or "").upper()
+    entry = {"engagement": eng, "action": "race", "method": method, "url": core.scrub(eng, url),
+             "race": n, **({"task": task} if task else {})}
+
+    def refuse(msg, **extra):
+        core._audit({**entry, "refused": msg, **extra})
+        return {"refused": msg, "text": f"REFUSED: {msg}"}
+
+    if method not in METHODS or method in ("GET", "HEAD", "OPTIONS"):
+        return refuse("race needs a state-changing method (POST, PUT, PATCH, DELETE): a race on a read proves "
+                      "nothing")
+    n = int(n or 10)
+    if not 2 <= n <= RACE_MAX:
+        return refuse(f"a race sends 2 to {RACE_MAX} requests (got {n})")
+    if i["halted"]:
+        return refuse("engagement is halted")
+    late = rvpolicy.time_refusal(rules)
+    if late:
+        return refuse(late + " (RULES.md)")
+    if "intrusive" not in rules["tiers"]:
+        return refuse("a race is tier 'intrusive', RULES.md allows only " + str(rules["tiers"]))
+    try:
+        hdrs = _clean_headers(headers)
+    except ValueError as e:
+        return refuse(str(e))
+    pol = core.policy_of(eng)
+    why = rvpolicy.check_url(pol, url)
+    if why:
+        return refuse(why)
+    if len(body.encode() if isinstance(body, str) else body or b"") > MAX_BODY_IN:
+        return refuse(f"request body over {MAX_BODY_IN} bytes")
+    # the identity (its secret by reference) is resolved once and rides every shot
+    send_hdrs = dict(hdrs)
+    if identity:
+        try:
+            import identities
+            auth = identities.auth_headers(eng, identity, url)
+            send_hdrs = {**{k: v for k, v in hdrs.items() if k.lower() not in {a.lower() for a in auth}}, **auth}
+        except ValueError as e:
+            return refuse(str(e))
+    action = {**http_action(method, url, hdrs, (body.encode() if isinstance(body, str) else body or b""),
+                             identity), "kind": "race", "race": n}
+    shown = (f"RACE {n}x {method} {url}" + (f" as {identity}" if identity else "")
+            + (f" ({len(body)} byte body)" if body else "")
+            + f": {n} identical requests as simultaneously as the kit can - exempt from Max rate (that is the "
+              f"point), capped at {RACE_MAX}; the request budget pays for all {n}")
+    if not approval_id:
+        a = core.request_approval(eng, action, "intrusive", shown, task)
+        return {"approval": a["id"], "text": f"APPROVAL REQUIRED (intrusive): {shown}\nApproval id: {a['id']}. "
+                f"Ask the user to review and run on the host:  ./rvkit approve {eng} {a['id']}   Then call "
+                f"race_request again with the same arguments and approval_id='{a['id']}'."}
+    err = core.consume_approval(eng, approval_id, action, rules)
+    if err:
+        return refuse(err, approval=approval_id)
+    for _ in range(n):                       # the budget pays for every shot, counted one at a time
+        if not core.take_budget(eng, "requests", rules.get("max_requests")):
+            return refuse(f"the request budget cannot cover {n} requests (Max requests: {rules['max_requests']})")
+    u = urllib.parse.urlsplit(url)
+    ip, why = _resolve(pol, u.hostname.lower().rstrip("."), _blocked())
+    if why:
+        return refuse(why)
+    data = (body.encode() if isinstance(body, str) else body or b"")
+    t0, results, lock = time.time(), [], threading.Lock()
+
+    def shot(k):
+        try:
+            r = _shot(eng, method, url, send_hdrs, data, ip, timeout_s, purpose="race")
+            out = {"status": r["status"], "seconds": r["seconds"],
+                   "body": (r["body"][:400].decode("utf-8", "replace") if isinstance(r["body"], bytes)
+                            else str(r["body"]))}
+        except Refused as e:
+            out = {"status": None, "error": str(e)}
+        with lock:
+            results.append(out)
+    threads = [threading.Thread(target=shot, args=(k,)) for k in range(n)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(60)
+    rel = None
+    if results:
+        ts = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%dT%H%M%S")
+        rel = f"evidence/race/{ts}-{n}.json"
+        work_dir(eng, "evidence", "race")
+        full = os.path.join(core.WORK, eng, rel)
+        with open(full, "w") as f:
+            json.dump({"at": ts, "method": method, "url": core.scrub(eng, url), "n": n,
+                       "identity": identity, "shots": results}, f, indent=1)
+        core._audit({**entry, "approval": approval_id, "outputs": {rel: core.sha256_file(full)}})
+    ok = [r for r in results if 200 <= (r.get("status") or 0) < 300]
+    dist = {}
+    for r in results:
+        dist[r.get("status")] = dist.get(r.get("status"), 0) + 1
+    spread = ", ".join(f"{v} x {k}" for k, v in sorted(dist.items(), key=lambda x: str(x[0])))
+    text = [f"race {method} {core.scrub(eng, url)} x {n}: {spread} in {round(time.time() - t0, 1)}s.",
+            f"{len(ok)} of {n} succeeded. Whether that broke the invariant is the oracle's call: read back what "
+            f"the requests changed (a status or count), or response_diff against what a single request leaves. "
+            f"If {len(ok)} > 1 where the operation must happen once, verify it and record the finding."]
+    if rel:
+        text.append(f"[race saved as verified evidence: /work/{eng}/{rel}]")
+    return {"n": n, "statuses": [r.get("status") for r in results], "succeeded": len(ok), "evidence": rel,
+            "text": core.scrub(eng, "\n".join(text))}
 
 
 def _mask_cookies(headers):

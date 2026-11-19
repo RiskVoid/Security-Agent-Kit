@@ -3644,11 +3644,13 @@ class ReconClasses(unittest.TestCase):
         """The W1 acceptance: each expected issue of the black-box benchmarks is plannable through at least one
         class. Excluded, with why: exposed-ftp (an exposed service recon finds, not an endpoint class), DVGA's
         introspection (recon finds it; not a matrix gap the epic's error analysis showed) and the LLM lab's
-        tool poisoning (the ai-llm playbook's surface). Source-code benchmarks have no map: their coverage is
-        the playbooks' checklists."""
+        tool poisoning (the ai-llm playbook's surface). Laravel's promo race: a race is a property of a
+        business operation, not of an endpoint's shape - no coverage class fits it (a race cell on every
+        write would be noise); the api-security playbook's API6 step and the race_request tool carry it.
+        Source-code benchmarks have no map: their coverage is the playbooks' checklists."""
         norm = lambda s: re.sub(r"[-_]+", " ", s.lower())
         EXCLUDE = {("web-juice-shop", "exposed-ftp"), ("api-graphql-dvga", "introspection"),
-                   ("ai-llm-lab", "mcp-tool-poisoning")}
+                   ("ai-llm-lab", "mcp-tool-poisoning"), ("laravel-ledgerly", "promo-race")}
         source = {"code-flask", "code-node", "laravel-ledgerly", "smoke"}
         folder = os.path.join(KIT, "evals", "benchmarks")
         for fname in sorted(os.listdir(folder)):
