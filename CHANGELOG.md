@@ -201,6 +201,9 @@ changes to the harness are measured.
   reply as its own cause.
 - The worker's `fetch_url` takes `start`, so it can read a long page past the first 100,000 characters. The hint
   at the end of each part names `fetch_url`.
+- Planning docs carry no calendar dates any more: the ROADMAP's "Now" states the active work in order
+  (first-user fixes, then the harness-run checks epic #76 and the research loop epic #77), and release and launch
+  sequencing is stated as readiness gates rather than target days.
 - Docs now match the code on releases, IPv6 scope entries (an error, not ignored), approval attribution, the
   testing window's time zone, Amazon Bedrock as a model option, the arm64 release check, the optional services
   and lab targets, and the six verification oracles.

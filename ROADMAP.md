@@ -8,10 +8,16 @@ The kit competes on trust, not on autonomy: each item below extends scope enforc
 and human decisions rather than working around them. What the kit is tested and measured for today is in
 [docs/capability-baselines.md](docs/capability-baselines.md).
 
-## Now: the first public release (0.1.x)
+## Now (0.1.x)
 
-- Published benchmark baselines for every lab target, with the method and the spread across runs.
+0.1.0 is public. The active work, in order:
+
 - Fixes from the first users on Linux and macOS.
+- **Epic #76 — harness-run checks for web and API targets:** the known vulnerability classes become deterministic
+  sweeps the harness runs itself, instead of every test depending on the model thinking of it. This is the
+  offensive-capability upgrade the [detection-quality PRD](docs/PRD/offensive-capability-upgrade.md) specifies.
+- **Epic #77 — a research loop for the harness:** research packets, evidence links, a queue over open work and
+  engagement-local method reuse, so planner–worker work stops repeating itself and keeps what it established.
 
 ## Next
 
