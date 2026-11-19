@@ -11,6 +11,7 @@ KIT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path[:0] = [os.path.join(KIT, "kali-mcp"), os.path.join(KIT, "harness"), os.path.join(KIT, "scripts")]
 import core  # noqa: E402
 import policy  # noqa: E402
+import reconmap  # noqa: E402
 import tierconf  # noqa: E402
 import findings_db as db  # noqa: E402
 import webfetch  # noqa: E402
@@ -3576,6 +3577,96 @@ class FindingTools(unittest.TestCase):
         self.assertEqual(self.validated, [])
         got = self.update(f["id"], status="confirmed", method="source-review")   # said outright: allowed, as before
         self.assertEqual(got["status"], "confirmed")
+
+
+class ReconClasses(unittest.TestCase):
+    """W1 of the offensive PRD: the coverage matrix's classes. Every expected issue of the black-box benchmarks
+    must map to at least one class, so nothing the benchmarks score is invisible to the coverage-driven method,
+    and each predicate applies where it should and doesn't where it shouldn't."""
+
+    def e(self, method, path, params=None, auth="unknown", operations=None):
+        return {"method": method, "path": path, "params": params or {}, "auth": auth,
+                "operations": operations or []}
+
+    def test_predicates(self):
+        cases = [  # (entry, class, applies?) - each row names a benchmark's real surface
+            (self.e("GET", "/users/v1/{}", params={"path": ["username"]}), "user-enumeration", True),   # VAmPI
+            (self.e("POST", "/users/v1/login", params={"body": ["email", "password"]}), "rate-limit", True),
+            (self.e("POST", "/users/v1/login", params={"body": ["email", "password"]}), "user-enumeration", True),
+            (self.e("GET", "/users/v1/_debug"), "information-disclosure", True),
+            (self.e("GET", "/users/v1/{}/email", params={"path": ["username"]}), "redos", True),        # the path param
+            (self.e("GET", "/search", params={"query": ["q"]}), "redos", True),                         # a search param
+            (self.e("GET", "/index.html"), "redos", False),
+            (self.e("GET", "/metrics"), "information-disclosure", True),                               # Juice Shop
+            (self.e("GET", "/graphiql"), "information-disclosure", True),                              # DVGA
+            (self.e("POST", "/vulnerabilities/exec", params={"body": ["ip"]}), "csrf", True),           # DVWA
+            (self.e("POST", "/vulnerabilities/csrf", params={"body": ["csrf_token"]}), "csrf", False),  # token present
+            (self.e("POST", "/vapi/books", params={"body": ["title"]}), "csrf", False),                 # an API write
+            (self.e("POST", "/graphql", operations=["importPaste"]), "graphql-depth", True),            # DVGA
+            (self.e("POST", "/graphql", operations=["importPaste"]), "graphql-batching", True),
+            (self.e("POST", "/graphql", operations=["importPaste"]), "graphql-field-suggestions", True),
+            (self.e("POST", "/api/users", params={"body": ["name"]}), "nosql-injection", True),
+            (self.e("GET", "/search", params={"query": ["q"]}), "cors-misconfig", True),               # a page
+            (self.e("GET", "/search", params={"query": ["q"]}), "security-headers", True),
+            (self.e("GET", "/rest/products"), "cors-misconfig", False),                                # an API path
+            (self.e("GET", "/index.html"), "information-disclosure", False),
+        ]
+        for e, cls, want in cases:
+            with self.subTest(path=e["path"], cls=cls):
+                self.assertEqual(cls in reconmap.applicable(e), want, reconmap.applicable(e))
+
+    def test_every_class_has_refs_and_a_description(self):
+        self.assertEqual(set(reconmap.CLASSES), set(reconmap.CLASS_REFS))
+        self.assertTrue(all(isinstance(v, str) and len(v) > 10 for v in reconmap.CLASSES.values()))
+
+    def test_the_pipeline_flags_the_new_cells(self):
+        """Synthetic evidence in, map out: the classes the benchmarks score appear on the entry the vulnerable
+        route produces, so the coverage matrix shows cells (and gaps) where before there were none."""
+        with tempfile.TemporaryDirectory() as d:
+            saved = db.WORK
+            db.WORK = d
+            try:
+                os.makedirs(os.path.join(d, "eng", "evidence", "map"), exist_ok=True)
+                json.dump({"observations": [
+                    {"method": "POST", "url": "http://target/users/v1/login", "source": "map",
+                     "params": {"body": ["email", "password"]}, "auth": "none", "status": 200},
+                    {"method": "GET", "url": "http://target/users/v1/_debug", "source": "map",
+                     "auth": "none", "status": 200}]},
+                    open(os.path.join(d, "eng", "evidence", "map", "map-x.json"), "w"))
+                m = reconmap.build("eng")
+            finally:
+                db.WORK = saved
+            login = next(e for e in m["entries"] if e["path"] == "/users/v1/login")
+            self.assertIn("user-enumeration", login["classes"])       # VAmPI's enumeration and brute-force
+            self.assertIn("rate-limit", login["classes"])              # surface on the login route
+            debug = next(e for e in m["entries"] if e["path"] == "/users/v1/_debug")
+            self.assertIn("information-disclosure", debug["classes"])
+
+    def test_every_expected_issue_maps_to_a_class(self):
+        """The W1 acceptance: each expected issue of the black-box benchmarks is plannable through at least one
+        class. Excluded, with why: exposed-ftp (an exposed service recon finds, not an endpoint class), DVGA's
+        introspection (recon finds it; not a matrix gap the epic's error analysis showed) and the LLM lab's
+        tool poisoning (the ai-llm playbook's surface). Source-code benchmarks have no map: their coverage is
+        the playbooks' checklists."""
+        norm = lambda s: re.sub(r"[-_]+", " ", s.lower())
+        EXCLUDE = {("web-juice-shop", "exposed-ftp"), ("api-graphql-dvga", "introspection"),
+                   ("ai-llm-lab", "mcp-tool-poisoning")}
+        source = {"code-flask", "code-node", "laravel-ledgerly", "smoke"}
+        folder = os.path.join(KIT, "evals", "benchmarks")
+        for fname in sorted(os.listdir(folder)):
+            if not fname.endswith(".json"):
+                continue
+            name = fname[:-5]
+            if name in source:
+                continue
+            for e in json.load(open(os.path.join(folder, fname))).get("expected", []):
+                if (name, e["id"]) in EXCLUDE:
+                    continue
+                with self.subTest(issue=f"{name}/{e['id']}"):
+                    text = norm(" ".join([e["id"]] + e.get("cwe", [])))
+                    found = [c for c, refs in reconmap.CLASS_REFS.items()
+                             if norm(c) in text or any(norm(r) in text for r in refs)]
+                    self.assertTrue(found, f"maps to no coverage class: {text!r}")
 
 
 class Oob(unittest.TestCase):

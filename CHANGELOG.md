@@ -56,6 +56,15 @@ changes to the harness are measured.
   unauthenticated probes. Plan items cite its entries.
 - The coverage matrix lists every map entry against the test classes that apply to it. Worker tasks are narrowed
   to one cell, and cells can be skipped with a reason. Untested cells are flagged before delivery.
+- The matrix knows the classes the benchmarks score that used to be invisible to it: user enumeration, rate
+  limits, information disclosure (debug, verbose, status, metrics, GraphiQL routes), ReDoS (search and filter
+  parameters, and path parameters: a validation regex may run on them), CSRF on page-form writes, NoSQL
+  injection in bodies, CORS and security headers on browser pages, and GraphQL depth, batching and field
+  suggestions. VAmPI's login enumeration and brute-force surface, its `_debug` route and its per-user email
+  validation, DVGA's batching/depth and Juice Shop's `/metrics` now have cells the planner can be held to,
+  where before the coverage-driven method couldn't see them at all. Every expected issue of the black-box
+  benchmarks maps to at least one class; each predicate has unit tests, and the eventual recall effect is
+  judged as a proposal when a benchmark budget exists.
 
 ### Hostile targets
 - Approvals show where each argument came from: the scope and rules, the task, the agent, or the target's own

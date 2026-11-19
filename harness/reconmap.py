@@ -38,23 +38,56 @@ CLASSES = {
     "open-redirect": "a parameter that takes a destination",
     "mass-assignment": "a write (POST, PUT, PATCH) with a body",
     "file-upload": "a file parameter or an upload path",
+    "user-enumeration": "a login, register, reset or user-lookup path, or a user-id path parameter",
+    "rate-limit": "an authentication, verification or OTP endpoint (brute force)",
+    "information-disclosure": "a debug, verbose, status, config, backup, metrics or graphiql path or parameter",
+    "redos": "a search, filter or pattern parameter, or a path parameter (a validation regex may run on it)",
+    "csrf": "a state-changing request on a page route, with no token parameter",
+    "nosql-injection": "a body parameter (JSON or form)",
+    "cors-misconfig": "a page a browser loads (GET, not an API or GraphQL path)",
+    "security-headers": "a page a browser loads (GET, not an API or GraphQL path)",
+    "graphql-depth": "a GraphQL operation (nesting without a limit)",
+    "graphql-batching": "a GraphQL operation (several can be sent in one request)",
+    "graphql-field-suggestions": "a GraphQL endpoint whose errors suggest field names",
 }
 CLASS_REFS = {"access-control": ("WSTG-ATHZ", "API1:2023", "API5:2023", "CWE-639", "CWE-284", "idor", "bola",
                                  "authorization", "authz"),
-              "authentication": ("WSTG-ATHN", "API2:2023", "CWE-287", "authn", "login", "jwt", "session"),
+              "authentication": ("WSTG-ATHN", "API2:2023", "CWE-287", "authn", "login", "jwt", "session",
+                                 "credential", "no-auth", "unauthenticated"),
               "injection": ("WSTG-INPV-05", "WSTG-INPV-12", "CWE-89", "CWE-78", "CWE-943", "sqli", "sql", "nosql",
                             "command", "ssti"),
               "xss": ("WSTG-INPV-01", "WSTG-INPV-02", "CWE-79", "xss", "cross-site scripting"),
               "ssrf": ("WSTG-INPV-19", "API7:2023", "CWE-918", "ssrf"),
               "open-redirect": ("WSTG-CLNT-04", "CWE-601", "redirect"),
               "mass-assignment": ("API3:2023", "CWE-915", "mass assignment", "mass-assignment"),
-              "file-upload": ("WSTG-BUSL-08", "WSTG-BUSL-09", "CWE-434", "upload")}
+              "file-upload": ("WSTG-BUSL-08", "WSTG-BUSL-09", "CWE-434", "upload", "traversal", "inclusion"),
+              "user-enumeration": ("WSTG-IDNT", "CWE-204", "CWE-203", "user enumeration", "user-enum",
+                                   "enumeration"),
+              "rate-limit": ("CWE-307", "rate limit", "rate-limit", "brute force", "brute-force", "throttl",
+                             "lockout"),
+              "information-disclosure": ("WSTG-INFO", "CWE-213", "CWE-497", "CWE-538", "information disclosure",
+                                         "debug", "verbose", "exposure", "exposed"),
+              "redos": ("CWE-1333", "redos", "re-dos", "regular expression denial", "resource consumption"),
+              "csrf": ("CWE-352", "csrf", "cross-site request forgery"),
+              "nosql-injection": ("CWE-943", "nosql", "no-sql", "mongo"),
+              "cors-misconfig": ("CWE-942", "CWE-346", "cors", "cross-origin"),
+              "security-headers": ("CWE-693", "security header", "missing header", "csp", "hsts"),
+              "graphql-depth": ("CWE-400", "depth", "nesting", "deep"),
+              "graphql-batching": ("CWE-770", "batch", "alias", "batching"),
+              "graphql-field-suggestions": ("CWE-209", "field suggestion", "suggestions", "did you mean")}
 URL_PARAM = re.compile(r"(^|_)(url|uri|link|href|callback|webhook|endpoint|image_url|feed|host|proxy|fetch)$", re.I)
 DEST_PARAM = re.compile(r"^(to|next|return|returnto|return_to|redirect|redirect_uri|redirect_url|continue|goto|dest|"
                         r"destination|target|back|r|u)$", re.I)
 ID_PARAM = re.compile(r"(^|_)(id|uuid|uid|key|ref|number|no)$|^(user|account|order|parcel|basket|item)s?$", re.I)
 FILE_PARAM = re.compile(r"file|upload|attachment|avatar|image|document", re.I)
 AUTH_PATH = re.compile(r"log-?in|sign-?in|auth|token|password|session|register|signup|reset|otp|2fa|mfa", re.I)
+USER_PATH = re.compile(r"user|account|profile|member|customer|username", re.I)
+INFO_PATH = re.compile(r"debug|verbose|trace|dump|config|backup|\.env|metrics|health|status|version|phpinfo|"
+                       r"graphiql|actuator|server-status|\.git$", re.I)
+INFO_PARAM = re.compile(r"(^|_)(debug|verbose|trace|test|admin|internal)$", re.I)
+SEARCH_PARAM = re.compile(r"(^|_)(search|filter|match|pattern|regex|find|query|q)$", re.I)
+CSRF_PARAM = re.compile(r"(^|_)csrf|token$|authenticity", re.I)
+API_PATH = re.compile(r"^/(api|vapi|v\d[\w-]*|graphql|rest)(/|$)", re.I)
 
 
 def template(path):
@@ -244,7 +277,9 @@ def build(eng):
 def applicable(e):
     """The vulnerability classes that apply to a map entry (CLASSES), from its method, parameters and auth."""
     names = [n for v in e["params"].values() for n in v]
+    path_names = list(e["params"].get("path") or [])
     has_params = bool(names) or "{}" in e["path"]
+    page = e["method"] == "GET" and not API_PATH.search(e["path"])
     out = []
     if "{}" in e["path"] or any(ID_PARAM.search(n) for n in names) or e["auth"] == "required":
         out.append("access-control")
@@ -262,6 +297,24 @@ def applicable(e):
         out.append("mass-assignment")
     if any(FILE_PARAM.search(n) for n in names) or re.search(r"upload|file", e["path"], re.I):
         out.append("file-upload")
+    if AUTH_PATH.search(e["path"]) or ("{}" in e["path"] and USER_PATH.search(e["path"])):
+        out.append("user-enumeration")
+    if AUTH_PATH.search(e["path"]):
+        out.append("rate-limit")
+    if INFO_PATH.search(e["path"]) or any(INFO_PARAM.search(n) for n in names):
+        out.append("information-disclosure")
+    if any(SEARCH_PARAM.search(n) for n in names) or path_names:
+        out.append("redos")
+    if e["method"] in ("POST", "PUT", "PATCH", "DELETE") and not API_PATH.search(e["path"]) \
+            and not any(CSRF_PARAM.search(n) for n in names):
+        out.append("csrf")
+    if e["params"].get("body"):
+        out.append("nosql-injection")
+    if page:
+        out.append("cors-misconfig")
+        out.append("security-headers")
+    if e["operations"] or re.search(r"graphql", e["path"], re.I):
+        out += ["graphql-depth", "graphql-batching", "graphql-field-suggestions"]
     return out
 
 
