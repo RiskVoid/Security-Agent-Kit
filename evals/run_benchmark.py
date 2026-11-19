@@ -126,6 +126,41 @@ def lab_running(target):
     return all(s in up for s in need)
 
 
+def lab_answers(url, timeout=8):
+    """True when the target answers one HTTP request (any status: a 404 still means it is alive). Runs inside
+    the kali container, because the lab network is internal and the host cannot reach it. A container that is
+    up but wedged must not eat a paid run (the DVGA incident: a whole run measured nothing)."""
+    if not url:
+        return True
+    probe = ("import sys, urllib.request, urllib.error\n"
+             "try:\n"
+             "    urllib.request.urlopen(sys.argv[1], timeout=%d)\n"
+             "except urllib.error.HTTPError:\n"
+             "    pass\n") % timeout   # any HTTP status means the server answered
+    r = subprocess.run(["docker", "compose", "exec", "-T", "kali-mcp", "python3", "-c", probe, str(url)],
+                       cwd=KIT, capture_output=True, text=True)
+    return r.returncode == 0
+
+
+def lab_reachable(name, b, log=print):
+    """A lab benchmark's target is up (container level) and answers (HTTP level), restarting it once if it
+    doesn't. Returns False when the run should be skipped: the log line says which gate failed."""
+    if not lab_running(b.get("lab_host", b["target"])):
+        log(f"SKIP {name}: lab not running (./rvkit lab up)")
+        return False
+    if not lab_answers(b.get("url")):
+        services = LAB_SERVICES.get(str(b.get("lab_host", b["target"])).split(":")[0], [])
+        if services:
+            log(f"  the lab target {b.get('url')} does not answer; restarting {' '.join(services)}")
+            subprocess.run(["docker", "compose", "--profile", "lab", "restart", *services],
+                           cwd=KIT, capture_output=True, text=True)
+        if not lab_answers(b.get("url"), timeout=12):
+            log(f"SKIP {name}: the lab target {b.get('url')} does not answer even after a restart; fix the lab "
+                "before spending a run on it")
+            return False
+    return True
+
+
 # ---------------------------------------------------------------- setup
 def prepare(name, b):
     eng = f"bench-{name}"
@@ -970,8 +1005,7 @@ def run_one(name, agent, log=print, group=None, budget=None, label=None, mode="o
     b = json.load(open(os.path.join(BENCH, f"{name}.json")))
     if budget is not None:
         b["max_budget_usd"] = min(budget, b.get("max_budget_usd", budget))
-    if b.get("lab") and not lab_running(b.get("lab_host", b["target"])):
-        log(f"SKIP {name}: lab not running (./rvkit lab up)")
+    if b.get("lab") and not lab_reachable(name, b, log):
         return None
     log(f"== {name}: {b['description']}" + (" (plain-agent baseline)" if agent == PLAIN else ""))
     if agent == PLAIN:

@@ -163,7 +163,10 @@ The budget is the OpenHands per-conversation limit for the run. The code targets
 one run of a model says little, since output varies between runs ([below](#repeated-runs)). `--label NAME` names a
 set of runs across benchmarks, for example the reference runs before a change and the runs after it. `--score` re-scores the findings already in a `bench-` engagement, for example after
 you changed the expected list; it never starts a conversation and only reads `bench-` engagements. Lab benchmarks need the lab running
-(`./rvkit lab up`): without it they are skipped with a message, they don't start it themselves.
+(`./rvkit lab up`): without it they are skipped with a message, they don't start it themselves. The lab target is
+also health-checked before the run starts — one HTTP probe, and if the container is up but wedged (the DVGA
+incident: a whole run measured nothing), it is restarted once and skipped with a message if it still doesn't
+answer, so a dead target never eats a paid run.
 
 What a run does:
 
