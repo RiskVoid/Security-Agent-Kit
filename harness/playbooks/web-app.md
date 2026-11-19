@@ -9,6 +9,10 @@ tiers: passive, active; intrusive steps need approval
 ## 1. Information gathering (passive, then active)
 - [ ] Recon map first: kali `recon_map` on each web target (crawl, script API paths, OpenAPI/GraphQL schema,
       which paths need authentication); `get_map` gives the entries (E-xxxxxx) the rest of the plan references
+- [ ] Then let the kit check: kali `probe_map` (after `recon_map`) — injection probes on every parameter, JWT
+      keys, mass assignment on registration-style writes, timing on validated fields. One authorization matrix
+      covers its writes; `import_observations` its evidence and triage the hits (leads, not findings, until
+      confirmed). The cells it covered count as tested
 - [ ] WSTG-INFO: `whatweb <url>`, `httpx-toolkit -u <url> -title -tech-detect -status-code -json -o httpx.json`
 - [ ] WAF/CDN in front: `wafw00f <url>` (explains blocked payloads later; never try to evade a WAF unless the RoE
       says so)
@@ -39,6 +43,9 @@ tiers: passive, active; intrusive steps need approval
 - [ ] WSTG-ATHZ: IDOR on every object id with two accounts if the client provided them; vertical escalation
 
 ## 4. Input validation (active → intrusive)
+- [ ] Regex-validated inputs (CWE-1333): on string fields whose malformed value is rejected, inputs of growing
+      length built to backtrack, timed (`probe_map` runs this ladder where it can reach; stop at the first
+      clear slowdown, never at the sizes that stop the app)
 - [ ] Reflected/stored XSS: manual probes; `dalfox url <url>` is intrusive → approval
 - [ ] SQL injection: manual probes first; `sqlmap` is intrusive → approval, with `--batch --level 1 --risk 1`
 - [ ] SSRF, path traversal, template injection, open redirect on parameters found in step 1

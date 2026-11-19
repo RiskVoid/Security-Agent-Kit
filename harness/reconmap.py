@@ -90,6 +90,14 @@ CSRF_PARAM = re.compile(r"(^|_)csrf|token$|authenticity", re.I)
 API_PATH = re.compile(r"^/(api|vapi|v\d[\w-]*|graphql|rest)(/|$)", re.I)
 
 
+def has_map(eng):
+    """Whether a recon map exists for the engagement (recon_map ran). The coverage rules that need map
+    references (#72) apply only then: a source review or an engagement that never mapped has no entries to
+    reference — and build() alone can't tell, because it also merges the agent's own request evidence."""
+    import glob
+    return bool(glob.glob(os.path.join(db.WORK, eng, "evidence", "map", "map-*.json")))
+
+
 def template(path):
     """A path with its variable segments replaced by {}: /api/parcels/12 and /api/parcels/{id} are the same."""
     segs = []
@@ -329,11 +337,33 @@ def _class_of(item):
 
 ORDER = ["planned", "blocked", "not-applicable", "excluded", "tested", "failed"]   # a cell takes its best item
 DONE = ("tested", "failed", "excluded", "not-applicable")
+SWEEP_CLASS = {"injection": "injection", "mass-assignment": "mass-assignment", "redos": "redos",
+               "jwt": "authentication"}
+
+
+def swept(eng):
+    """The coverage cells a probe_map sweep tested (#72): entry id -> {class: [evidence files]}. A hit means
+    the check ran on that entry; confirming it is the planner's, and the cell is covered either way."""
+    import glob
+    out = {}
+    for p in glob.glob(os.path.join(db.WORK, eng, "evidence", "sweep", "sweep-*.json")):
+        try:
+            with open(p, errors="replace") as f:
+                d = json.load(f)
+        except (OSError, ValueError):
+            continue
+        rel = os.path.relpath(p, os.path.join(db.WORK, eng))
+        for h in d.get("hits") or []:
+            cls = SWEEP_CLASS.get(h.get("check"))
+            if cls and h.get("entry"):
+                out.setdefault(h["entry"], {}).setdefault(cls, []).append(rel)
+    return out
 
 
 def matrix(eng, plan=None):
-    """The coverage matrix: each map entry x each class that applies to it, with the plan items that cover the cell.
-    Returns {"cells": [...], "gaps": [...], "counts": {...}, "unmapped_items": [...]}."""
+    """The coverage matrix: each map entry x each class that applies to it, with the plan items that cover the
+    cell, and the cells a probe_map sweep tested. Returns {"cells": [...], "gaps": [...], "counts": {...},
+    "unmapped_items": [...]}."""
     import workspace
     m = build(eng)
     plan = plan if plan is not None else workspace.plan_list(eng)
@@ -345,6 +375,7 @@ def matrix(eng, plan=None):
             unmapped.append(it["id"])
         for eid in eids:
             by_entry.setdefault(eid, []).append(it)
+    sweep_hits = swept(eng)
     cells, gaps = [], []
     for e in m["entries"]:
         for c in e["classes"]:
@@ -353,15 +384,21 @@ def matrix(eng, plan=None):
                 if items else "gap"
             cell = {"entry": e["id"], "method": e["method"], "path": e["path"], "host": e["host"], "class": c,
                     "state": state, "items": [it["id"] for it in items]}
+            hit = sweep_hits.get(e["id"], {}).get(c)
+            if hit:
+                cell["swept"] = hit
+                if state not in ORDER or ORDER.index(state) < ORDER.index("tested"):
+                    cell["state"] = "tested"
             cells.append(cell)
-            if not items:
+            if not items and not hit:
                 gaps.append(cell)
     counts = {}
     for c in cells:
         counts[c["state"]] = counts.get(c["state"], 0) + 1
     done = sum(n for s, n in counts.items() if s in DONE)
     return {"entries": len(m["entries"]), "cells": cells, "gaps": gaps, "counts": counts,
-            "complete": round(done / len(cells), 3) if cells else None, "unmapped_items": unmapped}
+            "complete": round(done / len(cells), 3) if cells else None, "unmapped_items": unmapped,
+            "swept": sum(len(v) for v in sweep_hits.values())}
 
 
 def check_refs(eng, refs):

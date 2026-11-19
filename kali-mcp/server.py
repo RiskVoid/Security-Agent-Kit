@@ -273,6 +273,32 @@ async def recon_map(engagement: str, url: str, depth: int = 2, crawl_seconds: in
 
 
 @mcp.tool()
+@with_rules
+async def probe_map(engagement: str, matrix: str = "", max_requests: int = 400, checks: str = "",
+                    task: str = "") -> str:
+    """Run the kit's fixed checks against the recon map (run recon_map first): the checks a model doesn't
+    reliably think of on its own.
+      injection        an error probe and a boolean true/false pair on every parameter of every read, path
+                       parameters included; a hit only when the answers differ the way the probe predicts
+      redos            string fields whose malformed value gets a validation error receive inputs of growing
+                       length, timed each time; a hit needs a clear growth, and the ladder stops at the first
+      jwt              every JWT seen in the evidence or this sweep is cracked offline against common secrets;
+                       a forged token is tried against an authenticated endpoint
+      mass-assignment  every object-creating POST with a JSON body registers a throwaway account carrying one
+                       privileged field and reads it back logged in as it, against a control account
+    Reads run now. The writes (throwaway registrations and logins) are proposed as ONE authorization matrix and
+    send nothing until you approve it (./rvkit authz <eng> approve <name>): call probe_map again with
+    matrix=<name> to run them. Every request goes through the same scope, tier, rate and budget checks as your
+    own, hits are observations to triage (not findings), and the sweep's evidence file names the exact requests
+    for each hit. checks: a comma-separated subset. max_requests caps the sweep."""
+    import sweep
+    try:
+        return await _thread(sweep.probe_map, engagement, matrix, max_requests, checks, task or None)
+    except ValueError as e:
+        return f"REFUSED: {e}"
+
+
+@mcp.tool()
 async def laravel_map(engagement: str, path: str, build_url: str = "", routes_file: str = "", max_tier: str = "",
                       task: str = "") -> str:
     """Map a Laravel application from its source (RW-012) without running any of it: framework and PHP versions,

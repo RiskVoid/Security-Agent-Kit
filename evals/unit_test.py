@@ -3642,6 +3642,32 @@ class ReconClasses(unittest.TestCase):
             debug = next(e for e in m["entries"] if e["path"] == "/users/v1/_debug")
             self.assertIn("information-disclosure", debug["classes"])
 
+    def test_a_sweep_fills_the_cells_it_tested(self):
+        """#72: a probe_map hit covers its cell (with the sweep evidence named), so the cell is no open-work gap;
+        the entry's other classes still are, and so are all cells without a sweep."""
+        with tempfile.TemporaryDirectory() as d:
+            saved = db.WORK
+            db.WORK = d
+            try:
+                os.makedirs(os.path.join(d, "eng", "evidence", "map"), exist_ok=True)
+                os.makedirs(os.path.join(d, "eng", "evidence", "sweep"), exist_ok=True)
+                json.dump({"observations": [{"method": "GET", "url": "http://t/users/v1/{username}", "source": "map",
+                                             "params": {"path": ["username"]}, "auth": "none", "status": 200}]},
+                          open(os.path.join(d, "eng", "evidence", "map", "map-x.json"), "w"))
+                eid = reconmap.build("eng")["entries"][0]["id"]
+                json.dump({"sweep": 1, "hits": [{"check": "injection", "entry": eid, "method": "GET",
+                                                 "path": "/users/v1/{}", "result": "hit", "evidence": []}]},
+                          open(os.path.join(d, "eng", "evidence", "sweep", "sweep-x.json"), "w"))
+                m = reconmap.matrix("eng", plan=[])
+            finally:
+                db.WORK = saved
+            inj = next(c for c in m["cells"] if c["class"] == "injection")
+            self.assertEqual(inj["state"], "tested")
+            self.assertEqual(inj["swept"], ["evidence/sweep/sweep-x.json"])
+            self.assertNotIn("injection", [c["class"] for c in m["gaps"]])   # covered by the sweep
+            self.assertTrue(any(c["class"] != "injection" for c in m["gaps"]))  # the rest is still open work
+            self.assertEqual(m["swept"], 1)
+
     def test_every_expected_issue_maps_to_a_class(self):
         """The W1 acceptance: each expected issue of the black-box benchmarks is plannable through at least one
         class. Excluded, with why: exposed-ftp (an exposed service recon finds, not an endpoint class), DVGA's

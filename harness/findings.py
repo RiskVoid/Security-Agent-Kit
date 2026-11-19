@@ -301,9 +301,10 @@ def _call(name, **req):
 @mcp.tool()
 def import_observations(engagement: str, path: str, tool: str = "") -> str:
     """Turn a tool's output (a file of the engagement: semgrep.json, evidence/...) into observations: Semgrep,
-    osv-scanner, pip-audit, bandit or gitleaks JSON, an authorization-matrix run (evidence/authz), a Laravel map (evidence/appmap) or an HTTP exchange
-    (evidence/http). tool: force a parser (detected otherwise). Re-importing doesn't duplicate; parser errors and
-    the tool's limitations (skipped files, blocked cells) are returned and kept."""
+    osv-scanner, pip-audit, bandit or gitleaks JSON, an authorization-matrix run (evidence/authz), a probe_map
+    sweep (evidence/sweep), a Laravel map (evidence/appmap) or an HTTP exchange (evidence/http). tool: force a
+    parser (detected otherwise). Re-importing doesn't duplicate; parser errors and the tool's limitations
+    (skipped files, blocked cells) are returned and kept."""
     return _call("observation.import", engagement=engagement, path=path, tool=tool or None)
 
 
