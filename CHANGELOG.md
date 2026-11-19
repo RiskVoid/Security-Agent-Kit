@@ -204,6 +204,9 @@ changes to the harness are measured.
   reply as its own cause.
 - The worker's `fetch_url` takes `start`, so it can read a long page past the first 100,000 characters. The hint
   at the end of each part names `fetch_url`.
+- A benchmark run health-checks its lab target before spending anything on it: one HTTP probe from inside the
+  kit, and a container that is up but wedged is restarted once and the run is skipped with a message if it still
+  doesn't answer. A dead target no longer produces a run that measures nothing (the DVGA incident).
 - Planning docs carry no calendar dates any more: the ROADMAP's "Now" states the active work in order
   (first-user fixes, then the harness-run checks epic #76 and the research loop epic #77), and release and launch
   sequencing is stated as readiness gates rather than target days.
