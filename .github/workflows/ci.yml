@@ -40,3 +40,5 @@ jobs:
           python3 evals/unit_test.py
       - name: Worker loop (scripted model, fake tools)
         run: python3 evals/worker_loop_test.py
+      - name: OAuth lab (seeded flaws and clean controls, no Docker or model)
+        run: python3 evals/oauth_lab_test.py

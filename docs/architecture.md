@@ -65,7 +65,7 @@ GPU, a local server or any OpenAI-compatible endpoint).
 | `otel-collector` (profile `tracing`) | `jaegertracing/all-in-one` (pinned) | Trace collector with an OTLP receiver, started by `./rvkit tracing on` | `default`, `rvtrace`; **127.0.0.1:16686** | none |
 | `plain-mcp` (profile `baseline`) | kit image `-harness` | Plain-agent baseline for benchmarks: only the sandboxed run tool and `record_finding`. Started by `./rvkit bench --agent riskvoid-plain` | `default`, `rvagent` | `/work` (read-write) |
 | `php-runner` (profile `php`) | built from `php-runner/` | The optional PHP profile, started only by `./rvkit php` | no network | the project's source at `/src` (read-only), `evidence/php/` of the engagement at `/out` |
-| `lab-*` (profile `lab`) | Juice Shop, DVWA + MariaDB, VAmPI, DVGA, `riskvoid-lab-llm`, Ledgerly (`riskvoid-lab-laravel`, and `riskvoid-lab-laravel-fixed` with the fixes), Parcel Tracker (`riskvoid-lab-hostile`) | Deliberately vulnerable practice targets | `rvlab` only | none |
+| `lab-*` (profile `lab`) | Juice Shop, DVWA + MariaDB, VAmPI, DVGA, `riskvoid-lab-llm`, Ledgerly (`riskvoid-lab-laravel`, and `riskvoid-lab-laravel-fixed` with the fixes), Parcel Tracker (`riskvoid-lab-hostile`), an OAuth2 authorization server (`riskvoid-lab-oauth`, and `riskvoid-lab-oauth-fixed` with the fixes) | Deliberately vulnerable practice targets | `rvlab` only | none |
 
 Kit images are published as `ghcr.io/riskvoid/security-agent-kit-{egress,harness,kali,report}:<VERSION>`
 (`RVKIT_REGISTRY` and `RVKIT_VERSION` override them). See [Design decisions](#design-decisions).
