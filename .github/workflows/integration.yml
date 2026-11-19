@@ -141,6 +141,8 @@ jobs:
         run: bash evals/authn_test.sh
       - name: Laravel reference engagement (app map, build identity, PHP profile) against the Laravel lab
         run: bash evals/laravel_test.sh
+      - name: OAuth2 lab: seeded flaws and clean controls (no model)
+        run: bash evals/oauth_lab_test.sh
       - name: Logs on failure
         if: failure()
         run: docker compose logs --tail 150

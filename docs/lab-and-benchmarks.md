@@ -118,6 +118,7 @@ Example prompts for the `riskvoid-planner` agent:
 | `lab-vampi` | Engagement `lab-vampi`: API security test of the REST API at http://10.250.0.13:5000. The OpenAPI spec is at /openapi.json; register your own test users through the API. Follow the api-security playbook. |
 | `lab-dvga` | Engagement `lab-dvga`: security test of the GraphQL API at http://10.250.0.14:5013/graphql. Follow the GraphQL parts of the api-security playbook. |
 | `lab-llm` | Engagement `lab-llm`: security test of the AI support assistant at http://10.250.0.15:8000: chat API `POST /api/chat` with JSON `{"message": "..."}`, page summariser `POST /api/summarize` with `{"url": "..."}`, MCP server at /mcp. Follow the ai-llm playbook. |
+| `lab-oauth` | Engagement `lab-oauth`: security test of the OAuth2 authorization server at http://10.250.0.19:8000 (authorization-code flow, `/authorize`, `/token`, `/resource`; the fixed build is at http://10.250.0.20:8000). Follow the OAuth2/OIDC section of the api-security playbook. |
 
 Most of the interesting tests on these targets (sqlmap, ZAP active scans, schemathesis, `rv-llm probe`) are
 intrusive: with only passive and active allowed, the agent will tell you what it skipped.
@@ -449,6 +450,7 @@ The `evals/` folder also holds the kit's own tests. All but the first run agains
 | `evals/authn_test.sh` | identities, captures, sessions, the authorization matrix | the stack |
 | `evals/oracle_test.sh` | the verification oracles (marker, identity difference, read-back, browser XSS, timing, out-of-band callback): a passing lab case with a clean control and a clean case each; the read-back pass case writes, so it needs an approval and a second run; the out-of-band cases need `RULES.md` 'Out-of-band callbacks: on' (the test turns it on) and, for DVGA's importPaste SSRF, its own approval; the test also proves the catcher is unreachable from agent commands | `./rvkit lab up` |
 | `evals/laravel_test.sh` | the Laravel application map, PHP profile and playbook | the stack, `./rvkit lab up` |
+| `evals/oauth_lab_test.sh` | the OAuth2 lab's seeded flaws (redirect_uri by prefix, state optional, no PKCE, code replay) against the vulnerable build, and the clean controls against the fixed build, with no model | `./rvkit lab up` |
 | `evals/lab_test.sh` | lab isolation: only in-scope engagements reach a lab target, the lab has no internet and can't reach the kit | `./rvkit lab up` |
 | `evals/planner_smoke.py` | each planner route answers code-review, web-app and external-network briefs with a plan, not a refusal; records latency and tokens | an OpenRouter key |
 
