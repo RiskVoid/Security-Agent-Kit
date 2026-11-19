@@ -12,5 +12,6 @@
  ],
  "read": 34,
  "status": "proposed",
+ "note": "Parked 2026-11-19: judging needs a candidate set of benchmark runs, and there is no model budget for them right now. It stays a proposal until the shared baseline round (epic #77 phase 0, issue #82) runs; do not merge it as a fix - the effect of prompt wording is exactly what a judge round is for.",
  "judgement": null
 }
