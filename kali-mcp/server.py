@@ -257,17 +257,24 @@ def cancel_task(engagement: str, task: str) -> str:
 @mcp.tool()
 @with_rules
 async def recon_map(engagement: str, url: str, depth: int = 2, crawl_seconds: int = 120, probe: bool = True,
-                    max_tier: str = "", task: str = "") -> str:
-    """Map a web target before testing it (epic #52, #46): crawl it (katana: links, JavaScript, robots, sitemap),
-    read the API paths its scripts name, fetch its OpenAPI / Swagger schema and GraphQL schema (a read-only
-    introspection by GET), and send one GET without credentials to each path not yet fetched, to see which need
-    authentication. Only in-scope URLs are kept; every request is audited. Saves evidence/map/map-<time>.json.
+                    max_tier: str = "", task: str = "", identity: str = "", max_scripts: int = 0,
+                    max_probes: int = 0) -> str:
+    """Map a web target before testing it (epic #52, #46; authenticated depth #135, feedback loops #136): crawl it
+    (katana: links, JavaScript, robots, sitemap), content-discovery (ffuf over the common wordlist), read the API
+    paths its scripts name (source maps, GraphQL operations and a gitleaks secrets pass included), fetch its
+    OpenAPI / Swagger and GraphQL schemas (clairvoyance when introspection is off), discover hidden GET parameters
+    (arjun), and send one GET without credentials to each path not yet fetched, to see which need authentication.
+    Only in-scope URLs are kept; every request is audited. Saves evidence/map/map-<time>.json.
     Run it once per web target before planning tests; then get_map (findings) gives the merged map with entry
-    ids to reference in plan_tests. depth: crawl depth (1-5). probe=false: no unauthenticated GETs."""
+    ids to reference in plan_tests. depth: crawl depth (1-5). probe=false: no unauthenticated GETs.
+    identity: run an authenticated pass after the unauthenticated one, with one of the engagement's identities
+    (list_identities): the surface behind login enters the map, tagged seen_by. An identity that isn't valid is
+    skipped with a note, never silently. max_scripts / max_probes: raise the script and probe caps for a large app
+    (defaults are sized for a typical app)."""
     import recon
     try:
         return await _thread(recon.build, engagement, url, depth, crawl_seconds, probe, max_tier or None,
-                             task or None)
+                             task or None, identity or "", max_scripts or None, max_probes or None)
     except ValueError as e:
         return f"REFUSED: {e}"
 
@@ -275,7 +282,7 @@ async def recon_map(engagement: str, url: str, depth: int = 2, crawl_seconds: in
 @mcp.tool()
 @with_rules
 async def probe_map(engagement: str, matrix: str = "", max_requests: int = 400, checks: str = "",
-                    task: str = "") -> str:
+                    task: str = "", identity: str = "") -> str:
     """Run the kit's fixed checks against the recon map (run recon_map first): the checks a model doesn't
     reliably think of on its own.
       injection        an error probe and a boolean true/false pair on every parameter of every read, path
@@ -290,10 +297,12 @@ async def probe_map(engagement: str, matrix: str = "", max_requests: int = 400, 
     send nothing until you approve it (./rvkit authz <eng> approve <name>): call probe_map again with
     matrix=<name> to run them. Every request goes through the same scope, tier, rate and budget checks as your
     own, hits are observations to triage (not findings), and the sweep's evidence file names the exact requests
-    for each hit. checks: a comma-separated subset. max_requests caps the sweep."""
+    for each hit. checks: a comma-separated subset. max_requests caps the sweep.
+    identity: run the reads as one of the engagement's identities (list_identities), so the checks reach the
+    surface behind login (#137); an entry no identity can reach is skipped with a note, not silently."""
     import sweep
     try:
-        return await _thread(sweep.probe_map, engagement, matrix, max_requests, checks, task or None)
+        return await _thread(sweep.probe_map, engagement, matrix, max_requests, checks, task or None, identity or "")
     except ValueError as e:
         return f"REFUSED: {e}"
 

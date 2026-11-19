@@ -92,7 +92,10 @@ def entries(eng):
             e = ents.get(key)
             if not e:
                 e = ents[key] = {"id": _eid(method, u.netloc, tpl), "method": method, "host": u.netloc,
-                                 "path": tpl, "example": o["url"], "params": {}, "auth": o.get("auth") or "unknown"}
+                                 "path": tpl, "example": o["url"], "params": {}, "auth": o.get("auth") or "unknown",
+                                 "seen_by": []}
+            if o.get("seen_by") and o["seen_by"] not in e["seen_by"]:
+                e["seen_by"].append(o["seen_by"])
             params = dict(o.get("params") or {})
             q = sorted(urllib.parse.parse_qs(u.query, keep_blank_values=True))
             if q:
@@ -180,17 +183,20 @@ def _row(check, e, where, param, result, why="", evidence=()):
 
 # ---------------------------------------------------------------- the checks
 
-def check_injection(eng, e, ctx):
+def check_injection(eng, e, ctx, identity=None):
     """#68: an error-based probe and a boolean true/false pair on every parameter of a read, path parameters
-    included. A hit is recorded only when the responses differ the way the probe predicts."""
+    included. A hit is recorded only when the responses differ the way the probe predicts. identity: the
+    engagement identity the reads run as (an authenticated entry the sweep couldn't reach without it, #137)."""
     out = []
     if e["method"] not in SAFE:
         return out                                   # a write parameter runs under the sweep matrix, not here
     targets = [("path", i) for i in e["params"]["path"]] + [("query", n) for n in e["params"].get("query") or []]
     for where, param in targets:
         url0 = e["example"]
-        st_err, err_text, ev_err, _, _h_err = ctx.send(e["method"], _url_with(url0, where, param, "sweep'"))
-        st_ctl, ctl_text, ev_ctl, _, _h_ctl = ctx.send(e["method"], _url_with(url0, where, param, "sweep"))
+        st_err, err_text, ev_err, _, _h_err = ctx.send(e["method"], _url_with(url0, where, param, "sweep'"),
+                                                       identity=identity)
+        st_ctl, ctl_text, ev_ctl, _, _h_ctl = ctx.send(e["method"], _url_with(url0, where, param, "sweep"),
+                                                        identity=identity)
         if st_err is None and st_ctl is None:
             out.append(_row("injection", e, where, param, "skip", "the requests were refused or need an approval",
                             [ev_err, ev_ctl]))
@@ -201,8 +207,10 @@ def check_injection(eng, e, ctx):
                             "for the control", [ev_err, ev_ctl],
                             "confirm with sqlmap -u '<url>' (an intrusive command: it needs an approval)"))
             return out
-        st_t, t_text, ev_t, _, _ = ctx.send(e["method"], _url_with(url0, where, param, "sweep' or '1'='1"))
-        st_f, f_text, ev_f, _, _ = ctx.send(e["method"], _url_with(url0, where, param, "sweep' or '1'='2"))
+        st_t, t_text, ev_t, _, _ = ctx.send(e["method"], _url_with(url0, where, param, "sweep' or '1'='1"),
+                                             identity=identity)
+        st_f, f_text, ev_f, _, _ = ctx.send(e["method"], _url_with(url0, where, param, "sweep' or '1'='2"),
+                                             identity=identity)
         if t_text and f_text and t_text != f_text and (f_text == ctl_text or t_text != ctl_text):
             out.append(_hit("injection", e, where, param,
                             "boolean-based: the '1'='1 and '1'='2 answers differ, and the control answer matches "
@@ -265,7 +273,7 @@ def check_redos(eng, e, ctx, token=None):
     return out
 
 
-def check_cors(eng, e, ctx):
+def check_cors(eng, e, ctx, identity=None):
     """W5: an Origin-probe matrix on entries a browser can call (the cors-misconfig class): a foreign origin
     and the null origin. A hit when an arbitrary origin is allowed (wildcard or reflected), naming whether
     credentials are allowed too; a hostile page reading the response cross-origin is the impact."""
@@ -276,7 +284,7 @@ def check_cors(eng, e, ctx):
     foreign = f"https://sweep-{os.urandom(3).hex()}.example.org"
     hits, evs = [], []
     for origin in (foreign, "null"):
-        st, text, ev, _, hdrs = ctx.send("GET", url, {"Origin": origin})
+        st, text, ev, _, hdrs = ctx.send("GET", url, {"Origin": origin}, identity=identity)
         if st is None:
             return out                                   # refused or an approval: nothing to conclude
         acao = (hdrs.get("access-control-allow-origin") or "").strip()
@@ -300,7 +308,7 @@ SEC_HEADERS = ("content-security-policy", "x-content-type-options", "x-frame-opt
 HSTS = "strict-transport-security"
 
 
-def check_headers(eng, e, ctx):
+def check_headers(eng, e, ctx, identity=None):
     """W5: the security-header checklist on a page a browser loads (the security-headers class): what is
     missing is named; HSTS is only required over https. A policy's presence counts here - judging its
     quality is the planner's, after the finding is confirmed."""
@@ -308,7 +316,7 @@ def check_headers(eng, e, ctx):
     if e["method"] != "GET" or API_PATH.search(e["path"]):
         return out
     url = _path_sub(e["example"], 0, "sweep") if e["params"]["path"] else e["example"]
-    st, text, ev, _, hdrs = ctx.send("GET", url)
+    st, text, ev, _, hdrs = ctx.send("GET", url, identity=identity)
     if st is None:
         return out
     want = list(SEC_HEADERS) + ([HSTS] if url.lower().startswith("https") else [])
@@ -527,13 +535,36 @@ def _short(v):
 
 # ---------------------------------------------------------------- the tool
 
-def probe_map(eng, matrix="", max_requests=400, checks="", task=""):
+def _entry_identity(eng, e, identity):
+    """The identity this entry's reads run as: None when the entry is reachable without a session, the identity
+    when it can reach it, and a skip-note string when the entry needs a session the given identity can't provide
+    (#137). An entry no identity can reach is skipped with a note, never silently."""
+    needs = e.get("auth") == "required" or bool(e.get("seen_by"))
+    if not needs:
+        return None, ""
+    if not identity:
+        return None, ("the entry needs a session and no identity was given (pass identity= to sweep the surface "
+                      "behind login)")
+    import identities
+    try:
+        identities.usable(eng, identity, e["example"], "active", "read")
+    except ValueError as ex:
+        return None, f"identity {identity} cannot reach this entry ({ex})"
+    return identity, ""
+
+
+def probe_map(eng, matrix="", max_requests=400, checks="", task="", identity=""):
     """Run the fixed checks against the recon map's entries; see the module docstring for what each check does.
-    matrix: the name of the approved sweep matrix, to run the write checks (proposed by the first call)."""
+    matrix: the name of the approved sweep matrix, to run the write checks (proposed by the first call).
+    identity: an engagement identity (./rvkit identity) whose session rides the reads, so the injection and page
+    checks run on the surface behind login (#137); entries no identity can reach are skipped with a note."""
     i = core.info(eng)
     ents = entries(eng)
     if not ents:
         raise ValueError("no recon map: run recon_map first (probe_map reads evidence/map/*.json)")
+    if identity:
+        import identities
+        identities._get(eng, identity)                   # raises a clear error for an identity that doesn't exist
     want = {x.strip() for x in checks.split(",") if x.strip()} or \
         {"injection", "jwt", "redos", "mass-assignment", "cors", "headers"}
     ctx = Ctx(eng, int(max_requests or 400), task)
@@ -547,14 +578,18 @@ def probe_map(eng, matrix="", max_requests=400, checks="", task=""):
             rows += check_jwt(eng, ents, ctx)
     else:
         for e in ents:
+            rid, skip = _entry_identity(eng, e, identity)
+            if skip and any(c in want for c in ("injection", "cors", "headers")):
+                rows.append(_row("read", e, "", "", "skip", skip))
+                continue
             if "injection" in want:
-                rows += check_injection(eng, e, ctx)
+                rows += check_injection(eng, e, ctx, identity=rid)
             if "redos" in want:
                 rows += check_redos(eng, e, ctx)
             if "cors" in want:
-                rows += check_cors(eng, e, ctx)
+                rows += check_cors(eng, e, ctx, identity=rid)
             if "headers" in want:
-                rows += check_headers(eng, e, ctx)
+                rows += check_headers(eng, e, ctx, identity=rid)
         if "jwt" in want:
             rows += check_jwt(eng, ents, ctx)
         if "mass-assignment" in want and mass_targets(ents):
@@ -570,7 +605,7 @@ def probe_map(eng, matrix="", max_requests=400, checks="", task=""):
     doc = {"sweep": 1, "at": ts.isoformat(timespec="seconds"), "engagement": eng, "entries": len(ents),
            "requests": ctx.requests, "checks": sorted(want), "hits": hits, "rows": rows,
            "tokens_seen": len(ctx.tokens), "created": ctx.created,
-           "matrix": matrix or None, "matrix_proposed": proposed}
+           "identity": identity or None, "matrix": matrix or None, "matrix_proposed": proposed}
     full = os.path.join(core.WORK, eng, rel)
     os.makedirs(os.path.dirname(full), exist_ok=True)
     with open(full, "w") as f:
@@ -580,11 +615,14 @@ def probe_map(eng, matrix="", max_requests=400, checks="", task=""):
             os.chown(full, i["uid"], i["uid"], follow_symlinks=False)
         except OSError:
             pass
-    core._audit({"engagement": eng, "action": "sweep", "command": f"probe_map{f' {matrix}' if matrix else ''}",
+    core._audit({"engagement": eng, "action": "sweep",
+                 "command": f"probe_map{f' {matrix}' if matrix else ''}" + (f" as {identity}" if identity else ""),
                  "tier": "active", "entries": len(ents), "requests": ctx.requests, "hits": len(hits),
-                 "outputs": {rel: core.sha256_file(full)}})
+                 "identity": identity or None, "outputs": {rel: core.sha256_file(full)}})
     text = [f"probe_map: {len(ents)} map entries, {ctx.requests} request(s), {len(hits)} hit(s), "
-            f"{len(ctx.tokens)} token(s) seen."]
+            f"{len(ctx.tokens)} token(s) seen."
+            + (f" Read checks ran as {identity} where a session was needed." if identity else
+               " No identity: entries behind login were skipped (pass identity= to sweep them).")]
     for h in hits:
         text.append(f"  HIT {h['check']} on {h.get('method') or ''} {h.get('path') or h.get('entry')} "
                     f"({h.get('where')} {h.get('param')}): {h['why']}")
