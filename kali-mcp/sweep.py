@@ -7,6 +7,10 @@ parameter they apply to — the checks the error analysis showed the model doesn
   injection        an error-based probe and a boolean true/false pair on every parameter of a read, path
                    parameters included. A hit is recorded only when the responses differ the way the probe
                    predicts. (#68)
+  cors             an Origin-probe matrix (a foreign origin and the null origin) on entries a browser can
+                   call; a hit names whether credentials are allowed too. (#W5)
+  headers          the security-header checklist on pages (CSP, nosniff, framing; HSTS over https): what is
+                   missing is named. (#W5)
   mass-assignment  every write with a JSON body gets a throwaway object carrying one privileged field, then the
                    object is read back logged in as it and compared with a control object without the field. (#70)
   redos            string fields the target validates get inputs of growing length built to backtrack, timed
@@ -45,6 +49,7 @@ REDOS_LEN = (16, 20, 24)
 SELF_PATH = re.compile(r"^/?((api|v\d)[/-])?(me|self|profile|whoami|account|user)(/|$)", re.I)
 LOGIN_PATH = re.compile(r"log-?in|signin|session|token", re.I)
 SAFE = ("GET", "HEAD", "OPTIONS")
+API_PATH = re.compile(r"^/(api|vapi|v\d[\w-]*|graphql|rest)(/|$)", re.I)   # the page check skips API paths
 JSON_HDR = {"Content-Type": "application/json"}
 SECRET_WORDS = ("random", "secret", "password", "changeme", "your-256-bit-secret", "supersecret", "super-secret-key",
                 "mysecretkey", "secretkey", "jwt_secret", "jwtsecret", "flask", "admin", "qwerty", "abc123",
@@ -140,9 +145,10 @@ class Ctx:
         self.evidence, self.tokens, self.rows, self.created = [], set(), [], []
 
     def send(self, method, url, headers=None, body=None, identity=None, timeout_s=30):
-        """One probe or control request through the broker. Returns (status, body_text, evidence, seconds)."""
+        """One probe or control request through the broker. Returns (status, body_text, evidence, seconds,
+        resp_headers) — resp_headers as {lower-cased name: value}."""
         if self.requests >= self.budget:
-            return None, "REFUSED: the sweep's request budget is used up", None, 0.0
+            return None, "REFUSED: the sweep's request budget is used up", None, 0.0, {}
         self.requests += 1
         data = json.dumps(body).encode() if isinstance(body, (dict, list)) else str(body or "").encode()
         r = actions.send(self.eng, method, url, headers or {}, data, identity=identity, task=self.task,
@@ -154,10 +160,11 @@ class Ctx:
         for tok in JWT_RX.findall(text):
             self.tokens.add(tok)
         secs = sum(h.get("seconds") or 0 for h in r.get("hops") or [])
+        hdrs = {str(k).lower(): str(v) for k, v in (r.get("headers") or [])}
         if r.get("refused") or r.get("approval"):
-            return None, text, ev, secs
+            return None, text, ev, secs, hdrs
         b = r.get("body") or b""
-        return r.get("status"), (b.decode("utf-8", "replace") if isinstance(b, bytes) else str(b)), ev, secs
+        return r.get("status"), (b.decode("utf-8", "replace") if isinstance(b, bytes) else str(b)), ev, secs, hdrs
 
 
 def _hit(check, e, where, param, why, evidence, suggest):
@@ -182,8 +189,8 @@ def check_injection(eng, e, ctx):
     targets = [("path", i) for i in e["params"]["path"]] + [("query", n) for n in e["params"].get("query") or []]
     for where, param in targets:
         url0 = e["example"]
-        st_err, err_text, ev_err, _ = ctx.send(e["method"], _url_with(url0, where, param, "sweep'"))
-        st_ctl, ctl_text, ev_ctl, _ = ctx.send(e["method"], _url_with(url0, where, param, "sweep"))
+        st_err, err_text, ev_err, _, _h_err = ctx.send(e["method"], _url_with(url0, where, param, "sweep'"))
+        st_ctl, ctl_text, ev_ctl, _, _h_ctl = ctx.send(e["method"], _url_with(url0, where, param, "sweep"))
         if st_err is None and st_ctl is None:
             out.append(_row("injection", e, where, param, "skip", "the requests were refused or need an approval",
                             [ev_err, ev_ctl]))
@@ -194,8 +201,8 @@ def check_injection(eng, e, ctx):
                             "for the control", [ev_err, ev_ctl],
                             "confirm with sqlmap -u '<url>' (an intrusive command: it needs an approval)"))
             return out
-        st_t, t_text, ev_t, _ = ctx.send(e["method"], _url_with(url0, where, param, "sweep' or '1'='1"))
-        st_f, f_text, ev_f, _ = ctx.send(e["method"], _url_with(url0, where, param, "sweep' or '1'='2"))
+        st_t, t_text, ev_t, _, _ = ctx.send(e["method"], _url_with(url0, where, param, "sweep' or '1'='1"))
+        st_f, f_text, ev_f, _, _ = ctx.send(e["method"], _url_with(url0, where, param, "sweep' or '1'='2"))
         if t_text and f_text and t_text != f_text and (f_text == ctl_text or t_text != ctl_text):
             out.append(_hit("injection", e, where, param,
                             "boolean-based: the '1'='1 and '1'='2 answers differ, and the control answer matches "
@@ -235,12 +242,12 @@ def check_redos(eng, e, ctx, token=None):
                 return ctx.send(e["method"], url0, hdr, _body_with(e["params"]["body"], param, value),
                                 timeout_s=10)
             return ctx.send(e["method"], _url_with(url0, where, param, value), hdr, None, timeout_s=10)
-        st, text, ev, secs = send("sweep{{7*7")
+        st, text, ev, secs, _ = send("sweep{{7*7")
         if st is None or not VALIDATION_ERR.search(text or ""):
             continue                                   # not a validated field: nothing to time
         times = [(8, secs, ev)]
         for n in REDOS_LEN:
-            st, text, ev, secs = send("a" * n + "@")
+            st, text, ev, secs, _ = send("a" * n + "@")
             if secs is None:
                 break
             times.append((n, secs, ev))
@@ -255,6 +262,62 @@ def check_redos(eng, e, ctx, token=None):
                 return out
         out.append(_row("redos", e, where, param, "clean", "the validated field answers fast at every length",
                         [v for _, _, v in times][:2]))
+    return out
+
+
+def check_cors(eng, e, ctx):
+    """W5: an Origin-probe matrix on entries a browser can call (the cors-misconfig class): a foreign origin
+    and the null origin. A hit when an arbitrary origin is allowed (wildcard or reflected), naming whether
+    credentials are allowed too; a hostile page reading the response cross-origin is the impact."""
+    out = []
+    if e["method"] not in SAFE:
+        return out
+    url = _url_with(e["example"], "path", 0, "sweep") if e["params"]["path"] else e["example"]
+    foreign = f"https://sweep-{os.urandom(3).hex()}.example.org"
+    hits, evs = [], []
+    for origin in (foreign, "null"):
+        st, text, ev, _, hdrs = ctx.send("GET", url, {"Origin": origin})
+        if st is None:
+            return out                                   # refused or an approval: nothing to conclude
+        acao = (hdrs.get("access-control-allow-origin") or "").strip()
+        acac = (hdrs.get("access-control-allow-credentials") or "").strip().lower()
+        evs.append(ev)
+        if acao in ("*", origin):
+            hits.append(f"Origin {origin} is allowed ({'wildcard' if acao == '*' else 'reflected'}"
+                        + (", with credentials" if acac == "true" else ""))
+    if hits:
+        cred = any("credentials" in h for h in hits)
+        out.append(_hit("cors", e, "origin", foreign, "; ".join(hits)
+                        + (" - a cross-origin page reads this response with the target's cookies"
+                           if cred else " - a cross-origin page can read this response (cookies are not sent)"),
+                        evs, "confirm by fetching the URL from another origin in the browser"))
+    elif evs:
+        out.append(_row("cors", e, "origin", foreign, "clean", "no arbitrary origin is allowed", evs[:1]))
+    return out
+
+
+SEC_HEADERS = ("content-security-policy", "x-content-type-options", "x-frame-options")
+HSTS = "strict-transport-security"
+
+
+def check_headers(eng, e, ctx):
+    """W5: the security-header checklist on a page a browser loads (the security-headers class): what is
+    missing is named; HSTS is only required over https. A policy's presence counts here - judging its
+    quality is the planner's, after the finding is confirmed."""
+    out = []
+    if e["method"] != "GET" or API_PATH.search(e["path"]):
+        return out
+    url = _path_sub(e["example"], 0, "sweep") if e["params"]["path"] else e["example"]
+    st, text, ev, _, hdrs = ctx.send("GET", url)
+    if st is None:
+        return out
+    want = list(SEC_HEADERS) + ([HSTS] if url.lower().startswith("https") else [])
+    missing = [h for h in want if h not in hdrs]
+    if missing:
+        out.append(_hit("headers", e, "", url, f"missing security header(s): {', '.join(missing)}", [ev],
+                        "the finding is the missing header list; the evidence file holds the response"))
+    else:
+        out.append(_row("headers", e, "", url, "clean", "the page sends the security headers", [ev]))
     return out
 
 
@@ -312,8 +375,8 @@ def check_jwt(eng, ents, ctx):
         row["secret_in_evidence"] = secret
         row["claims"] = claims
         if protected:
-            st_f, _, ev_f, _ = ctx.send("GET", protected[0]["example"], {"Authorization": "Bearer " + forged})
-            st_o, _, ev_o, _ = ctx.send("GET", protected[0]["example"], {"Authorization": "Bearer " + tok})
+            st_f, _, ev_f, _, _ = ctx.send("GET", protected[0]["example"], {"Authorization": "Bearer " + forged})
+            st_o, _, ev_o, _, _ = ctx.send("GET", protected[0]["example"], {"Authorization": "Bearer " + tok})
             row["evidence"] = [ev_f, ev_o]
             if st_f == 200 and st_o == 200:
                 row["entry"], row["path"] = protected[0]["id"], protected[0]["path"]
@@ -420,7 +483,7 @@ def run_writes(eng, ents, ctx, name):
             except ValueError:
                 ctx.created.append("?")
     for op in m["operations"]:
-        st, text, ev, _ = ctx.send(op["method"], op["url"], op.get("headers") or {}, op.get("body"))
+        st, text, ev, _, _ = ctx.send(op["method"], op["url"], op.get("headers") or {}, op.get("body"))
         if op["id"].startswith("login-"):
             for tok in JWT_RX.findall(text or ""):
                 sessions[op["id"][6:]] = tok          # "login-0-0-ctl" -> "0-0-ctl"
@@ -434,8 +497,8 @@ def run_writes(eng, ents, ctx, name):
                                     "no login or no read-back (self) endpoint on the map: the write ran, its "
                                     "effect couldn't be read back"))
                 continue
-            _, me_ctl, ev_c, _ = ctx.send("GET", self_e["example"], {"Authorization": "Bearer " + tok_ctl})
-            _, me_prb, ev_p, _ = ctx.send("GET", self_e["example"], {"Authorization": "Bearer " + tok_prb})
+            _, me_ctl, ev_c, _, _ = ctx.send("GET", self_e["example"], {"Authorization": "Bearer " + tok_ctl})
+            _, me_prb, ev_p, _, _ = ctx.send("GET", self_e["example"], {"Authorization": "Bearer " + tok_prb})
             ctl, prb = _parse(me_ctl), _parse(me_prb)
             a, b = _get(ctl, field), _get(prb, field)
             if str(b) not in (str(a), "None") and b not in (None, "", False, "False"):
@@ -471,7 +534,8 @@ def probe_map(eng, matrix="", max_requests=400, checks="", task=""):
     ents = entries(eng)
     if not ents:
         raise ValueError("no recon map: run recon_map first (probe_map reads evidence/map/*.json)")
-    want = {x.strip() for x in checks.split(",") if x.strip()} or {"injection", "jwt", "redos", "mass-assignment"}
+    want = {x.strip() for x in checks.split(",") if x.strip()} or \
+        {"injection", "jwt", "redos", "mass-assignment", "cors", "headers"}
     ctx = Ctx(eng, int(max_requests or 400), task)
     rows, proposed = [], None
     if matrix:
@@ -487,6 +551,10 @@ def probe_map(eng, matrix="", max_requests=400, checks="", task=""):
                 rows += check_injection(eng, e, ctx)
             if "redos" in want:
                 rows += check_redos(eng, e, ctx)
+            if "cors" in want:
+                rows += check_cors(eng, e, ctx)
+            if "headers" in want:
+                rows += check_headers(eng, e, ctx)
         if "jwt" in want:
             rows += check_jwt(eng, ents, ctx)
         if "mass-assignment" in want and mass_targets(ents):

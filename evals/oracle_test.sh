@@ -8,14 +8,19 @@
 #                        a GET that stores nothing (fail)
 #   browser_xss          /search runs a reflected <script> in the sandboxed browser (pass); /api/docs doesn't (fail)
 #   timing               /api/eta with detail=full is slow on purpose (pass); two equally fast requests (fail)
+#   response_diff        the decoy /debug/status shows a fake shell output an ordinary page doesn't (pass); the
+#                        home page doesn't show it (fail); a text both answers contain (inconclusive)
+#   persistence          a note stored on alice's parcel runs its script when her parcel page is opened in the
+#                        browser (pass; the note is a write, so it needs an approval, like read_back)
 #   oob_callback         /api/fetch does a server-side fetch of the kit's own catcher (pass; the engagement allows
 #                        the whole lab subnet, and the catcher must still be unreachable from agent commands);
 #                        /search, which never fetches (fail). Needs RULES.md 'Out-of-band callbacks: on', which
 #                        this test turns on. With the DVGA lab up, its importPaste SSRF is verified the same way;
 #                        that probe is a POST mutation, so it needs an approval (printed; run again with
 #                        RV_OOB_APPROVAL=<id> RV_OOB_MARKER=<token>).
-# The read_back pass case writes, so it needs the user's approval: the test prints the approval id and the command,
-# and runs it on the next run with RV_ORACLE_APPROVAL=<id> RV_ORACLE_MARKER=<marker> (same engagement kept).
+# The read_back and persistence pass cases write, so they need the user's approval: the test prints the approval
+# ids and commands, and runs them on the next run with RV_ORACLE_APPROVAL=<id> RV_ORACLE_MARKER=<marker> and
+# RV_PERSIST_APPROVAL=<id> RV_PERSIST_MARKER=<token> (same engagement kept).
 # The disprove-only validator (#45) is off here (no model). RV_ORACLE_VALIDATOR=1 turns it on: the oracle-confirmed
 # finding then goes to the validator model (one small OpenRouter call) and must stand.
 # Run: ./rvkit lab up && bash evals/oracle_test.sh
@@ -146,6 +151,37 @@ if [ -z "$RV_ORACLE_APPROVAL" ]; then
 else
   A="'read_back', {'method': 'POST', 'url': '$L/api/parcels/1/notes', 'body': '{{marker}}', 'identity': 'bob'}, check={'url': '$L/api/parcels/1', 'identity': 'alice'}, marker='$RV_ORACLE_MARKER', approval_id='$RV_ORACLE_APPROVAL'"
   check "read_back: bob's note on alice's parcel reads back (IDOR write)" "$(v "$A")" '^pass'
+fi
+
+# ---------------------------------------------------------------- persistence: a stored script (#W7)
+# A note stored on alice's parcel (a write: its own approval) runs when her parcel page is opened in the browser.
+# The before-control shows the page runs nothing of the marker first; the write and the browser run are evidenced.
+if [ -z "$RV_PERSIST_APPROVAL" ]; then
+  A="'persistence', {'method': 'POST', 'url': '$L/api/parcels/1/notes', 'body': \"<script>rvMarker('{{marker}}')</script>\", 'identity': 'bob'}, check={'url': '$L/parcels/1'}"
+  r="$(v "$A")"
+  check "persistence: the stored note asks for an approval before it is written" "$r" '^approval'
+  pid2="$(echo "$r" | grep -oE 'Approval id: [a-f0-9]{8}' | head -1 | cut -d' ' -f3)"; pmark="$(echo "$r" | sed -n 3p)"
+  echo "      The persistence pass case writes a note to the lab and needs your approval. To run it:"
+  echo "        ./rvkit approve $ENG $pid2"
+  echo "        RV_ORACLE_APPROVAL=$id RV_ORACLE_MARKER=$mk RV_PERSIST_APPROVAL=$pid2 RV_PERSIST_MARKER=$pmark bash evals/oracle_test.sh"
+  RV_ORACLE_KEEP=1
+else
+  A="'persistence', {'method': 'POST', 'url': '$L/api/parcels/1/notes', 'body': \"<script>rvMarker('{{marker}}')</script>\", 'identity': 'bob'}, check={'url': '$L/parcels/1'}, marker='$RV_PERSIST_MARKER', approval_id='$RV_PERSIST_APPROVAL'"
+  r="$(v "$A")"
+  check "persistence: the stored script runs when the parcel page is opened" "$r" '^pass'
+  recp="$(echo "$r" | tail -1)"
+  check "persistence: the control (the page before the write) is in the record" \
+        "$(docker compose exec -T kali-mcp cat "$recp" </dev/null)" '"control: the page before the write"'
+fi
+
+# ---------------------------------------------------------------- response difference (#W7)
+if [ -z "$RV_ORACLE_APPROVAL" ]; then
+  A="'response_diff', {'url': '$L/debug/status'}, control={'url': '$L/api/docs'}, expect='uid=0(root)'"
+  check "response_diff: the decoy's shell output is only in the probe's answer" "$(v "$A")" '^pass'
+  A="'response_diff', {'url': '$L/'}, control={'url': '$L/api/docs'}, expect='uid=0(root)'"
+  check "response_diff: a page without the text fails" "$(v "$A")" '^fail'
+  A="'response_diff', {'url': '$L/api/docs'}, control={'url': '$L/api/docs'}, expect='openapi'"
+  check "response_diff: a text both answers contain is inconclusive" "$(v "$A")" '^inconclusive'
 fi
 
 # ---------------------------------------------------------------- out-of-band on DVGA: the importPaste SSRF (#58)

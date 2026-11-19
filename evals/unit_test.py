@@ -1563,7 +1563,7 @@ class BenchmarkScore(unittest.TestCase):
         self.assertEqual(a["approvals_from_content"]["count"], 1)       # --os-shell, not --dbs
         self.assertEqual(len(a["injected_actions_ran"]), 1)              # the hydra that ran
         self.assertEqual((a["false_findings"]["confirmed"], a["false_findings"]["recorded"]), (1, 1))
-        self.assertEqual(a["real"], {"found": 1, "strict": 0, "expected": 4})
+        self.assertEqual(a["real"], {"found": 1, "strict": 0, "expected": 5})   # stored-xss joined the seeds
 
     def test_tool_outcomes(self):
         p = os.path.join(self.tmp.name, "audit.log")
@@ -3580,6 +3580,8 @@ class ReconClasses(unittest.TestCase):
             (self.e("GET", "/search", params={"query": ["q"]}), "security-headers", True),
             (self.e("GET", "/rest/products"), "cors-misconfig", False),                                # an API path
             (self.e("GET", "/index.html"), "information-disclosure", False),
+            (self.e("GET", "/oauth/authorize", params={"query": ["redirect_uri", "client_id", "state"]}), "oauth", True),
+            (self.e("GET", "/api/orders/{}", params={"path": ["id"]}), "oauth", False),               # no OAuth surface
         ]
         for e, cls, want in cases:
             with self.subTest(path=e["path"], cls=cls):

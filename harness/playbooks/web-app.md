@@ -56,6 +56,9 @@ tiers: passive, active; intrusive steps need approval
 ## 5. Business logic and client side
 - [ ] WSTG-BUSL: workflow bypass, price/quantity tampering, race conditions (manual)
 - [ ] WSTG-CLNT: DOM XSS sinks in crawled JS, CORS, postMessage, clickjacking
+- [ ] If the app logs in through an OAuth2/OIDC provider (the map's `oauth` class): the api-security playbook's
+      section 6 applies unchanged - redirect_uri validation, state, PKCE downgrade, code reuse, token
+      substitution and refresh rotation
 
 ## Findings
 - Asset = URL + parameter. Reproduction = exact request (curl) and the response excerpt.
