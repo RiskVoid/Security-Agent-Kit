@@ -22,11 +22,13 @@ RULES.md, "key: value" per line; an unknown key is an error rather than silently
   Max commands: 300          commands through run, whole engagement
   Max parallel: 2            network commands at once; each gets Max rate / Max parallel
   Redirects: in-scope | none Execution: standard | controlled    Approval expiry: 24h
+  Out-of-band callbacks: on  the kit's own catcher proves blind SSRF/XXE/cmd (verify oracle oob_callback)
   Stop condition: ...        instruction for the agent and you; not detected by the kit
   Note: ...                  free text, kept with the policy
 """
 import datetime
 import ipaddress
+import os
 import posixpath
 import re
 import urllib.parse
@@ -49,7 +51,7 @@ DEFAULT_RULES = {"tiers": ["passive", "active"], "max_rate": 100, "network": "on
                  "strict": False, "worker": "auto", "timezone": "UTC", "dates": None, "days": None,
                  "max_requests": None, "max_commands": None, "max_parallel": 2, "redirects": "in-scope",
                  "execution": "standard", "approval_hours": 24, "target_content": False, "stop_conditions": [], "notes": [],
-                 "client_data": None, "browser_support": []}  # client_data None: any destination
+                 "client_data": None, "browser_support": [], "out_of_band": False}  # client_data None: any destination
 
 
 def entries(text):
@@ -429,6 +431,10 @@ def parse_rules(text):
                 if v not in ("on", "off", "yes", "no", "true", "false"):
                     raise ValueError("Target content approval is on or off")
                 r["target_content"] = v in ("on", "yes", "true")
+            elif k.startswith("out-of-band") or k.startswith("out_of_band"):
+                if v not in ("on", "off", "yes", "no", "true", "false"):
+                    raise ValueError("Out-of-band callbacks is on or off")
+                r["out_of_band"] = v in ("on", "yes", "true")
             elif k == "execution":
                 if v not in ("standard", "controlled"):
                     raise ValueError("Execution is standard or controlled")
@@ -507,6 +513,10 @@ def reminder(rules, usage=None, now=None):
             parts.append(f"budget {used}/{rules[key]} {word}" if used is not None else f"budget {rules[key]} {word}")
     if rules.get("client_data"):
         parts.append("client data may go only to " + ", ".join(rules["client_data"]))
+    if rules.get("out_of_band"):
+        catcher = os.environ.get("OOB_ADVERTISE", "http://10.250.0.2:8080").rstrip("/")
+        parts.append(f"out-of-band catcher {catcher}/{{{{marker}}}}: embed that URL in a blind SSRF/XXE/cmd "
+                     "probe and prove it with verify oracle oob_callback")
     return ("[engagement rules: " + "; ".join(parts) + "]") if parts else ""
 
 

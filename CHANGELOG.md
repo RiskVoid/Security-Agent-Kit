@@ -33,6 +33,16 @@ changes to the harness are measured.
 - Oracles prove a finding with a check the kit runs itself: a response marker, the difference between two
   identities, a read-back, script execution in the sandboxed browser, and timing. Each runs a negative control, and
   the report shows the oracle and its control for each verified finding.
+- A sixth oracle, `oob_callback`, proves a blind issue (SSRF, blind XXE, blind command injection): the probe
+  embeds the kit's own callback catcher where the target's fetch goes, and passes only when a token unique to the
+  verification arrives and the control's does not (`{{marker}}` is the token). The catcher is kit-operated, on the
+  lab network at `10.250.0.2:8080`, never an agent-run listener, and off unless the engagement's RULES.md says
+  `Out-of-band callbacks: on` — a host decision like an identity, and the rules line the agent sees names the
+  catcher URL. The firewall drops every engagement user's traffic to the catcher on any local address, so an agent
+  command cannot forge a callback: the token can only come from the target, and each expected callback is recorded
+  as timestamped evidence with an audit entry. Lab-verified with a negative control on the hostile lab's SSRF and
+  on DVGA's `importPaste` mutation (`evals/oracle_test.sh`, which now also runs in CI; the DVGA probe is a POST,
+  so it needs an approval like any write).
 - A validator on a separate model (`VALIDATOR_MODEL`) tries to disprove each confirmed finding from its evidence
   and the source lines it cites. A finding it disproves stays confirmed and is flagged: the report can't be
   delivered until the finding is corrected, withdrawn or excepted by a person (`VALIDATOR_DISPROVE=demote` sends
@@ -193,7 +203,7 @@ changes to the harness are measured.
   at the end of each part names `fetch_url`.
 - Docs now match the code on releases, IPv6 scope entries (an error, not ignored), approval attribution, the
   testing window's time zone, Amazon Bedrock as a model option, the arm64 release check, the optional services
-  and lab targets, and the five verification oracles.
+  and lab targets, and the six verification oracles.
 
 ## [0.1.0]
 

@@ -21,9 +21,12 @@ and runs a negative control. The result is pass only when the oracle holds AND t
                       spread. The caller gives both requests.
 
   oob_callback        blind issue (SSRF, blind command injection, XXE): the probe makes the target call back to the
-                      kit's own catcher with a token unique to the finding, and the oracle passes only when that
-                      token arrives. Control: a request that does not trigger a callback (or an unreachable catcher
-                      host) must not deliver its token. No public callback service: client traffic stays in the kit.
+                      kit's own catcher with a token unique to this verification (<engagement>.<canary>), and the
+                      oracle passes only when that token arrives. Control: a request that does not trigger a
+                      callback (or an unreachable catcher) must not deliver its token. RULES.md needs
+                      'Out-of-band callbacks: on'; the firewall drops every engagement user's traffic to the
+                      catcher, so a token can only arrive from the target itself. No public callback service:
+                      client traffic stays in the kit, and every expected callback is evidence with an audit entry.
 
 Every run writes a verification record (evidence/verify/<ts>-<oracle>-<id>.json) with the oracle, the result, the
 reason and each request's evidence file and status, and the record is audited and hashed like any evidence.
@@ -234,37 +237,40 @@ def timing(eng, request, control, samples=5, min_delay=1.0, send_kw=None):
     return "fail", detail, "", steps
 
 
-def _catcher_url():
-    return None
-
-
-def oob_callback(eng, request, marker="", control=None, send_kw=None, timeout=5.0):
+def oob_callback(eng, request, marker="", control=None, send_kw=None, timeout=10.0):
     """Blind issue (SSRF, blind command injection, XXE): the probe makes the target call back to the kit's own
-    catcher with a token unique to the finding, and the oracle passes only when that token arrives.
+    catcher with a token unique to this verification, and the oracle passes only when that token arrives.
 
-    The request carries {{marker}} in the URL the target will fetch (e.g.
-    http://target/api/fetch?url=http://10.250.0.2:8080/{{marker}}). The marker becomes the callback token. A control
-    request that does not trigger a callback (or an unreachable catcher host) must not deliver its token."""
+    The request carries {{marker}} where the callback URL goes (e.g. ...url=http://10.250.0.2:8080/{{marker}},
+    or the host/path arguments of a GraphQL mutation that fetches); the token is <engagement>.<canary>. The
+    engagement's RULES.md needs 'Out-of-band callbacks: on': the catcher is a host decision, like an identity.
+    Control: a request that does not trigger a callback, or the same request with an unreachable catcher."""
     kw = send_kw or {}
     if oob is None:
         raise ValueError("oob callback catcher is not available in this kali-mcp process")
-    oob.start()
-    if not _has_placeholder(request) and not marker:
-        raise ValueError("oob_callback: put {{marker}} in the request URL (the callback token), or give marker")
-    mark = marker or canary()
-    probe_req = _fill(request, mark) if _has_placeholder(request) else _fill(request, mark)
-    # the token the control uses must never be the probe's
-    control_token = canary()
+    if not core.info(eng)["rules"].get("out_of_band"):
+        raise ValueError("Out-of-band callbacks are off for this engagement: the catcher is a host decision, "
+                         "RULES.md needs 'Out-of-band callbacks: on' (./rvkit scope <engagement> applies it)")
+    mark = marker or oob.token_for(eng)
+    eng_part, _ = oob.token_parts(mark)
+    if eng_part != eng:
+        raise ValueError("oob_callback: the callback token is <engagement>.<canary>; leave {{marker}} in the "
+                         "request and the oracle generates one")
+    # both tokens are pre-registered so their arrivals become evidence; the control's must never be the probe's
+    control_token = oob.token_for(eng)
+    probe_req = _fill(request, mark)
     if control:
         control_req = _fill(control, control_token)
     else:
-        # default control: the same request with an unreachable catcher host, so no callback can arrive
-        control_req = _fill(request, control_token)
-        try:
-            control_req["url"] = control_req["url"].replace("10.250.0.2:8080", "127.0.0.1:1").replace(
-                "localhost:8080", "127.0.0.1:1")
-        except Exception:  # noqa: BLE001
-            pass
+        # Default control: a GET of the probe request's own origin, the same target without the payload: the
+        # token's job is to prove the target processed our payload, and an unguessable token that arrives is
+        # already strong evidence, so the control only has to stay clean of it. (The same request with an
+        # unreachable catcher is a fine explicit control, but it can't be the default: a POST would need its own
+        # single-use approval, and the probe's is consumed.)
+        origin = "/".join(probe_req["url"].split("/", 3)[:3]) + "/"
+        control_req = {"method": "GET", "url": origin, "headers": {}, "body": "", "identity": probe_req.get("identity")}
+    oob.expect(mark)
+    oob.expect(control_token)
     probe = _send(eng, probe_req, "probe", **kw)
     ctl = _send(eng, control_req, "control", **{k: v for k, v in kw.items() if k != "approval_id"})
     steps = [probe, ctl]
@@ -276,17 +282,19 @@ def oob_callback(eng, request, marker="", control=None, send_kw=None, timeout=5.
         return "fail", f"callback token {mark!r} did not arrive at the catcher", mark, steps
     # the control's token must not have arrived (spurious traffic would make the result meaningless)
     if oob.received(control_token):
-        return "inconclusive", f"the control's token {control_token!r} arrived too: the callback is not tied to the probe",             mark, steps
+        return "inconclusive", f"the control's token {control_token!r} arrived too: the callback is not tied to the probe", \
+            mark, steps
     # a token that was never sent must not be present either
-    never = canary()
-    if oob.received(never):
+    if oob.received(oob.token_for(eng)):
         return "inconclusive", "an unsent token arrived at the catcher: spurious traffic", mark, steps
-    return "pass", f"callback token {mark!r} arrived at the catcher; the control's did not", mark, steps
-
+    cb = oob.evidence(eng, mark)
+    steps.append({"role": "callback", "status": "received", "evidence": cb, "error": None})
+    where = f", recorded as {cb}" if cb else ""
+    return "pass", f"callback token {mark!r} arrived at the catcher{where}; the control's did not", mark, steps
 
 
 def verify(eng, oracle, request, marker="", expect="", identities=None, check=None, control=None, approval_id=None,
-           max_tier=None, task=None, finding="", send=None, samples=5, min_delay=1.0, browse=None):
+           max_tier=None, task=None, finding="", send=None, samples=5, min_delay=1.0, browse=None, timeout=10.0):
     """Run one oracle and record it. Returns {"result", "reason", "record", "text", ...}."""
     if oracle not in ORACLES:
         raise ValueError(f"oracle must be one of {', '.join(ORACLES)}")
@@ -297,6 +305,8 @@ def verify(eng, oracle, request, marker="", expect="", identities=None, check=No
     kw = {"approval_id": approval_id or None, "max_tier": max_tier, "task": task, "send": send}
     if not marker and _has_placeholder(request) and oracle in ("marker", "read_back", "browser_xss"):
         marker = canary()   # chosen here so a request that needs an approval can be sent again with the same one
+    if not marker and oracle == "oob_callback":
+        marker = oob.token_for(eng) if oob else f"{eng}.{canary()}"
     try:
         if oracle == "marker":
             result, reason, mark, steps = marker_oracle(eng, request, marker, expect, control, kw)
@@ -307,7 +317,7 @@ def verify(eng, oracle, request, marker="", expect="", identities=None, check=No
         elif oracle == "timing":
             result, reason, mark, steps = timing(eng, request, control, samples, min_delay, kw)
         elif oracle == "oob_callback":
-            result, reason, mark, steps = oob_callback(eng, request, marker, control, kw, timeout=5.0)
+            result, reason, mark, steps = oob_callback(eng, request, marker, control, kw, timeout=timeout)
         else:
             result, reason, mark, steps = read_back(eng, request, check, marker, kw)
     except Stopped as s:

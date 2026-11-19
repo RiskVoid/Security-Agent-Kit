@@ -9,7 +9,8 @@ What the kit can do for each kind of target, as four separate claims that are ea
 | **Lab-verified** | a test in `evals/` runs the method against a seeded lab target, with protected controls, and passes in CI | a model running the method unattended finds the same issues |
 | **Measured model result** | a saved benchmark run of the real agent, scored as in [lab-and-benchmarks.md](lab-and-benchmarks.md#how-runs-are-scored) | the same result on other code, other models, or another run |
 
-Last checked 2026-11-15. Re-check after changing the Kali image, a playbook or a
+Last checked 2026-11-19 (the out-of-band callback oracle added; no new measured runs). Re-check after changing the
+Kali image, a playbook or a
 benchmark: `./rvkit bench --history` for measured results, the tests in
 [regression-matrix.md](regression-matrix.md) for the lab-verified methods.
 
@@ -246,8 +247,8 @@ Details: [laravel.md](laravel.md), [authenticated-testing.md](authenticated-test
 | Claim | State |
 |---|---|
 | Executable available | Nmap, Naabu, dnsx, Subfinder, Katana, httpx-toolkit, Nuclei, Nikto, FFUF, Feroxbuster, sqlmap, Dalfox, ZAP, testssl, sslscan, Schemathesis, jwt_tool, graphw00f, Chromium |
-| Method implemented | `web-app`, `api-security` and `external-network` playbooks; the request tool (scope-checked, saved as verified evidence); approvals for intrusive commands |
-| Lab-verified | `lab_test.sh` (18 checks): only the engagement with a lab target in scope reaches it; `policy_test.sh` (42 checks) and `phase3_policy_test.sh` (51 checks): scope, firewall, tiers, rate caps, approvals, halt. These verify the controls, not detection |
+| Method implemented | `web-app`, `api-security` and `external-network` playbooks; the request tool (scope-checked, saved as verified evidence); approvals for intrusive commands; six verification oracles with negative controls, the sixth proving blind SSRF/XXE/command injection by a callback to the kit's own catcher (`Out-of-band callbacks: on` in RULES.md; the target's network must be able to reach the host) |
+| Lab-verified | `lab_test.sh` (18 checks): only the engagement with a lab target in scope reaches it; `policy_test.sh` (42 checks) and `phase3_policy_test.sh` (51 checks): scope, firewall, tiers, rate caps, approvals, halt. These verify the controls, not detection. `oracle_test.sh`: each oracle against the hostile lab, including the out-of-band callback (with DVGA's `importPaste` SSRF as a second case), and the catcher unreachable from agent commands |
 | Measured model result | `web-dvwa` 8 of 8, `web-juice-shop` 2 of 7, `api-graphql-dvga` 3 of 9, `api-vampi` 2 of 9, with evidence ([above](#measured-model-results)) |
 
 ### AI applications and MCP servers
@@ -262,7 +263,9 @@ Details: [laravel.md](laravel.md), [authenticated-testing.md](authenticated-test
 ### Not supported as complete workflows
 
 Django and FastAPI, Symfony, Spring and other JVM frameworks, ASP.NET, Go, Rails, native code, live cloud
-accounts, Kubernetes, Active Directory, mobile applications and out-of-band callbacks. The generic tools may still
+accounts, Kubernetes, Active Directory and mobile applications. Out-of-band callbacks are verified in the lab and
+wherever the target can route to the host running the kit; a public callback endpoint for internet-facing targets
+needs its own threat model first. The generic tools may still
 contribute to such an engagement, but no playbook, lab target or measured result backs a claim about them.
 
 See also: [lab-and-benchmarks.md](lab-and-benchmarks.md) · [regression-matrix.md](regression-matrix.md) ·

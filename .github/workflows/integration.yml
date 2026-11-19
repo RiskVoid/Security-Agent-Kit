@@ -131,6 +131,8 @@ jobs:
         run: bash evals/phase5_e2e.sh
       - name: Lab isolation
         run: RVKIT_NO_PULL=1 ./rvkit lab up && bash evals/lab_test.sh
+      - name: Verification oracles against the hostile lab (and DVGA when up; no model)
+        run: bash evals/oracle_test.sh   # the approval-gated pass cases stay unverified in CI: it asserts the approval request
       - name: Authenticated testing (identities, captures, browser, authorization matrix) against the Laravel lab
         run: bash evals/authn_test.sh
       - name: Laravel reference engagement (app map, build identity, PHP profile) against the Laravel lab

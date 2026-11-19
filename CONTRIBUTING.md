@@ -91,6 +91,7 @@ bash evals/ci_prepare.sh
 | `model_stub_test.sh` | the deterministic model stub (`evals/mock_llm.py` scenario mode) through LiteLLM: answers by turn, streaming, 429 and 402 classified like provider errors; no GPU or provider | the stack | `bash evals/model_stub_test.sh` |
 | `loop_limit_test.sh` | the gateway's loop limit through a second LiteLLM proxy with a scripted model: the note, the withheld tool and the ended turn, for one repeated call and for a cycle of two; no provider | the stack | `bash evals/loop_limit_test.sh` |
 | `lab_test.sh` | lab isolation: an engagement reaches only its own lab target; lab targets have no internet and can't reach the kit's services; DVWA login works | `./rvkit lab up`, `demo-code`, `net-test`; it creates `lab-juice` and `lab-dvwa` itself | `bash evals/lab_test.sh` |
+| `oracle_test.sh` | the verification oracles against the hostile lab (and DVGA's `importPaste` SSRF when up): each oracle passes on the vulnerable route with a clean control and fails on the clean one; the out-of-band cases need RULES.md 'Out-of-band callbacks: on' (the test turns it on) and prove the catcher is unreachable from agent commands; the approval-gated pass cases stay unverified in CI, which asserts the approval request | `./rvkit lab up` | `bash evals/oracle_test.sh` |
 | `planner_smoke.py` | each planner route answers authorised code-review, web-app and external-network briefs with a usable plan, not a refusal; records latency and tokens | `OPENROUTER_API_KEY` (costs a few cents) | `python3 evals/planner_smoke.py [--brief code\|web\|network] [model ...]` |
 
 Results that the suites write go to `evals/results/`, which is git-ignored: results can contain model output about
@@ -231,7 +232,7 @@ Actions are pinned to a commit SHA, with the release tag in a comment.
   guard, the console). It
   builds no images. This is the check a pull request needs.
 - `.github/workflows/integration.yml` builds every image and runs the full-stack suites: `evals/ci_prepare.sh`,
-  then the 16 suites listed in [Tests](#tests) (amd64, no model or API key needed). Image layers are cached
+  then the 17 suites listed in [Tests](#tests) (amd64, no model or API key needed). Image layers are cached
   between runs, so a run that changes little takes much less than the first one (15–20 minutes). It runs:
   - on a pull request that changes `harness/`, `kali-mcp/`, `litellm/`, `scripts/`, `egress/`, `gateway/`,
     `php-runner/`, `prompts/`, `searxng/`, `evals/` (not `evals/improvement/` or `evals/results/`), `rvkit`,

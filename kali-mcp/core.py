@@ -23,10 +23,11 @@ TIERS = ("passive", "active", "intrusive")
 DEFAULT_RULES = rvpolicy.DEFAULT_RULES  # worker: auto (fallback model allowed) | private (worker endpoint only)
 # Never reachable by agent commands, even if a scope entry covers them (loopback, link-local/cloud metadata).
 MCP_PORT = 8090  # server.py listens here; engagement commands must never reach it (they could call run for others)
+OOB_PORT = int(os.environ.get("OOB_PORT", "8080"))  # the out-of-band catcher (oob.py) listens here; same rule
 # Who is acting, recorded on every audit entry: rvctl sets it from --actor (console:<user> or cli:<user>); commands
 # that arrive through the MCP server are the agent's.
 ACTOR = "agent:kali-mcp"
-ACTOR_RX = re.compile(r"^(console|cli|agent|test):[A-Za-z0-9._@-]{1,64}$")
+ACTOR_RX = re.compile(r"^(console|cli|agent|test|kit):[A-Za-z0-9._@-]{1,64}$")
 # Events another authority reports for the audit log (rvctl record): changes made through harness/ops.py.
 RECORDABLE = {"finding-updated", "finding-recorded", "meta-updated", "summary-updated", "report-generated",
               "finding-not-reproducible", "observations-imported", "observation-added", "observations-linked",
@@ -435,7 +436,12 @@ def _nft_script(engs, blocked):
         "  set infra4 { type ipv4_addr; flags timeout; timeout 2h; }", *sets,
         "  chain out {", "    type filter hook output priority 0; policy accept;",
         f"    meta skuid {UID_BASE + 1}-{UID_BASE + 254} jump eng", "  }",
-        "  chain eng {", *([f"    ip daddr 127.0.0.0/8 meta skuid vmap {{ {', '.join(lo_vmap)} }}"] if lo_vmap else []),
+        # the out-of-band catcher first of all: an engagement user must not forge a callback token (issue #58).
+        # fib daddr type local covers every address of this container, loopback included, on the catcher's port
+        # only; the target calling back arrives on the input side and never passes through here.
+        "  chain eng {",
+        f"    fib daddr type local meta l4proto tcp th dport {OOB_PORT} counter drop",
+        *([f"    ip daddr 127.0.0.0/8 meta skuid vmap {{ {', '.join(lo_vmap)} }}"] if lo_vmap else []),
         "    ct state established,related accept", "    meta nfproto ipv6 drop",
         *([f"    meta skuid vmap {{ {', '.join(vmap)} }}"] if vmap else []), "    counter drop", "  }",
         *chains, "}",

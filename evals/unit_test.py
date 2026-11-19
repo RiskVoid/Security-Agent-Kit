@@ -305,6 +305,13 @@ class Scope(unittest.TestCase):
             self.assertTrue(policy.parse_rules(bad)[1], bad)
         self.assertEqual(policy.parse_rules("")[0]["tiers"], ["passive", "active"])
         self.assertEqual(policy.parse_rules("- Window (UTC): 08:00-18:00")[0]["timezone"], "UTC")
+        # out-of-band callbacks (#58): off by default, a host decision in RULES.md
+        self.assertFalse(policy.parse_rules("")[0]["out_of_band"])
+        self.assertTrue(policy.parse_rules("- Out-of-band callbacks: on")[0]["out_of_band"])
+        self.assertFalse(policy.parse_rules("- Out-of-band callbacks: off")[0]["out_of_band"])
+        self.assertTrue(policy.parse_rules("- Out-of-band callbacks: whenever")[1])
+        self.assertIn("oob_callback", policy.reminder(policy.parse_rules("- Out-of-band callbacks: on")[0]))
+        self.assertNotIn("out-of-band catcher", policy.reminder(policy.parse_rules("")[0]))
 
     def test_time(self):
         import datetime as dt
@@ -349,13 +356,15 @@ class Scope(unittest.TestCase):
 
     def test_nft_loopback_before_conntrack(self):
         """A DNS query that matches a live conntrack entry skips the redirect to the engagement's resolver. Loopback
-        must be checked before 'established' lets it through, or Docker's DNS answers names the scope excludes."""
+        must be checked before 'established' lets it through, or Docker's DNS answers names the scope excludes.
+        The out-of-band catcher comes before everything (#58): an engagement user must not forge a callback."""
         pol = policy.effective("- example.com\n- *.example.io:443\n- !x.example.io", "")
         script = core._nft_script([(20001, pol, True), (20002, pol, False)], policy.ALWAYS_BLOCKED)
         eng = script.split("chain eng {")[1].split("\n  }")[0].splitlines()
         eng = [line.strip() for line in eng if line.strip()]
-        self.assertEqual(eng[0], "ip daddr 127.0.0.0/8 meta skuid vmap { 20001 : jump e20001_lo, 20002 : jump e20002_lo }")
-        self.assertEqual(eng[1], "ct state established,related accept")
+        self.assertEqual(eng[0], "fib daddr type local meta l4proto tcp th dport 8080 counter drop")
+        self.assertEqual(eng[1], "ip daddr 127.0.0.0/8 meta skuid vmap { 20001 : jump e20001_lo, 20002 : jump e20002_lo }")
+        self.assertEqual(eng[2], "ct state established,related accept")
         lo = script.split("chain e20001_lo {")[1].split("\n  }")[0].strip().splitlines()
         self.assertEqual([line.strip() for line in lo], [
             "ip daddr 127.0.1.1 meta l4proto { tcp, udp } th dport 53 accept",
@@ -3537,6 +3546,39 @@ class FindingTools(unittest.TestCase):
         self.assertEqual(self.validated, [])
         got = self.update(f["id"], status="confirmed", method="source-review")   # said outright: allowed, as before
         self.assertEqual(got["status"], "confirmed")
+
+
+class Oob(unittest.TestCase):
+    """The out-of-band catcher's pure parts (issue #58): the token shape and the evidence lookup. The catcher
+    itself and the oracle's requests are lab-tested by evals/oracle_test.sh, with no model."""
+
+    def test_token_shape(self):
+        import oob
+        self.assertEqual(oob.token_parts("rv-oracle-test.rv2b92d33e1769"), ("rv-oracle-test", "rv2b92d33e1769"))
+        # an engagement name may contain dots: the canary is always after the last one
+        self.assertEqual(oob.token_parts("acme.co.uk.rv2b92d33e1769"), ("acme.co.uk", "rv2b92d33e1769"))
+        for bad in ("", "rv", "plain-token", "rv-test.rv", "rv-test.", ".rv1234567890ab",
+                    "rv-test/evil.rv1234567890ab", "rv-test.rv12 34"):
+            self.assertEqual(oob.token_parts(bad), (None, None), bad)
+        tok = oob.token_for("eng-x")
+        self.assertEqual(oob.token_parts(tok), ("eng-x", tok.rpartition(".")[2]))
+
+    def test_store_expect_and_evidence(self):
+        import oob
+        with tempfile.TemporaryDirectory() as d:
+            oob.STORE, oob.EXPECTED, oob.WORK = os.path.join(d, "r.txt"), os.path.join(d, "e.txt"), d
+            tok = oob.token_for("demo")
+            self.assertFalse(oob.received(tok))
+            oob.mark(tok)
+            self.assertTrue(oob.received(tok))
+            oob.expect(tok)
+            self.assertIn(tok, oob._expected())
+            self.assertIsNone(oob.evidence("demo", tok))          # no callback recorded yet
+            folder = os.path.join(d, "demo", "evidence", "oob")
+            os.makedirs(folder)
+            with open(os.path.join(folder, f"20260101T000000-{tok.rpartition('.')[2]}.json"), "w") as f:
+                f.write("{}")
+            self.assertTrue(oob.evidence("demo", tok).endswith(f"-{tok.rpartition('.')[2]}.json"))
 
 
 if __name__ == "__main__":

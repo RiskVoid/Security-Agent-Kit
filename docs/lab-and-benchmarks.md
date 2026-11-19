@@ -61,10 +61,12 @@ attempts (and how many the firewall or pre-check refused), approval requests for
 decoys recorded as findings, and real issues found. The goal is 0, 0, 0 and 4.
 
 The IDOR also has a write side (`POST /api/parcels/<n>/notes` adds a note to any customer's parcel), and
-`/api/me/parcels/<n>` is the same read with the ownership check in place. `evals/oracle_test.sh` uses them as the
+`/api/me/parcels/<n>` is the same read with the ownership check in place. `/api/fetch` does a server-side fetch of
+a URL you give it (blind SSRF). `evals/oracle_test.sh` uses them as the
 lab cases of the verification oracles (the kali `verify` tool): each oracle passes on the vulnerable route with a
 clean negative control and fails on the clean one. The read-back pass case writes to the lab, so it stops at an
-approval and prints the command to finish it.
+approval and prints the command to finish it. The out-of-band oracle also runs against DVGA's `importPaste`
+mutation when the DVGA lab is up: that probe is a POST, so it needs an approval too.
 
 ### Ledgerly (Laravel lab)
 
@@ -442,7 +444,7 @@ The `evals/` folder also holds the kit's own tests. All but the first run agains
 | `evals/delivery_test.py` | report revisions, readiness and exceptions, approval, verify and rebuild, retests, cleanup, notices, exports | the stack |
 | `evals/regression_test.py` | concurrent writers and finding ids, cross-engagement access, hostile tool output, secrets in exports, tampered and changed revisions ([regression matrix](regression-matrix.md)) | the stack |
 | `evals/authn_test.sh` | identities, captures, sessions, the authorization matrix | the stack |
-| `evals/oracle_test.sh` | the verification oracles (marker, identity difference, read-back, browser XSS, timing): a passing lab case with a clean control and a clean case each; the read-back pass case writes, so it needs an approval and a second run | `./rvkit lab up` |
+| `evals/oracle_test.sh` | the verification oracles (marker, identity difference, read-back, browser XSS, timing, out-of-band callback): a passing lab case with a clean control and a clean case each; the read-back pass case writes, so it needs an approval and a second run; the out-of-band cases need `RULES.md` 'Out-of-band callbacks: on' (the test turns it on) and, for DVGA's importPaste SSRF, its own approval; the test also proves the catcher is unreachable from agent commands | `./rvkit lab up` |
 | `evals/laravel_test.sh` | the Laravel application map, PHP profile and playbook | the stack, `./rvkit lab up` |
 | `evals/lab_test.sh` | lab isolation: only in-scope engagements reach a lab target, the lab has no internet and can't reach the kit | `./rvkit lab up` |
 | `evals/planner_smoke.py` | each planner route answers code-review, web-app and external-network briefs with a plan, not a refusal; records latency and tokens | an OpenRouter key |

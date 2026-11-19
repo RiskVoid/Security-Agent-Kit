@@ -192,7 +192,7 @@ async def run(command: str, engagement: str, timeout_s: int = 600, approval_id: 
 async def verify(engagement: str, oracle: str, request: dict, marker: str = "", expect: str = "",
                  identities: list[str] | None = None, check: dict | None = None, control: dict | None = None,
                  approval_id: str = "", finding: str = "", task: str = "", samples: int = 5,
-                 min_delay: float = 1.0) -> str:
+                 min_delay: float = 1.0, timeout: float = 10.0) -> str:
     """Decide whether a finding holds with a deterministic oracle and a negative control, instead of judging a
     response yourself. request: {method, url, headers?, body?, identity?}; put {{marker}} where a fresh canary goes.
       marker               the canary (or expect, e.g. "<b>{{marker}}</b>") comes back in the response. Control: the
@@ -205,6 +205,12 @@ async def verify(engagement: str, oracle: str, request: dict, marker: str = "", 
                            browser and passes only if that script ran. Control: the same URL with another token.
       timing               request and control (both required): samples of each (default 5, max 10); passes when
                            every probe is slower than every control by more than min_delay and the noise.
+      oob_callback         a blind issue (SSRF, blind XXE, blind command injection): put {{marker}} where the
+                           target's callback URL goes, e.g. the url argument it fetches
+                           (...fetch?url=<catcher>/{{marker}}) or the host/path it connects to; {{marker}} becomes
+                           the callback token. Passes only when that token arrives at the kit's own catcher and
+                           the control's does not (timeout seconds to wait, default 10). Needs RULES.md
+                           'Out-of-band callbacks: on'; the rules line shows the catcher URL to embed.
     Result: pass (holds and the control is clean), fail, or inconclusive. Each run is saved as a verification record
     (evidence/verify/...json): cite it as evidence and confirm the finding with method=oracle. Requests go through
     the same scope, tier, approval and identity checks as http_request; a write needs an approval (call again with
@@ -212,7 +218,7 @@ async def verify(engagement: str, oracle: str, request: dict, marker: str = "", 
     try:
         import oracles
         r = await _thread(oracles.verify, engagement, oracle, request, marker, expect, identities, check, control,
-                          approval_id or None, None, task or None, finding, None, samples, min_delay)
+                          approval_id or None, None, task or None, finding, None, samples, min_delay, None, timeout)
         return r["text"]
     except ValueError as e:
         return f"REFUSED: {e}"

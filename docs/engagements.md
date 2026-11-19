@@ -234,6 +234,7 @@ and add `*.` entries where you meant subdomains.
 | `Approval expiry:` | `1h` to `168h` | `24h` |
 | `Strict tiers:` | `on` or `off` | `off` |
 | `Target content approval:` | `on` or `off`: an active call whose path or host only a target's content named needs an approval ([below](#hostile-targets)) | `off` |
+| `Out-of-band callbacks:` | `on` or `off`: the kit's own callback catcher proves blind SSRF/XXE/command injection (`verify` oracle `oob_callback`). The rules line the agent sees names the catcher URL to embed in a probe; the catcher is unreachable from agent commands, so a token can only come from the target. Lab targets reach it at `http://10.250.0.2:8080`; a target elsewhere must be able to route to the host running the kit | `off` |
 | `Worker model:` | `private` or `auto` | `auto` |
 | `Browser support:` | domain names the browser tool may load page assets from (fonts, CDNs) although they aren't in scope; GET page assets only ([authenticated-testing.md](authenticated-testing.md#the-browser)) | none |
 | `Client data:` | `any`, or where model calls about this engagement may go: any of `local`, `colab`, `api`, `openrouter`, `anthropic`, `openai`, `bedrock` ([below](#where-client-data-may-go)) | `any` |
