@@ -536,15 +536,13 @@ def _short(v):
 # ---------------------------------------------------------------- the tool
 
 def _entry_identity(eng, e, identity):
-    """The identity this entry's reads run as: None when the entry is reachable without a session, the identity
-    when it can reach it, and a skip-note string when the entry needs a session the given identity can't provide
-    (#137). An entry no identity can reach is skipped with a note, never silently."""
+    """The identity this entry's reads run as: None when the entry is probed without a session (it needs none, or
+    no identity was given — the unauthenticated read still runs, as it did before #137), the identity when it can
+    reach the entry, and a skip-note string when the entry needs a session the given identity can't provide. An
+    entry no identity can reach (with an identity given) is skipped with a note, never silently."""
     needs = e.get("auth") == "required" or bool(e.get("seen_by"))
-    if not needs:
+    if not needs or not identity:
         return None, ""
-    if not identity:
-        return None, ("the entry needs a session and no identity was given (pass identity= to sweep the surface "
-                      "behind login)")
     import identities
     try:
         identities.usable(eng, identity, e["example"], "active", "read")
@@ -621,8 +619,7 @@ def probe_map(eng, matrix="", max_requests=400, checks="", task="", identity="")
                  "identity": identity or None, "outputs": {rel: core.sha256_file(full)}})
     text = [f"probe_map: {len(ents)} map entries, {ctx.requests} request(s), {len(hits)} hit(s), "
             f"{len(ctx.tokens)} token(s) seen."
-            + (f" Read checks ran as {identity} where a session was needed." if identity else
-               " No identity: entries behind login were skipped (pass identity= to sweep them).")]
+            + (f" Read checks ran as {identity} where a session was needed." if identity else "")]
     for h in hits:
         text.append(f"  HIT {h['check']} on {h.get('method') or ''} {h.get('path') or h.get('entry')} "
                     f"({h.get('where')} {h.get('param')}): {h['why']}")

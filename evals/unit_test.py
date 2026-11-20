@@ -2348,8 +2348,8 @@ class ReconMap(unittest.TestCase):
 
 
 class SweepIdentity(unittest.TestCase):
-    """#137: probe_map sweeps the authenticated surface with an identity, and skips entries no identity can
-    reach with a note (not silently)."""
+    """#137: probe_map sweeps the authenticated surface as an identity, and skips entries the given identity can't
+    reach with a note (not silently). Without an identity, reads run unauthenticated as before."""
 
     def test_entry_identity(self):
         sys.path.insert(0, os.path.join(KIT, "kali-mcp"))
@@ -2357,9 +2357,8 @@ class SweepIdentity(unittest.TestCase):
         unauth = {"auth": "none", "seen_by": [], "example": "http://lab/search"}
         self.assertEqual(sweep._entry_identity("e", unauth, ""), (None, ""))
         required = {"auth": "required", "seen_by": ["member"], "example": "http://lab/api/me"}
-        rid, why = sweep._entry_identity("e", required, "")
-        self.assertIsNone(rid)
-        self.assertIn("no identity", why)
+        # no identity: the unauthenticated read still runs (the pre-#137 behaviour is unchanged)
+        self.assertEqual(sweep._entry_identity("e", required, ""), (None, ""))
         with mock.patch("identities.usable", side_effect=ValueError("identity member is only for lab")):
             rid, why = sweep._entry_identity("e", required, "member")
         self.assertIsNone(rid)
