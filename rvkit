@@ -186,7 +186,7 @@ lab_vampi_init() { # VAmPI starts with an empty database: /createdb fills it wit
   done
   warn "VAmPI database setup didn't complete: check ./rvkit logs lab-vampi"
 }
-LAB="lab-juice-shop lab-dvwa lab-dvwa-db lab-vampi lab-dvga lab-llm lab-laravel lab-laravel-fixed lab-hostile"
+LAB="lab-juice-shop lab-dvwa lab-dvwa-db lab-vampi lab-dvga lab-llm lab-laravel lab-laravel-fixed lab-hostile lab-oauth lab-oauth-fixed"
 
 # Who acts, for the audit log: cli:<login> here; the console sets RVKIT_ACTOR=console:<login> when it calls rvkit.
 actor() { local a="${RVKIT_ACTOR:-cli:$(id -un 2>/dev/null | tr -cd 'A-Za-z0-9._@-' | cut -c1-64)}"
@@ -1024,6 +1024,7 @@ for k, b in p.items(): print("%s: spent $%.4f in the current 24 h period" % (k, 
         echo "   DVGA        http://10.250.0.14:5013/graphql   GraphQL API"
         echo "   LLM lab     http://10.250.0.15:8000   AI support assistant (chat /api/chat, MCP /mcp)"
         echo "   Ledgerly    http://10.250.0.16:8000   Laravel multi-tenant app (alice@acme.test / alice-lab-pass); fixed build at 10.250.0.17:8000"
+        echo "   OAuth lab   http://10.250.0.19:8000   OAuth2 authorization server with seeded flaws; fixed build at 10.250.0.20:8000"
         echo "   Try: ./rvkit quickstart, or ./rvkit engagement lab-juice 10.250.0.10" ;;
       down)   docker compose --profile lab stop $LAB >/dev/null 2>&1; docker compose --profile lab rm -f $LAB >/dev/null 2>&1
               ok "Lab stopped and removed (it resets to a clean state on the next 'lab up')" ;;

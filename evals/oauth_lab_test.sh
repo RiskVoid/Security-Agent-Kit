@@ -28,8 +28,9 @@ check "fixed: state is required" "$out_f" 'CLEAN.*state'
 check "fixed: PKCE is enforced" "$out_f" 'CLEAN.*PKCE'
 check "fixed: a code is single-use" "$out_f" 'CLEAN.*replay'
 
-# the clean control must show no flaw at all
-check "fixed: no seeded flaw remains" "$out_f" '^(CLEAN.*){4}$'
+# the clean control must show no flaw at all: four clean rows and not one flaw row
+check "fixed: no seeded flaw remains" \
+      "$(echo "$out_f" | grep -c '^CLEAN') clean, $(echo "$out_f" | grep -c '^FLAW') flaws" '^4 clean, 0 flaws$'
 
 echo "---"; echo "$pass passed, $fail failed"
 [ "$fail" -eq 0 ]
