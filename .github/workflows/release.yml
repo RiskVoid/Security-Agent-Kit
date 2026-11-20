@@ -29,8 +29,10 @@ jobs:
       - id: v
         run: |
           v="$(cat VERSION)"
-          if [ "${{ github.ref_type }}" = tag ] && [ "${{ github.ref_name }}" != "v$v" ]; then
-            echo "tag ${{ github.ref_name }} doesn't match VERSION ($v)"; exit 1; fi
+          reftype="${{ github.ref_type }}"
+          refname="${{ github.ref_name }}"
+          if [ "$reftype" = tag ] && [ "$refname" != "v$v" ]; then
+            echo "tag $refname doesn't match VERSION ($v)"; exit 1; fi
           echo "version=$v" >> "$GITHUB_OUTPUT"
 
   build:
@@ -97,8 +99,9 @@ jobs:
       - name: Multi-arch tag
         run: |
           img="${REGISTRY}-${{ matrix.name }}"
-          docker buildx imagetools create -t "$img:${{ needs.version.outputs.version }}" -t "$img:latest" \
-            $(for f in digests/*; do printf '%s@%s ' "$img" "$(cat "$f")"; done)
+          args=()
+          for f in digests/*; do args+=("$img@$(cat "$f")"); done
+          docker buildx imagetools create -t "$img:${{ needs.version.outputs.version }}" -t "$img:latest" "${args[@]}"
           docker buildx imagetools inspect "$img:${{ needs.version.outputs.version }}"
 
   install-check:   # what a new user gets: a clean machine pulls the images just published and passes the policy tests

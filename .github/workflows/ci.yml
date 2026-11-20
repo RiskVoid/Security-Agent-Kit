@@ -40,5 +40,11 @@ jobs:
           python3 evals/unit_test.py
       - name: Worker loop (scripted model, fake tools)
         run: python3 evals/worker_loop_test.py
+      - name: Workflow files are valid (actionlint, pinned)
+        run: |   # a workflow file that doesn't parse silently disables integration and releases (it happened)
+          curl -fsSL -o actionlint.tgz https://github.com/rhysd/actionlint/releases/download/v1.7.12/actionlint_1.7.12_linux_amd64.tar.gz
+          tar -xzf actionlint.tgz actionlint
+          echo "c872d6db8c6bf83a8eaa704fc93999f027d55dffbc63b8a6abdccb47df5f4cd4  actionlint" | shasum -c -
+          ./actionlint
       - name: OAuth lab (seeded flaws and clean controls, no Docker or model)
         run: python3 evals/oauth_lab_test.py
