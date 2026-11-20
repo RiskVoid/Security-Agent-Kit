@@ -2308,6 +2308,63 @@ class ReconMap(unittest.TestCase):
         js = 'a.get(this.host+"/api/Products/"+id);fetch("/rest/user/login");x="/assets/logo.png";y="/about"'
         self.assertEqual(recon.JS_PATH.findall(js), ["/api/Products/", "/rest/user/login"])
         self.assertIn("cookie laravel_session: Laravel", recon.tech_of([("Set-Cookie", "laravel_session=x")]))
+        # #136: the feedback-loop parsers (ffuf content, arjun hidden parameters, GraphQL in client JS)
+        self.assertEqual(recon.ffuf_found(json.dumps({"results": [
+            {"url": "http://lab/admin", "status": 200},
+            {"url": "http://lab/app.js", "status": 200},
+            {"url": "http://lab/robots.txt", "status": 200}]})),
+            [{"url": "http://lab/admin", "status": 200},
+             {"url": "http://lab/robots.txt", "status": 200}])   # the static .js path is dropped, pages kept
+        self.assertEqual(recon.ffuf_found("not json\n"), [])
+        self.assertEqual(recon.arjun_params({"http://lab/": {"params": ["search", "id"], "method": "GET",
+                                                              "headers": {}}}), ["search", "id"])
+        self.assertEqual(recon.arjun_params('{"http://lab/": {"params": ["q"]}}'), ["q"])
+        self.assertEqual(recon.arjun_params("{}"), [])
+        self.assertEqual(recon.gql_ops_in_js("query GetUser { id } mutation MakeAdmin { id }"),
+                         [{"kind": "query", "name": "GetUser"}, {"kind": "mutation", "name": "MakeAdmin"}])
+        self.assertEqual(recon.gql_ops_in_js("const x = 1"), [])
+
+    def test_seen_by(self):
+        # #135: an identity pass observation tags the entry, and the matrix cell carries the access requirement.
+        e = os.path.join(self.tmp.name, "acme", "evidence", "map")
+        json.dump({"base": "http://lab", "tech": [], "schemas": [],
+                   "observations": [
+                       {"method": "GET", "url": "http://lab/api/parcels/12", "source": "crawl", "status": 401,
+                        "auth": "required", "auth_basis": "status 401 without credentials"},
+                       {"method": "GET", "url": "http://lab/api/parcels/12", "source": "probe-identity",
+                        "status": 200, "auth": "required", "auth_basis": "reachable as member",
+                        "seen_by": "member"}]},
+                  open(os.path.join(e, "map-2.json"), "w"))
+        m = self.m.build("acme")
+        by = {(x["method"], x["path"]): x for x in m["entries"]}
+        self.assertEqual(by[("GET", "/api/parcels/{}")]["seen_by"], ["member"])
+        self.assertEqual(by[("GET", "/api/parcels/{}")]["auth"], "required")
+        mx = self.m.matrix("acme")
+        cell = next(c for c in mx["cells"] if c["entry"] == by[("GET", "/api/parcels/{}")]["id"]
+                    and c["class"] == "access-control")
+        self.assertEqual(cell["seen_by"], ["member"])
+        # an entry no identity saw stays untagged: the unauthenticated /search entry has no seen_by
+        self.assertEqual(by[("GET", "/search")]["seen_by"], [])
+
+
+class SweepIdentity(unittest.TestCase):
+    """#137: probe_map sweeps the authenticated surface as an identity, and skips entries the given identity can't
+    reach with a note (not silently). Without an identity, reads run unauthenticated as before."""
+
+    def test_entry_identity(self):
+        sys.path.insert(0, os.path.join(KIT, "kali-mcp"))
+        import sweep
+        unauth = {"auth": "none", "seen_by": [], "example": "http://lab/search"}
+        self.assertEqual(sweep._entry_identity("e", unauth, ""), (None, ""))
+        required = {"auth": "required", "seen_by": ["member"], "example": "http://lab/api/me"}
+        # no identity: the unauthenticated read still runs (the pre-#137 behaviour is unchanged)
+        self.assertEqual(sweep._entry_identity("e", required, ""), (None, ""))
+        with mock.patch("identities.usable", side_effect=ValueError("identity member is only for lab")):
+            rid, why = sweep._entry_identity("e", required, "member")
+        self.assertIsNone(rid)
+        self.assertIn("cannot reach", why)
+        with mock.patch("identities.usable", return_value={}):
+            self.assertEqual(sweep._entry_identity("e", required, "member"), ("member", ""))
 
 
 class ArgumentOrigins(unittest.TestCase):

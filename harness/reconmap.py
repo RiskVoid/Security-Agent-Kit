@@ -13,7 +13,9 @@ when the map is rebuilt, so plan items can reference it. A source route without 
 the same path on any host, or stands alone.
 
 authentication of an entry: required when a source says so (401/403/login redirect without credentials, the schema's
-security, an auth middleware), none when a request without credentials got a 2xx, otherwise unknown.
+security, an auth middleware), none when a request without credentials got a 2xx, otherwise unknown. An entry an
+engagement identity could reach is tagged `seen_by` (the recon_map identity pass, #135): the authenticated surface
+becomes plannable, and its coverage cells carry that access requirement.
 
 The coverage matrix (#47): for each entry, the vulnerability classes that apply to it (by its method, parameters and
 authentication), and the plan items that test that class on it (refs: the entry id; area or refs: the class). An
@@ -245,9 +247,13 @@ def build(eng):
         if not e:
             e = ents[key] = {"id": _eid(method, host, tpl), "method": method, "host": host, "path": tpl,
                              "example": o.get("url") or path, "params": {}, "auth": "unknown", "auth_basis": None,
-                             "status": [], "sources": [], "evidence": [], "operations": []}
+                             "status": [], "sources": [], "evidence": [], "operations": [], "seen_by": []}
         for k, v in _params(o).items():
             e["params"][k] = sorted(set(e["params"].get(k, [])) | set(v))
+        # #135: an identity that saw this entry (the recon_map identity pass) tags it, so the authenticated
+        # surface becomes plannable and the coverage cells carry the access requirement.
+        if o.get("seen_by") and o["seen_by"] not in e["seen_by"]:
+            e["seen_by"].append(o["seen_by"])
         if AUTH_RANK.get(o.get("auth"), 0) > AUTH_RANK[e["auth"]]:
             e["auth"], e["auth_basis"] = o["auth"], o.get("auth_basis")
         if o.get("status") and o["status"] not in e["status"]:
@@ -275,6 +281,7 @@ def build(eng):
             twin["evidence"] = (twin["evidence"] + [x for x in e["evidence"] if x not in twin["evidence"]])[:5]
             for k, v in e["params"].items():
                 twin["params"][k] = sorted(set(twin["params"].get(k, [])) | set(v))
+            twin["seen_by"] = sorted(set(twin.get("seen_by") or []) | set(e.get("seen_by") or []))
             if AUTH_RANK[e["auth"]] > AUTH_RANK[twin["auth"]]:
                 twin["auth"], twin["auth_basis"] = e["auth"], e["auth_basis"]
             if e.get("code"):
@@ -393,6 +400,8 @@ def matrix(eng, plan=None):
                 if items else "gap"
             cell = {"entry": e["id"], "method": e["method"], "path": e["path"], "host": e["host"], "class": c,
                     "state": state, "items": [it["id"] for it in items]}
+            if e.get("seen_by"):
+                cell["seen_by"] = e["seen_by"]
             hit = sweep_hits.get(e["id"], {}).get(c)
             if hit:
                 cell["swept"] = hit
