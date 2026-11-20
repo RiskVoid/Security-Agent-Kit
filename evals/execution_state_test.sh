@@ -247,7 +247,7 @@ async def main():
             await s.initialize()
             print("BEFORE", len((await s.list_tools()).tools), flush=True)
             t, down = time.time(), False
-            while time.time() - t < 120 and not (down and up()):   # wait for the restart: down, then up again
+            while time.time() - t < 30 and not (down and up()):  # wait for the restart: down, then up again
                 down = down or not up()
                 await asyncio.sleep(0.5)
             print("RESTARTED", down, flush=True)
@@ -256,10 +256,20 @@ asyncio.run(main())
 PY
 client=$!
 for _ in $(seq 30); do grep -q '^BEFORE' "$OUT" && break; sleep 1; done
-docker compose restart intel-mcp >/dev/null 2>&1
+# the restart is proven by the container's start time (RFC 3339 with nanoseconds: a restart inside one
+# second still differs), not by the down window the 0.5 s poll above can miss on a fast runner
+started0="$(docker inspect -f '{{.State.StartedAt}}' "$(docker compose ps -q intel-mcp)" 2>/dev/null)"
+docker compose restart intel-mcp >/dev/null 2>&1 \
+  || echo "WARN  docker compose restart intel-mcp failed (exit $?)"
+started1="$(docker inspect -f '{{.State.StartedAt}}' "$(docker compose ps -q intel-mcp)" 2>/dev/null)"
 wait $client
+if [ -n "$started1" ] && [ "$started0" != "$started1" ]; then
+  pass=$((pass+1)); echo "PASS  tool server restarted under an open client"
+else
+  fail=$((fail+1)); echo "FAIL  tool server restarted under an open client"
+  echo "      started: ${started0:-none} -> ${started1:-none}"
+fi
 r="$(cat "$OUT")"
-check "tool server restarted under an open client" "$r" '^RESTARTED True'
 check "the same client still works after the restart" "$r" '^AFTER [1-9]'
 
 echo; echo "execution state test: $pass passed, $fail failed"
