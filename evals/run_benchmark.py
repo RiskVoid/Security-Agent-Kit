@@ -55,6 +55,8 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import bench_stats as stats  # noqa: E402
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "harness"))
 import lookup  # noqa: E402
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "scripts"))
+import conversations  # noqa: E402  the one conversation path: console, ./rvkit conversation, benchmark runs
 
 KIT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 OH = os.environ.get("OPENHANDS_URL", "http://127.0.0.1:8000")
@@ -251,7 +253,7 @@ def plain_preamble(eng, b, target):
     approvals = ("Some commands return an approval id: the benchmark harness approves them within about 30 "
                  "seconds. Wait (`sleep 30` in your terminal), then call run again with the identical command and the "
                  "approval_id." if b.get("lab") else "Intrusive commands are not allowed in this engagement.")
-    return (f"UNATTENDED BENCHMARK RUN. Engagement: `{eng}` (pass it to every tool call). Target: {target}.\n\n"
+    return (f"UNATTENDED BENCHMARK RUN (pass the engagement to every tool call). Target: {target}.\n\n"
             f"Task: {plain_task(b['task'].format(src=target, url=b.get('url', target)))}\n\n"
             "No human is watching this run: never ask questions or wait for answers. " + approvals + "\n"
             "Record every vulnerability you find with record_finding, one per root cause, with a CWE and the "
@@ -266,7 +268,7 @@ def preamble(eng, b, target, resumed=None):
                  "30 seconds. Wait (`sleep 30` in your terminal), then call run again with the identical command and "
                  "the approval_id." if b.get("lab") else
                  "Intrusive tools are not allowed in this engagement.")
-    return (f"UNATTENDED BENCHMARK RUN. Engagement: `{eng}`. Target: {target}.\n\n"
+    return (f"UNATTENDED BENCHMARK RUN. Target: {target}.\n\n"
             f"Task: {b['task'].format(src=target, url=b.get('url', target))}\n\n"
             "No human is watching this run: never ask questions or wait for answers. Make reasonable decisions "
             "yourself and note them in PLAN.md. " + approvals + "\n"
@@ -341,32 +343,14 @@ def final_response(cid):
         return ""
 
 
-def bind_conversation(eng, cid, title):
-    """Bind a benchmark conversation to its engagement (rvctl bind, like ./rvkit conversation bind): the console
-    and ./rvkit conversation list then show it, and a deleted engagement refuses its model calls. Best effort:
-    the gateway also reads the engagement from the message content, so a failed bind costs nothing."""
-    r = subprocess.run(["docker", "compose", "exec", "-T", "kali-mcp", "python3", "/opt/kali-mcp/rvctl.py",
-                        "--actor", "cli:bench", "bind", eng, cid, title], cwd=KIT, capture_output=True, text=True)
-    return r.returncode == 0
-
-
 def run_conversation(eng, b, agent, target, log, before=None):
-    prof = next((p for p in oh("GET", "/api/agent-profiles")["profiles"] if p["name"] == agent), None)
-    if not prof:
-        raise SystemExit(f"agent profile {agent!r} not found: run ./rvkit openhands")
-
     def start(text):
-        conv = oh("POST", "/api/conversations", {
-            "workspace": {"working_dir": "/workspace/project"}, "agent_profile_id": prof["id"], "max_iterations": 300,
-            "max_budget_per_run": b.get("max_budget_usd", 5.0), "title": f"benchmark {eng}",
-            "initial_message": {"role": "user", "content": [{"type": "text", "text": text}]}})
-        try:
-            oh("POST", f"/api/conversations/{conv['id']}/run")
-        except urllib.error.HTTPError as e:
-            if e.code != 409:  # 409: the initial message already started it
-                raise
-        log(f"  conversation {conv['id']} (watch it at {OH}/canvas)")
-        bind_conversation(eng, conv["id"], f"benchmark {eng}")
+        # The same door every conversation goes through (scripts/conversations.py): the engagement's own profile
+        # choice or the caller's, bind before the first message, the standing first-message line. A benchmark run
+        # must not have a conversation path of its own, or it measures a harness nobody else runs.
+        conv = conversations.new(eng, "cli:bench", text, title=f"benchmark {eng}", profile=agent,
+                                max_iterations=300, max_budget_per_run=b.get("max_budget_usd", 5.0))
+        log(f"  conversation {conv['id']} (watch it at {conv['url']})")
         return conv["id"]
 
     cid = start((plain_preamble if agent == PLAIN else preamble)(eng, b, target))
@@ -402,7 +386,7 @@ def run_conversation(eng, b, agent, target, log, before=None):
                                  "minute": round((time.time() - t0) / 60)})
                 log(f"  {restarts[-1]['reason']}: continuing in a new conversation")
                 try:
-                    oh("POST", f"/api/conversations/{cid}/pause")
+                    conversations.pause_one(cid)
                 except Exception:  # noqa: BLE001  it has stopped already
                     pass
                 cid = start(preamble(eng, b, target, resumed={
@@ -423,10 +407,10 @@ def run_conversation(eng, b, agent, target, log, before=None):
                 if len(nudges) < 3 and room:
                     nudges.append([f"transient error {code}"])
                     log(f"  stopped by a transient provider error ({code}): continuing")
-                    oh("POST", f"/api/conversations/{cid}/events", {"role": "user", "run": True, "content": [
-                        {"type": "text", "text": "The run stopped because a model call failed with a transient "
-                         "provider error (a rate limit or an empty reply). Continue where you left off: call "
-                         "get_coverage, work through the remaining plan items, and record and confirm the findings."}]})
+                    conversations.send(eng, cid, "The run stopped because a model call failed with a transient "
+                                        "provider error (a rate limit or an empty reply). Continue where you left "
+                                        "off: call get_coverage, work through the remaining plan items, and record "
+                                        "and confirm the findings.", "cli:bench")
                     status = "running"
                     continue
                 break
@@ -446,8 +430,7 @@ def run_conversation(eng, b, agent, target, log, before=None):
                 nudges.append(todo)
                 stuck_here = stuck_here or status == "stuck"
                 log(f"  {'stuck' if status == 'stuck' else 'not done yet'} ({'; '.join(todo)[:200]}): continuing")
-                oh("POST", f"/api/conversations/{cid}/events", {"role": "user", "run": True,
-                                                                "content": [{"type": "text", "text": text}]})
+                conversations.send(eng, cid, text, "cli:bench")
                 status = "running"
                 continue
             break
@@ -456,7 +439,7 @@ def run_conversation(eng, b, agent, target, log, before=None):
         now = openrouter_usage() if before is not None else None
         if now is not None and now - before > b.get("max_budget_usd", 5.0):
             try:
-                oh("POST", f"/api/conversations/{cid}/pause")
+                conversations.pause_one(cid)
             except Exception:
                 pass
             status = "budget"
@@ -464,7 +447,7 @@ def run_conversation(eng, b, agent, target, log, before=None):
             break
         if time.time() - t0 > b["max_minutes"] * 60:
             try:
-                oh("POST", f"/api/conversations/{cid}/pause")
+                conversations.pause_one(cid)
             except Exception:
                 pass
             status = "timeout"

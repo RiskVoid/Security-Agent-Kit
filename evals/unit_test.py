@@ -1528,22 +1528,33 @@ class BenchmarkScore(unittest.TestCase):
 
     def drive(self, statuses, finals, agent="riskvoid-planner"):
         """run_conversation against a made-up OpenHands: statuses and finals are per conversation, in the order
-        the runner sees them (the last status of a conversation repeats)."""
+        the runner sees them (the last status of a conversation repeats). Conversations are created through the
+        real path (scripts/conversations.py): only its HTTP and control-plane edges are stubbed, so the test
+        checks the same door an engagement uses."""
         from unittest import mock
-        convs, sent, seen = [], [], {}
+        convs, sent, firsts, seen = [], [], set(), {}
 
-        def oh(method, path, body=None):
+        def api(method, path, body=None, timeout=30):
             if path == "/api/agent-profiles":
                 return {"profiles": [{"name": agent, "id": "p1"}]}
             if method == "POST" and path == "/api/conversations":
-                convs.append(body["initial_message"]["content"][0]["text"])
-                return {"id": f"c{len(convs)}"}
+                return {"id": f"c{len(firsts) + 1}"}
             cid = path.split("/")[3]
-            if path.endswith("/events"):
-                sent.append((cid, body["content"][0]["text"]))
+            if path.endswith("/events"):   # the first message opens a conversation; later ones are operator talk
+                text = body["content"][0]["text"]
+                if cid in firsts:
+                    sent.append((cid, text))
+                else:
+                    firsts.add(cid)
+                    convs.append(text)
                 return {}
-            if path.endswith(("/run", "/pause")):
-                return {}
+            return {}    # PATCH title, run, pause
+
+        def ctl(actor, *args):
+            return json.dumps({"halted": False, "rules": {}}) if args and args[0] == "show" else "ok"
+
+        def oh(method, path, body=None):
+            cid = path.split("/")[3]
             if path.endswith("/agent_final_response"):
                 return {"response": finals[int(cid[1:]) - 1]}
             mine = statuses[int(cid[1:]) - 1]
@@ -1554,7 +1565,8 @@ class BenchmarkScore(unittest.TestCase):
         obs = {"kind": "ObservationEvent", "tool_name": "findings_update_finding", "observation": {"content": [
             {"type": "text", "text": "REFUSED: F-001 needs status=confirmed"}]}}
         b = {"task": "Review {src}", "max_minutes": 60, "max_budget_usd": 5}
-        with mock.patch.object(self.rb, "oh", oh), mock.patch.object(self.rb.time, "sleep", lambda s: None), \
+        with mock.patch.object(self.rb.conversations, "api", api), mock.patch.object(self.rb.conversations, "ctl", ctl), \
+                mock.patch.object(self.rb, "oh", oh), mock.patch.object(self.rb.time, "sleep", lambda s: None), \
                 mock.patch.object(self.rb, "openrouter_usage", lambda: 1.0), \
                 mock.patch.object(self.rb, "conversation_events", lambda cid: [obs]), \
                 mock.patch.object(self.rb, "open_work", lambda *a, **k: []):

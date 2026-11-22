@@ -50,8 +50,14 @@ changes to the harness are measured.
   preamble alike), and a scanner or recon command the planner ran itself — `run` with no worker task — ends its
   result with a delegate reminder, in the same place as the rules line, up to three times per engagement. The
   instruction in the system prompt alone was shown not to steer models under workload (two runs spent 4M and 12M
-  planner tokens with zero worker calls), and the benchmark preamble carries no delegation text of its own: a
-  benchmark result must measure what a real engagement runs. Worker runs and single checks never see the reminder.
+  planner tokens with zero worker calls). Worker runs and single checks never see the reminder.
+- Every conversation the kit starts goes through one door: `conversations.new()` in scripts/conversations.py
+  (profile by the engagement's rules, bind before the first message, the standing first-message line) — the
+  console, `./rvkit conversation new`, and the benchmark runner alike. The runner's own conversation-creation
+  path (a different workspace, no tags, its own profile lookup, a message sent in the create call) is gone: a
+  benchmark run must exercise exactly what a real engagement runs, and its unit tests stub the same module's
+  HTTP and control-plane edges instead of a private path. The runner keeps only what is genuinely unattended:
+  the auto-approved approvals, the nudges, the caps — all through the shared `send` and `pause_one`.
 
 ### Verification
 - A confirmed finding's quotes are compared with its evidence files. Quotes that are not there are listed in the
