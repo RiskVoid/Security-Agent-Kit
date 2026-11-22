@@ -3,10 +3,15 @@
 
 Settings (.env):
   OPENROUTER_DAILY_BUDGET   USD per day for all OpenRouter calls (planner, and the worker fallback when on). Default 20
+  OPENROUTER_ZDR            on | off (default on). on: every OpenRouter call asks for zero-data-retention providers that
+                            don't collect prompts. off: that request is left out of every OpenRouter model, so the
+                            OpenRouter account's own privacy settings decide and providers may keep prompts or train on
+                            them (the ":free" models need this). For benchmark runs against the lab, not client work
   WORKER_FALLBACK           on | off (default off). on: while the worker endpoint is down, worker calls go to
                             WORKER_FALLBACK_MODEL on OpenRouter, which then sees tool output and client code
   PLANNER_MODEL, PLANNER_FALLBACK_MODEL, VALIDATOR_MODEL
-                            openrouter/<id> (default): OpenRouter key, zero-data-retention providers only.
+                            openrouter/<id> (default): OpenRouter key, zero-data-retention providers only (unless
+                            OPENROUTER_ZDR=off).
                             anthropic/<id> or openai/<id>: that provider's API directly, with ANTHROPIC_API_KEY or
                             OPENAI_API_KEY. The daily budget then also caps that provider (Anthropic: provider budget;
                             OpenAI: a budget on each planner model, because the worker also counts as provider "openai").
@@ -27,6 +32,15 @@ DIRECT = {"anthropic": "ANTHROPIC_API_KEY", "openai": "OPENAI_API_KEY", "bedrock
 PROVIDER_BUDGETS = ("anthropic", "bedrock")
 ZDR = "      extra_body:\n        provider: {zdr: true, data_collection: deny}\n"
 FALLBACK_RULE = ', {"colab-qwen": ["colab-qwen-fallback"]}'
+ZDR_ON, ZDR_OFF = ("", "on", "1", "true", "yes"), ("off", "0", "false", "no")
+
+
+def zero_retention(e):
+    """OPENROUTER_ZDR from .env: True (the default) keeps the zero-data-retention request on every OpenRouter call."""
+    v = (e.get("OPENROUTER_ZDR") or "").strip().lower()
+    if v not in ZDR_ON + ZDR_OFF:   # a typo must not switch it off, nor pass for a setting that was applied
+        sys.exit(f"OPENROUTER_ZDR in .env must be on or off, not {e.get('OPENROUTER_ZDR')!r}")
+    return v in ZDR_ON
 
 
 def env():
@@ -52,7 +66,11 @@ def tracing(t, e):
 
 
 def main():
-    t = render(open(os.path.join(KIT, "litellm", "config.yaml")).read(), env())
+    e = env()
+    t = render(open(os.path.join(KIT, "litellm", "config.yaml")).read(), e)
+    if not zero_retention(e):
+        t = ("# OPENROUTER_ZDR=off in .env: no OpenRouter model below asks for zero-data-retention providers, whatever a\n"
+             "# comment copied from the template says.\n") + t
     out = os.path.join(KIT, ".rvkit", "litellm.yaml")
     os.makedirs(os.path.join(KIT, ".rvkit", "events"), exist_ok=True)  # model-problem log (litellm/rv_events.py)
     with open(out + ".tmp", "w") as f:
@@ -84,6 +102,8 @@ def render(t, e):
     for prov in PROVIDER_BUDGETS:
         if prov in used:
             t = provider_budget(t, prov, budget)
+    if not zero_retention(e):   # last: planners() and worker() above recognise an OpenRouter entry by this block
+        t = t.replace(ZDR, "")
     return t
 
 

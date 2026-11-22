@@ -44,6 +44,11 @@ yesno() { # yesno "Question" y|n -> exit status
   local a; a="$(ask "$1 (y/n)" "$2")"; case "$a" in y|Y|yes|YES) return 0 ;; *) return 1 ;; esac
 }
 
+zdr_off() { # OPENROUTER_ZDR=off in .env: OpenRouter calls no longer ask for zero-data-retention providers
+  case "$(envget OPENROUTER_ZDR 2>/dev/null | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]' || true)" in off|0|false|no) return 0 ;; *) return 1 ;; esac
+}
+zdr_text() { if zdr_off; then printf 'zero retention is OFF: the provider may keep prompts'; else printf '%s' "$1"; fi; }
+
 need_env() {
   [ -f .env ] || die "No .env yet. Run: ./rvkit setup"
   # migrate older .env files and fill in settings added in newer versions
@@ -331,6 +336,8 @@ cmd_doctor() {
   else pass "The kit folder (keys, console token) is not mounted into any container"; fi
   [ -n "$(envget "$(planner_key)")" ] && pass "$(planner_key) set (planner)" || note "$(planner_key) empty: only the riskvoid-local agent works"
   [ "$(envget WORKER_FALLBACK)" = on ] && note "Worker fallback ON: while the worker is down, tool output and code go to $(envget WORKER_FALLBACK_MODEL)" || pass "Worker fallback off"
+  if zdr_off; then note "OpenRouter zero retention OFF (OPENROUTER_ZDR=off in .env): providers may keep prompts, tool output and code, or train on them. For benchmark runs against the lab only; set it to on, then ./rvkit up, before client work"
+  else pass "OpenRouter calls ask for zero-data-retention providers"; fi
 
   bold "Services"
   local want="agent-canvas gateway egress-proxy litellm redis searxng web-mcp kali-mcp worker-mcp findings-mcp intel-mcp" running
@@ -404,6 +411,7 @@ cmd_status() {
   [ "$(envget WORKER_FALLBACK)" = on ] && echo "   fallback ON: $(envget WORKER_FALLBACK_MODEL) (sees client data while the worker is down)" \
                                        || echo "   fallback off"
   if [ -n "$(envget "$(planner_key)")" ]; then ok "Planner: $(envget PLANNER_MODEL)"; else warn "Planner: no $(planner_key) in .env"; fi
+  if zdr_off; then warn "OpenRouter zero retention OFF (OPENROUTER_ZDR=off): providers may keep prompts, tool output and code. Benchmarks against the lab only"; fi
   echo "   Model spend today: \$$(spend_sum) (daily budget \$$(envget OPENROUTER_DAILY_BUDGET) per provider)"
   model_problems 3600 "in the last hour"
   if list="$(kctl list --json 2>/dev/null)"; then
@@ -569,13 +577,13 @@ cmd_worker() {
     show)
       echo "worker endpoint: $(envget WORKER_API_BASE)   model: $(envget WORKER_MODEL_ID)"
       case "$(envget WORKER_MODEL_ID)" in openrouter/*)
-        echo "  hosted on OpenRouter (zero-data-retention providers): tool output and client code go there, also for"
+        echo "  hosted on OpenRouter ($(zdr_text "zero-data-retention providers")): tool output and client code go there, also for"
         echo "  'Worker model: private' engagements and the riskvoid-local agent. For fully local work: ./rvkit worker local" ;;
       bedrock/*)
         echo "  hosted on Amazon Bedrock ($(envget AWS_REGION_NAME)): tool output and client code go there, also for"
         echo "  'Worker model: private' engagements and the riskvoid-local agent. For fully local work: ./rvkit worker local" ;; esac
       if [ "$(envget WORKER_FALLBACK)" = "on" ]; then
-        echo "fallback (when the endpoint is down): $(envget WORKER_FALLBACK_MODEL) via OpenRouter, zero-data-retention providers"
+        echo "fallback (when the endpoint is down): $(envget WORKER_FALLBACK_MODEL) via OpenRouter, $(zdr_text "zero-data-retention providers")"
         echo "  while it is in use, tool output and client code go to that model"
       else echo "fallback: off (worker calls fail while the endpoint is down; ./rvkit worker fallback on allows it)"; fi
       return 0 ;;
@@ -608,7 +616,7 @@ cmd_worker() {
     openrouter) # no GPU at all: a hosted model through the OpenRouter key (zero-data-retention providers)
       [ -n "$(envget OPENROUTER_API_KEY)" ] || die "needs OPENROUTER_API_KEY in .env (https://openrouter.ai/keys), then ./rvkit up"
       local m="${2:-$(envget WORKER_FALLBACK_MODEL)}"; m="${m#openrouter/}"
-      warn "Tool output and client code will go to $m on OpenRouter (zero-data-retention providers only)."
+      warn "Tool output and client code will go to $m on OpenRouter ($(zdr_text "zero-data-retention providers only"))."
       envset WORKER_API_BASE "https://openrouter.ai/api/v1"; envset WORKER_API_KEY none
       envset WORKER_MODEL_ID "openrouter/${m:-deepseek/deepseek-v4.1-flash}" ;;
     bedrock) # no GPU: a model on Amazon Bedrock (AWS credits pay for it), with the Bedrock API key
@@ -860,7 +868,7 @@ for k, b in p.items(): print("%s: spent $%.4f in the current 24 h period" % (k, 
     need_env
     case "${1:-show}" in
       show) echo "planner: $(envget PLANNER_MODEL)   fallback: $(envget PLANNER_FALLBACK_MODEL)"
-            echo "   openrouter/...: zero-data-retention providers only. anthropic/..., openai/... or bedrock/...: that provider's API directly, under its own data terms"
+            echo "   openrouter/...: $(zdr_text "zero-data-retention providers only"). anthropic/..., openai/... or bedrock/...: that provider's API directly, under its own data terms"
             exit 0 ;;
       --direct)
             shift; [ $# -ge 1 ] || die "usage: ./rvkit planner --direct anthropic/<model>|openai/<model>|bedrock/<model> [fallback]"
