@@ -45,11 +45,13 @@ changes to the harness are measured.
 - The gateway classifies OpenRouter's free-model daily limit as a rate limit that resets at UTC midnight, not as a
   credits problem: the limit's own name ("free-models-per-day-high-balance") matched the bare word "balance", and
   the run was told to top up.
-- Real engagements delegate too. The first message of a new conversation (`./rvkit conversation new`, the console,
-  the quickstart prompt) names the worker alongside the playbooks, like the unattended benchmark preamble does.
-  And a scanner or recon command the planner ran itself — `run` with no worker task — ends its result with a
-  delegate reminder, in the same place as the rules line, up to three times per engagement: the instruction in the
-  system prompt alone was shown not to steer models under workload. Worker runs and single checks never see it.
+- Delegation is harness behavior, not benchmark behavior. The first message of a new conversation names the worker
+  alongside the playbooks (`./rvkit conversation new`, the console, the quickstart prompt, the unattended benchmark
+  preamble alike), and a scanner or recon command the planner ran itself — `run` with no worker task — ends its
+  result with a delegate reminder, in the same place as the rules line, up to three times per engagement. The
+  instruction in the system prompt alone was shown not to steer models under workload (two runs spent 4M and 12M
+  planner tokens with zero worker calls), and the benchmark preamble carries no delegation text of its own: a
+  benchmark result must measure what a real engagement runs. Worker runs and single checks never see the reminder.
 
 ### Verification
 - A confirmed finding's quotes are compared with its evidence files. Quotes that are not there are listed in the
@@ -214,10 +216,6 @@ changes to the harness are measured.
 - Each benchmark conversation is bound to its engagement, as `./rvkit conversation new` binds one: the console and
   `./rvkit conversation list` show it, and a deleted engagement refuses its model calls. Before, benchmark
   conversations were invisible to the kit's own tooling, and a crashed session left nothing to find.
-- The unattended preamble tells the planner to hand every scanner and review run to the worker (`delegate_task`,
-  one narrow task per plan item, none left running). Without it the model followed the preamble's plan-and-coverage
-  workflow alone and never delegated: two runs spent 4M and 12M planner tokens with zero worker calls, where a run
-  that did delegate spent a fifth of it.
 - A conversation that stopped on a transient provider error (a per-minute rate limit, an empty reply) is sent back
   to work within its time budget, up to the nudge limit. Before, any `error` state ended the run; one run lost
   eight remaining minutes and six finished worker tasks to a per-minute limit.

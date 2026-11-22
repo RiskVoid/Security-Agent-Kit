@@ -271,11 +271,7 @@ def preamble(eng, b, target, resumed=None):
             "No human is watching this run: never ask questions or wait for answers. Make reasonable decisions "
             "yourself and note them in PLAN.md. " + approvals + "\n"
             + ("Start by calling plan_tests with each playbook that applies (and add tests the target needs), then "
-               "work through the plan with update_coverage. Hand every scanner and review run to the worker with "
-               "delegate_task (static analysis, secret scans, dependency and SBOM scans, recon and crawling, "
-               "anything that prints a lot: one narrow task per plan item, with plan_item set) and run only single "
-               "checks yourself; collect each result with get_task, and no task may still be running when you are "
-               "done (list_tasks). " if not resumed else
+               "work through the plan with update_coverage. " if not resumed else
                "This conversation continues an earlier one on this engagement. " + resumed["why"] + " The plan, the "
                "findings and the evidence so far are saved: call get_handover and get_coverage first. Do not plan "
                "again and do not repeat a test that has an outcome. Work through the planned tests with "
