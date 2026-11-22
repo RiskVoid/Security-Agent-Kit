@@ -86,6 +86,36 @@ def _max(a, b):
     return a if TIERS.index(a) >= TIERS.index(b) else b
 
 
+# Runtimes the sandbox doesn't ship: the kit reads code and lockfiles, it never installs or runs the target's
+# own stack. npm/node and php/composer are the ones models reach for; refusing them with the alternative saves
+# the loop of variants a bare "command not found" buys (seen on a benchmark run: six steps on npm audit).
+MISSING_RUNTIMES = {
+    "npm": "Node.js", "npx": "Node.js", "node": "Node.js", "nodejs": "Node.js",
+    "yarn": "Node.js", "pnpm": "Node.js", "bun": "Node.js",
+    "php": "PHP", "composer": "PHP",
+}
+MISSING_ALTERNATIVES = {
+    "Node.js": "dependency checks: osv-scanner or trivy on the lockfile (package-lock.json, yarn.lock, "
+               "pnpm-lock.yaml) or syft for an SBOM; read the code with the file tools",
+    "PHP": "laravel_map on the source, osv-scanner on composer.lock, or the optional PHP profile "
+           "(the user runs ./rvkit php) for a route export",
+}
+
+
+def missing_runtime(command, _depth=0):
+    """The first program in the command the sandbox doesn't ship, with what to use instead, or None."""
+    for prog, _ in _segments(command):
+        if prog in MISSING_RUNTIMES:
+            return prog, MISSING_ALTERNATIVES[MISSING_RUNTIMES[prog]]
+    if _depth < 3:  # a shell -c '...' or eval '...' string counts too, as in classify
+        for m in INNER.finditer(command):
+            inner = m.group(1) if m.group(1) is not None else m.group(2).replace('\\"', '"')
+            hit = missing_runtime(inner, _depth + 1)
+            if hit:
+                return hit
+    return None
+
+
 def classify(command, strict=False, _depth=0):
     """The command's tier: the highest tier of the programs it runs. strict (RULES.md "Strict tiers: on") also
     counts interpreters running code, and requests that send data, from tiers.yaml's strict section."""
@@ -1276,6 +1306,10 @@ def run(command, eng, timeout_s=600, approval_id=None, max_tier=None, task=None)
         return refuse(f"this command is tier '{tier}', RULES.md allows only {rules['tiers']}", tier=tier)
     if _tier_over(tier, max_tier):
         return refuse(f"this command is tier '{tier}' and this task may only use '{max_tier}'", tier=tier)
+    miss = missing_runtime(command)
+    if miss:
+        return refuse(f"{miss[0]} is not installed in the Kali sandbox: the kit reads code and lockfiles, it never "
+                      f"installs or runs the target's own runtime. Use {miss[1]} instead.")
     pol = policy_of(eng)
     bad = precheck(command, i, pol)
     if bad:
