@@ -45,6 +45,11 @@ changes to the harness are measured.
 - The gateway classifies OpenRouter's free-model daily limit as a rate limit that resets at UTC midnight, not as a
   credits problem: the limit's own name ("free-models-per-day-high-balance") matched the bare word "balance", and
   the run was told to top up.
+- Real engagements delegate too. The first message of a new conversation (`./rvkit conversation new`, the console,
+  the quickstart prompt) names the worker alongside the playbooks, like the unattended benchmark preamble does.
+  And a scanner or recon command the planner ran itself — `run` with no worker task — ends its result with a
+  delegate reminder, in the same place as the rules line, up to three times per engagement: the instruction in the
+  system prompt alone was shown not to steer models under workload. Worker runs and single checks never see it.
 
 ### Verification
 - A confirmed finding's quotes are compared with its evidence files. Quotes that are not there are listed in the
