@@ -50,9 +50,10 @@ except Exception:  # noqa: BLE001
     oob = None
 
 ORACLES = ("marker", "identity_difference", "read_back", "browser_xss", "timing", "oob_callback",
-           "response_diff", "persistence")
+           "response_diff", "persistence", "rate_limit")
 BROWSER_EVIDENCE = re.compile(r"\[browser evidence: /work/[^/]+/(\S+?)/ ")
 MAX_SAMPLES = 10
+RATE_SAMPLES = 100               # the rate-limit oracle's own ceiling: burst requests in one verification
 PLACEHOLDER = "{{marker}}"
 MARKER_RX = re.compile(r"^[A-Za-z0-9_.:@-]{6,128}$")
 
@@ -275,6 +276,45 @@ def _stats(xs):
     return m, (sum((x - m) ** 2 for x in xs) / max(1, len(xs) - 1)) ** 0.5
 
 
+BLOCKED = (429, 423)   # statuses that are rate limiting, or a lockout beside a different control status
+
+
+def rate_limit(eng, request, samples=30, cooldown=10.0, send_kw=None):
+    """The probe is a brokered burst (actions.rate_burst): the same request N times at the engagement's own max
+    rate — one approval names the N and the control — then one more request after a cooldown.
+
+    pass: every burst request was answered like the control — no rate limiting at the measured rate. That is the
+    evidence a 'missing rate limit' finding needs (a run once proved it with five requests and the validator
+    rightly refused: N, the exact statuses and every response are in the record).
+    fail: some burst requests were refused while the cooldown control was answered — rate limiting IS present;
+    record that instead, this record is its proof. inconclusive: the control failed, so nothing distinguishes a
+    limiter from the endpoint being down."""
+    kw = send_kw or {}
+    n = 30 if not samples or int(samples) < 10 else int(samples)
+    r = actions.rate_burst(eng, request.get("method") or "GET", request["url"], request.get("headers"),
+                           request.get("body") or "", n=min(n, RATE_SAMPLES), cooldown=cooldown,
+                           approval_id=kw.get("approval_id"), identity=request.get("identity") or None,
+                           task=kw.get("task"))
+    if r.get("refused") or r.get("approval"):
+        raise Stopped({**r, "role": "burst"})
+    steps = [{"role": f"{r['n']} rapid requests, then the cooldown control", "status": r.get("control"),
+              "evidence": f"/work/{eng}/{r['evidence']}" if r.get("evidence") else None}]
+    c_status = r.get("control")
+    if c_status is None:
+        return "inconclusive", "the control request after the cooldown failed, so nothing distinguishes a " \
+                                "limiter from the endpoint being down", "", steps
+    blocked = [i + 1 for i, st in enumerate(r.get("statuses") or [])
+               if st in BLOCKED or (st != c_status and st in (403, 503))]
+    detail = (f"{r['n']} requests in {r.get('seconds', 0)}s at the engagement's max rate, statuses "
+              f"{sorted(set(s for s in (r.get('statuses') or []) if s))}, control after {cooldown:.0f}s "
+              f"cooldown: {c_status}; every response is in the evidence")
+    if blocked:
+        return "fail", detail + f"; refused at {', '.join(f'#{i}' for i in blocked)} while the cooldown control " \
+                                "was answered: rate limiting IS present — record that, this record is its proof", "", steps
+    return "pass", detail + "; every request of the burst was answered as the control was: no rate limiting " \
+                            "at this rate", "", steps
+
+
 def timing(eng, request, control, samples=5, min_delay=1.0, send_kw=None):
     """The probe is slower than its control by more than the noise: every probe sample is slower than every
     control sample, and the difference of the means is above min_delay and three times the spread."""
@@ -381,6 +421,8 @@ def verify(eng, oracle, request, marker="", expect="", identities=None, check=No
             result, reason, mark, steps = browser_xss(eng, request, marker, {**kw, "browse": browse})
         elif oracle == "timing":
             result, reason, mark, steps = timing(eng, request, control, samples, min_delay, kw)
+        elif oracle == "rate_limit":
+            result, reason, mark, steps = rate_limit(eng, request, samples, timeout, kw)
         elif oracle == "oob_callback":
             result, reason, mark, steps = oob_callback(eng, request, marker, control, kw, timeout=timeout)
         elif oracle == "response_diff":

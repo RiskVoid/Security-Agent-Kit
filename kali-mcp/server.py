@@ -254,6 +254,11 @@ async def verify(engagement: str, oracle: str, request: dict, marker: str = "", 
                            the callback token. Passes only when that token arrives at the kit's own catcher and
                            the control's does not (timeout seconds to wait, default 10). Needs RULES.md
                            'Out-of-band callbacks: on'; the rules line shows the catcher URL to embed.
+       rate_limit           the same request N times at the engagement's own max rate, then one control after a
+                            cooldown (samples: N, default 30, max 100; timeout: the cooldown, default 10s). One
+                            approval names the N and the control. pass: no rate limiting at that rate (every
+                            response in the record - the evidence a 'missing rate limit' finding needs); fail:
+                            rate limiting IS present (the record is its proof - record that instead).
     Result: pass (holds and the control is clean), fail, or inconclusive. Each run is saved as a verification record
     (evidence/verify/...json): cite it as evidence and confirm the finding with method=oracle. Requests go through
     the same scope, tier, approval and identity checks as http_request; a write needs an approval (call again with

@@ -87,6 +87,12 @@ def _validated(engagement, row):
         v["note"] = (str(v.get("note") or "") + " " if v.get("note") else "") + \
             (f"Evidence entry(ies) {', '.join(missing)} name no file of this engagement: cite the path a tool "
              "printed (evidence/runs/...), or a /src/<file>:<line> reference, or drop the entry.")
+    dup = _duplicate_hint(engagement, row)
+    if dup:
+        v["note"] = (str(v.get("note") or "") + " " if v.get("note") else "") + \
+            (f"Same CWE and asset as confirmed {', '.join(dup)}: if this is the same root cause, merge it "
+             "(status duplicate, duplicate_of the finding to keep, after adding its evidence there); if it is a "
+             "separate one, say why in the description.")
     return {**row, **({"quotes": quotes} if quotes else {}), "validation": v}
 
 
@@ -114,6 +120,20 @@ def _missing_evidence(engagement, row):
             continue
         out.append(p.split(" ")[0][:80])
     return out
+
+
+def _duplicate_hint(engagement, row):
+    """Confirmed findings that already cover the same CWE on the same asset: a likely duplicate, named at record
+    time. One finding per root cause is the rule; a benchmark run recorded three SQL injection findings on the
+    same endpoint and confirmed each before merging them."""
+    try:
+        same = [f for f in db.list_(engagement)
+                if f.get("id") != row.get("id") and f.get("status") == "confirmed"
+                and (f.get("cwe") or "").strip().lower() == (row.get("cwe") or "").strip().lower()
+                and (f.get("asset") or "").strip().lower() == (row.get("asset") or "").strip().lower()]
+    except Exception:  # noqa: BLE001  the note is a convenience, never a refusal
+        return []
+    return [f"{f['id']} ({str(f.get('title'))[:60]})" for f in same]
 
 
 def _disproved(engagement, finding_id):

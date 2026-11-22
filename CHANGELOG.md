@@ -63,6 +63,22 @@ changes to the harness are measured.
 - A confirmed finding's quotes are compared with its evidence files. Quotes that are not there are listed in the
   reply, in `get_finding` and as a warning before delivery. A `/src/<file>:<line>` that doesn't exist refuses the
   confirmation.
+- A plan item can no longer be marked not-applicable or excluded while the probe_map sweep has a recorded hit on
+  one of the cells it covers: the update is refused with the hit's class, entry and evidence, through
+  `update_coverage` and `skip_coverage_cells` alike, until what the sweep found is triaged. A run rationalised
+  ReDoS items away with the sweep's timing hit untriaged and lost two expected issues to it.
+- A likely duplicate is named at record time: a confirmed finding with the same CWE on the same asset as one
+  already confirmed says so in its reply, with the merge instruction. A run confirmed three SQL injection
+  findings on one endpoint and merged them only at the end.
+- The validator asks the same model once more without the JSON response format when it answers nothing: on one
+  benchmark day a fifth of its calls came back empty with it and each one cost the fallback model the same
+  packet again. The retry's usage is kept with the first's.
+- A seventh oracle, `rate_limit`, proves the presence or absence of rate limiting with a brokered burst: the same
+  request N times at the engagement's own max rate (never past it), then one control after a cooldown. ONE
+  approval names the N and the control (like the race's, bound to that exact action); the evidence file holds
+  every response. pass is the proof a 'missing rate limit' finding needs (a run once offered five rapid requests
+  and the validator rightly refused); fail names rate limiting present — the record is its proof, record that
+  instead. Lab-verified by `oracle_test.sh`; the fail verdict by the unit tests.
 - Oracles prove a finding with a check the kit runs itself: a response marker, the difference between two
   identities, a read-back, script execution in the sandboxed browser, and timing. Each runs a negative control, and
   the report shows the oracle and its control for each verified finding.

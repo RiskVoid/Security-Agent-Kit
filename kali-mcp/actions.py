@@ -290,6 +290,129 @@ def race(eng, method, url, headers=None, body="", n=10, approval_id=None, identi
             "text": core.scrub(eng, "\n".join(text))}
 
 
+RATE_MAX = 100   # a rate burst's ceiling, the race's RACE_MAX for a different shape
+
+
+def rate_burst(eng, method, url, headers=None, body="", n=30, cooldown=10.0, approval_id=None, identity=None,
+               task=None, timeout_s=30):
+    """The probe shape for rate limiting and brute-force resistance: the same request N times at the engagement's
+    own max rate, then one control request after a cooldown.
+
+    One approval covers the exact request x N plus the control: its text names both, and unlike a race there is
+    no rate exemption — the burst presses at Max rate, never past it, because the point is pressure inside the
+    rules the target is tested under. The verdict is the oracle's (oracles.rate_limit reads this action's shots);
+    the evidence file holds every response. N is capped at RATE_MAX and the request budget pays for all N + 1.
+    Returns the shots' statuses, the control's, the seconds the burst took and the evidence path;
+    {"approval": id, "text": ...} when the approval is still needed."""
+    i = core.info(eng)
+    rules = i["rules"]
+    method = (method or "GET").upper()
+    n = int(n or 30)
+    cooldown = float(cooldown or 10)
+    entry = {"engagement": eng, "action": "rate_burst", "method": method, "url": core.scrub(eng, url),
+             "burst": n, "cooldown": cooldown, **({"task": task} if task else {})}
+
+    def refuse(msg, **extra):
+        core._audit({**entry, "refused": msg, **extra})
+        return {"refused": msg, "text": f"REFUSED: {msg}"}
+
+    if method not in METHODS:
+        return refuse(f"method must be one of {', '.join(METHODS)}")
+    if not 5 <= n <= RATE_MAX:
+        return refuse(f"a rate burst sends 5 to {RATE_MAX} requests (got {n})")
+    if i["halted"]:
+        return refuse("engagement is halted")
+    late = rvpolicy.time_refusal(rules)
+    if late:
+        return refuse(late + " (RULES.md)")
+    if "intrusive" not in rules["tiers"]:
+        return refuse("a rate burst is tier 'intrusive' (high-rate testing), RULES.md allows only "
+                      + str(rules["tiers"]))
+    try:
+        hdrs = _clean_headers(headers)
+    except ValueError as e:
+        return refuse(str(e))
+    pol = core.policy_of(eng)
+    why = rvpolicy.check_url(pol, url)
+    if why:
+        return refuse(why)
+    if len(body.encode() if isinstance(body, str) else body or b"") > MAX_BODY_IN:
+        return refuse(f"request body over {MAX_BODY_IN} bytes")
+    send_hdrs = dict(hdrs)
+    if identity:
+        try:
+            import identities
+            auth = identities.auth_headers(eng, identity, url)
+            send_hdrs = {**{k: v for k, v in hdrs.items() if k.lower() not in {a.lower() for a in auth}}, **auth}
+        except ValueError as e:
+            return refuse(str(e))
+    data = (body.encode() if isinstance(body, str) else body or b"")
+    action = {**http_action(method, url, hdrs, data, identity), "kind": "rate-burst", "burst": n,
+              "cooldown": cooldown}
+    shown = (f"RATE BURST {n}x {method} {url}" + (f" as {identity}" if identity else "")
+             + (f" ({len(body)} byte body)" if body else "")
+             + f": the same request {n} times at the engagement's max rate ({rules['max_rate']}/s, no exemption)"
+               f", then one control request after {cooldown:.0f}s; the request budget pays for all {n + 1}."
+               " Whether that shows rate limiting is the rate_limit oracle's call.")
+    if not approval_id:
+        a = core.request_approval(eng, action, "intrusive", shown, task)
+        return {"approval": a["id"], "text": f"APPROVAL REQUIRED (intrusive): {shown}\nApproval id: {a['id']}. "
+                f"Ask the user to review and run on the host:  ./rvkit approve {eng} {a['id']}   Then call "
+                f"verify again with the same arguments and approval_id='{a['id']}'."}
+    err = core.consume_approval(eng, approval_id, action, rules)
+    if err:
+        return refuse(err, approval=approval_id)
+    for _ in range(n + 1):                    # the budget pays for every shot and the control
+        if not core.take_budget(eng, "requests", rules.get("max_requests")):
+            return refuse(f"the request budget cannot cover {n + 1} requests (Max requests: "
+                          f"{rules['max_requests']})")
+    u = urllib.parse.urlsplit(url)
+    ip, why = _resolve(pol, u.hostname.lower().rstrip("."), _blocked())
+    if why:
+        return refuse(why)
+    gap = max(0.0, 1.0 / max(1, int(rules.get("max_rate") or 20)))
+    results, t0 = [], time.time()
+    for k in range(n):                        # sequential and paced: pressure inside the engagement's own rules
+        try:
+            r = _shot(eng, method, url, send_hdrs, data, ip, timeout_s, purpose="rate-burst")
+            out = {"status": r["status"], "seconds": r["seconds"],
+                   "body": (r["body"][:400].decode("utf-8", "replace") if isinstance(r["body"], bytes)
+                            else str(r["body"]))}
+        except Refused as e:
+            out = {"status": None, "error": str(e)}
+        results.append(out)
+        if k + 1 < n:
+            time.sleep(gap)
+    burst_s = time.time() - t0
+    time.sleep(cooldown)
+    try:
+        c = _shot(eng, method, url, send_hdrs, data, ip, timeout_s, purpose="rate-burst control")
+        control = {"status": c["status"], "seconds": c["seconds"]}
+    except Refused as e:
+        control = {"status": None, "error": str(e)}
+    rel = None
+    ts = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%dT%H%M%S")
+    rel = f"evidence/rate/{ts}-{n}.json"
+    work_dir(eng, "evidence", "rate")
+    full = os.path.join(core.WORK, eng, rel)
+    with open(full, "w") as f:
+        json.dump({"at": ts, "method": method, "url": core.scrub(eng, url), "n": n, "gap": gap,
+                   "cooldown": cooldown, "identity": identity, "shots": results, "control": control}, f,
+                  indent=1)
+    core._audit({**entry, "approval": approval_id, "outputs": {rel: core.sha256_file(full)}})
+    dist = {}
+    for r in results:
+        dist[r.get("status")] = dist.get(r.get("status"), 0) + 1
+    spread = ", ".join(f"{v} x {k}" for k, v in sorted(dist.items(), key=lambda x: str(x[0])))
+    text = [f"rate burst {method} {core.scrub(eng, url)} x {n}: {spread} in {burst_s:.1f}s at "
+            f"{rules['max_rate']}/s; control after {cooldown:.0f}s: {control.get('status')}.",
+            "Whether that is rate limiting is the rate_limit oracle's call: call verify with oracle rate_limit "
+            "on this request to decide it from this evidence, or run it as the oracle directly."]
+    return {"n": n, "statuses": [r.get("status") for r in results], "control": control.get("status"),
+            "seconds": round(burst_s, 1), "gap": gap, "evidence": rel,
+            "text": core.scrub(eng, "\n".join(text))}
+
+
 def _mask_cookies(headers):
     """Set-Cookie values are session material: keep the cookie names and attributes, drop the values."""
     out = []

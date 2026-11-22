@@ -2134,6 +2134,32 @@ class Validator(unittest.TestCase):
         self.assertEqual(self.v._requests("> GET http://lab/search?q=%3Cb%3Erv1%3C/b%3E\n< 200 OK"),
                          ["GET http://lab/search?q=<b>rv1</b>"])
 
+    def test_an_empty_answer_is_asked_again_without_the_json_format(self):
+        """A fifth of the validator's calls on one benchmark day came back empty with the JSON format, and each
+        one cost the fallback model the same packet again: the same model is asked once more without the format,
+        and both calls' usage is kept."""
+        import io
+        import urllib.request as urlreq
+        from unittest import mock
+        bodies = []
+
+        def urlopen(req, timeout=180):
+            bodies.append(json.loads(req.data.decode()))
+            content = "" if len(bodies) == 1 else \
+                '{"verdict": "stands", "reason": "the code shows it", "evidence_ref": "r1.txt"}'
+            return io.BytesIO(json.dumps({
+                "choices": [{"message": {"content": content}}], "model": "validator/1",
+                "usage": {"prompt_tokens": 10, "completion_tokens": 2}}).encode())
+
+        with mock.patch.object(urlreq, "urlopen", urlopen):
+            a, model, usage = self.v._chat("validator", "acme", [{"role": "user", "content": "x"}])
+        self.assertEqual(len(bodies), 2)
+        self.assertIn("response_format", bodies[0])
+        self.assertNotIn("response_format", bodies[1])
+        self.assertIn('"stands"', a)
+        self.assertEqual(usage["prompt_tokens"], 20)          # both calls are spent and counted
+        self.assertEqual(usage["completion_tokens"], 4)
+
     def test_stands(self):
         r = self.v.validate("acme", self.f["id"], chat=self.chat(['{"verdict": "stands", "reason": "rv123 is '
                                                                    'reflected inside <b>", "evidence_ref": "r1.txt"}']))
@@ -2672,6 +2698,44 @@ class Oracles(unittest.TestCase):
                                        send=noisy)["result"], "fail")
         with self.assertRaises(ValueError):
             self.o.verify("acme", "timing", {"url": "http://t/slow"}, send=slow)   # no control
+
+    def test_rate_limit(self):
+        """The brokered burst (actions.rate_burst) is faked: pass when every shot is answered like the cooldown
+        control, fail - rate limiting IS present - when some are refused while the control isn't, inconclusive
+        when the control fails, and an approval still needed surfaces as every oracle's does."""
+        req = {"method": "POST", "url": "http://t/login", "body": "u=x"}
+        self.shape = {"n": 30, "statuses": [200] * 30, "control": 200, "seconds": 1.5, "gap": 0.05,
+                      "evidence": "evidence/rate/1.json", "text": "ok"}
+        self.burst_calls = []
+        real = self.o.actions.rate_burst
+
+        def fake(eng, method, url, headers=None, body="", n=30, cooldown=10.0, approval_id=None, identity=None,
+                 task=None, timeout_s=30):
+            self.burst_calls.append((n, cooldown, approval_id))
+            return dict(self.shape)
+        self.o.actions.rate_burst = fake
+        try:
+            r = self.o.verify("acme", "rate_limit", req, samples=5, timeout=10.0)
+            self.assertEqual(r["result"], "pass", r["reason"])
+            self.assertEqual(self.burst_calls[0][0], 30)          # a tiny samples value means the default burst
+            self.assertIn("no rate limiting", r["reason"])
+            self.assertIn("evidence/rate/1.json", json.dumps(r["steps"]))
+            self.shape = {**self.shape, "n": 50, "statuses": [200] * 45 + [429] * 5}
+            r = self.o.verify("acme", "rate_limit", req, samples=50)
+            self.assertEqual(r["result"], "fail")
+            self.assertIn("rate limiting IS present", r["reason"])
+            self.assertEqual(self.burst_calls[-1][0], 50)
+            self.shape = {**self.shape, "control": None}
+            self.assertEqual(self.o.verify("acme", "rate_limit", req)["result"], "inconclusive")
+            self.shape = {"approval": "ab12cd34", "text": "APPROVAL REQUIRED"}
+            stopped = None
+            try:
+                self.o.rate_limit("acme", req, send_kw={})
+            except self.o.Stopped as s:
+                stopped = s.result
+            self.assertEqual((stopped or {}).get("approval"), "ab12cd34")
+        finally:
+            self.o.actions.rate_burst = real
 
     def test_findings_side(self):
         import verification
@@ -3578,6 +3642,19 @@ class FindingTools(unittest.TestCase):
         self.assertIn("refers to source that isn't there", f["note"])
         self.assertIn("the file has 4 lines", f["note"])
 
+    def test_a_likely_duplicate_is_named_at_record_time(self):
+        """A benchmark run confirmed three SQL injection findings on the same endpoint before merging them: the
+        second one names the first in its reply."""
+        one = self.record(title="SQL injection in /user", method="source-review", reproduction=self.REPRO)
+        self.assertNotIn("note", one)
+        two = self.record(title="Blind SQL injection in /user", method="source-review", reproduction=self.REPRO,
+                          description="The name parameter is concatenated into the query, differently.")
+        self.assertIn(f"Same CWE and asset as confirmed {one['id']}", (two.get("validation") or {}).get("note", ""))
+        self.assertIn("duplicate_of", (two.get("validation") or {}).get("note", ""))
+        merged = self.update(two["id"], status="duplicate", duplicate_of=one["id"],
+                              reason="same root cause as " + one["id"])
+        self.assertEqual(merged["status"], "duplicate")
+
     def test_a_method_alone_that_cannot_confirm_is_refused(self):
         f = self.record()
         out = self.update(f["id"], method="source-review")
@@ -3602,6 +3679,34 @@ class FindingTools(unittest.TestCase):
         self.assertEqual(out["evidence"], ["evidence/runs/r1.txt", "evidence/runs/r1.txt"])
         out = self.t.update_coverage("e", pid, "tested", evidence=["evidence/runs/nope.txt: see above"])
         self.assertEqual(out, "REFUSED: evidence/runs/nope.txt: no such file")
+
+    def test_not_applicable_is_refused_while_a_sweep_hit_stands(self):
+        """A benchmark run marked ReDoS items not-applicable with the sweep's timing hit untriaged: the update
+        is refused with the hit's class, cell and evidence until it is triaged, whatever door it comes through."""
+        import reconmap
+        import workspace
+        from unittest import mock
+        with mock.patch.object(workspace, "_map_refs", lambda eng, refs: None):   # the map itself is stubbed below
+            pid = workspace.plan_add("e", "agent:planner", [{"title": "redos on E-1a2b3c", "area": "redos",
+                                                            "refs": ["E-1a2b3c"]}])[0]
+        cells = {"cells": [{"entry": "E-1a2b3c", "method": "GET", "path": "/u/{}/email", "host": "h",
+                            "class": "redos", "items": [pid], "swept": ["evidence/sweep/sweep-1.json"]}]}
+        real = reconmap.matrix
+        reconmap.matrix = lambda eng, plan=None: cells
+        try:
+            out = self.t.update_coverage("e", pid, "not-applicable", rationale="no regex here")
+            self.assertIn("can't be not-applicable or excluded", out)
+            self.assertIn("sweep hit redos on GET /u/{}/email", out)
+            self.assertIn("evidence/sweep/sweep-1.json", out)
+            self.assertIn("import_observations", out)
+            cells["cells"][0]["swept"] = None
+            out = json.loads(self.t.update_coverage("e", pid, "not-applicable", rationale="no regex here"))
+            self.assertEqual(out["state"], "not-applicable")
+            reconmap.matrix = lambda eng, plan=None: (_ for _ in ()).throw(ValueError("no map"))
+            out = json.loads(self.t.update_coverage("e", pid, "not-applicable", rationale="no map at all"))
+            self.assertEqual(out["state"], "not-applicable")   # a broken map never blocks a write
+        finally:
+            reconmap.matrix = real
 
     def test_coverage_of_several_items_in_one_call(self):
         """#112: update_coverage was 21 of 59, 52 of 125 and 22 of 102 tool calls in three runs, one item each."""

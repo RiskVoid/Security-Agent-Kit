@@ -83,6 +83,10 @@ ORACLE_METHOD = {
                    "another value) didn't run it.",
     "timing": "Probe and control samples, interleaved. pass: every probe sample is slower than every control sample "
               "and the difference of the means is above the minimum delay and three times the spread.",
+    "rate_limit": "The oracle sends the same request N times at the engagement's own max rate (one approval names "
+                  "the N and the control), then one control after a cooldown. pass: every burst request was "
+                  "answered as the control was (no rate limiting at that rate; a status alone is not blocking). "
+                  "fail: some were refused while the cooldown control was answered (rate limiting present).",
 }
 
 
@@ -313,13 +317,26 @@ def packet(engagement, finding):
 
 
 def _chat(model, engagement, messages):
-    body = {"model": model, "messages": messages, "max_tokens": MAX_TOKENS, "temperature": 0,
-            "response_format": {"type": "json_object"}}
-    req = urllib.request.Request(f"{LITELLM}/chat/completions", data=json.dumps(body).encode(), headers={
-        "Authorization": f"Bearer {LITELLM_KEY}", "Content-Type": "application/json",
-        "x-rv-engagement": engagement, "x-rv-task": "validator"})
-    r = json.load(urllib.request.urlopen(req, timeout=180))
-    return r["choices"][0]["message"].get("content") or "", r.get("model") or model, r.get("usage")
+    """One validator model call. An empty reply is asked once more WITHOUT the JSON response format: reasoning
+    models on a provider's free tier were seen answering nothing with it and answering without it (a fifth of the
+    validator's calls on one benchmark day each cost the fallback model the same packet twice). The system prompt
+    already demands JSON and parse() takes it from any text. Both calls' usage is returned, spent either way."""
+    spent = None
+    for fmt in ({"type": "json_object"}, None):
+        body = {"model": model, "messages": messages, "max_tokens": MAX_TOKENS, "temperature": 0}
+        if fmt:
+            body["response_format"] = fmt
+        req = urllib.request.Request(f"{LITELLM}/chat/completions", data=json.dumps(body).encode(), headers={
+            "Authorization": f"Bearer {LITELLM_KEY}", "Content-Type": "application/json",
+            "x-rv-engagement": engagement, "x-rv-task": "validator"})
+        r = json.load(urllib.request.urlopen(req, timeout=180))
+        u = r.get("usage") or {}
+        spent = u if spent is None else {k: int(spent.get(k) or 0) + int(u.get(k) or 0)
+                                         for k in set(spent) | set(u)}
+        content = r["choices"][0]["message"].get("content") or ""
+        if content.strip() and not content.lstrip().startswith("[RiskVoid]"):
+            return content, r.get("model") or model, spent
+    return "", r.get("model") or model, spent
 
 
 def usage_counts(u):
