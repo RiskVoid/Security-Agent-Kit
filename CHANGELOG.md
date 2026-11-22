@@ -25,6 +25,26 @@ changes to the harness are measured.
 - `record_finding` and `update_finding` read a `method` without `status` as a confirmation attempt, with the same
   checks as `status="confirmed"`. When the checks fail, the finding and the other fields are saved and the reply
   says why it is still a candidate. Before, the finding was recorded as a candidate without a word.
+- The planner prompt says what the Kali sandbox doesn't ship — no npm, Node, PHP or Composer, and a `/tmp` that is a
+  fresh mount per command — and that the planner's own terminal is a different environment. On one benchmark run the
+  planner spent six steps trying `npm audit` variants after finding npm in its own terminal.
+- The Kali `run` tool refuses a command that names a runtime the sandbox doesn't ship (npm, node, yarn, pnpm, php,
+  composer), with what to use instead: one refused call instead of a loop of `command not found` variants.
+- A worker model call judges "busy" by its error text, not only by the status code: the gateway explains a rate
+  limit in the text, but litellm's error envelope can lose the 429 on the way out, and a worker task died as
+  `model_refused` on a limit that resets within the minute. `BUSY_RX` is what a busy model says.
+- The worker's prompt points static analysis of in-scope code at `analyze_source` and its offline rules: a delegated
+  semgrep task spent 9 of its 15 steps hunting an owasp ruleset that exists only in the registry, which the
+  sandbox cannot reach (the `run` tool's description claimed otherwise and is corrected).
+- The worker's prompt names the per-command `/tmp`: a worker built a virtualenv there and lost it 90 seconds later.
+- A confirmed finding whose evidence entry names no file (neither an engagement file nor a `/src` reference) says so
+  in the confirmation reply. On one run the planner cited "the intel_prioritize output" — inline tool text — and
+  only the validator noticed, after the report's strict score had already lost the finding.
+- The model gateway reads a call's engagement from the `x-rv-engagement` header first: worker and validator calls
+  name no engagement in their content, so their model events were recorded with no engagement to group them by.
+- The gateway classifies OpenRouter's free-model daily limit as a rate limit that resets at UTC midnight, not as a
+  credits problem: the limit's own name ("free-models-per-day-high-balance") matched the bare word "balance", and
+  the run was told to top up.
 
 ### Verification
 - A confirmed finding's quotes are compared with its evidence files. Quotes that are not there are listed in the
@@ -184,6 +204,20 @@ changes to the harness are measured.
   the lab can use OpenRouter's free models. It is on by default and applies to every OpenRouter model the kit calls.
   While it is off, `./rvkit status` and `./rvkit doctor` warn, and each benchmark result records it
   (`models.openrouter_zero_retention`). Not for client work: providers may then keep prompts or train on them.
+- Progress lines appear live when the runner's output is piped to a file: before, nothing showed until the run
+  ended, and a long benchmark could not be watched.
+- Each benchmark conversation is bound to its engagement, as `./rvkit conversation new` binds one: the console and
+  `./rvkit conversation list` show it, and a deleted engagement refuses its model calls. Before, benchmark
+  conversations were invisible to the kit's own tooling, and a crashed session left nothing to find.
+- The unattended preamble tells the planner to hand every scanner and review run to the worker (`delegate_task`,
+  one narrow task per plan item, none left running). Without it the model followed the preamble's plan-and-coverage
+  workflow alone and never delegated: two runs spent 4M and 12M planner tokens with zero worker calls, where a run
+  that did delegate spent a fifth of it.
+- A conversation that stopped on a transient provider error (a per-minute rate limit, an empty reply) is sent back
+  to work within its time budget, up to the nudge limit. Before, any `error` state ended the run; one run lost
+  eight remaining minutes and six finished worker tasks to a per-minute limit.
+- The free-model daily limit stops the whole suite: every remaining benchmark would fail at its first model call,
+  so the runner says so and skips them instead of spending a run each.
 
 ### Fixed
 - Worker delegation didn't work with a reasoning model as the worker. A model call was capped at 2,048 output
