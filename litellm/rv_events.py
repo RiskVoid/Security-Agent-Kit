@@ -70,7 +70,8 @@ def classify(group, exc=None, status=None, text=""):
     if "budget" in low and ("exceed" in low or "crossed" in low or "over" in low):
         return "budget", ("The daily model budget is used up (OPENROUTER_DAILY_BUDGET). Raise it with ./rvkit budget <usd>, "
                           "or wait for the next UTC day.")
-    if status == 402 or re.search(r"credit|insufficient (funds|balance)|payment required|balance", low):
+    if status == 402 or re.search(r"insufficient (?:funds|credits?)|payment required|needs? (?:more )?credits"
+                                    r"|balance is too low", low):
         return "credits", (f"{who}: the OpenRouter balance is too low for this call. Top up at "
                            "https://openrouter.ai/settings/credits, then continue the conversation.")
     if status in (401, 403) or "authenticationerror" in low or "invalid api key" in low or "unauthorized" in low:
@@ -86,7 +87,12 @@ def classify(group, exc=None, status=None, text=""):
     if "contextwindowexceeded" in low or "context length" in low or "context window" in low or "too many tokens" in low:
         return "context", (f"{who}: the conversation no longer fits the model's context window. Start a new "
                            "conversation for the next step (the engagement's notes and findings are kept).")
-    if status == 429 or "ratelimit" in low or "rate limit" in low:
+    if status == 429 or "ratelimit" in low or "rate limit" in low:   # before credits: a 429 is never about money
+        daily = "per-day" in low or "per_day" in low or "daily" in low
+        if daily:   # OpenRouter's free-model daily cap: no wait inside a run brings it back
+            return "rate_limit", (f"{who}: the OpenRouter free-model daily limit is used up. It resets at the next "
+                                  "UTC midnight (the provider's X-RateLimit-Reset names when); until then use a paid "
+                                  "model (./rvkit planner <model>, ./rvkit worker <model>) or wait.")
         return "rate_limit", (f"{who} is rate-limited by its provider. Wait a minute and continue the conversation.")
     if "timeout" in low or "timed out" in low:
         if worker:

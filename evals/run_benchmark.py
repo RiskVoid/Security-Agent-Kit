@@ -306,6 +306,17 @@ def approve_pending(eng):
 LOOP_TAG = "[RiskVoid] Loop stopped"   # litellm/rv_repeats.py CUT_TAG: the gateway ended a turn that repeated one call
 MAX_CONVERSATIONS = 3                  # a run goes on in a new conversation at most twice
 MODEL_LOG = os.path.join(KIT, ".rvkit", "events", "model-events.jsonl")   # litellm/rv_events.py writes it
+STOP_SUITE = {"why": None}             # set when a whole-suite condition hits (the free-model daily limit)
+
+
+def error_kind(cid):
+    """(code, detail) of the newest ConversationErrorEvent: what stopped an errored conversation."""
+    try:
+        events = conversation_events(cid)
+    except (urllib.error.URLError, TimeoutError):
+        return "", ""
+    e = next((x for x in reversed(events) if x.get("kind") == "ConversationErrorEvent"), None)
+    return (e or {}).get("code") or "", str((e or {}).get("detail") or "")
 
 
 def loop_limit(eng, start, end, path=MODEL_LOG):
@@ -403,6 +414,26 @@ def run_conversation(eng, b, agent, target, log, before=None):
                 cids.append(cid)
                 stuck_here, status = False, "running"
                 continue
+            if status == "error":
+                # An error is OpenHands giving up on the model call: a transient provider problem (a rate limit
+                # that resets within the minute, an empty reply) should not end a run that has time and work left,
+                # and the free-model daily limit ends the whole suite: no benchmark can run until it resets.
+                code, detail = error_kind(cid)
+                if re.search(r"free.tier.daily|per.day|daily limit", detail, re.I):
+                    STOP_SUITE["why"] = ("the OpenRouter free-model daily limit is used up (it resets at the next "
+                                         "UTC midnight)")
+                    log(f"  stopped: {STOP_SUITE['why']}")
+                    break
+                if len(nudges) < 3 and room:
+                    nudges.append([f"transient error {code}"])
+                    log(f"  stopped by a transient provider error ({code}): continuing")
+                    oh("POST", f"/api/conversations/{cid}/events", {"role": "user", "run": True, "content": [
+                        {"type": "text", "text": "The run stopped because a model call failed with a transient "
+                         "provider error (a rate limit or an empty reply). Continue where you left off: call "
+                         "get_coverage, work through the remaining plan items, and record and confirm the findings."}]})
+                    status = "running"
+                    continue
+                break
             if status == "stuck":
                 try:
                     todo = [stuck_note(conversation_events(cid))]
@@ -1230,6 +1261,10 @@ def main(argv):
         if len(runs) > 1:
             stats.print_group(save_group(runs))
             print(f"  summary: evals/results/bench/groups/{group}.json")
+        if STOP_SUITE["why"]:
+            print(f"\nstopped after {n}: {STOP_SUITE['why']}. The remaining benchmarks are skipped: every run would "
+                  "fail at its first model call.")
+            break
     return 0
 
 
