@@ -83,7 +83,8 @@ Rules:
 - Use kali_run for anything that touches a target. fetch_url is for public research only (advisories, docs).
 - Prefer small, specific commands. The current directory is the engagement folder: write all output files there
   (or under ./evidence/). /src is read-only client code: never `cd /src && … > file`; pass /src paths as
-  arguments instead. Read only what you need from long output.
+  arguments instead. Read only what you need from long output. /tmp is a fresh mount per command: nothing you
+  leave there survives, so keep working files in the current directory and use the tools the image ships.
 - Scanner output is a lead, not a finding. Record a candidate only with concrete evidence (file:line, request/
   response, version + advisory). For evidence, cite the path kali_run prints after "output saved as verified
   evidence" (and any "evidence recorded" files), plus /src file:line references. Don't invent results: if a
@@ -345,7 +346,12 @@ def chat(messages, model=WORKER_MODEL, task=None):
                     detail = json.loads(detail).get("error", {}).get("message") or detail
                 except (ValueError, AttributeError):
                     pass
-                if e.code in BUSY_CODES and attempt < len(BUSY_WAITS):
+                # The gateway explains a rate limit in the text but its status code can be lost on the way out
+                # (litellm's error envelope re-wraps it): judge by the message too, or a limit that resets within
+                # the minute kills the task as a refusal (seen on a benchmark run: a task died as "model_refused"
+                # on the provider's 429).
+                busy = e.code in BUSY_CODES or bool(BUSY_RX.search(detail))
+                if busy and attempt < len(BUSY_WAITS):
                     # A rate limit or an overloaded provider passes: wait and ask again. Ending the task here would
                     # throw away its steps for a limit that resets within the minute.
                     wait = busy_wait(e.headers, str(detail), BUSY_WAITS[attempt])
@@ -355,7 +361,7 @@ def chat(messages, model=WORKER_MODEL, task=None):
                     _pause(task, wait)
                     continue
                 sp.error(f"HTTP {e.code}: {detail}")
-                raise (ModelBusy if e.code in BUSY_CODES else ModelRefused)(e.code, str(detail)) from None
+                raise (ModelBusy if busy else ModelRefused)(e.code, str(detail)) from None
         msg = r["choices"][0]["message"]
         u = r.get("usage") or {}
         if task is not None:
@@ -403,6 +409,7 @@ class ModelBusy(ModelRefused):
 # each further try, about three minutes in all. The provider's own hint (Retry-After, or the reset time in its error)
 # replaces a step when it is there.
 BUSY_CODES = (429, 502, 503, 504, 529)
+BUSY_RX = re.compile(r"rate.?limit|too many requests|overloaded", re.I)   # what a busy model says in its error text
 BUSY_WAITS = (5, 15, 30, 60, 60)
 BUSY_MAX_WAIT = 90
 
