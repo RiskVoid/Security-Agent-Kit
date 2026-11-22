@@ -36,6 +36,9 @@ VERDICTS = ("stands", "disproved", "not_run", "unclear")
 # characters of one cited file the validator sees, and of all of them together; beyond PER_FILE a file is shown
 # around the finding's quotes (WINDOW each side) with its head and tail
 PER_FILE = int(os.environ.get("VALIDATOR_FILE_CHARS", "30000") or 30000)
+# Output tokens per validator call, reasoning included. At 4000 a reasoning model spent them all on thinking for the
+# longer packets and returned nothing, so those findings went to the planner model instead (seen on a benchmark run).
+MAX_TOKENS = int(os.environ.get("VALIDATOR_MAX_TOKENS", "8192") or 8192)
 TOTAL, MAX_FILES, WINDOW = PER_FILE * 4, 8, 1200
 SRC_LINES, MAX_SRC = 25, 8   # source lines shown each side of a cited line; cited source places shown
 SRC_HEAD = 150               # lines shown of a source file the evidence cites without a line
@@ -310,7 +313,7 @@ def packet(engagement, finding):
 
 
 def _chat(model, engagement, messages):
-    body = {"model": model, "messages": messages, "max_tokens": 4000, "temperature": 0,
+    body = {"model": model, "messages": messages, "max_tokens": MAX_TOKENS, "temperature": 0,
             "response_format": {"type": "json_object"}}
     req = urllib.request.Request(f"{LITELLM}/chat/completions", data=json.dumps(body).encode(), headers={
         "Authorization": f"Bearer {LITELLM_KEY}", "Content-Type": "application/json",
