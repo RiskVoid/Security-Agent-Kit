@@ -114,8 +114,12 @@ ENG_TEXT = re.compile(r"\b[Ee]ngagement[:\s]+`?([A-Za-z0-9][A-Za-z0-9._-]{0,63})
 
 
 def engagement_of(request):
-    """The engagement a model call belongs to, best effort: the newest tool call that names one (every kit tool takes
-    an `engagement` argument), else the brief ("Engagement `lab-juice`: ..."). None when nothing names one."""
+    """The engagement a model call belongs to, best effort: the x-rv-engagement header first (the worker and the
+    validator always send it), else the newest tool call that names one (every kit tool takes an `engagement`
+    argument), else the brief ("Engagement `lab-juice`: ..."). None when nothing names one."""
+    hit = rv_routes.header(request_headers(request or {}), "x-rv-engagement")
+    if hit:
+        return str(hit)
     msgs = (request or {}).get("messages") or []
     for m in reversed(msgs):
         for tc in (m.get("tool_calls") or []) if isinstance(m, dict) else []:
