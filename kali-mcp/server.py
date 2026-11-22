@@ -71,11 +71,14 @@ DELEGATE_NOTE_MAX = 3
 
 def delegate_note(fn, arguments):
     """The reminder appended to a bulk scanner or recon run the planner made itself (task empty: worker calls
-    carry one). Empty for everything else."""
+    carry one). Empty for everything else, and never a reason a result fails (like the rules line)."""
     if fn.__name__ != "run" or arguments.get("task"):
         return ""
-    command = str(arguments.get("command") or "")
-    if not any(prog in DELEGATE_TOOLS for prog, _ in core._segments(command)):
+    try:
+        progs = [prog for prog, _ in core._segments(str(arguments.get("command") or ""))]
+        if not any(prog in DELEGATE_TOOLS for prog in progs):
+            return ""
+    except Exception:  # noqa: BLE001 - a reminder is best effort
         return ""
     eng = str(arguments.get("engagement") or "")
     if DELEGATE_NOTES.get(eng, 0) >= DELEGATE_NOTE_MAX:
