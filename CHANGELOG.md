@@ -180,6 +180,10 @@ changes to the harness are measured.
 - `code-node` moved from the held-out to the tuning benchmarks. Its runs were read while fixing the harness, so it
   no longer tests a change on failures nobody read. P-001 and P-003 keep their recorded verdicts, which used it as
   held out.
+- `OPENROUTER_ZDR=off` in `.env` stops asking OpenRouter for zero-data-retention providers, so benchmark runs against
+  the lab can use OpenRouter's free models. It is on by default and applies to every OpenRouter model the kit calls.
+  While it is off, `./rvkit status` and `./rvkit doctor` warn, and each benchmark result records it
+  (`models.openrouter_zero_retention`). Not for client work: providers may then keep prompts or train on them.
 
 ### Fixed
 - Worker delegation didn't work with a reasoning model as the worker. A model call was capped at 2,048 output

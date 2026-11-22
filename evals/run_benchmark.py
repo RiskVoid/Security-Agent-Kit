@@ -912,9 +912,17 @@ def provenance():
 
 
 # ---------------------------------------------------------------- main
-def models():
-    return {"planner": E.get("PLANNER_MODEL"), "worker": E.get("WORKER_MODEL_ID"),
-            "worker_endpoint": re.sub(r"//([^/]+)\.trycloudflare\.com", "//<colab-tunnel>", E.get("WORKER_API_BASE", ""))}
+def zero_retention(e):
+    """False when .env has OPENROUTER_ZDR=off: OpenRouter calls then don't ask for zero-data-retention providers
+    (scripts/render_litellm.py), which the free models need. A result records it, since it changes who serves a model."""
+    return (e.get("OPENROUTER_ZDR") or "").strip().lower() not in ("off", "0", "false", "no")
+
+
+def models(e=None):
+    e = E if e is None else e
+    return {"planner": e.get("PLANNER_MODEL"), "worker": e.get("WORKER_MODEL_ID"),
+            "worker_endpoint": re.sub(r"//([^/]+)\.trycloudflare\.com", "//<colab-tunnel>", e.get("WORKER_API_BASE", "")),
+            "openrouter_zero_retention": zero_retention(e)}
 
 
 def conversation_events(cid):
@@ -1016,6 +1024,9 @@ def run_one(name, agent, log=print, group=None, budget=None, label=None, mode="o
     if b.get("lab") and not lab_reachable(name, b, log):
         return None
     log(f"== {name}: {b['description']}" + (" (plain-agent baseline)" if agent == PLAIN else ""))
+    if not zero_retention(E):
+        log("  OpenRouter zero retention is off (OPENROUTER_ZDR=off): providers may keep this run's prompts; "
+            "the result records it")
     if agent == PLAIN:
         ensure_plain()
     eng, target = prepare(name, b)

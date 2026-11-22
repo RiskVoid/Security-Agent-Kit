@@ -213,6 +213,37 @@ class LiteLLMConfig(unittest.TestCase):
             self.assertNotIn("WORKER_API_BASE", block)
             self.assertIn("zdr: true", block)
 
+    def test_zero_retention_optional(self):  # OPENROUTER_ZDR=off: the free models, for benchmark runs against the lab
+        import contextlib, importlib.util, io, re, render_litellm as r
+        t = open(os.path.join(KIT, "litellm", "config.yaml")).read()
+        e = {"PLANNER_MODEL": "openrouter/a:free", "PLANNER_FALLBACK_MODEL": "openrouter/b:free",
+             "VALIDATOR_MODEL": "openrouter/c:free", "WORKER_MODEL_ID": "openrouter/d:free", "OPENROUTER_API_KEY": "k",
+             "WORKER_FALLBACK": "on"}
+        on = r.render(t, dict(e))
+        self.assertEqual(on.count("zdr: true, data_collection: deny"), 6)   # planner, its fallback, validator, worker
+        for v in ("on", "ON", " on ", "1", "true", "yes", ""):             # fallback, and the two worker aliases
+            self.assertEqual(r.render(t, dict(e, OPENROUTER_ZDR=v)), on, v)   # the default, however it is spelt
+        for v in ("off", "OFF", " off ", "0", "false", "no"):
+            off = r.render(t, dict(e, OPENROUTER_ZDR=v))
+            self.assertNotIn("zdr", off, v)
+            self.assertNotIn("data_collection", off, v)
+            self.assertEqual(off, on.replace(r.ZDR, ""), v)                # nothing but the routing request changes
+        with contextlib.redirect_stderr(io.StringIO()):                    # a direct provider next to it still renders
+            out = r.render(t, dict(e, OPENROUTER_ZDR="off", PLANNER_MODEL="anthropic/m"))
+        self.assertIn("os.environ/ANTHROPIC_API_KEY", re.search(r"  - model_name: planner\n(?:    .*\n)+", out).group(0))
+        self.assertNotIn("zdr", out)
+        for v in ("of", "none", "disabled"):                               # a typo neither switches it off nor passes
+            with self.assertRaises(SystemExit):
+                r.render(t, dict(e, OPENROUTER_ZDR=v))
+        # a benchmark result says which way it ran
+        spec = importlib.util.spec_from_file_location("rv_bench_zdr", os.path.join(KIT, "evals", "run_benchmark.py"))
+        bench = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(bench)
+        self.assertIs(bench.models({"PLANNER_MODEL": "openrouter/a"})["openrouter_zero_retention"], True)
+        self.assertIs(bench.models(dict(e, OPENROUTER_ZDR="on"))["openrouter_zero_retention"], True)
+        self.assertIs(bench.models(dict(e, OPENROUTER_ZDR="Off"))["openrouter_zero_retention"], False)
+        self.assertEqual(bench.models(dict(e, OPENROUTER_ZDR="off"))["planner"], "openrouter/a:free")
+
     def test_tracing(self):  # ./rvkit tracing on (#51): spans, never messages
         import render_litellm as r
         t = open(os.path.join(KIT, "litellm", "config.yaml")).read()

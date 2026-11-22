@@ -160,6 +160,10 @@ The budget is the OpenHands per-conversation limit for the run. The code targets
 ./rvkit bench --rescore                          # score every saved run again with the current scorer
 ```
 
+To run benchmarks on OpenRouter's free models, see
+[Free OpenRouter models](models.md#free-openrouter-models-zero-retention-off): it needs `OPENROUTER_ZDR=off`, which
+is for lab runs only.
+
 `--agent` is `riskvoid-planner` (default) or `riskvoid-local`. `--repeat N` runs the benchmark N times in one group:
 one run of a model says little, since output varies between runs ([below](#repeated-runs)). `--label NAME` names a
 set of runs across benchmarks, for example the reference runs before a change and the runs after it. `--score` re-scores the findings already in a `bench-` engagement, for example after

@@ -21,7 +21,8 @@ routes each model name to the right place:
 `colab-qwen` keeps its name whichever endpoint you use: it may point at Colab, a local server or an API.
 
 Every OpenRouter model is called with provider routing set to zero-data-retention providers only, with prompt
-collection denied.
+collection denied. One setting lifts that for benchmark runs:
+[free OpenRouter models](#free-openrouter-models-zero-retention-off).
 
 LiteLLM's config is a template (`litellm/config.yaml`). `./rvkit` renders it with your `.env` settings into
 `.rvkit/litellm.yaml` and recreates the LiteLLM container whenever you change a model, the fallback or the
@@ -372,6 +373,42 @@ OpenRouter key at all, as long as the worker fallback stays off.
 - **Budget.** Bedrock gets a provider budget, like Anthropic. A model whose price LiteLLM doesn't know counts as $0,
   so check spend in AWS Cost Explorer too.
 
+### Free OpenRouter models (zero retention off)
+
+OpenRouter serves some models at no charge (ids ending in `:free`). Their providers generally keep prompts or train
+on them, so the kit's zero-data-retention routing excludes them. For benchmark runs against the lab, where the
+targets are public practice applications and nothing belongs to a client, you can lift the routing:
+
+```sh
+# in .env
+OPENROUTER_ZDR=off
+VALIDATOR_MODEL=openrouter/google/gemma-4-31b-it:free      # a different model from the planner
+
+./rvkit planner nvidia/nemotron-3-ultra-550b-a55b:free google/gemma-4-31b-it:free
+./rvkit worker openrouter google/gemma-4-31b-it:free      # or keep your own worker endpoint
+./rvkit bench code-flask
+```
+
+Set the planner's fallback and the validator to free models as well, as above: otherwise a refusal or an error
+falls through to a paid model. The model ids are examples from OpenRouter's catalogue in November 2026; the free list
+changes, and none of these models has been through the kit's benchmarks yet.
+
+What `OPENROUTER_ZDR=off` does:
+
+- **Every OpenRouter model the kit calls stops asking for zero-data-retention providers**: the planner, its
+  fallback, the validator, a worker on OpenRouter and the worker fallback. Your OpenRouter account's privacy settings
+  then decide which providers can serve a call, and a provider may keep prompts, tool output and code, or train on
+  them.
+- **It is for benchmarks against the lab only.** Set it back to `on` and run `./rvkit up` before any client work.
+  `./rvkit status` and `./rvkit doctor` warn while it is off.
+- **Benchmark results record it** (`models.openrouter_zero_retention`), since it changes which providers serve a
+  model.
+
+OpenRouter's limits for free models (its limits page, read 22 November 2026): 20 requests a minute, and per day 50
+requests, or 1,000 once the account has bought at least 10 credits in total. The daily count is shared by all free
+models. A benchmark run makes roughly 60 to 220 model calls. An account with a negative balance is refused free
+models too. A run on free models costs nothing, so the benchmark's spend cap never pauses it.
+
 ## When a model call fails
 
 OpenHands always streams model replies. A refusal arrives inside a reply that has already started, so LiteLLM's own
@@ -450,6 +487,10 @@ off, and use the L4 unless you need the longer context.
 | Web search and page fetch (`web` tool) | search queries, public URLs | SearXNG's upstream search engines; the public site |
 | Vulnerability intel, package installs | CVE and package ids, package names | NVD, EPSS, CISA KEV, OSV; package registries (through the egress proxy) |
 | Everything else (findings, evidence, audit log, reports) | everything | your machine |
+
+The OpenRouter rows assume the default. With `OPENROUTER_ZDR=off`
+([free OpenRouter models](#free-openrouter-models-zero-retention-off)) providers may keep what they receive, so
+keep that setting for benchmark runs against the lab.
 
 For work where nothing may leave your machine: run the worker on a local or self-hosted endpoint (`./rvkit worker
 local|api`), use the `riskvoid-local` agent, keep the fallback off, and set the engagement to `offline` if package
