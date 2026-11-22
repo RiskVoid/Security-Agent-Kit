@@ -50,6 +50,7 @@ Cost is measured from your OpenRouter key's usage: don't use the key for anythin
 """
 import datetime, glob, hashlib, json, os, re, shutil, sqlite3, subprocess, sys, time, urllib.error, urllib.request
 
+sys.stdout.reconfigure(line_buffering=True)   # progress lines must appear live, also when the output is piped
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import bench_stats as stats  # noqa: E402
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "harness"))
@@ -270,7 +271,11 @@ def preamble(eng, b, target, resumed=None):
             "No human is watching this run: never ask questions or wait for answers. Make reasonable decisions "
             "yourself and note them in PLAN.md. " + approvals + "\n"
             + ("Start by calling plan_tests with each playbook that applies (and add tests the target needs), then "
-               "work through the plan with update_coverage. " if not resumed else
+               "work through the plan with update_coverage. Hand every scanner and review run to the worker with "
+               "delegate_task (static analysis, secret scans, dependency and SBOM scans, recon and crawling, "
+               "anything that prints a lot: one narrow task per plan item, with plan_item set) and run only single "
+               "checks yourself; collect each result with get_task, and no task may still be running when you are "
+               "done (list_tasks). " if not resumed else
                "This conversation continues an earlier one on this engagement. " + resumed["why"] + " The plan, the "
                "findings and the evidence so far are saved: call get_handover and get_coverage first. Do not plan "
                "again and do not repeat a test that has an outcome. Work through the planned tests with "
@@ -329,6 +334,15 @@ def final_response(cid):
         return ""
 
 
+def bind_conversation(eng, cid, title):
+    """Bind a benchmark conversation to its engagement (rvctl bind, like ./rvkit conversation bind): the console
+    and ./rvkit conversation list then show it, and a deleted engagement refuses its model calls. Best effort:
+    the gateway also reads the engagement from the message content, so a failed bind costs nothing."""
+    r = subprocess.run(["docker", "compose", "exec", "-T", "kali-mcp", "python3", "/opt/kali-mcp/rvctl.py",
+                        "--actor", "cli:bench", "bind", eng, cid, title], cwd=KIT, capture_output=True, text=True)
+    return r.returncode == 0
+
+
 def run_conversation(eng, b, agent, target, log, before=None):
     prof = next((p for p in oh("GET", "/api/agent-profiles")["profiles"] if p["name"] == agent), None)
     if not prof:
@@ -345,6 +359,7 @@ def run_conversation(eng, b, agent, target, log, before=None):
             if e.code != 409:  # 409: the initial message already started it
                 raise
         log(f"  conversation {conv['id']} (watch it at {OH}/canvas)")
+        bind_conversation(eng, conv["id"], f"benchmark {eng}")
         return conv["id"]
 
     cid = start((plain_preamble if agent == PLAIN else preamble)(eng, b, target))
