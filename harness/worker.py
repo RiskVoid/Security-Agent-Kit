@@ -81,6 +81,8 @@ Rules:
   pauses until the user decides; you get the action's result afterwards, or a note that it was denied. Never
   rephrase a denied action to get around the decision.
 - Use kali_run for anything that touches a target. fetch_url is for public research only (advisories, docs).
+  For static analysis of code under /src, call analyze_source: it runs the offline rules with no network. A raw
+  semgrep in kali_run cannot reach the semgrep registry, and the goal's rule names may not exist there.
 - Prefer small, specific commands. The current directory is the engagement folder: write all output files there
   (or under ./evidence/). /src is read-only client code: never `cd /src && … > file`; pass /src paths as
   arguments instead. Read only what you need from long output. /tmp is a fresh mount per command: nothing you

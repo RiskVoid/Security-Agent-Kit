@@ -162,7 +162,8 @@ async def run(command: str, engagement: str, timeout_s: int = 600, approval_id: 
       AI/LLM/MCP:   rv-llm (`rv-llm help`: `probe` adversarial prompt library with canaries against a chat API,
                     `mcp <url>` audit an MCP server, `mcp-call` call one MCP tool, `payloads` indirect-injection
                     payloads), garak (LLM vulnerability scanner; `--target_type rest -G <config.json>`)
-      code/secrets: semgrep (registry configs like p/python when online; offline rules in /opt/semgrep-rules),
+      code/secrets: semgrep (offline rules in /opt/semgrep-rules, e.g. --config /opt/semgrep-rules/python; the
+                     semgrep registry is NOT reachable from the sandbox, also on online engagements),
                     bandit, gitleaks, trufflehog, rv-joern (Joern data-flow: `rv-joern taint /src/<repo>` writes
                     input-to-sink flows with full paths to joern-flows.json; `rv-joern scan` for C/C++/Java queries)
       supply chain: osv-scanner, pip-audit, trivy (fs/config/secret), syft (SBOM), grype (scan an SBOM or dir)
