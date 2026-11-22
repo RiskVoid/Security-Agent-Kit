@@ -96,9 +96,15 @@ def new(eng, actor="cli:host", message=""):
     except Fail:
         pass
     if message.strip():
+        delegation = ("Hand the scanner and review runs to the worker with delegate_task (static analysis, secret "
+                      "scans, dependency and SBOM scans, recon and crawling: one narrow task per plan item, "
+                      "plan_item set) and run only single checks yourself; its output stays out of your context. "
+                      "Collect each result with get_task, and no task may still be running when you are done "
+                      "(list_tasks).") if name == "riskvoid-planner" else ""
         api("POST", f"/api/conversations/{cid}/events",
-            {"role": "user", "content": [{"type": "text", "text": f"Engagement `{eng}`: {message.strip()}"}],
-             "run": True})
+            {"role": "user", "content": [{"type": "text",
+                                         "text": f"Engagement `{eng}`: {message.strip()}"
+                                                 + (f"\n\n{delegation}" if delegation else "")}], "run": True})
     return {"id": cid, "engagement": eng, "agent": name, "url": url(cid), "title": title}
 
 

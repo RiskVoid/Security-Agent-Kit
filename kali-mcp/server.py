@@ -42,9 +42,48 @@ def with_rules(fn):
     @functools.wraps(fn)
     async def wrap(*args, **kw):
         out = await fn(*args, **kw)
-        line = rules_line(sig.bind_partial(*args, **kw).arguments.get("engagement") or "")
-        return f"{out}\n{line}" if line and isinstance(out, str) else out
+        bound = sig.bind_partial(*args, **kw).arguments
+        line = rules_line(bound.get("engagement") or "")
+        extra = delegate_note(fn, bound)
+        if not isinstance(out, str):
+            return out
+        for text in (line, extra):
+            if text:
+                out = f"{out}\n{text}"
+        return out
     return wrap
+
+
+# Scanner and recon programs a run-tool command can name. Models skip planner.md's "Delegate tool work" section
+# when the first message doesn't name the worker (two benchmark runs spent 4M and 12M planner tokens with zero
+# worker calls), so a run made by the planner itself ends with the reminder, up to DELEGATE_NOTE_MAX times per
+# engagement: a note on every result is noise, and one the model never reads is worse.
+DELEGATE_TOOLS = {
+    "semgrep", "bandit", "gitleaks", "trufflehog", "rv-joern", "osv-scanner", "pip-audit", "trivy", "syft", "grype",
+    "nmap", "naabu", "dnsx", "subfinder", "amass", "katana", "httpx-toolkit", "whatweb", "gowitness", "nuclei",
+    "nikto", "ffuf", "feroxbuster", "gobuster", "arjun", "wafw00f", "wpscan", "dalfox", "commix", "zaproxy",
+    "sqlmap", "testssl", "sslscan", "schemathesis", "jwt_tool", "graphw00f", "graphql-cop", "clairvoyance",
+    "rv-llm", "garak",
+}
+DELEGATE_NOTES = {}   # engagement -> notes shown (this server process)
+DELEGATE_NOTE_MAX = 3
+
+
+def delegate_note(fn, arguments):
+    """The reminder appended to a bulk scanner or recon run the planner made itself (task empty: worker calls
+    carry one). Empty for everything else."""
+    if fn.__name__ != "run" or arguments.get("task"):
+        return ""
+    command = str(arguments.get("command") or "")
+    if not any(prog in DELEGATE_TOOLS for prog, _ in core._segments(command)):
+        return ""
+    eng = str(arguments.get("engagement") or "")
+    if DELEGATE_NOTES.get(eng, 0) >= DELEGATE_NOTE_MAX:
+        return ""
+    DELEGATE_NOTES[eng] = DELEGATE_NOTES.get(eng, 0) + 1
+    return ("[delegate: scanner and recon runs belong to the worker — hand the next one over with delegate_task "
+            "(one narrow task per plan item, plan_item set) and collect it with get_task; its output stays out of "
+            "your context. A single check (one request, one file) is yours.]")
 
 
 @mcp.tool()
