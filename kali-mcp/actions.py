@@ -692,6 +692,30 @@ def _languages(path, limit=20000):
     return sorted(seen)
 
 
+# Names a model gives for a ruleset that is a folder of the offline rules under another name.
+RULESET_ALIASES = {"nodejs": "javascript", "node": "javascript", "js": "javascript", "express": "javascript",
+                   "ts": "typescript", "py": "python", "flask": "python", "django": "python", "golang": "go",
+                   "dotnet": "csharp", "c#": "csharp", "docker": "dockerfile", "shell": "bash", "sh": "bash",
+                   "tf": "terraform", "yml": "yaml", "laravel": "php"}
+
+
+def pick_rulesets(rulesets, rules_dir=None):
+    """(folders to scan with, names left out) for the rulesets a caller asked for. A registry name is read as its
+    folder (p/python, nodejs); a name with no offline folder (owasp-top-ten) is left out and reported, where the
+    whole scan used to be refused for it."""
+    rules_dir = rules_dir or core.RULES_DIR
+    keep, skipped = [], []
+    for r in rulesets or []:
+        n = re.sub(r"^p/", "", str(r).strip().lower())
+        n = RULESET_ALIASES.get(n, n)
+        if re.fullmatch(r"[a-z0-9_-]{1,40}", n) and os.path.isdir(os.path.join(rules_dir, n)):
+            if n not in keep:
+                keep.append(n)
+        else:
+            skipped.append(str(r)[:40])
+    return keep, skipped
+
+
 def analyze_source(eng, tool, path, rulesets=None, task=None, timeout_s=1800):
     i = core.info(eng)
     entry = {"engagement": eng, "uid": i["uid"], "action": "analyze_source", "tool": tool,
@@ -717,11 +741,10 @@ def analyze_source(eng, tool, path, rulesets=None, task=None, timeout_s=1800):
         return refuse(str(e))
     q = core.shlex.quote
     if tool == "semgrep":
-        names = rulesets or _languages(p)
-        bad = [r for r in names if not re.fullmatch(r"[a-z0-9_-]{1,40}", r)
-               or not os.path.isdir(os.path.join(core.RULES_DIR, r))]
-        if bad or not names:
-            return refuse(f"no offline semgrep rules for {bad or 'this code'}; rulesets are folders of "
+        names, skipped = pick_rulesets(rulesets)
+        names = names or _languages(p)   # nothing usable was named: the languages found in the code
+        if not names:
+            return refuse(f"no offline semgrep rules for {skipped or 'this code'}; rulesets are folders of "
                           f"{core.RULES_DIR}")
         cmd = ("semgrep scan --metrics=off --disable-version-check --quiet --json "
                + " ".join(f"--config {q(os.path.join(core.RULES_DIR, r))}" for r in names)
@@ -747,6 +770,10 @@ def analyze_source(eng, tool, path, rulesets=None, task=None, timeout_s=1800):
         pass
     head = (f"{tool}: {count} result(s) in /work/{eng}/{out} (no network was available to the tool)\n"
             if count is not None else f"{tool}: no report was written; see the output below\n")
+    if tool == "semgrep":
+        head += f"rulesets used: {', '.join(names)}" + (
+            f"; left out, no offline rules under that name: {', '.join(skipped)} (rulesets are folders of "
+            f"{core.RULES_DIR})" if skipped else "") + "\n"
     return head + res
 
 

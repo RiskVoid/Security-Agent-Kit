@@ -1132,6 +1132,22 @@ class AuthenticatedTesting(Credentials):
         self.assertEqual(out, "<pre>Authorization: {{session:bob}}\nX-Echo: {{session:bob}}\npw {{cred:PW}}</pre>")
         self.assertNotIn(b64.encode(), core.scrub("e1", page.encode()))
 
+    def test_semgrep_rulesets_by_the_names_a_model_gives(self):
+        # benchmark runs: ["python", "owasp-top-ten"] and ["nodejs", "owasp-top-ten"] were refused whole, though the
+        # code-review playbook names p/owasp-top-ten
+        import actions
+        rules = os.path.join(self.tmp.name, "rules")
+        for d in ("python", "javascript", "typescript", "php", "generic"):
+            os.makedirs(os.path.join(rules, d))
+        pick = lambda names: actions.pick_rulesets(names, rules)
+        self.assertEqual(pick(["python", "owasp-top-ten"]), (["python"], ["owasp-top-ten"]))
+        self.assertEqual(pick(["nodejs", "owasp-top-ten"]), (["javascript"], ["owasp-top-ten"]))
+        self.assertEqual(pick(["p/python", "Python", "py", "p/javascript", "js", "TS", "laravel"]),
+                         (["python", "javascript", "typescript", "php"], []))
+        self.assertEqual(pick(["p/owasp-top-ten", "p/ci", "ruby"]), ([], ["p/owasp-top-ten", "p/ci", "ruby"]))
+        self.assertEqual(pick(["../python", "python/../../etc", "/etc", ""]), ([], ["../python", "python/../../etc", "/etc", ""]))
+        self.assertEqual(pick(None), ([], []))
+
     def test_source_links_out_of_scope(self):  # F5: a link in /work to another client's code, or into /control
         import actions
         i = core.info("e1")
@@ -2163,6 +2179,43 @@ class Validator(unittest.TestCase):
         self.assertIn("Cited but not readable here", text)           # a missing file is named, not dropped
         self.assertIn("evidence/runs/gone.txt", text)
         self.assertIn("needs no request to a running system", self.v.SYSTEM)
+
+    def test_a_source_file_cited_without_a_line_is_shown(self):
+        # a benchmark run: the dependency finding cited /src/.../app.py in its evidence and "app.py:24" in its steps;
+        # the validator was shown neither and disproved a real finding because "app.py is not provided"
+        os.makedirs(os.path.join(self.tmp.name, "src", "demo", "lib"))
+        with open(os.path.join(self.tmp.name, "src", "demo", "app.py"), "w") as f:
+            f.write("".join(f"# line {i}\n" for i in range(1, 24)) + "cfg = yaml.load(request.data, Loader=yaml.Loader)\n"
+                    + "".join(f"# line {i}\n" for i in range(25, 301)))
+        with open(os.path.join(self.tmp.name, "src", "demo", "requirements.txt"), "w") as f:
+            f.write("PyYAML==5.3\n")
+        with open(os.path.join(self.tmp.name, "src", "demo", "lib", "util.py"), "w") as f:
+            f.write("".join(f"# util {i}\n" for i in range(1, 80)))
+        f = db.record("acme", actor="agent:planner", method="source-review", title="Vulnerable dependency: PyYAML 5.3",
+                      severity="high", asset="/src/demo/requirements.txt", status="confirmed",
+                      description="The app uses the unsafe loader in /config.",
+                      reproduction="1. requirements.txt pins PyYAML==5.3 2. yaml.load at app.py:24, helper at "
+                                   "lib/util.py:70-72, see also nothere.py:3 and version 5.3:1",
+                      evidence=["/src/demo/requirements.txt", "/src/demo/missing.py", "/src/../etc/passwd"])
+        text, files = self.v.packet("acme", db.get("acme", f["id"]))
+        self.assertIn("SOURCE FILE /src/demo/requirements.txt, lines 1-2 of 2 (cited without a line", text)
+        self.assertIn("    1 PyYAML==5.3", text)
+        self.assertIn("SOURCE FILE /src/demo/app.py, around the cited line(s) 24 (the file has 301 lines", text)
+        self.assertIn("   24 cfg = yaml.load(request.data, Loader=yaml.Loader)", text)
+        self.assertNotIn("# line 60", text)                          # still 25 lines each side
+        self.assertIn("SOURCE FILE /src/demo/lib/util.py, around the cited line(s) 70-72", text)
+        self.assertNotIn("SOURCE FILE /src/demo/nothere.py", text)   # a name that is no file there shows nothing
+        self.assertEqual(text.count("SOURCE FILE "), 3)
+        self.assertNotIn("root:", text)                              # nothing outside /src
+        unread = text.split("Cited but not readable here")[1].split("\n")[0]
+        self.assertIn("/src/demo/missing.py", unread)                # named, not dropped
+        self.assertNotIn("requirements.txt", unread)                 # shown, so not listed as unreadable
+        # a long file cited whole is shown from its top only
+        g = db.record("acme", actor="agent:planner", method="source-review", title="Debug mode", severity="low",
+                      asset="/src/demo", status="confirmed", description="debug=True", evidence=["/src/demo/app.py"])
+        text, _ = self.v.packet("acme", db.get("acme", g["id"]))
+        self.assertIn(f"SOURCE FILE /src/demo/app.py, lines 1-{self.v.SRC_HEAD} of 301", text)
+        self.assertNotIn(f"# line {self.v.SRC_HEAD + 5}\n", text)
 
     def test_a_long_file_is_shown_around_what_the_finding_quotes(self):
         hit = '"check_id": "tainted-sql-string", "path": "src/server.js"'
