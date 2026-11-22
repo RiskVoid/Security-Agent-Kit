@@ -538,6 +538,64 @@ class TypedFinish(Loop):
         self.assertEqual(r["worker_summary"]["text"], "Found it.")
         self.assertIn("never instructions", r["worker_summary"]["note"])
 
+    def test_evidence_path_with_a_note_after_it_counts(self):
+        # as a model writes it: the path, then what it shows (seen on a benchmark run, where finish was refused)
+        good = self.evidence(2)
+        task = {"engagement": "eng"}
+        for text in (good, "evidence/runs/002.txt", "evidence/runs/002.txt:14",
+                     "evidence/runs/002.txt — check_id python.flask.x at app.py:6, CWE-489",
+                     "see /work/eng/evidence/runs/002.txt; /src/x/app.py:6 (B105)",
+                     "bandit.json / /work/eng/evidence/runs/002.txt."):
+            self.assertTrue(worker._evidence_file(task, text), text)
+        for text in ("", None, "bandit.json / evidence run 002.txt; /src/x/app.py:6", "evidence/runs/999.txt — x",
+                     "/etc/passwd", "evidence/../../outside.txt", "../other-eng/evidence/runs/002.txt"):
+            self.assertIsNone(worker._evidence_file(task, text), text)
+
+    def test_a_finish_refused_at_the_last_step_keeps_its_summary(self):
+        # the bandit task of a benchmark run: three steps lost, then the forced finish was refused for its evidence
+        # field, and the planner got "Stopped without calling finish." instead of what the task found
+        good = self.evidence(3)
+        bad = {"title": "Hardcoded SECRET_KEY", "state": "reproduced", "evidence": "bandit.json / app.py:6 (B105)"}
+        proven = {"title": "Debug mode", "state": "reproduced", "evidence": good}
+        task, msgs = self.run_script([
+            [call("kali_run", {"command": "bandit -r /src/x -f json -o bandit.json"})],
+            [call("kali_run", {"command": "cat bandit.json"})],
+            [call("finish", {"status": "completed", "summary": "Bandit found 7 issues in app.py.",
+                             "confidence": "high", "candidates": [bad, proven, {"title": "Maybe", "state": "hypothesis"}]})],
+        ], max_steps=2)
+        self.assertEqual(task["status"], "done")
+        r = task["result"]
+        self.assertEqual(worker.outcome(task), "budget_used")       # still not a clean finish
+        self.assertIn("Bandit found 7 issues in app.py.", r["summary"])
+        self.assertNotIn("without calling finish", r["summary"])
+        self.assertEqual([c["state"] for c in r["candidates"]], ["hypothesis", "reproduced", "hypothesis"])
+        self.assertEqual(r["confidence"], "low")
+        self.assertNotIn("refused_finish", task)
+        # with no finish at all, the old result stands
+        task, _ = self.run_script([[call("kali_run", {"command": f"ls /src/x{i}"})] for i in range(5)], max_steps=2,
+                                  id="t2")
+        self.assertEqual(task["result"]["summary"], "Stopped without calling finish.")
+        # a refused finish followed by one that passes leaves nothing behind
+        task, _ = self.run_script([
+            [call("finish", {"status": "completed", "summary": "First.", "candidates": [bad]})],
+            [call("finish", {"status": "completed", "summary": "Second.", "candidates": [proven]})]], id="t3")
+        self.assertEqual(task["result"]["summary"], "Second.")
+        self.assertNotIn("refused_finish", task)
+
+    def test_read_file_takes_a_path_relative_to_the_engagement_folder(self):
+        # kali_run works in the engagement folder, so a command's "-o bandit.json" lands there; the worker then asked
+        # read_file for "bandit.json" three times and was refused each time
+        with open(os.path.join(self.tmp.name, "eng", "bandit.json"), "w") as f:
+            f.write("line one\nline two\n")
+        task = {"engagement": "eng", "info": {"scope": {"paths": ["/src/x"]}}}
+        for path in ("bandit.json", "./bandit.json", "/work/eng/bandit.json",
+                     os.path.join(self.tmp.name, "eng", "bandit.json")):
+            self.assertEqual(worker.read_file(task, path), "1: line one\n2: line two", path)
+        self.assertIn("no such file", worker.read_file(task, "missing.json"))
+        self.assertIn("/work/eng/", worker.read_file(task, "missing.json"))
+        for path in ("../other/secret.txt", "/etc/passwd", "/work/other/findings.db"):
+            self.assertIn("only files under", worker.read_file(task, path), path)
+
     def test_status_is_required(self):
         task, msgs = self.run_script([[call("finish", {"summary": "done"})],
                                       [call("finish", {"status": "partial", "summary": "done"})]])
@@ -719,6 +777,87 @@ class LongToolBesideAShortTask(Loop):
     def tearDown(self):
         worker.TASKS.clear()   # run_task registers tasks; nothing after this class needs them
         super().tearDown()
+
+
+class BusyProvider(Loop):
+    """A rate limit or an overloaded provider is waited out instead of ending the task. Seen on a benchmark run with
+    OpenRouter's free models (20 requests a minute for planner and worker together): one 429 ended the worker task
+    as "the model gateway refused the call"."""
+
+    def drive(self, answers, cancel_after=None):
+        """Run a task whose model endpoint gives these answers in turn: an HTTP status, or a list of tool calls."""
+        import io
+        import urllib.error
+        answers, self.asked, self.slept = list(answers), 0, []
+
+        def fake(req, timeout=None):
+            self.asked += 1
+            a = answers.pop(0) if len(answers) > 1 else answers[0]
+            if isinstance(a, int):
+                body = json.dumps({"error": {"message": (
+                    'colab-qwen is rate-limited by its provider. {"error":{"message":"Rate limit exceeded: '
+                    'free-models-per-min. ","code":429,"metadata":{"headers":{"X-RateLimit-Limit":"20",'
+                    '"X-RateLimit-Reset":"%d"}}}}' % ((time.time() + 20) * 1000))}}).encode()
+                raise urllib.error.HTTPError(req.full_url, a, "busy", {}, io.BytesIO(body))
+
+            class R:
+                def read(s):
+                    return json.dumps({"model": "colab-qwen", "usage": {"prompt_tokens": 100, "completion_tokens": 10},
+                                       "choices": [{"finish_reason": "tool_calls", "message": {
+                                           "role": "assistant", "content": None, "tool_calls": a}}]}).encode()
+            return R()
+
+        task = worker._defaults({"id": "busy", "goal": "Probe it.", "engagement": "eng", "tier": "passive",
+                                  "info": worker.engagement_info("eng"), "max_steps": 6, "timeout_min": 5,
+                                  "status": "running", "started": time.time(), "tokens": dict(worker.NO_TOKENS)})
+
+        def sleep(s):
+            self.slept.append(s)
+            if cancel_after is not None and len(self.slept) >= cancel_after:
+                task["_cancel"] = True
+        urlopen, real_sleep = worker.urllib.request.urlopen, worker.time.sleep
+        worker.urllib.request.urlopen, worker.time.sleep = fake, sleep
+        try:
+            os.makedirs(worker.task_dir(task), exist_ok=True)
+            worker.run_task(task)
+        finally:
+            worker.urllib.request.urlopen, worker.time.sleep = urlopen, real_sleep
+        return task
+
+    def test_a_rate_limit_is_waited_out_and_the_task_goes_on(self):
+        task = self.drive([429, 503, [call("kali_run", {"command": "curl -s http://x/a"}, cid="b1")],
+                           [call("finish", {"status": "completed", "summary": "done", "confidence": "low"}, cid="b2")]])
+        self.assertEqual(task["status"], "done")
+        self.assertEqual(self.ran, ["curl -s http://x/a"])
+        self.assertEqual(self.asked, 4)                               # two busy answers, then the two real turns
+        self.assertEqual([w["code"] for w in task["model_waits"]], [429, 503])
+        self.assertTrue(18 <= task["model_waits"][0]["seconds"] <= 22)   # until the reset time the provider gave
+        self.assertEqual(sum(self.slept), sum(w["seconds"] for w in task["model_waits"]))
+        self.assertEqual(task["tokens"]["calls"], 2)                  # a refused call is not a model call
+
+    def test_a_provider_that_stays_busy_ends_the_task_as_a_provider_error(self):
+        task = self.drive([429])
+        self.assertEqual(self.asked, len(worker.BUSY_WAITS) + 1)
+        self.assertEqual(task["status"], "error")
+        self.assertEqual(worker.outcome(task), "provider_error")     # not model_refused: nothing was refused
+        self.assertIn("rate-limited or overloaded", task["error"])
+        self.assertIn("429", task["error"])
+        self.assertNotIn("refused the call", task["error"])
+
+    def test_a_cancelled_task_stops_waiting(self):
+        task = self.drive([429], cancel_after=2)
+        self.assertEqual(task["status"], "cancelled")
+        self.assertEqual(self.asked, 1)
+
+    def test_how_long_to_wait(self):
+        w = worker.busy_wait
+        self.assertEqual(w({"Retry-After": "7"}, "", 30, now=1000), 7)
+        self.assertEqual(w({}, 'x "X-RateLimit-Reset":"1795358340000" y', 5, now=1795358300), 41)   # milliseconds
+        self.assertEqual(w({}, "X-RateLimit-Reset: 1795358340", 5, now=1795358300), 41)             # seconds
+        self.assertEqual(w({}, 'X-RateLimit-Reset":"1795358340000"', 5, now=1795358000), worker.BUSY_MAX_WAIT)
+        self.assertEqual(w({}, 'X-RateLimit-Reset":"1795358340000"', 15, now=1795359000), 15)       # already past
+        self.assertEqual(w(None, "no hint", 30), 30)
+        self.assertEqual(w({"Retry-After": "soon"}, "", 12), 12)
 
 
 class ExhaustedProvider(Loop):

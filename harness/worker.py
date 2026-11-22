@@ -267,11 +267,19 @@ def fetch_url(task, url, start=0):
 
 
 def read_file(task, path, start=1, lines=200):
-    real = os.path.realpath(path)
-    allowed = tuple(p.rstrip("/") + "/" for p in task["info"]["scope"]["paths"]) + \
-        (os.path.realpath(db.engagement_dir(task["engagement"])) + "/",)
+    folder = os.path.realpath(db.engagement_dir(task["engagement"]))
+    path = str(path or "")
+    if path.startswith("/work/"):   # the engagement folder as the tools name it
+        path = os.path.join(db.WORK, path[len("/work/"):])
+    # A relative path is a file in the engagement folder: kali_run works there, so "bandit.json" is where a command
+    # just wrote it. Refusing it made the worker ask three times over, then stall.
+    real = os.path.realpath(path if os.path.isabs(path) else os.path.join(folder, path))
+    allowed = tuple(p.rstrip("/") + "/" for p in task["info"]["scope"]["paths"]) + (folder + "/",)
     if not real.startswith(allowed):
-        return f"only files under the in-scope code paths {task['info']['scope']['paths']} or the engagement folder"
+        return (f"only files under the in-scope code paths {task['info']['scope']['paths']} or the engagement folder "
+                f"(/work/{task['engagement']}/..., or a path relative to it)")
+    if not os.path.isfile(real):
+        return f"no such file: {path} (relative paths are read from /work/{task['engagement']}/)"
     start, lines = max(1, int(start or 1)), min(int(lines or 200), 500)
     with open(real, errors="replace") as f:
         out = [f"{i}: {l.rstrip()}" for i, l in enumerate(f, 1) if start <= i < start + lines]
@@ -327,16 +335,27 @@ def chat(messages, model=WORKER_MODEL, task=None):
                                         "gen_ai.request.temperature": body["temperature"],
                                         "rv.engagement": task and task["engagement"], "rv.task": task and task["id"],
                                         "rv.messages": len(messages)}, kind=3) as sp:
-        try:
-            r = json.load(urllib.request.urlopen(req, timeout=900))
-        except urllib.error.HTTPError as e:
-            detail = e.read()[:2000].decode("utf-8", "replace")
+        for attempt in range(len(BUSY_WAITS) + 1):
             try:
-                detail = json.loads(detail).get("error", {}).get("message") or detail
-            except (ValueError, AttributeError):
-                pass
-            sp.error(f"HTTP {e.code}: {detail}")
-            raise ModelRefused(e.code, str(detail)) from None
+                r = json.load(urllib.request.urlopen(req, timeout=900))
+                break
+            except urllib.error.HTTPError as e:
+                detail = e.read()[:2000].decode("utf-8", "replace")
+                try:
+                    detail = json.loads(detail).get("error", {}).get("message") or detail
+                except (ValueError, AttributeError):
+                    pass
+                if e.code in BUSY_CODES and attempt < len(BUSY_WAITS):
+                    # A rate limit or an overloaded provider passes: wait and ask again. Ending the task here would
+                    # throw away its steps for a limit that resets within the minute.
+                    wait = busy_wait(e.headers, str(detail), BUSY_WAITS[attempt])
+                    if task is not None:
+                        task.setdefault("model_waits", []).append({"at": _now(), "code": e.code, "seconds": wait})
+                    sp.set("rv.model_waits", attempt + 1)
+                    _pause(task, wait)
+                    continue
+                sp.error(f"HTTP {e.code}: {detail}")
+                raise (ModelBusy if e.code in BUSY_CODES else ModelRefused)(e.code, str(detail)) from None
         msg = r["choices"][0]["message"]
         u = r.get("usage") or {}
         if task is not None:
@@ -374,6 +393,46 @@ class ModelRefused(Exception):
     def __init__(self, code, detail):
         super().__init__(f"HTTP {code}: {detail}")
         self.code, self.detail = code, detail
+
+
+class ModelBusy(ModelRefused):
+    """The model stayed rate-limited or overloaded through every wait: a provider problem, not a refusal."""
+
+
+# A rate limit (429) or an overloaded or unreachable provider (502, 503, 504, 529) is waited out: the seconds before
+# each further try, about three minutes in all. The provider's own hint (Retry-After, or the reset time in its error)
+# replaces a step when it is there.
+BUSY_CODES = (429, 502, 503, 504, 529)
+BUSY_WAITS = (5, 15, 30, 60, 60)
+BUSY_MAX_WAIT = 90
+
+
+def busy_wait(headers, detail, default, now=None):
+    """Seconds to wait before asking a busy model again: Retry-After, else the X-RateLimit-Reset time (epoch
+    milliseconds) the provider put in its error, else default. Between 1 and BUSY_MAX_WAIT."""
+    now = time.time() if now is None else now
+    wait = None
+    try:
+        wait = float((headers or {}).get("Retry-After"))
+    except (TypeError, ValueError):
+        m = re.search(r"X-RateLimit-Reset\W+(\d{10,13})", detail or "")
+        if m:
+            at = int(m.group(1))
+            wait = (at / 1000 if at > 10 ** 11 else at) - now + 1
+    if wait is None or wait <= 0:
+        wait = default
+    return int(max(1, min(BUSY_MAX_WAIT, round(wait))))
+
+
+def _pause(task, seconds):
+    """Sleep in short steps, so a cancelled task stops waiting."""
+    left = seconds
+    while left > 0:
+        if task is not None and task.get("_cancel"):
+            raise Stop("cancelled", task.get("cancel_reason") or "cancelled")
+        step = min(2, left)
+        time.sleep(step)
+        left -= step
 
 
 def compact(messages, lines=None):
@@ -621,14 +680,34 @@ def stops_on_approval(task):
 
 def _evidence_file(task, path):
     """The evidence file a reproduced candidate cites, or None when it isn't one of this engagement's."""
-    p = str(path or "").strip().split(":")[0]
-    if not p or "evidence/" not in p:
-        return None
     base = os.path.realpath(os.path.join(db.WORK, task["engagement"]))
-    if p.startswith("/work/"):
-        p = os.path.join(db.WORK, p[len("/work/"):])
-    full = os.path.realpath(p if os.path.isabs(p) else os.path.join(base, p))
-    return full if full.startswith(base + os.sep) and os.path.isfile(full) else None
+    # The path may come with a note after it ("evidence/source/semgrep-1.json — check_id x at app.py:6"), or with
+    # other paths around it: the first one that is a file of this engagement counts.
+    for p in EVIDENCE_PATH.findall(str(path or "")):
+        p = p.rstrip(".,;)")
+        if p.startswith("/work/"):
+            p = os.path.join(db.WORK, p[len("/work/"):])
+        full = os.path.realpath(p if os.path.isabs(p) else os.path.join(base, p))
+        if full.startswith(base + os.sep) and os.path.isfile(full):
+            return full
+    return None
+
+
+EVIDENCE_PATH = re.compile(r"[\w./-]*evidence/[\w./-]+")
+
+
+def unfinished_result(task):
+    """The result of a task that ran out of steps. When its last finish was refused by check_finish, that finish is
+    kept: its summary, and its candidates with the unproven ones as hypotheses. Before, a finish refused at the last
+    step left "Stopped without calling finish." and the work of the task was lost to the planner."""
+    last = task.pop("refused_finish", None)
+    if not isinstance(last, dict):
+        return {"status": "budget_used", "summary": "Stopped without calling finish.", "confidence": "low"}
+    cands = [dict(c, state="hypothesis") if c.get("state") == "reproduced" and not _evidence_file(task, c.get("evidence"))
+             else c for c in last.get("candidates") or [] if isinstance(c, dict)]
+    return {**last, "status": "budget_used", "confidence": "low", "candidates": cands,
+            "summary": ("Out of steps. The last finish was refused, so candidates without an evidence file are kept "
+                        "as hypotheses. " + str(last.get("summary") or "")).strip()}
 
 
 def check_finish(task, args):
@@ -695,8 +774,10 @@ def _do_call_inner(task, c, messages):
         if problem:
             messages.append({"role": "tool", "tool_call_id": c.get("id", name), "content":
                              f"ERROR: finish refused: {problem} The task is not finished; call finish again."})
+            task["refused_finish"] = args   # kept if the steps run out before a finish passes (unfinished_result)
             save(task, messages)
             return "ok"
+        task.pop("refused_finish", None)
         task["result"] = args
         return "finish"
     ap = task.get("approval") if (task.get("approval") or {}).get("call") == c.get("id") else None
@@ -790,8 +871,7 @@ def _loop(task, log):
             raise TimeoutError(f"task exceeded {task['timeout_min']} min")
         task["step"] += 1
         if task["step"] > task["max_steps"] + 1:
-            task["result"] = {"status": "budget_used", "summary": "Stopped without calling finish.",
-                              "confidence": "low"}
+            task["result"] = unfinished_result(task)
             return "done"
         compact(messages, task.get("lines"))
         if task["step"] > task["max_steps"]:  # out of tool budget: force a final answer
@@ -864,6 +944,10 @@ def run_task(task):
             status = _loop(task, log)
         except Stop as s:
             status, err = s.args[0], s.args[1]
+        except ModelBusy as e:
+            status, err = "error", (f"the worker model stayed rate-limited or overloaded after {len(BUSY_WAITS) + 1} "
+                                    f"tries (HTTP {e.code}): {e.detail}")
+            task["outcome"] = "provider_error"
         except ModelRefused as e:
             halted = False
             try:
