@@ -421,7 +421,8 @@ def _malformed_update(u):
         return "an entry is not an object"
     extra = sorted(set(u) - set(COVERAGE_KEYS))
     if extra:
-        return f"unknown keys {', '.join(extra)}"
+        return (f"unknown keys {', '.join(extra)}: an update takes {', '.join(COVERAGE_KEYS)} — refs are set "
+                "when the item is planned (plan_tests), and get_coverage matrix=true shows the cells they cover")
     if not (isinstance(u.get("item"), str) and u["item"].strip() and isinstance(u.get("state"), str) and u["state"]):
         return "an entry has no item or no state"
     ev = u.get("evidence")

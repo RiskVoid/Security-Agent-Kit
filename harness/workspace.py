@@ -372,11 +372,17 @@ def plan_update(eng, actor, pid, expected_revision=None, **f):
             raise ValueError("tested needs evidence (the files that show the test and its result)")
         if st == "tested":
             # #72: an item without map references covers no coverage-matrix cell, so marking it tested would
-            # hide the gap. Only when a recon map exists: a source review has no entries to reference.
+            # hide the gap. Only when a recon map exists — a source review has no entries to reference — and
+            # only for an item that names a vulnerability class (its area, refs or title): orientation and
+            # checklist items legitimately have no refs, and refusing them made runs burn calls on items that
+            # were never meant to cover a cell (#174).
             import reconmap
-            if reconmap.has_map(eng) and not any(reconmap.ENTRY_RX.match(r) for r in new["refs"]):
-                raise ValueError(f"{pid} references no recon map entry, so it covers no coverage-matrix cell: add "
-                                 "refs (E-xxxxxx from get_map) or record it not-applicable with a rationale")
+            if reconmap.has_map(eng) and not any(reconmap.ENTRY_RX.match(r) for r in new["refs"]) \
+                    and reconmap._class_of(new):
+                raise ValueError(f"{pid} tests {', '.join(reconmap._class_of(new))} and references no recon map "
+                                 "entry, so it covers no coverage-matrix cell: add refs (E-xxxxxx from get_map) "
+                                 "when planning it, or mark it not-applicable with a rationale for why the class "
+                                 "can't apply")
         if st == "failed":
             if not new.get("finding_id"):
                 raise ValueError("failed needs the finding it produced (finding_id)")

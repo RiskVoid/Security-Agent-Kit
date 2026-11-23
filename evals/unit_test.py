@@ -3708,6 +3708,32 @@ class FindingTools(unittest.TestCase):
         finally:
             reconmap.matrix = real
 
+    def test_coverage_refusals_teach_their_shape(self):
+        """#174: the recurring first-use refusals answer with the valid form, and the no-map-entry guard
+        fires only for items that name a vulnerability class — an orientation item may be tested without refs."""
+        import reconmap
+        import workspace
+        pid = workspace.plan_add("e", "agent:planner", [{"title": "Inventory: languages and entry points",
+                                                         "area": "Orientation"}])[0]
+        out = json.loads(self.t.update_coverage("e", pid, "tested", evidence=["evidence/runs/r1.txt"]))
+        self.assertEqual(out["state"], "tested")          # no class named: no map refs needed, ever
+        out = self.t.update_coverage("e", updates=[{"item": pid, "state": "tested", "refs": ["E-1a2b3c"],
+                                                    "evidence": ["evidence/runs/r1.txt"]}])
+        self.assertIn("unknown keys refs", out)
+        self.assertIn("refs are set when the item is planned", out)
+        self.assertIn("get_coverage matrix=true", out)
+        real_has = reconmap.has_map
+        reconmap.has_map = lambda eng: True              # a web engagement: the guard is armed
+        try:
+            cls = workspace.plan_add("e", "agent:planner", [{"title": "redos on the search field",
+                                                            "area": "redos"}])[0]
+            out = self.t.update_coverage("e", cls, "tested", evidence=["evidence/runs/r1.txt"])
+            self.assertIn("tests redos and references no recon map entry", out)
+            self.assertIn("get_map", out)
+            self.assertIn("not-applicable", out)
+        finally:
+            reconmap.has_map = real_has
+
     def test_a_worker_transcript_cited_as_evidence_is_refused_with_the_doctrine(self):
         """A run cited the task's step files as coverage evidence: the refusal names the doctrine and where the
         citable files are, also when the transcript file does exist."""
