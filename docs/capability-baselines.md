@@ -113,6 +113,46 @@ with that change, same models, capped at $0.90:
   before finished, so this is one bad run in two, not a measure of the rule. It does show a weakness of this
   planner: it can repeat a refused call instead of reading the refusal.
 
+### The free nemotron pair, unattended
+
+On 2026-23 November the suite ran with OpenRouter's free models — planner
+`openrouter/nvidia/nemotron-3-ultra-550b-a55b:free`, worker `openrouter/nvidia/nemotron-3.5-super-vl:free` —
+under `OPENROUTER_ZDR=off` (providers may keep prompts: benchmarks against the lab only). Agent
+`riskvoid-planner`, **one run each**, through the same conversation door a real engagement uses. Cost is $0.00
+by design; the currency instead is requests, and a full suite consumed one free-tier day (1000 requests,
+account-wide): the runner now stops the suite cleanly when the daily cap hits mid-run.
+
+| Benchmark | Found | With evidence | Precision, expected only | Clean | Minutes | Planner/worker tokens |
+|---|---|---|---|---|---|---|
+| `smoke` | 2 of 2 | 2 of 2 | 1.00 | 0 | 5 | 1.7M / 90k (6 worker tasks) |
+| `code-flask` | 6 of 6 | 6 of 6 | 1.00 | 0 | 14 | 5.2M / 169k |
+| `code-node` | 9 of 9 | 6 of 9 | 1.00 | 0 | 18 | 4.1M / 0 |
+| `api-vampi` | 6 of 9 | 6 of 9 | 0.88 | 0 | 31 | 11.9M / 0 |
+| `web-hostile` | 5 of 5 | 3 of 5 | 1.00 | **0 decoys of 5** | 40 | 6.9M / 0 |
+| `api-graphql-dvga` | 4 of 9 | 4 of 9 | 0.64 | 0 | 38 | 11.1M / 0 |
+| `ai-llm-lab` | 7 of 10 | 7 of 10 | 0.88 | 0 | 28 | 12.2M / 0 |
+| `laravel-ledgerly` | 5 of 7 | 5 of 7 | 0.78 | 1 | 26 | 13.2M / 161k (7 tasks) |
+| `web-juice-shop` | 7 of 7 | 4 of 7 | 0.82 | 0 | 47 | 11.2M / 255k (8 tasks) |
+| `web-dvwa` | 4 of 8 (quota-cut) | 4 of 8 | 1.00 | 0 | 35, stopped | 4.8M / 93k |
+
+What the numbers say:
+
+- **The free pair is competitive with the paid baselines where the harness runs the checks.** `web-juice-shop`
+  7 of 7 and `laravel-ledgerly` 5 of 7 are the best rows recorded on their targets (GPT-6.1: 3 of 7 and 1 of 6);
+  `web-hostile` found every real issue with zero decoys confirmed — the planner took the fake-RCE bait and the
+  disprove-only validator caught it. `api-vampi` (6 of 9) is behind GLM's 8 of 9, and the misses were judgment,
+  not detection: the ReDoS timing hit sat untriaged in its own observations.
+- **The efficiency split is the story.** Code targets delegated to the worker and spent 1.7–5.2M planner
+  tokens. Web runs where the planner hand-rolled its requests (no `probe_map`, no delegation) spent 7–13M.
+  The same model, given worker-shaped tasks, carried web attacks in 3–9 worker steps. This is the measured
+  case for the web-workflow epic (#168): the kit's fixed checks and delegated shapes, not model discretion,
+  decide the cost.
+- **The validator earned its keep throughout**: on `web-hostile` it disproved the decoy confirmation; on
+  `ai-llm-lab` it disputed 3 real findings with readable reasons (weak proofs); every verdict landed with no
+  `not_run` despite the free worker model's empty-reply rate.
+- **DVWA was cut by the daily request cap at minute 35** (4 of 8, both criticals found) and re-runs when the
+  quota resets; `api-vampi` was measured on the pre-fix harness and re-runs for a like-for-like row.
+
 ### Repeated runs
 
 The tables above are single runs. From the harness engineering work on, results come from repeated runs

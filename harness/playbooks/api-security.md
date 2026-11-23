@@ -1,10 +1,17 @@
 ---
-version: 2
+version: 3
 title: API security test (REST, GraphQL)
 standard: OWASP API Security Top 10 2023, OWASP WSTG (APIT)
 tiers: passive, active; fuzzing and exploitation are intrusive (approval)
 ---
 # API security test (REST and GraphQL)
+
+Every step names who runs it — **[kit]** the harness runs it (the fused recon sweep, an oracle),
+**[worker]** a delegated task carries it (`delegate_task`, one class against one endpoint or route
+group per task, `plan_item` set, its output stays out of your context), **[you]** a single check you
+run yourself. The measured rule: delegated web attack tasks finished in 3-9 worker steps where the
+same model hand-rolling them spent 11-13M planner tokens.
+
 
 Ask the client for: the API spec (OpenAPI/Swagger, GraphQL schema or Postman collection), two test accounts per
 role (needed for authorisation tests), and which endpoints change real data. Put credentials in
@@ -18,63 +25,63 @@ role (needed for authorisation tests), and which endpoints change real data. Put
       validated string fields. Its reads run at once; its writes are one authorization matrix the user approves.
       `import_observations` its evidence and triage the hits: a hit names the parameter and the exact requests
       (leads, not findings, until confirmed). The cells it covered count as tested.
-- [ ] Spec: try `/openapi.json`, `/swagger.json`, `/v3/api-docs`, `/api-docs`, `/swagger-ui/`, `/graphql`,
+- [ ] Spec: try `/openapi.json` **[worker]** **[worker]**, `/swagger.json`, `/v3/api-docs`, `/api-docs`, `/swagger-ui/`, `/graphql`,
       `/graphiql`, `/.well-known/` with `curl -s -o /dev/null -w '%{http_code} %{url}\n' <url>/<path>`
-- [ ] Routes: `ffuf -u <base>/FUZZ -w /usr/share/seclists/Discovery/Web-Content/api/api-endpoints.txt
+- [ ] Routes: `ffuf **[worker]** -u <base>/FUZZ -w /usr/share/seclists/Discovery/Web-Content/api/api-endpoints.txt
       -ac -mc all -fc 404 -of json -o ffuf-api.json`; versions: `/v1 /v2 /api/v1 /internal /admin /beta`
-- [ ] Crawl the web client for API calls: `katana -u <app> -jc -d 3 -f qurl -o api-urls.txt`
-- [ ] Parameters on interesting endpoints: `arjun -u <endpoint> -m JSON -oJ arjun.json`
-- [ ] GraphQL: `graphw00f -d -f -t <url>/graphql` (engine fingerprint); introspection:
+- [ ] Crawl the web client for API calls **[worker]**: `katana -u <app> -jc -d 3 -f qurl -o api-urls.txt`
+- [ ] Parameters on interesting endpoints: `arjun -u <endpoint> -m JSON -oJ arjun.json` **[worker]**
+- [ ] GraphQL: `graphw00f **[worker]** -d -f -t <url>/graphql` (engine fingerprint); introspection:
       `curl -s <url>/graphql -H 'Content-Type: application/json' -d '{"query":"{__schema{types{name}}}"}'`
-- [ ] GraphQL with introspection disabled: `clairvoyance <url>/graphql -o schema.json` (field suggestions)
-- [ ] Record every endpoint, method, auth requirement and object id in PLAN.md (the inventory is a deliverable)
+- [ ] GraphQL with introspection disabled: `clairvoyance **[worker]** <url>/graphql -o schema.json` (field suggestions)
+- [ ] Record every endpoint, method, auth requirement and object id in PLAN.md **[you]** (the inventory is a deliverable)
 
 ## 2. Authentication (API2)
-- [ ] Endpoints that answer without a token (call each read endpoint with no Authorization header)
-- [ ] JWT: decode `jwt_tool <token>` (alg, kid, jku, exp, claims); weak HS secret, offline:
+- [ ] Endpoints that answer without a token **[you]** (one request each; the sweep's auth notes already name them) (call each read endpoint with no Authorization header)
+- [ ] JWT: decode `jwt_tool **[worker]** <token>` (alg, kid, jku, exp, claims); weak HS secret, offline:
       `jwt_tool <token> -C -d /usr/share/seclists/Passwords/scraped-JWT-secrets.txt`; against the API (`-t <url>
       -rh "Authorization: Bearer <token>"`, intrusive with attacks): `-M pb` playbook scan, `-X a` (alg none),
       `-X k` (key confusion), `-S hs256 -p <cracked-secret> -I -pc sub -pv <other-user>` (forged identity)
-- [ ] Token lifetime, logout/revocation, refresh token reuse, password reset flow, user enumeration in login/
+- [ ] Token lifetime, logout/revocation **[worker]**, refresh token reuse, password reset flow, user enumeration in login/
       register/reset responses (status codes, messages, timing)
 - [ ] Rate limiting on login, OTP and reset (API4): send 30 requests at the engagement's max rate and record
-      whether any are refused. Real brute force is intrusive (approval)
+      whether any are refused. Real brute force is intrusive (approval) — the `rate_limit` oracle is the proof **[kit]**; reading what it saved and deciding the finding is yours **[you]**; real brute force is intrusive (approval) **[worker]**
 
 ## 3. Authorisation (API1 BOLA, API3 BOPLA, API5 BFLA). Most important part
-- [ ] BOLA: for every endpoint with an object id, request user A's object with user B's token. Try numeric ±1,
+- [ ] BOLA: for every endpoint with an object id **[worker]** (one endpoint or route group per task); where fixtures carry markers, `identity_difference` decides **[kit]**, request user A's object with user B's token. Try numeric ±1,
       UUIDs seen elsewhere, ids in body/query/headers, and arrays `[1,2]`
-- [ ] BFLA: call admin and other-role functions (methods too: `PUT/DELETE` where only `GET` is documented) with a
+- [ ] BFLA: call admin and other-role functions **[worker]** (methods too: `PUT/DELETE` where only `GET` is documented) with a
       low-privilege token
-- [ ] Excessive data exposure (API3): compare response fields with what the UI shows; look for password hashes,
+- [ ] Excessive data exposure (API3) **[worker]**; comparing against the UI is yours **[you]**: compare response fields with what the UI shows; look for password hashes,
       tokens, internal ids, other users' PII; `/debug`, `?fields=*`, `?expand=` parameters
-- [ ] Mass assignment (API3): add `isAdmin`, `role`, `admin`, `balance`, `owner_id`, `verified` to create/update
+- [ ] Mass assignment (API3) — the sweep's write checks cover it under their approved matrix **[kit]**; what they couldn't write to is one narrow task **[worker]**: add `isAdmin`, `role`, `admin`, `balance`, `owner_id`, `verified` to create/update
       bodies and check whether they stick
-- [ ] GraphQL: per-field authorisation on every type reachable from `Query` and `Mutation`; mutations as a
+- [ ] GraphQL: per-field authorisation **[worker]** (one type or mutation group per task) on every type reachable from `Query` and `Mutation`; mutations as a
       low-privilege user; `node(id:)` / global id access
 
 ## 4. Input handling (API8 misconfiguration, API7 SSRF, injection)
-- [ ] Schema fuzzing (intrusive, approval; GET-only first if the client worries about data):
+- [ ] Schema fuzzing **[worker]** (intrusive, approval (intrusive, approval; GET-only first if the client worries about data):
       `schemathesis run <spec-url> --url <base> -H "Authorization: Bearer <t>" --checks all
       --max-examples 30 --report har --report-dir st-report` (add `--include-method GET` for read-only)
-- [ ] GraphQL checks: `graphql-cop -t <url>/graphql -o json` (introspection, field suggestions, batching, alias
+- [ ] GraphQL checks: `graphql-cop **[worker]** -t <url>/graphql -o json` (introspection, field suggestions, batching, alias
       and depth DoS indicators, GET-based CSRF, tracing/debug)
-- [ ] Injection on parameters found: SQL/NoSQL (`'`, `{"$ne":null}`), command, template, XXE on XML endpoints;
+- [ ] Injection on parameters found — the sweep's probes cover every parameter **[kit]**; confirming what they hit is yours **[you]**; sqlmap / commix only after manual signs, intrusive (approval) **[worker]**: SQL/NoSQL (`'`, `{"$ne":null}`), command, template, XXE on XML endpoints;
       sqlmap / commix only after manual signs, intrusive (approval)
-- [ ] SSRF (API7): any parameter that takes a URL, webhook or file location; try the lab's or client's own hosts
+- [ ] SSRF (API7) **[worker]** (one parameter class per task); blind SSRF proves with the `oob_callback` oracle **[kit]**: any parameter that takes a URL, webhook or file location; try the lab's or client's own hosts
       only (the sandbox blocks metadata and other out-of-scope addresses anyway)
-- [ ] Misconfiguration: CORS (`-H 'Origin: https://evil.example'`), verbose errors and stack traces, HTTP methods,
+- [ ] Misconfiguration: CORS **[worker]** (page-route CORS and headers are already in the sweep's evidence **[kit]**) (`-H 'Origin: https://evil.example'`), verbose errors and stack traces, HTTP methods,
       missing security headers, TLS (`testssl`)
 
 ## 5. Resources and business flows (API4, API6, API10)
-- [ ] Regex-validated inputs (CWE-1333): on every string field whose malformed value is rejected, send inputs of
+- [ ] Regex-validated inputs (CWE-1333) — the sweep runs the ladder where it reaches **[kit]**; a field it couldn't is one narrow task **[worker]**: on every string field whose malformed value is rejected, send inputs of
       growing length built to backtrack (`a` × 16/20/24 + `@`) and watch the response time; a clear growth is the
       finding. `probe_map` runs this ladder for you (and stops before the sizes that stop the API); test what it
       skipped by hand
-- [ ] Pagination and size limits: `?limit=100000`, huge bodies, deep JSON, GraphQL aliases/batching
+- [ ] Pagination and size limits **[worker]**: `?limit=100000`, huge bodies, deep JSON, GraphQL aliases/batching
       (measure response time; stop at the first sign of impact)
-- [ ] Sensitive business flows (API6): purchase, transfer, invite, voucher: replay, race (parallel requests),
+- [ ] Sensitive business flows (API6) — `race_request` fires the simultaneous requests under one approval **[kit]**; the business reasoning is yours **[you]**: purchase, transfer, invite, voucher: replay, race (parallel requests),
       negative/zero amounts, skipping steps
-- [ ] Unsafe consumption (API10): third-party data the API trusts (webhooks, redirects, imported URLs)
+- [ ] Unsafe consumption (API10) **[worker]**: third-party data the API trusts (webhooks, redirects, imported URLs)
 
 ## 6. OAuth2 and OIDC (CWE-351, CWE-308, CWE-384)
 
@@ -83,23 +90,23 @@ Applies when the map has an authorize, token, callback or OIDC route, or redirec
 allows one, and record each check's requests as evidence. Recipes assume `<idp>` is the authorization server and
 `<cb>` your registered redirect URI.
 
-- [ ] redirect_uri validation: send the authorize request with the exact `<cb>`, then with variants:
+- [ ] redirect_uri validation: **[worker]** send the authorize request with the exact `<cb>`, then with variants:
       a different host, a subdomain (`evil.<cb-host>`), a suffix path (`<cb>/../evil`), a query or fragment
       appended, and an IP literal. A 200 redirect with `code` for any variant but the exact match is the finding
       (authorization-code injection: another site can receive the code)
-- [ ] state: authorize without the state parameter (does the server accept it?), and with one — confirm the
+- [ ] state: authorize without **[worker]** the state parameter (does the server accept it?), and with one — confirm the
       callback echoes it back unchanged. No state, or state not validated at the token endpoint, is CSRF in the
       authorization flow
-- [ ] PKCE downgrade: authorize with `code_challenge` omitted, or `response_type=token` (implicit flow). If the
+- [ ] PKCE downgrade: **[worker]** authorize with `code_challenge` omitted, or `response_type=token` (implicit flow). If the
       code is issued without PKCE or the implicit flow is live, code interception gets easier
-- [ ] authorization-code reuse: complete a flow, then replay the exact token request (same grant_type=code and
+- [ ] authorization-code reuse: **[worker]** complete a flow, then replay the exact token request (same grant_type=code and
       code). The second use must fail; a 200 with a fresh token pair is the finding (CWE-384)
-- [ ] token substitution and audience: use A's access token on B's flow (call the resource server directly), and
+- [ ] token substitution and audience: **[worker]** use A's access token on B's flow (call the resource server directly), and
       check whether tokens carry an `aud` claim the server verifies. An audience-less token accepted everywhere
       is the finding; a forged `aud` against the cracked/leaked key proves it
-- [ ] refresh token rotation: use a refresh token twice. If both work and return the SAME refresh token
+- [ ] refresh token rotation: **[worker]** use a refresh token twice. If both work and return the SAME refresh token
       (no rotation), or the old one still works after use, stolen refresh tokens are long-lived — the finding
-- [ ] Token endpoint auth: `client_secret` in the query string or body instead of the Authorization header,
+- [ ] Token endpoint auth: **[worker]** `client_secret` in the query string or body instead of the Authorization header,
       and whether the token endpoint rate-limits (it mints tokens: brute force is intrusive — approval)
 
 ## Findings
