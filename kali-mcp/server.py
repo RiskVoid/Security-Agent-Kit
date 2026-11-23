@@ -196,7 +196,7 @@ async def run(command: str, engagement: str, timeout_s: int = 600, approval_id: 
     Network access is limited to the engagement scope (plus package/vulnerability-database sites when the
     engagement is online); everything else is blocked. Tools:
       recon:        nmap, naabu, dnsx, subfinder, amass, katana, httpx-toolkit, whatweb, gowitness (screenshots)
-      web:          nuclei (templates in ~/nuclei-templates), nikto, ffuf, feroxbuster, gobuster, arjun, crlfuzz,
+      web:          nuclei (templates at /opt/nuclei-templates, e.g. -t /opt/nuclei-templates/vulnerabilities), nikto, ffuf, feroxbuster, gobuster, arjun, crlfuzz,
                     wafw00f, wpscan, dalfox, commix, zaproxy, sqlmap, testssl, sslscan; wordlists in /usr/share/seclists
       API:          schemathesis (`schemathesis run <openapi-or-graphql-url> --url <base>`: spec-driven fuzzing),
                     jwt_tool (decode/crack/forge offline; -t <url> sends to the target: active, with -X/-I/-S/-M intrusive), graphw00f (-d -f -t <url>),
