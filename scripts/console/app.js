@@ -1251,6 +1251,14 @@ async function paneInvestigation() {
           <dt>Coverage</dt><dd>${cov.total ? `${done} of ${cov.total} tests have an outcome${covLine ? `<div class="rv-dim">${covLine}</div>` : ""}` : "no plan yet"}</dd>
           <dt>Imports</dt><dd>${h.imports}</dd></dl></div></div>
       </div>
+      ${h.board && h.board.length ? `<div class="rv-card"><div class="rv-card-head"><h3>Board: open questions <span class="rv-dim">${h.board.length}</span></h3></div>
+        <div class="rv-dl" style="--cols:150px minmax(0, 1fr) 190px;--minw:560px"><div class="rv-dl-in">
+          ${h.board.map((b) => `<div class="rv-dl-row"><span class="mono">${esc(b.item)} <span class="rv-dim">${esc(b.state)}${b.stale ? " (stale)" : ""}</span></span>
+            <span><b>${esc(b.question)}</b>${b.last_result ? `<div class="rv-dim">last: ${esc(b.last_result.status)} - ${esc(b.last_result.summary || "")}</div>` : ""}
+              ${b.blocker ? `<div class="rv-dim">blocker: ${esc(b.blocker)}</div>` : ""}</span>
+            <span><b>${esc(b.next)}</b><div class="rv-dim">${esc(b.why)}</div>
+              <div class="rv-dim">${b.budget.tasks} task(s), ${b.budget.steps} step(s), ${Number(b.budget.tokens).toLocaleString()} worker tokens</div></span></div>`).join("")}
+        </div></div></div>` : ""}
       ${h.material.length ? `<div class="rv-card"><div class="rv-card-head"><h3>Material findings <span class="rv-dim">${h.material.length}</span></h3></div>
         <div class="rv-dl" style="--cols:92px 64px minmax(0, 1fr) 132px;--minw:520px"><div class="rv-dl-in">${h.material.map((m) => `<div class="rv-dl-row">${sevMark(m.severity)}<span class="mono">${esc(m.id)}</span><b>${esc(m.title)}</b><span>${statusPill(m)}</span></div>`).join("")}</div></div></div>` : ""}
       ${h.pending.length ? `<div class="rv-card"><div class="rv-card-head"><h3>Pending decisions <span class="rv-dim">${h.pending.length}</span></h3>
