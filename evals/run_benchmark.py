@@ -292,13 +292,25 @@ def preamble(eng, b, target, resumed=None):
 
 # ---------------------------------------------------------------- run
 def approve_pending(eng):
+    """The lab-only auto-approval: intrusive commands, and the sweep's write matrix. The sweep's writes are
+    proposed as an authz matrix (the kit's own fixed checks, named sweep-*), and without this they could never
+    run unattended — both web runs left the write checks 'not approved'. An agent-proposed access-control matrix
+    still waits for a person: intent nobody read is not the lab's deal."""
     try:
         pending = json.loads(rvkit("approvals", eng, "--json", check=False) or "[]")
     except ValueError:
-        return 0
+        pending = []
     for a in pending:
         rvkit("approve", eng, a["id"], check=False)
-    return len(pending)
+    n = len(pending)
+    try:
+        for m in json.loads(rvkit("authz", eng, "list", check=False) or "[]"):
+            if m.get("state") == "proposed" and str(m.get("name") or "").startswith("sweep-"):
+                rvkit("authz", eng, "approve", m["name"], check=False)
+                n += 1
+    except (ValueError, TypeError):
+        pass
+    return n
 
 
 LOOP_TAG = "[RiskVoid] Loop stopped"   # litellm/rv_repeats.py CUT_TAG: the gateway ended a turn that repeated one call

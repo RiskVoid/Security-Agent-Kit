@@ -306,7 +306,7 @@ def cancel_task(engagement: str, task: str) -> str:
 @with_rules
 async def recon_map(engagement: str, url: str, depth: int = 2, crawl_seconds: int = 120, probe: bool = True,
                     max_tier: str = "", task: str = "", identity: str = "", max_scripts: int = 0,
-                    max_probes: int = 0) -> str:
+                    max_probes: int = 0, sweep: bool = True) -> str:
     """Map a web target before testing it (epic #52, #46; authenticated depth #135, feedback loops #136): crawl it
     (katana: links, JavaScript, robots, sitemap), content-discovery (ffuf over the common wordlist), read the API
     paths its scripts name (source maps, GraphQL operations and a gitleaks secrets pass included), fetch its
@@ -318,11 +318,14 @@ async def recon_map(engagement: str, url: str, depth: int = 2, crawl_seconds: in
     identity: run an authenticated pass after the unauthenticated one, with one of the engagement's identities
     (list_identities): the surface behind login enters the map, tagged seen_by. An identity that isn't valid is
     skipped with a note, never silently. max_scripts / max_probes: raise the script and probe caps for a large app
-    (defaults are sized for a typical app)."""
+    (defaults are sized for a typical app). sweep (default true): after the map is built, the kit's fixed checks
+    run on it in the same call (#169) - injection, JWT, ReDoS, CORS and headers over every entry, and the write
+    checks proposed as one authorization matrix. Approve that matrix (console or ./rvkit authz approve), then
+    call probe_map with matrix=<name> for the writes. sweep=false maps only: say why when you use it."""
     import recon
     try:
         return await _thread(recon.build, engagement, url, depth, crawl_seconds, probe, max_tier or None,
-                             task or None, identity or "", max_scripts or None, max_probes or None)
+                             task or None, identity or "", max_scripts or None, max_probes or None, sweep)
     except ValueError as e:
         return f"REFUSED: {e}"
 

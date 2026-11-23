@@ -1428,6 +1428,31 @@ class BenchmarkScore(unittest.TestCase):
         cls.rb = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(cls.rb)
 
+    def test_lab_auto_approval_covers_the_sweeps_write_matrix_only(self):
+        """#169: unattended lab runs approve the sweep's write matrix (the kit's own fixed checks — without this
+        the write checks could never run: both web runs left them 'not approved'), but an agent-proposed
+        access-control matrix still waits for a person."""
+        calls = []
+
+        def rvkit(*args, check=True):
+            calls.append(args)
+            if args[:2] == ("approvals", "eng-x"):
+                return '[{"id": "ab12cd34"}]'
+            if args[:3] == ("authz", "eng-x", "list"):
+                return json.dumps([{"name": "sweep-20261123T101010", "state": "proposed"},
+                                   {"name": "api-security-tests", "state": "proposed"}])
+            return ""
+        real = self.rb.rvkit
+        self.rb.rvkit = rvkit
+        try:
+            n = self.rb.approve_pending("eng-x")
+        finally:
+            self.rb.rvkit = real
+        self.assertEqual(n, 2)                       # the command approval and the sweep matrix
+        self.assertIn(("approve", "eng-x", "ab12cd34"), calls)
+        self.assertIn(("authz", "eng-x", "approve", "sweep-20261123T101010"), calls)
+        self.assertNotIn(("authz", "eng-x", "approve", "api-security-tests"), calls)   # a person reads that one
+
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         os.makedirs(os.path.join(self.tmp.name, "evidence", "http"))

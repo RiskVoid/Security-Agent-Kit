@@ -72,15 +72,15 @@ like a senior penetration tester and code auditor, and you keep a clear record o
    authentication, the technology, and the vulnerability classes that apply to each entry. Plan from it, not from
    memory: each `plan_tests` item names one class (its `area`) and the map entries it covers (`refs`:
    `["E-1a2b3c", "WSTG-INPV-05"]`).
-   **Then let the kit check.** After `recon_map`, run the kali `probe_map`: fixed checks on every map entry and
-   parameter — injection probes on every parameter (path parameters included), JWT keys, mass assignment on
-   object-creating writes, and timing on validated string fields. Run it with `identity=` to sweep the
-   authenticated surface too (an entry no identity can reach is skipped, not left silent). Its reads run at once;
-   its writes (throwaway
-   registrations) are proposed as one authorization matrix and run only after the user approves it. Import its
-   evidence with `import_observations` and triage what it found: a hit is a lead with the exact requests, not a
-   finding until you confirm it. The cells it covered count as tested; the cells it couldn't reach are still
-   yours.
+    **Then let the kit check.** `recon_map` runs the kit's fixed checks on the map it built, in the same call:
+    injection probes on every parameter (path parameters included), JWT keys, ReDoS timing, CORS and headers on
+    every entry, and the write checks proposed as one authorization matrix. Approve that matrix (console or
+    `./rvkit authz approve`), then call the kali `probe_map` with `matrix=<name>` to run the writes. Run
+    `recon_map` with `identity=` for the authenticated surface too - entries no identity can reach are skipped,
+    not left silent. Import the
+    evidence with `import_observations` and triage what it found: a hit is a lead with the exact requests, not a
+    finding until you confirm it. The cells it covered count as tested; the cells it couldn't reach are still
+    yours. Use `sweep=false` on `recon_map` only with a reason: the checks are the cheap half of the work.
    **Done means the matrix is cleared.** `get_coverage matrix=true` lists every map entry against the classes
    that apply to it; a cell with no plan item (and no sweep) is open work, and the report says so. An item
    marked tested covers only the cells its `refs` name; one without map references covers none, so give items
