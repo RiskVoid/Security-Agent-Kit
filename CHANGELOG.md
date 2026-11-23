@@ -220,6 +220,27 @@ changes to the harness are measured.
   engagement takes no message. Each one is in the audit log with who did it.
 
 ### Benchmarks
+- The web-workflow epic (#168): the kit's fixed checks run on the map `recon_map` builds, in the same call
+  (#169) — the free-model campaign measured the model skipping `probe_map` in 2 of 4 web runs and hand-rolling
+  40–70 requests at 11–13M planner tokens each. The fusion makes the reads and the write-matrix proposal the
+  default second half of the recon pass (`sweep=false` opts out with a reason), every identity on the engagement
+  is swept with its own pass (#170 — verified live: three sweeps and three evidence files in one call), and
+  unattended lab runs approve the sweep's write matrix, which no run could run before (both left it 'not
+  approved'; agent-proposed access-control matrices still wait for a person).
+- Coverage gaps in `get_coverage matrix=true` arrive pre-shaped (#171): the plan item to add (title, area,
+  refs) and the delegate_task goal to send — two calls and the cell is covered by a worker task. The offer is a
+  suggestion the planner decides on, never an automatic dispatch.
+- The web-app and api-security playbooks name who runs each step (#172): **[kit]** the harness (fused sweep,
+  oracles), **[worker]** a delegated task (one class against one endpoint, `plan_item` set), **[you]** a single
+  check — the measured rule being that delegated web attacks finished in 3–9 worker steps where the same model
+  hand-rolling them spent 11–13M planner tokens.
+- Blind-SSRF payloads are approval-tiered, not flatly refused (#173): a command whose out-of-scope hosts all
+  sit inside data carriers — JSON bodies, `--data` values, headers the target reads — falls through to the
+  approval flow, whose text names what the target is being asked to fetch. The tool's own destination and bare
+  quoted URLs stay refused flat; the firewall still blocks the kit's own connections to payload hosts.
+- Coverage refusals teach their shape (#174): unknown keys name the valid form and where refs belong, and the
+  no-map-entry guard fires only for items that name a vulnerability class — orientation items may be tested
+  without refs, and every run burned calls discovering that.
 - Repeated runs (`--repeat N`): per expected finding, found in k of n runs; pass^k and pass@k; every mean with its
   standard error. `--compare A B` pairs two labelled sets of runs with a 95% interval.
 - Clean runs (`--clean`) limit lookups to vendor documentation and vulnerability records and flag any lookup of a
