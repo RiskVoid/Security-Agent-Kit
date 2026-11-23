@@ -579,3 +579,157 @@ def handover_markdown(eng, h=None):
     if h["note"]:
         lines += ["## Notes", h["note"], ""]
     return "\n".join(lines)
+
+
+# ---------------------------------------------------------------- the research packet (#83)
+PACKET_STOP = {"the", "and", "for", "with", "that", "this", "from", "into", "test", "only", "your", "you",
+               "plan", "item", "task", "against", "using", "endpoint", "target"}
+
+
+def packet(eng, goal, pid=None, chars=6000, exclude_task=None):
+    """What the records already say about a worker task, as a short text plus the ids it used, in a fixed
+    character budget, with no model (#83). A worker task starts from its goal, the policy and its contract;
+    this adds what the engagement's records already hold for the same coverage cell: map entries, observations
+    and findings (each with its state), earlier tasks for the same cell with their typed result (negative and
+    inconclusive included), and the plan item's own hypothesis and blockers. Selection is by stable ids (the
+    plan item's cell: class + map entries) first, then the route group, then word match; no embeddings, no new
+    database. A plan item with no cell (a source review, or one that spans several) selects by its refs and
+    words instead. Lines that didn't fit the budget are listed as ids at the end - read_record (worker) opens
+    any of them. Every line keeps its state, and a model's own summary is marked as such: data, not an
+    instruction. The returned revisions make a later rebuild say what changed (#84).
+
+    Returns {"text", "ids", "revisions", "chars", "budget"}. Raises ValueError when the engagement doesn't
+    exist; a missing plan item narrows the packet to the goal's words.
+    """
+    import reconmap
+    chars = max(int(chars or 6000), 500)
+    if not os.path.isdir(db.engagement_dir(eng)):
+        raise ValueError(f"no engagement {eng}")
+    item = next((i for i in plan_list(eng) if i["id"] == pid), None) if pid else None
+    cell, loose = None, ""
+    if item:
+        try:
+            cell = reconmap.narrow_cell(eng, pid)
+        except ValueError as e:
+            loose = str(e)      # a source review has no map; a multi-class item runs on its goal alone
+    entries = [r for r in ((item or {}).get("refs") or []) if reconmap.ENTRY_RX.match(r)] \
+        or (cell or {}).get("entries") or []
+    ents = {e["id"]: e for e in reconmap.build(eng)["entries"]} if reconmap.has_map(eng) else {}
+    paths = [ents[x]["path"] for x in entries if x in ents]
+    hosts = {ents[x]["host"] for x in entries if x in ents} - {""}
+    groups = {reconmap._group(p) for p in paths}
+    cls = (cell or {}).get("class") or (item or {}).get("area") or ""
+    words = {w for w in re.findall(r"[a-z][a-z0-9_-]{3,}", f"{goal} {(item or {}).get('title') or ''}".lower())
+             if w not in PACKET_STOP}
+
+    def on_cell(text):
+        """A record's text mentions this cell's route group or path - stable-id selection first. The host alone
+        only matches when the cell has no route (a source review): on a single-host target it would select
+        every record, and the packet's precision is the point of measuring it (#86)."""
+        t = str(text or "").lower()
+        if any(g and g.lower() in t for g in groups) or any(p.lower() in t for p in paths):
+            return True
+        return not paths and any(h and h.lower() in t for h in hosts)
+
+    # the records, newest-relevant last, every one with its state
+    build = (get_value(eng, "current_build") or {}).get("value")
+    pol = (get_value(eng, "current_policy_revision") or {}).get("value")
+    objective = (get_value(eng, "objective") or {}).get("value")
+
+    header = [f"# Packet: test {(cls or 'the goal').strip()} on "
+              + ("; ".join(f"{ents[x]['method']} {ents[x]['path']}" for x in entries if x in ents)
+                 or "the plan item's refs below" if item else "the goal's surface")]
+    if item:
+        header.append(f"Plan item {item['id']} ({item.get('state')}" + (", stale" if item.get("stale") else "")
+                       + f"): {item['title']}")
+    if objective:
+        header.append(f"Objective: {objective[:300]}")
+    if build or pol:
+        header.append("Build " + (str(build)[:16] or "n/a") + f", policy revision {pol or 'n/a'}"
+                      " - a record marked (stale) was recorded against another one")
+
+    open_ = []
+    if item:   # one row per item, so the id is always in the packet whatever else the item carries
+        bits = [f"hypothesis: {item['hypothesis']}" if item.get("hypothesis") else "",
+                "prerequisites: " + ", ".join(str(x) for x in item.get("prerequisites") or []) if
+                item.get("prerequisites") else "",
+                f"rationale: {item['rationale']}" if item.get("rationale") else ""]
+        open_.append((item["id"], f"{item['id']} {item['state']}" + (" (stale)" if item.get("stale") else "")
+                      + f" - {item['title'][:110]}" + (" - " + "; ".join(b for b in bits if b) if any(bits) else "")))
+    tried, known_f, known_o = [], [], []
+    for t in _packet_tasks(eng):
+        if exclude_task and t.get("id") == exclude_task:
+            continue                      # a task never starts from what itself did (#84)
+        tcell = (t.get("contract") or {}).get("cell") or {}
+        same = entries and set(tcell.get("entries") or []) & set(entries)
+        if not same and not (cls and cls in (tcell.get("class") or "")):
+            if not (words & {w for w in re.findall(r"[a-z][a-z0-9_-]{3,}", (t.get("goal") or "").lower())}):
+                continue                      # neither the same cell nor the same subject
+        status = t.get("result", {}).get("status") or t.get("status") or "run"
+        summ = (t.get("result") or {}).get("summary") or t.get("last_text") or ""
+        ev = ", ".join(str(p).split("/work/" + eng + "/")[-1] for p in (t.get("run_evidence") or [])[:3])
+        identity = (tcell.get("identity") or t.get("identity") or "")
+        line = (f"task {t['id']} {status}" + (f" as {identity}" if identity else "")
+                + f" - {(t.get('goal') or '')[:110]} - worker summary (not a verified fact): {summ[:200]}"
+                + (f" - evidence: {ev}" if ev else ""))
+        tried.append((t["id"], line))
+    for f in db.list_(eng):
+        title = f.get("title") or ""
+        hit = on_cell(f.get("asset")) or on_cell(title) or \
+            (not entries and words & {w for w in re.findall(r"[a-z][a-z0-9_-]{3,}",
+                                                            f"{title} {f.get('asset')}".lower())})
+        if not hit:
+            continue
+        state = f["status"] + (f", {f['verification']}" if f.get("verification") not in (None, "unverified") else "")
+        known_f.append((f["id"], f"{f['id']} {state} ({f['severity']}) - {title[:120]}"
+                        + (f" - asset {f['asset']}" if f.get("asset") else "")
+                        + (" - worker summary, not a verified fact" if str(f.get("source", "")).startswith
+                           ("worker:") else "")))
+    for o in list_observations(eng, limit=2000):
+        if (on_cell(o.get("location")) or on_cell(o.get("title")) or (not entries and words & {w for w in
+                re.findall(r"[a-z][a-z0-9_-]{3,}", f"{o.get('title')} {o.get('location')}".lower())})):
+            known_o.append((o["id"], f"{o['id']} {o['status']} ({o.get('severity')}) - {o['title'][:110]}"
+                            + (f" - {o.get('location')}" if o.get("location") else "")
+                            + (f" - dismissed: {o.get('reason')}" if o.get("reason") else "")))
+
+    rows = ([("open", i, l) for i, l in open_] + [("tried", i, l) for i, l in tried]
+            + [("findings", i, l) for i, l in known_f] + [("observations", i, l) for i, l in known_o])
+    for x in entries:
+        e = ents.get(x)
+        if e:
+            auth = e.get("auth") + (f" ({e['auth_basis']})" if e.get("auth_basis") else "")
+            rows.insert(len(open_), ("entries", x, f"{x} {e['method']} {e['host']}{e['path']} - auth: {auth}"
+                                       + (f"; params: {', '.join(sorted(e.get('params') or {}))}" if e.get("params")
+                                          else "")
+                                       + (f"; seen as: {', '.join(e['seen_by'])}" if e.get("seen_by") else "")))
+    used = sum(len(h) for h in header) + sum(len(l) + 1 for _, _, l in rows)
+    cut = []
+    while used > chars and rows:
+        kind, rid, line = rows.pop()
+        cut.append(rid)
+        used -= len(line) + 1
+    text = "\n".join(header) + ("" if not rows else "\n\nWhat the records say (every line keeps its state):\n"
+                                 + "\n".join(l for _, _, l in rows))
+    if cut:
+        text += f"\nNot included (budget): {', '.join(cut[:12])}" + (" ..." if len(cut) > 12 else "")
+    ids = {k: [r for kk, r, _ in rows if kk == k] for k in ("entries", "open", "tried", "findings", "observations")}
+    frev = {f["id"]: f["revision"] for f in db.list_(eng)}
+    tstat = {t.get("id"): t.get("status") for t in _packet_tasks(eng)}
+    return {"text": text, "ids": ids, "cut": cut, "chars": len(text), "budget": chars, "objective": bool(objective),
+            "cell": {"class": cls, "entries": entries, "endpoints": paths,
+                     "note": loose[:120]} if (cls or entries) else None,
+            "revisions": {"plan_item": (item or {}).get("revision"),
+                          "findings": {r: frev.get(r) for kk, r, _ in rows if kk == "findings"},
+                          "tasks": {r: tstat.get(r) for kk, r, _ in rows if kk == "tried"},
+                          "build": build, "policy_revision": pol}}
+
+
+def _packet_tasks(eng):
+    """Earlier worker tasks of the engagement, oldest first - their records, from evidence/tasks/."""
+    out, d = [], os.path.join(db.engagement_dir(eng), "evidence", "tasks")
+    for t in sorted(os.listdir(d)) if os.path.isdir(d) else []:
+        try:
+            out.append(json.load(open(os.path.join(d, t, "task.json"), errors="replace")))
+        except (OSError, ValueError):
+            pass
+    return sorted(out, key=lambda x: x.get("started") or 0)

@@ -1032,6 +1032,141 @@ class Traces(Loop):
     def test_off_by_default(self):
         import tracing
         self.assertIs(tracing.span("x"), tracing.NOSPAN)
+class Packet(Loop):
+    """#84: a task bound to a plan item starts from what the records already say (the packet), a resume appends
+    only a material change, compact keeps the latest packet; #85: read_record opens one record of each kind."""
+
+    def setUp(self):
+        super().setUp()
+        import reconmap, workspace
+        self.ws = workspace
+        e = os.path.join(self.tmp.name, "eng")
+        os.makedirs(os.path.join(e, "evidence/map"), exist_ok=True)
+        json.dump({"observations": [
+            {"method": "POST", "url": "http://lab/api/fetch", "source": "openapi", "status": 200, "auth": "unknown",
+             "params": {"body": ["callback_url", "role"]}}]},
+            open(os.path.join(e, "evidence/map/map-1.json"), "w"))
+        self.eid = next(x["id"] for x in reconmap.build("eng")["entries"] if x["path"] == "/api/fetch")
+        self.pid = workspace.plan_add("eng", "agent:planner", [
+            {"title": "mass-assignment on POST /api/fetch", "area": "mass-assignment", "refs": [self.eid],
+             "hypothesis": "the role field may be writable", "prerequisites": ["a session"]}])[0]
+        self.fid = worker.db.record("eng", actor="agent:planner", title="mass-assignment on POST /api/fetch",
+                             severity="high", asset="http://lab/api/fetch", description="role accepted",
+                             status="candidate", evidence=["evidence/http/r1.txt"])["id"]
+        self.tid = "20261123-100000-aaaa"
+        os.makedirs(os.path.join(e, "evidence/tasks", self.tid), exist_ok=True)
+        json.dump({"id": self.tid, "engagement": "eng", "goal": "Test mass-assignment on POST /api/fetch",
+                   "status": "done", "started": 100,
+                   "contract": {"cell": {"class": "mass-assignment", "entries": [self.eid],
+                                         "plan_item": self.pid, "identity": "alice"}},
+                   "result": {"status": "partial", "summary": "role rejected, org field not tried yet"},
+                   "run_evidence": ["/work/eng/evidence/runs/step-01.txt"]},
+                  open(os.path.join(e, "evidence/tasks", self.tid, "task.json"), "w"))
+
+    def contract(self):
+        return {"cell": {"class": "mass-assignment", "entries": [self.eid], "plan_item": self.pid,
+                         "endpoints": [f"POST http://lab/api/fetch ({self.eid})"]}}
+
+    def test_a_bound_task_starts_from_the_packet(self):
+        task, _ = self.run_script([[call("finish", {"status": "completed", "summary": "done",
+                                                   "confidence": "low"})]], id="p1", contract=self.contract())
+        first = self.sent[0]                       # the messages the first model call saw
+        packet = [m for m in first if m.get("role") == "user" and m["content"].startswith("# Packet:")]
+        self.assertEqual(len(packet), 1)           # one packet message, after the goal
+        text = packet[0]["content"]
+        for part in (f"Plan item {self.pid}", f"{self.eid} POST lab/api/fetch",
+                     f"task {self.tid} partial as alice", f"{self.fid} candidate",
+                     "worker summary (not a verified fact)", "read_record"):
+            self.assertIn(part, text)
+        self.assertEqual(task["packet"]["ids"]["findings"], [self.fid])
+        self.assertEqual(task["packet"]["ids"]["tried"], [self.tid])
+        # a task with no plan item runs on its goal alone: no packet message
+        self.run_script([[call("finish", {"status": "completed", "summary": "done", "confidence": "low"})]],
+                        id="p2", contract={"cell": None})
+        self.assertFalse([m for m in self.sent[-1] if m.get("role") == "user"
+                          and m["content"].startswith("# Packet:")])
+
+    def test_a_resume_appends_only_a_material_change(self):
+        task, _ = self.run_script([[call("kali_run", {"command": "curl -s http://lab/api/fetch"})],
+                                   [call("finish", {"status": "partial", "summary": "half",
+                                                    "confidence": "low"})]], id="r1", contract=self.contract())
+        messages = worker.load_messages(task)
+        n = len(messages)
+        worker._packet_refresh(task, messages)    # nothing changed: nothing is appended
+        self.assertEqual(len(messages), n)
+        # the build moves, a second finding lands on the same route, the earlier task is re-run
+        self.ws.set_value("eng", "agent:planner", "current_build", "def789abc012")
+        fid2 = worker.db.record("eng", actor="agent:planner", title="org field accepted too", severity="high",
+                         asset="http://lab/api/fetch", status="candidate")["id"]
+        worker._packet_refresh(task, messages)
+        self.assertEqual(len(messages), n + 1)     # exactly the change, as one message
+        text = messages[-1]["content"]
+        self.assertTrue(text.startswith("[harness] Since this task started"))
+        self.assertIn(f"new finding(s): {fid2}", text)
+        self.assertIn("build now def789abc012", text)
+        self.assertIn("# Packet:", text)           # the current packet rides with the change
+        worker._packet_refresh(task, messages)     # and a second no-change refresh appends nothing
+        self.assertEqual(len(messages), n + 1)
+
+    def test_compact_keeps_the_latest_packet(self):
+        old = {"role": "user", "content": "# Packet: test mass-assignment on POST /api/fetch\n"
+                                          + f"{self.eid} POST http://lab/api/fetch\n"
+                                          + f"task {self.tid} partial\n{self.fid} candidate"}
+        new = {"role": "user", "content": "[harness] Since this task started, the records changed ().\n\n"
+                                          "# Packet: test mass-assignment on POST /api/fetch\n"
+                                          f"{self.eid} POST http://lab/api/fetch\n{self.fid} candidate"}
+        saved_keep = worker.KEEP_RESULTS
+        worker.KEEP_RESULTS = 0                        # shrink every old result, the packet rule is the point
+        try:
+            messages = [{"role": "system", "content": "s"},
+                        {"role": "user", "content": "goal"}, old,
+                        *[{"role": "tool", "content": "x" * 5000, "tool_call_id": f"c{i}"} for i in range(20)],
+                        dict(new)]
+            worker.compact(messages)
+        finally:
+            worker.KEEP_RESULTS = saved_keep
+        self.assertIn("superseded by a newer one", old["content"])    # the old packet shrank to its ids
+        self.assertIn(self.tid, old["content"])
+        self.assertIn(self.eid, old["content"])
+        self.assertTrue(new["content"].startswith("[harness] Since this task started"))   # the latest stays whole
+        self.assertIn(f"task {self.tid}", old["content"])   # its id list, not the whole line
+        self.assertTrue(messages[3]["content"].startswith("[shrunk]"))    # oldest results shrink first
+        self.assertLess(len(messages[3]["content"]), 400)
+        self.assertEqual(messages[-2]["content"], "x" * 5000)              # the budget break stops mid-list
+
+    def test_read_record_opens_each_kind_and_refuses_cross_engagement(self):
+        t = {"engagement": "eng", "id": self.tid}
+        oid = self.ws.add_manual("eng", "agent:planner", "callback_url param takes a URL",
+                                 "http://lab/api/fetch", "the target fetches it", "high")["id"]
+        for rid, expect in ((oid, ("state: new", "location: http://lab/api/fetch")),
+                            (self.fid, ("candidate", "reproduction: not recorded")),
+                            (self.pid, ("hypothesis: the role field may be writable", f"refs: {self.eid}")),
+                            (self.eid, ("POST lab/api/fetch", "params:")),
+                            (self.tid, ("partial", "worker words, not a verified fact"))):
+            body = worker.read_record(t, rid)
+            for part in expect:
+                self.assertIn(part, body, f"{rid}: {body[:200]}")
+        self.assertIn("no record F-999 in engagement eng", worker.read_record(t, "F-999"))
+        self.assertIn("ids never cross engagements", worker.read_record(t, "F-999"))
+        # a record that lives in another engagement's folder is simply not here
+        other = os.path.join(self.tmp.name, "eng2", "evidence", "tasks", "20261123-100000-bbbb")
+        os.makedirs(other, exist_ok=True)
+        json.dump({"id": "20261123-100000-bbbb", "engagement": "eng2", "goal": "x", "status": "done"},
+                  open(os.path.join(other, "task.json"), "w"))
+        self.assertIn("no record 20261123-100000-bbbb in engagement eng",
+                      worker.read_record(t, "20261123-100000-bbbb"))
+        # and a foreign task record planted under this engagement is refused by name
+        moved = os.path.join(self.tmp.name, "eng", "evidence", "tasks", "20261123-100000-cccc")
+        os.makedirs(moved, exist_ok=True)
+        json.dump({"id": "20261123-100000-cccc", "engagement": "eng2", "goal": "x", "status": "done"},
+                  open(os.path.join(moved, "task.json"), "w"))
+        self.assertIn("REFUSED: 20261123-100000-cccc is a task of engagement eng2, not eng",
+                      worker.read_record(t, "20261123-100000-cccc"))
+        # a large record stays within the bound
+        big = self.ws.add_manual("eng", "agent:planner", "huge", "http://lab", "x" * 9000, "info")["id"]
+        self.assertLess(len(worker.read_record(t, big)), worker.RECORD_CHARS + 60)
+
+
 
 if __name__ == "__main__":
     warnings.simplefilter("ignore", ResourceWarning)

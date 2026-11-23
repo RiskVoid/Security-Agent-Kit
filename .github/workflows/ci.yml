@@ -40,6 +40,8 @@ jobs:
           python3 evals/unit_test.py
       - name: Worker loop (scripted model, fake tools)
         run: python3 evals/worker_loop_test.py
+      - name: The packet's labelled-set check (no model)
+        run: python3 evals/packet_check.py
       - name: Workflow files are valid (actionlint, pinned)
         run: |   # a workflow file that doesn't parse silently disables integration and releases (it happened)
           curl -fsSL -o actionlint.tgz https://github.com/rhysd/actionlint/releases/download/v1.7.12/actionlint_1.7.12_linux_amd64.tar.gz
