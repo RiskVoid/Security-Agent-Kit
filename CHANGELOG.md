@@ -58,6 +58,13 @@ changes to the harness are measured.
   benchmark run must exercise exactly what a real engagement runs, and its unit tests stub the same module's
   HTTP and control-plane edges instead of a private path. The runner keeps only what is genuinely unattended:
   the auto-approved approvals, the nudges, the caps — all through the shared `send` and `pause_one`.
+- A killed benchmark runner pauses its conversation instead of orphaning it (SIGTERM/SIGINT: a timeout killed a
+  run mid-flight and left the agent testing with nobody watching).
+- Worker results name the citable evidence: `run_evidence` lists the verified-evidence files each of the task's
+  commands produced, the step files are called transcripts everywhere, and citing anything under
+  `evidence/tasks/` — as coverage evidence or a finding's evidence, existing or not — is refused with the
+  doctrine and where the citable files are. Before, the result named the step-file folder "evidence_dir" and a
+  planner did the reasonable thing with it.
 
 ### Verification
 - A confirmed finding's quotes are compared with its evidence files. Quotes that are not there are listed in the
