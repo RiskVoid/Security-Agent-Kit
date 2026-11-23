@@ -61,6 +61,40 @@ TASKS: dict[str, dict] = {}
 # How many tasks run at once. 1 (default) suits a single-slot llama-server on Colab; raise it for an endpoint that
 # serves parallel requests (an API, or llama-server with --parallel N).
 MODEL_LOCK = threading.BoundedSemaphore(max(1, int(os.environ.get("WORKER_PARALLEL_TASKS", "1") or 1)))
+TOOL_LOCK = threading.BoundedSemaphore(max(1, int(os.environ.get("WORKER_PARALLEL_TOOLS", "2") or 2)))
+ENG_TASK_LOCKS = {}   # #107: per engagement, WORKER_ENG_PARALLEL tasks at once (the target's own capacity)
+WRITE_LOCKS = {}      # #107: (engagement, identity) -> lock: intrusive tasks through one identity serialize
+TOOL_WAIT_S = float(os.environ.get("WORKER_TOOL_WAIT_S", "120") or 120)   # #107: a busy engagement's wait bound
+BUSY_POLL_S = 5.0     # how often a busy refusal is retried
+
+
+def _eng_lock(eng):
+    n = max(1, int(os.environ.get("WORKER_ENG_PARALLEL", "2") or 2))
+    with _LOCKS_GUARD:
+        return ENG_TASK_LOCKS.setdefault(eng, threading.BoundedSemaphore(n))
+
+
+def _write_lock(task):
+    """#107: intrusive tasks that act through the same identity serialize - two writers on one account or
+    fixture race each other and the target. Read-only tiers never take this lock."""
+    ident = ((task.get("contract") or {}).get("cell") or {}).get("identity") or task.get("identity")
+    if task.get("tier") != "intrusive" or not ident:
+        return None
+    with _LOCKS_GUARD:
+        return WRITE_LOCKS.setdefault((task["engagement"], str(ident)), threading.Lock())
+
+
+_LOCKS_GUARD = threading.Lock()
+
+
+def _queue_wait(task, kind, seconds):
+    """#107: a wait the task didn't choose - model, a tool slot, the target's task limit, a fixture - recorded
+    by kind and not charged to the task's own timeout (the deadline extends by waited_s)."""
+    if seconds <= 0.05:
+        return
+    q = task.setdefault("queue", {})
+    q[kind] = round(q.get(kind, 0.0) + seconds, 1)
+    task["waited_s"] = task.get("waited_s", 0) + seconds
 
 # finish (epic #52, issue #40): what the model can say about its task, and what the harness says when the task ends
 # another way. A task's outcome is one of OUTCOMES.
@@ -251,18 +285,22 @@ def engagement_info(engagement):
     return json.loads(out)
 
 
+TARGET_BUSY_RX = re.compile(r"REFUSED: \d+ (?:network )?command\(s\) already running", re.I)
+
+
 def kali_run(task, command, timeout_s=600, approval_id=""):
     """kali-mcp enforces the task's tier (max_tier), not only the prompt."""
     t = min(int(timeout_s or 600), 3600)
-    return _arun(_kali("run", {"command": command, "engagement": task["engagement"], "timeout_s": t,
-                               "max_tier": task["tier"], "task": task["id"], "approval_id": approval_id or ""}, t))
+    body = {"command": command, "engagement": task["engagement"], "timeout_s": t,
+            "max_tier": task["tier"], "task": task["id"], "approval_id": approval_id or ""}
+    return _arun(_kali("run", body, t))
 
 
 def http_request(task, method, url, headers=None, body="", approval_id="", identity=""):
-    return _arun(_kali("http_request", {"engagement": task["engagement"], "method": method, "url": url,
-                                        "headers": headers or {}, "body": body or "", "max_tier": task["tier"],
-                                        "task": task["id"], "approval_id": approval_id or "",
-                                        "identity": identity or ""}, 300))
+    req = {"engagement": task["engagement"], "method": method, "url": url, "headers": headers or {},
+           "body": body or "", "max_tier": task["tier"], "task": task["id"], "approval_id": approval_id or "",
+           "identity": identity or ""}
+    return _arun(_kali("http_request", req, 300))
 
 
 def check_identity(task, identity):
@@ -802,7 +840,10 @@ def advise(task, kind, detail):
     req = urllib.request.Request(f"{LITELLM}/chat/completions", data=json.dumps(body).encode(), headers=hdrs)
     rec = {"at": _now(), "kind": kind}
     try:
-        r = json.load(urllib.request.urlopen(req, timeout=180))
+        t_lock = time.time()
+        with MODEL_LOCK:            # #106: an advice call is a model call, nothing more
+            _queue_wait(task, "model", time.time() - t_lock)
+            r = json.load(urllib.request.urlopen(req, timeout=180))
         text = (r["choices"][0]["message"].get("content") or "").strip()
         rec.update(tokens=r.get("usage"), model=r.get("model"))
     except Exception as e:  # noqa: BLE001 - no advice: the task stops as stalled instead
@@ -1162,7 +1203,21 @@ def _do_call_inner(task, c, messages):
     rec.update(state="started", at=_now(), **({"approval": ap["id"]} if ap else {}))
     save(task, messages)  # checkpoint: the action may run from here on
     try:
-        out = IMPL[name](task, **args, **extra)
+        with TOOL_LOCK:            # #107: running tools have their own limit, separate from the model's
+            out = IMPL[name](task, **args, **extra)
+            if name in ("kali_run", "http_request") and TARGET_BUSY_RX.match(str(out or "").strip()):
+                # #107: the call was refused because the engagement is at its parallel limit, so it never
+                # ran - wait for a slot and send it again, bounded, instead of an error the model retries
+                waited = 0.0
+                while waited < TOOL_WAIT_S:
+                    poll = min(BUSY_POLL_S, TOOL_WAIT_S - waited)
+                    time.sleep(poll)
+                    waited += poll
+                    out = IMPL[name](task, **args, **extra)
+                    if not TARGET_BUSY_RX.match(str(out or "").strip()):
+                        break
+                if waited:
+                    _queue_wait(task, "tool", waited)
     except Exception as e:  # tool errors go back to the model
         out = f"ERROR: {type(e).__name__}: {e}"
     m = APPROVAL_RX.search(out) if name in ("kali_run", "http_request") and not extra else None
@@ -1232,7 +1287,6 @@ def _loop(task, log):
             task["packet"] = {"ids": pk["ids"], "revisions": pk["revisions"], "at": _now()}
     # "Worker model: private" in RULES.md: never use the fallback model (tool output and code stay on the endpoint)
     model = "private-llm" if task["info"]["rules"].get("worker") == "private" else WORKER_MODEL
-    deadline = task["started"] + task["timeout_min"] * 60 + task.get("waited_s", 0)
     while True:
         while task["pending_calls"]:  # the rest of the current assistant turn (also after an approval)
             r = _do_call(task, task["pending_calls"][0], messages)
@@ -1243,6 +1297,11 @@ def _loop(task, log):
             task["pending_calls"].pop(0)
             save(task, messages)
         _stop_check(task)
+        if "queue_s" not in task:      # #79/#106: the queue ends at the first model call, and the timeout
+            with MODEL_LOCK:           # counts the task's own running time from there, not the wait
+                task["queue_s"] = round(max(0.0, time.time() - task["started"] - task.get("waited_s", 0)), 1)
+                task["started"] = time.time()
+        deadline = task["started"] + task["timeout_min"] * 60 + task.get("waited_s", 0)
         if time.time() > deadline:
             raise TimeoutError(f"task exceeded {task['timeout_min']} min")
         task["step"] += 1
@@ -1252,7 +1311,10 @@ def _loop(task, log):
         compact(messages, task.get("lines"), task=task)
         if task["step"] > task["max_steps"]:  # out of tool budget: force a final answer
             messages.append({"role": "user", "content": "Tool budget used up. Call finish now."})
-        msg = chat(messages, model, task)
+        t_lock = time.time()
+        with MODEL_LOCK:            # #106: held only for the model call, released before the tools run
+            _queue_wait(task, "model", time.time() - t_lock)
+            msg = chat(messages, model, task)
         if msg.get("_served_by") and msg["_served_by"] not in task["served_by"]:
             task["served_by"].append(msg["_served_by"])
         messages.append({k: v for k, v in msg.items() if k in ("role", "content", "tool_calls")})
@@ -1300,7 +1362,11 @@ def no_answer(task, msg, messages):
 
 
 def run_task(task):
-    """Run (or continue) a task until it finishes, pauses for an approval or stops."""
+    """Run (or continue) a task until it finishes, pauses for an approval or stops. #106: the model semaphore
+    is held only around each model call (below, in _loop and advise), released before a tool runs - a long scan
+    no longer keeps every other task away from an idle model endpoint. In its place the task holds the
+    engagement's own limit (#107) and, when it writes through an identity, that identity's lock; a task's own
+    steps stay one at a time and every durable checkpoint is kept."""
     _defaults(task)
     os.makedirs(task_dir(task), exist_ok=True)
     TASKS[task["id"]] = task
@@ -1310,49 +1376,59 @@ def run_task(task):
         "rv.max_steps": task["max_steps"]}, trace_key=task["id"],
         content=tracing.content_allowed((task.get("info") or {}).get("rules")))
     sp.content_attr("rv.task.goal", task.get("goal"))
-    with sp, MODEL_LOCK, open(os.path.join(task_dir(task), "transcript.jsonl"), "a") as log:
-        status, err = None, None
+    locks = []   # #107: the target's own task limit, then (for a writer) its identity lock
+    for lk, kind in ((_eng_lock(task["engagement"]), "target"), (_write_lock(task), "fixture")):
+        if lk is None:
+            continue
+        t0 = time.time()
+        lk.acquire()
+        _queue_wait(task, kind, time.time() - t0)
+        locks.append(lk)
+    status, err = None, None
+    try:
         task.pop("outcome", None)
-        if "queue_s" not in task:   # #79: the wait before this task's first model call - the lock, the queue,
-            task["queue_s"] = round(max(0.0, time.time() - task["started"] - task.get("waited_s", 0)), 1)
-        try:
-            _stop_check(task)
-            task["status"] = "running"
-            save(task)
-            status = _loop(task, log)
-        except Stop as s:
-            status, err = s.args[0], s.args[1]
-        except ModelBusy as e:
-            status, err = "error", (f"the worker model stayed rate-limited or overloaded after {len(BUSY_WAITS) + 1} "
-                                    f"tries (HTTP {e.code}): {e.detail}")
-            task["outcome"] = "provider_error"
-        except ModelRefused as e:
-            halted = False
+        with sp, open(os.path.join(task_dir(task), "transcript.jsonl"), "a") as log:
             try:
-                halted = engagement_info(task["engagement"]).get("halted")
-            except Exception:  # noqa: BLE001
-                pass
-            status, err = ("halted", f"engagement {task['engagement']} was halted") if halted else \
-                ("error", f"the model gateway refused the call: {e.detail}")
-            if not halted:
-                task["outcome"] = "model_refused"
-        except urllib.error.URLError as e:
-            status, err = "error", f"worker model unreachable ({e}). Start it with /rv-start, then retry."
-            task["outcome"] = "provider_error"
-        except Exception as e:
-            status, err = "error", f"{type(e).__name__}: {e}"
-        task["status"] = status
-        if err:
-            task["error"] = err
-        sp.set("rv.status", status).set("rv.outcome", task.get("outcome")).set("rv.steps", task.get("step"))
-        if err:
-            sp.error(err)
-        if status != "awaiting_approval":
-            task["finished"] = time.time()
-            task.pop("lease", None)
-            log.write(json.dumps({"ts": _now(), "end": status, "result": task.get("result"),
-                                  "error": task.get("error")}) + "\n")
-        save(task)
+                _stop_check(task)
+                task["status"] = "running"
+                save(task)
+                status = _loop(task, log)
+            except Stop as st:
+                status, err = st.args[0], st.args[1]
+            except ModelBusy as e:
+                status, err = "error", (f"the worker model stayed rate-limited or overloaded after "
+                                        f"{len(BUSY_WAITS) + 1} tries (HTTP {e.code}): {e.detail}")
+                task["outcome"] = "provider_error"
+            except ModelRefused as e:
+                halted = False
+                try:
+                    halted = engagement_info(task["engagement"]).get("halted")
+                except Exception:  # noqa: BLE001
+                    pass
+                status, err = ("halted", f"engagement {task['engagement']} was halted") if halted else \
+                    ("error", f"the model gateway refused the call: {e.detail}")
+                if not halted:
+                    task["outcome"] = "model_refused"
+            except urllib.error.URLError as e:
+                status, err = "error", f"worker model unreachable ({e}). Start it with /rv-start, then retry."
+                task["outcome"] = "provider_error"
+            except Exception as e:
+                status, err = "error", f"{type(e).__name__}: {e}"
+            task["status"] = status
+            if err:
+                task["error"] = err
+            sp.set("rv.status", status).set("rv.outcome", task.get("outcome")).set("rv.steps", task.get("step"))
+            if err:
+                sp.error(err)
+            if status != "awaiting_approval":
+                task["finished"] = time.time()
+                task.pop("lease", None)
+                log.write(json.dumps({"ts": _now(), "end": status, "result": task.get("result"),
+                                      "error": task.get("error")}) + "\n")
+            save(task)
+    finally:
+        for lk in reversed(locks):
+            lk.release()
     if status == "awaiting_approval":
         threading.Thread(target=await_approval, args=(task,), daemon=True).start()
 

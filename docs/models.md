@@ -243,7 +243,7 @@ model is connected.
 
 | Limit | Value |
 |---|---|
-| Tasks at a time | one by default (`WORKER_PARALLEL_TASKS`): Colab handles one request at a time, so delegated tasks queue. Raise it for an endpoint that serves parallel requests |
+| Tasks at a time | model calls one at a time by default (`WORKER_PARALLEL_TASKS`): Colab handles one request at a time. Since #106 the semaphore covers only the model call itself, so a task whose tool runs long no longer blocks every other task's model; tools overlap up to `WORKER_PARALLEL_TOOLS` and each engagement runs up to `WORKER_ENG_PARALLEL` tasks, with intrusive tasks through one identity serialized |
 | Tool calls per task | `max_steps`, 15 by default, 1–40 |
 | Time per task | `timeout_min`, 30 by default, 1–180 minutes |
 | Context | about 90,000 characters (~25K tokens, fits the L4 profile's 32K). Past it, older tool results shrink to one line each (tool, command, exit status, digest, evidence path); the latest five stay whole. Each step's full output is saved in `/work/<engagement>/evidence/tasks/<task_id>/step-NN-<tool>.txt` |

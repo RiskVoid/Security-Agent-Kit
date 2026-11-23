@@ -164,6 +164,9 @@ services:
       WORKER_MODEL: colab-qwen
       WORKER_CONTEXT_CHARS: ${WORKER_CONTEXT_CHARS:-90000}   # task context budget; raise for bigger model contexts
       WORKER_PARALLEL_TASKS: ${WORKER_PARALLEL_TASKS:-1}     # tasks at once; raise only if the endpoint serves parallel requests
+      WORKER_PARALLEL_TOOLS: ${WORKER_PARALLEL_TOOLS:-2}   # tool calls at once (#106/#107); the model lock covers model calls only
+      WORKER_ENG_PARALLEL: ${WORKER_ENG_PARALLEL:-2}       # tasks of one engagement at once (#107)
+      WORKER_TOOL_WAIT_S: ${WORKER_TOOL_WAIT_S:-120}       # a busy target is waited for, bounded (#107)
       WORKER_MAX_TOKENS: ${WORKER_MAX_TOKENS:-8192}          # output tokens per worker model call, reasoning included
       RV_TRACING: ${RV_TRACING:-off}                        # ./rvkit tracing on: spans of tasks, model and tool calls
       RV_TRACE_ENDPOINT: http://otel-collector:4318   # the bundled collector on rvtrace: the worker has no route out

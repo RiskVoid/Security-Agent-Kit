@@ -220,6 +220,18 @@ changes to the harness are measured.
   engagement takes no message. Each one is in the audit log with who did it.
 
 ### Benchmarks
+- Model capacity is released while a tool runs (#106, phase E pulled forward): the worker's model semaphore
+  is held only around each model call - the worker's and the advisor's - instead of across a task's whole loop,
+  so a long scan no longer keeps every other task away from an idle model endpoint. Tools get their own limit
+  (`WORKER_PARALLEL_TOOLS`), a task's own steps stay one at a time with every durable checkpoint kept, and a
+  task's timeout counts its own running time: time queued for the model is recorded as queue delay (#79), not
+  charged. `WORKER_PARALLEL_TASKS` keeps its meaning for existing setups.
+- Tasks wait their turn on the target (#107): an engagement-level limit on tasks at once
+  (`WORKER_ENG_PARALLEL`), intrusive tasks that write through the same identity serialized (read-only tasks
+  never take that lock), and a call refused because the engagement is at its parallel limit - it never ran -
+  retried after a bounded wait (`WORKER_TOOL_WAIT_S`) instead of an error the model may fumble. The
+  engagement's rate and budgets hold across all tasks; every wait is recorded by kind (model, tool slot,
+  target, fixture) and not charged to the task's timeout.
 - The research board (#87): one row per open question - planned, blocked, or an outcome gone stale - with
   the last result that changed something, the blocker, the budget used (tasks, worker steps, worker tokens,
   target requests), and the next decision with its reason, computed from the records with no model. In
