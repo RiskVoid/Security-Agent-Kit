@@ -956,6 +956,8 @@ def run_task(task):
     with sp, MODEL_LOCK, open(os.path.join(task_dir(task), "transcript.jsonl"), "a") as log:
         status, err = None, None
         task.pop("outcome", None)
+        if "queue_s" not in task:   # #79: the wait before this task's first model call - the lock, the queue,
+            task["queue_s"] = round(max(0.0, time.time() - task["started"] - task.get("waited_s", 0)), 1)
         try:
             _stop_check(task)
             task["status"] = "running"

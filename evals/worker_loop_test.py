@@ -110,10 +110,26 @@ class Loop(unittest.TestCase):
         return [m["content"] for m in messages if m.get("role") == "tool"]
 
 
-class MalformedCalls(Loop):
-    """#33: broken arguments go back to the model as an error; the tool doesn't run."""
+    def test_run_task_records_its_queue_wait(self):   # #79: queue_s - the wait before the task's first model call
+        worker.chat = lambda messages, model=None, task=None: {
+            "role": "assistant", "content": None,
+            "tool_calls": [call("finish", {"status": "completed", "summary": "done", "confidence": "low"})]}
+        task = worker._defaults({"id": "t-q", "goal": "g", "engagement": "eng", "tier": "passive",
+                                 "info": worker.engagement_info("eng"), "max_steps": 3, "timeout_min": 5,
+                                 "status": "running", "started": time.time() - 120})
+        os.makedirs(worker.task_dir(task), exist_ok=True)
+        worker.run_task(task)
+        self.assertEqual(task["status"], "done")
+        self.assertIn("queue_s", task)                      # measured once, at the first model call
+        self.assertGreaterEqual(task["queue_s"], 0.0)
+        first = task["queue_s"]
+        worker.run_task(task)                               # a resumed task doesn't re-measure the queue
+        self.assertEqual(task["queue_s"], first)
 
+
+class MalformedCalls(Loop):
     def test_broken_json_is_not_run(self):
+        """#33: broken arguments go back to the model as an error; the tool doesn't run."""
         task, msgs = self.run_script([[call("kali_run", None, raw='{"command": "ls /src/x"')],
                                       [call("kali_run", {"command": "ls /src/x"})]])
         self.assertEqual(self.ran, ["ls /src/x"])                      # only the valid call ran

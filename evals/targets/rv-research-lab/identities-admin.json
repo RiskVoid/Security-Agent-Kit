@@ -1,0 +1,5 @@
+[
+  {"username": "alice@acme.test", "password": "alice-pass", "role": "user", "tenant": "acme"},
+  {"username": "bob@brit.test", "password": "bob-pass", "role": "user", "tenant": "brit"},
+  {"username": "admin@acme.test", "password": "admin-pass", "role": "admin", "tenant": "acme"}
+]

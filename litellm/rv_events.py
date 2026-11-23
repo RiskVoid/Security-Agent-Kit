@@ -31,6 +31,9 @@ except ImportError:  # unit tests import classify() without LiteLLM installed
 
 EVENTS = os.environ.get("RV_EVENTS_FILE", "/rv-events/model-events.jsonl")
 MAX_BYTES = 512_000                       # the log is trimmed to its newer half beyond this
+USAGE = os.environ.get("RV_USAGE_FILE", "/rv-events/usage.jsonl")
+USAGE_MAX_BYTES = 4_000_000                # the per-call usage ledger (#79's tokens-at-first-finding), trimmed the
+                                          # same way; runs read it right after they end, so their rows are never cut
 WORKER = {"colab-qwen", "private-llm", "colab-qwen-fallback"}
 MODEL_VAR = {"planner": "PLANNER_MODEL", "planner-fallback": "PLANNER_FALLBACK_MODEL", "validator": "VALIDATOR_MODEL",
              "colab-qwen": "WORKER_MODEL_ID",
@@ -159,6 +162,33 @@ def record(kind, group, message, **extra):
     except OSError:
         pass
     return ev
+
+
+def record_usage(group, eng, response):
+    """#79: one row per successful model call - when it answered and what it used. The benchmark's efficiency
+    measures read it back for the tokens spent up to the first verified finding. Never raises."""
+    u = getattr(response, "usage", None)
+    if u is None:
+        return
+    cached = getattr(u, "prompt_tokens_details", None)
+    row = {"ts": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), "engagement": eng, "model": group,
+           "model_id": os.environ.get(MODEL_VAR.get(group, ""), ""),
+           "prompt_tokens": int(getattr(u, "prompt_tokens", 0) or 0),
+           "completion_tokens": int(getattr(u, "completion_tokens", 0) or 0),
+           "cached_tokens": int(getattr(cached, "cached_tokens", 0) or 0) if cached else 0}
+    try:
+        os.makedirs(os.path.dirname(USAGE), exist_ok=True)
+        if os.path.exists(USAGE) and os.path.getsize(USAGE) > USAGE_MAX_BYTES:
+            with open(USAGE) as f:
+                lines = f.readlines()
+            with open(USAGE + ".tmp", "w") as f:
+                f.writelines(lines[len(lines) // 2:])
+            os.replace(USAGE + ".tmp", USAGE)
+        with open(USAGE, "a") as f:
+            f.write(json.dumps(row) + "\n")
+    except (OSError, TypeError, ValueError):
+        pass
+    return row
 
 
 def fallback_for(group):
@@ -365,6 +395,7 @@ class RvEvents(CustomLogger):
 
     async def async_post_call_success_hook(self, data, user_api_key_dict, response):
         group, eng = data.get("model"), engagement_of(data)
+        record_usage(group, eng, response)
         hp = getattr(response, "_hidden_params", None) or {}
         served = hp.get("model_group") or (hp.get("additional_headers") or {}).get("x-litellm-model-group")
         if served and group and served != group:

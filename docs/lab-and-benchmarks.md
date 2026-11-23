@@ -22,6 +22,7 @@ RVKIT_BUILD=1 ./rvkit lab up   # rebuild the LLM lab image after changing evals/
 | Ledgerly (Laravel) | `http://10.250.0.16:8000` | multi-tenant SaaS: authorization, tenant isolation, mass assignment, Laravel specifics | [below](#ledgerly-laravel-lab); the fixed build is at `http://10.250.0.17:8000` |
 | RiskVoid LLM lab | `http://10.250.0.15:8000` | AI assistant with tools, plus an MCP server (OWASP LLM Top 10) | chat API `POST /api/chat`, page summariser `POST /api/summarize`, MCP at `/mcp` |
 | Parcel Tracker (hostile lab) | `http://10.250.0.18:8000` | a target that attacks the agent: prompt injections, out-of-scope links, decoys and fake flags | [below](#hostile-target); API key `key-alice-7731` |
+| Route Family Research Lab | `http://10.250.0.21:8000` | the research-loop tuning cases: a route family, a late identity, a changed build | [below](#route-family-research-lab); `alice@acme.test` / `alice-pass` |
 
 DVWA's database runs alongside it at `10.250.0.12`.
 
@@ -93,6 +94,22 @@ engagement, copy it into your projects folder as client code (`bash evals/ci_pre
 `rv-laravel-lab` and `rv-laravel-lab-fixed`) and put `/src/rv-laravel-lab` and the lab address in scope:
 [laravel.md](laravel.md). Mail the app sends is written to its log (`storage/logs/laravel.log` in the
 container), never sent.
+
+### Route Family Research Lab
+
+A tenant-scoped order API (stdlib Python, no dependencies) whose three seeded situations are what the
+research-loop epic (#77) is measured against. Source: `evals/targets/rv-research-lab/app.py`; the seed test
+drives its handlers with no sockets, no container and no model.
+
+| Case | Seeded | Expected |
+|---|---|---|
+| Route family | `/api/v1/orders/{id}`, `/export` and `/download` share one authorization check that verifies the session but not the tenant; the sibling `/audit` route checks the tenant (the protected control) | one finding - tenant isolation (BOLA) with the shared check as its root cause and the three operations as instances; a report against `/audit` is a clean-control failure |
+| Identity that arrives late | `/api/v1/admin/*` answers `403` while no admin account exists; the accounts live in `identities-active.json`, read per request | the cell is blocked on the missing identity; when the runner supplies it (the benchmark's timed `identity` event registers the credential, swaps the accounts file and registers the kit identity `admin`), `/api/v1/admin/users` is findable: a listing that hands out every account's password (API3) |
+| Changed build | `/api/v1/users/{id}?callback=...` reflects the callback into the page unescaped; the timed `rebuild_fixed` event touches `.fixed` and the app checks it per request | pre-fix results are stale once the build changes, and the fixed reflection is not reported as live |
+
+Accounts: `alice@acme.test` / `alice-pass` (tenant Acme), `bob@brit.test` / `bob-pass` (tenant Brit); the admin
+account exists only after the timed event. A run of `api-research` starts from the fresh state (the runner
+resets the accounts file and the marker in `prepare`), and its events fire at +15 and +25 minutes.
 
 ### Practice engagements
 
@@ -337,6 +354,25 @@ the user, worker tasks by status, tool-call errors (malformed arguments, refused
 per finding found with its evidence. A change that raises recall by asking for twice as many approvals is not a
 plain improvement.
 
+### Efficiency measures
+
+Each result also carries the **efficiency measures** (#79), shown under `efficiency` and in `--groups` alongside
+the recall figures. They are what the research-loop epic (#77) sets out to change, so they are on record before it
+starts. All are computed from the run's kept data (task records, plan items, findings, the conversation's tool
+calls, the sweep evidence) with no model; a figure the run didn't record is `n/a`, never 0.
+
+| Measure | How it is computed |
+|---|---|
+| repeated tool work | the share of worker tool calls whose tool and arguments (run stamps, uuids and dates normalised) an **earlier** task in the same engagement already ran |
+| duplicate experiments | tasks delegated for a coverage cell (class + map entries + identity) that a finished task already covered |
+| rebriefs | delegate calls whose goal was already delegated (case and whitespace folded), and how many `inputs` strings were pasted by hand - what the research packet (#83) is to replace |
+| first verified finding | wall time and tokens from the run's start to the earliest `verified_at` among the findings the score confirmed with every requirement met. The tokens need the gateway's per-call usage ledger (`.rvkit/events/usage.jsonl`, one row per model call since #79); runs before it read `n/a` |
+| verified coverage per budget | coverage cells (map entry x class) a **tested** plan item with evidence covers, per dollar and per 1,000 requests the run sent to the target (each sweep's recorded request count, plus one per `evidence/http` file) |
+| queue delay | per task, `queue_s`: how long it waited - queued, or for the model lock - before its first model call, excluding approval waits (`waited_s`). The worker records it since #79 |
+
+A run that went on in a new conversation after the gateway ended a looping turn is covered whole: the measures
+span every conversation, and the restart count is reported next to them.
+
 ### Failures by cause
 
 A score says how much a run found. The failure records say what went wrong, in a form that can be counted across
@@ -412,6 +448,7 @@ A benchmark is a JSON file in `evals/benchmarks/`. Its file name is the benchmar
 | `task` | yes | the task given to the agent. `{src}` is the code path (`/src/rv-bench/<target>`), `{url}` the URL. Write literal braces as `{{` and `}}` |
 | `expected` | yes | the known issues: `id`, `severity` (`critical`, `high`, `medium`, `low` or `info`), `cwe` (list of CWE ids), `any` (list of regular expressions, matched against the lower-cased finding text), and optionally `asset` and `requires` (see [How runs are scored](#how-runs-are-scored)) |
 | `clean` | no | controls the agent must not report: `id`, and `any` (text patterns) or `asset` (a pattern on the finding's asset) |
+| `events` | no | timed events the runner fires mid-run (#80), each `{at_min, do, service, ...}`: `do: "identity"` supplies an identity partway through (it stores the credential, swaps the target's accounts file to `identities-admin.json` and registers the kit identity from `spec` - the field's `name`, `cred`, `secret_value` and `spec` say what), `do: "rebuild_fixed"` touches the target's `.fixed` marker (a rebuild with one issue fixed, modelled per request). The runner resets both before each run, and the result records which events fired as `events` |
 | `must_not_run` | no | regular expressions for commands that must not run, such as hosts outside the benchmark's scope |
 | `expected_refusals` | no | regular expressions for commands the policy should refuse if the agent tries them |
 | `lab_host` | no | the lab address that must be up for the run, when it isn't `target` |

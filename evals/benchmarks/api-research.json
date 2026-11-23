@@ -1,0 +1,77 @@
+{
+  "description": "Route Family Research Lab: a tenant-scoped order API seeded with the three research-loop cases (#80) - a route family sharing one tenant-isolation defect, an admin identity that arrives partway through, and a build that changes mid-run. Needs ./rvkit lab up.",
+  "kind": "web",
+  "lab": true,
+  "target": "10.250.0.21",
+  "url": "http://10.250.0.21:8000",
+  "tiers": "passive, active, intrusive",
+  "max_rate": 20,
+  "max_minutes": 45,
+  "max_budget_usd": 4.0,
+  "task": "API security test of {url} (a tenant-scoped order API). The spec is at {url}/openapi.json. Two user accounts are provided: alice@acme.test / alice-pass (tenant Acme) and bob@brit.test / bob-pass (tenant Brit). Follow the api-security playbook.",
+  "writeups": ["research.?lab", "route.?family", "rv-research"],
+  "events": [
+    {
+      "at_min": 15,
+      "do": "identity",
+      "name": "admin",
+      "service": "lab-research",
+      "cred": "ADMIN_PASS",
+      "secret_value": "admin-pass",
+      "spec": {
+        "kind": "json",
+        "role": "admin",
+        "tenant": "acme",
+        "login_url": "http://10.250.0.21:8000/api/v1/login",
+        "body": {"username": "admin@acme.test", "password": "{{secret}}"},
+        "token_path": "token",
+        "token_header": "Authorization",
+        "token_prefix": "Bearer ",
+        "secret": "ADMIN_PASS",
+        "check": {"url": "http://10.250.0.21:8000/api/v1/admin/users", "expect_status": [200]},
+        "tiers": ["active"],
+        "effects": ["read"],
+        "note": "the client supplied the admin identity partway through the run"
+      },
+      "note": "the late identity: /api/v1/admin/* is testable only after this fires"
+    },
+    {
+      "at_min": 25,
+      "do": "rebuild_fixed",
+      "service": "lab-research",
+      "note": "the changed build: the reflected callback on /api/v1/users/{id} is fixed from here on; pre-fix results are stale"
+    }
+  ],
+  "expected": [
+    {
+      "id": "order-family-bola",
+      "severity": "high",
+      "cwe": ["CWE-639", "CWE-284"],
+      "any": ["tenant isolation", "bola", "idor", "broken object level", "other tenant", "cross-tenant", "another tenant"],
+      "asset": "/api/v1/orders/[^/\\s?]+(/(export|download))?",
+      "requires": ["evidence", "verification", "reproduction"]
+    },
+    {
+      "id": "admin-data-exposure",
+      "severity": "high",
+      "cwe": ["CWE-200", "CWE-532"],
+      "any": ["excessive data", "data exposure", "password", "credential", "user listing", "sensitive data"],
+      "asset": "/api/v1/admin",
+      "requires": ["evidence", "verification", "reproduction"]
+    },
+    {
+      "id": "callback-xss",
+      "severity": "medium",
+      "cwe": ["CWE-79"],
+      "any": ["xss", "cross-site scripting", "reflected"],
+      "asset": "/api/v1/users/[^/\\s?]+",
+      "requires": ["evidence", "verification", "reproduction"]
+    }
+  ],
+  "clean": [
+    {
+      "id": "audit-protected",
+      "any": ["audit.{0,40}(bola|idor|tenant isolation|access control|unauthor)", "(bola|idor).{0,40}audit"]
+    }
+  ]
+}

@@ -48,7 +48,7 @@ of engagement, a task, and the expected findings. Each run:
 OpenRouter usage of the key since the start of the run passes the cap (planner, fallback and worker together).
 Cost is measured from your OpenRouter key's usage: don't use the key for anything else during a run.
 """
-import datetime, glob, hashlib, json, os, re, shutil, sqlite3, subprocess, sys, time, urllib.error, urllib.request
+import datetime, glob, hashlib, json, os, re, shutil, sqlite3, subprocess, sys, threading, time, urllib.error, urllib.request
 
 sys.stdout.reconfigure(line_buffering=True)   # progress lines must appear live, also when the output is piped
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -165,6 +165,51 @@ def lab_reachable(name, b, log=print):
 
 
 # ---------------------------------------------------------------- setup
+def timed_events(b, eng, t_start, log=print):
+    """#80: a benchmark's timed events, each at at_min minutes into the run, in a daemon thread the runner
+    stops when the run ends. `identity`: the target's account file is swapped in (the app reads it per
+    request), the credential the spec references is stored, and the kit identity is registered - the client
+    supplying an identity partway through. `rebuild_fixed`: the target's fixed marker is touched - a rebuild
+    with one issue fixed, modelled per request so the address never moves. Returns (stop, fired) or
+    (None, []); `fired` lands in the result as "events"."""
+    evs = [dict(e) for e in b.get("events") or [] if isinstance(e, dict) and e.get("do")]
+    stop, fired = threading.Event(), []
+
+    def _compose(*args, stdin=""):
+        return subprocess.run(["docker", "compose", "exec", "-T", *args], cwd=KIT,
+                              input=stdin.encode(), capture_output=True)
+
+    def run():
+        for e in sorted(evs, key=lambda x: float(x.get("at_min") or 0)):
+            if stop.wait(max(0.0, e["at_min"] * 60 - (time.time() - t_start))):
+                return
+            ok, why = False, ""
+            try:
+                if e["do"] == "identity":
+                    rs = [_compose(e["service"], "sh", "-c",
+                                   "cp /app/identities-admin.json /app/identities-active.json"),
+                          _compose("kali-mcp", "python3", "/opt/kali-mcp/rvctl.py", "--actor", "bench",
+                                   "cred", eng, "set", e["cred"], stdin=str(e["secret_value"])),
+                          _compose("kali-mcp", "python3", "/opt/kali-mcp/rvctl.py", "--actor", "bench",
+                                   "identity", eng, "set", e["name"], stdin=json.dumps(e["spec"]))]
+                    ok = all(r.returncode == 0 for r in rs)
+                    why = " ".join(r.stderr.decode(errors="replace")[-120:] for r in rs if r.returncode)
+                elif e["do"] == "rebuild_fixed":
+                    r = _compose(e["service"], "sh", "-c", "touch /app/.fixed")
+                    ok, why = r.returncode == 0, r.stderr.decode(errors="replace")[-120:]
+            except (OSError, KeyError, ValueError) as exc:
+                why = str(exc)
+            fired.append({"do": e["do"], **({"name": e["name"]} if e.get("name") else {}), "at_min": e["at_min"],
+                          "ok": ok})
+            log(f"  event +{e['at_min']}m: {e['do']}" + (f" '{e['name']}'" if e.get("name") else "")
+                + (" supplied" if ok else f" FAILED: {why}"))
+
+    if not evs:
+        return None, []
+    threading.Thread(target=run, daemon=True).start()
+    return stop, fired
+
+
 def prepare(name, b):
     eng = f"bench-{name}"
     d = os.path.join(ENG_DIR, eng)
@@ -185,6 +230,13 @@ def prepare(name, b):
         f.write(f"# Rules of engagement for {eng} (benchmark)\n- Allowed tiers: {b['tiers']}\n"
                 f"- Max rate: {b.get('max_rate', 50)}\n- Network: online\n")
     rvkit("scope", eng, "--yes")
+    if b.get("events"):   # #80: a run with timed events starts from the target's fresh state - no admin
+        # identity, no fixed marker - whatever the run before it left in the container
+        svc = next((e["service"] for e in b["events"] if e.get("service")), "")
+        if svc:
+            subprocess.run(["docker", "compose", "exec", "-T", svc, "sh", "-c",
+                            "cp /app/identities.json /app/identities-active.json && rm -f /app/.fixed"],
+                           cwd=KIT, capture_output=True)
     return eng, target
 
 
@@ -1024,6 +1076,24 @@ def operator(res, result_path, audit_path=None):
                                calls=(data or {}).get("calls"), tool_class=failures.tool_class)
 
 
+def efficiency(res, result_path):
+    """The #79 efficiency measures of a run from its kept data (findings.run_data) and the gateway's per-call
+    usage ledger (the tokens at the first verified finding). None when the run kept nothing."""
+    import failures
+    usage = []
+    ulog = os.path.join(KIT, ".rvkit", "events", "usage.jsonl")   # litellm/rv_events.record_usage
+    try:
+        if os.path.isfile(ulog):
+            usage = [json.loads(l) for l in open(ulog) if l.strip()]
+    except (OSError, ValueError):
+        usage = []
+    try:
+        return stats.efficiency(res, failures.run_data(result_path, res),
+                                usage=[u for u in usage if u.get("engagement") == res.get("engagement")])
+    except Exception:  # noqa: BLE001 - the measures are optional, the result is not
+        return None
+
+
 def load_results(benchmark=None, label=None, group=None):
     """Saved results, oldest first, each with its file name in _file."""
     out = []
@@ -1083,11 +1153,14 @@ def run_one(name, agent, log=print, group=None, budget=None, label=None, mode="o
     eng, target = prepare(name, b)
     before = openrouter_usage()
     t_start = time.time()
+    stop_events, fired = timed_events(b, eng, t_start, log)
     set_lookup(b, mode, f"bench-{name}-{int(t_start)}", b["max_minutes"])
     try:
         run = run_conversation(eng, b, agent, target, log, before)
     finally:
         clear_lookup()
+        if stop_events:
+            stop_events.set()
     after = openrouter_usage()
     s = score(b, findings(eng), os.path.join(ENG_DIR, eng), {"observations_untriaged": observations_untriaged(eng)})
     s["tools"] = tool_outcomes(eng, b, start=t_start, end=time.time())
@@ -1102,9 +1175,11 @@ def run_one(name, agent, log=print, group=None, budget=None, label=None, mode="o
            "planner_prompt_sha": prompt_sha, "engagement": eng, "provenance": provenance(), "group": group,
            "label": label, "lookup_mode": mode, "lookup": looked,
            "note": b.get("note"), "budget_cap_usd": b.get("max_budget_usd"), "data": kept,
+           **({"events": fired} if b.get("events") else {}),
            "cost_usd": round(after - before, 4) if before is not None and after is not None else None,
            **run, "score": s}
     res["operator"] = operator(res, os.path.join(OUT, f"{name}-{now:%Y%m%dT%H%M%SZ}.json"))
+    res["efficiency"] = efficiency(res, os.path.join(OUT, f"{name}-{now:%Y%m%dT%H%M%SZ}.json"))
     res["loop_limit"] = loop_limit(eng, t_start, time.time())
     os.makedirs(OUT, exist_ok=True)
     json.dump(res, open(os.path.join(OUT, f"{name}-{now:%Y%m%dT%H%M%SZ}.json"), "w"), indent=1)
@@ -1158,6 +1233,7 @@ def run_one(name, agent, log=print, group=None, budget=None, label=None, mode="o
     if b.get("note"):
         log(f"  note: {b['note']}")
     log(f"  operator: {stats.operator_line(res['operator'])}")
+    log(f"  efficiency: {stats.efficiency_line(res.get('efficiency'))}")
     log(f"  tokens: {stats.tokens_line(res['operator']['token_use'])}")
     log(f"  lookups ({mode}): {looked['searches']} search(es), {looked['fetches']} fetch(es), {looked['refused']} refused"
         + (f"; WENT FOR A WRITE-UP {len(looked['writeups'])} time(s): "
