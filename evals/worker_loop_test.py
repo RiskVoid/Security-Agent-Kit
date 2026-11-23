@@ -463,6 +463,17 @@ class NoAnswer(Loop):
         self.assertEqual(worker.outcome(task), "stalled")
         self.assertNotIn("worker_notes", json.loads(worker.report(task)))
 
+    def test_the_result_carries_the_citable_evidence_not_the_transcripts(self):
+        """A planner cited the task's step files as coverage evidence (the result used to name their folder
+        'evidence_dir'): the result now names the verified-evidence files each command produced (run_evidence)
+        and calls the step files what they are."""
+        task, _ = self.run_script([[call("kali_run", {"command": "semgrep /src/x"})],
+                                   [call("finish", {"status": "completed", "summary": "done."})]])
+        out = json.loads(worker.report(task))
+        self.assertEqual(out["run_evidence"], ["/work/eng/evidence/runs/001.txt"])
+        self.assertTrue(out["transcripts_dir"].endswith("evidence/tasks/t1"))
+        self.assertNotIn("evidence_dir", out)
+
     def test_an_answer_in_prose_comes_back_with_the_result(self):
         listed = "Candidates:\n1. server.js:31 SQL injection in /orders (CWE-89)"
         task, _ = self.run_script([{"content": listed, "tool_calls": [

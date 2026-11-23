@@ -3708,6 +3708,22 @@ class FindingTools(unittest.TestCase):
         finally:
             reconmap.matrix = real
 
+    def test_a_worker_transcript_cited_as_evidence_is_refused_with_the_doctrine(self):
+        """A run cited the task's step files as coverage evidence: the refusal names the doctrine and where the
+        citable files are, also when the transcript file does exist."""
+        import workspace
+        pid = workspace.plan_add("e", "agent:planner", [{"title": "x", "area": "injection"}])[0]
+        os.makedirs(os.path.join(self.tmp.name, "e", "evidence", "tasks", "t1"))
+        with open(os.path.join(self.tmp.name, "e", "evidence", "tasks", "t1", "step-01.txt"), "w") as f:
+            f.write("a transcript\n")
+        out = self.t.update_coverage("e", pid, "tested", evidence=["evidence/tasks/t1/step-01.txt"])
+        self.assertIn("transcripts, not evidence", out)
+        self.assertIn("run_evidence", out)
+        out = self.t.update_coverage("e", pid, "tested",
+                                     evidence=[os.path.join(self.tmp.name, "e", "evidence", "tasks", "t1",
+                                                            "nope.json")])
+        self.assertIn("transcripts, not evidence", out)   # also when the file doesn't exist
+
     def test_coverage_of_several_items_in_one_call(self):
         """#112: update_coverage was 21 of 59, 52 of 125 and 22 of 102 tool calls in three runs, one item each."""
         import workspace
