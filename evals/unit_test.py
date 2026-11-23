@@ -10,6 +10,7 @@ from unittest import mock
 KIT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path[:0] = [os.path.join(KIT, "kali-mcp"), os.path.join(KIT, "harness"), os.path.join(KIT, "scripts")]
 import core  # noqa: E402
+core_module = core
 import policy  # noqa: E402
 import reconmap  # noqa: E402
 import tierconf  # noqa: E402
@@ -3704,6 +3705,21 @@ class FindingTools(unittest.TestCase):
         self.assertEqual(out["evidence"], ["evidence/runs/r1.txt", "evidence/runs/r1.txt"])
         out = self.t.update_coverage("e", pid, "tested", evidence=["evidence/runs/nope.txt: see above"])
         self.assertEqual(out, "REFUSED: evidence/runs/nope.txt: no such file")
+
+    def test_a_blind_ssrf_payload_is_tiered_not_refused(self):
+        """#173: a command passing an out-of-scope host as data to an in-scope target (JSON body, --data,
+        a header) is the approval's business; the tool's own destination and a bare quoted URL stay refused."""
+        cases = [
+            ("rv-llm mcp-call http://10.250.0.15:8000/mcp run_diagnostics '{\"host\": \"http://169.254.169.254/\"}'", "169.254.169.254", True),
+            ("curl -s http://ok/x --data '{\"url\": \"http://169.254.169.254/\"}'", "169.254.169.254", True),
+            ("ffuf -u http://ok/FUZZ -H 'X-Backend: http://169.254.169.254'", "169.254.169.254", True),
+            ("nuclei -u http://out.com/x -t /opt/nuclei-templates", "out.com", False),
+            ("curl http://169.254.169.254/latest/", "169.254.169.254", False),
+            ("sqlmap -u 'http://out.com/x?id=1' --batch", "out.com", False),
+        ]
+        for command, host, want in cases:
+            self.assertEqual(core_module.payload_position(command, host), want,
+                             f"payload_position({command[:60]!r}, {host!r}) should be {want}")
 
     def test_a_gap_arrives_pre_shaped_as_two_calls(self):
         """#171: a coverage gap in the matrix listing carries the plan item to add and the delegate_task goal to
