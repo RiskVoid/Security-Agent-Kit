@@ -10,6 +10,8 @@ The kit competes on trust, not on autonomy: each item below extends scope enforc
 and human decisions rather than working around them. What the kit is tested and measured for today is in
 [docs/capability-baselines.md](docs/capability-baselines.md).
 
+Independent validation: the November 2026 GTIG report on [agentic threat activity](https://cloud.google.com/blog/topics/threat-intelligence/agentic-threat-activity-crosses-a-significant-threshold) names the leading tradecraft — multi-agent frameworks, differential patch analysis, machine-readable attack recipes — and separately warns that LLM-generated exploits "claimed to work but don't" are flooding defenders, which is exactly the verification gap the kit's deterministic oracles answer. Items 8–10 below turn the transferable techniques into governed capability; the evasion and full-autonomy parts are deliberately not adopted.
+
 ## Now (0.1.x): parity and proof
 
 Three fronts, one stance: the kit gains the offensive reach of the most capable autonomous frameworks —
@@ -50,6 +52,23 @@ work — all lab-verified with no model, running in CI. [CHANGELOG](CHANGELOG.md
 7. **More framework packs: Django and FastAPI first, then Spring, Rails and Go**, on the Laravel pattern. A pack
    is only claimed when it has a playbook, tiers, a lab target, a benchmark with clean controls and a measured
    row.
+8. **n-day research** (epic [#153](https://github.com/RiskVoid/Security-Agent-Kit/issues/153)): differential
+   patch analysis and governed weaponization — diff a patched and unpatched version to find the flaw a fix
+   closed, map it to its CVE and affected range, and decide whether a client's build is exposed. Passive and
+   offline; anything that runs against a target stays in the exploit pack (#139).
+9. **AI-agent supply chain** (epic [#154](https://github.com/RiskVoid/Security-Agent-Kit/issues/154)): the
+   report's agent-config and startup vectors — attacker-modified `.claude/settings.json`/MCP registrations that
+   drop a backdoor on startup, and LLMJacking. Adds the TTP to the ai-llm playbook and a lab target, and hardens
+   the kit's own `.claude/` and MCP trust model.
+10. **Executable attack recipes** (epic [#155](https://github.com/RiskVoid/Security-Agent-Kit/issues/155)): a
+    machine-readable form of the playbooks the worker follows step by step, with per-step evidence and the normal
+    approvals. Complements the Markdown playbooks; no new orchestrator.
+11. **Web workflow: the kit checks first** (epic [#168](https://github.com/RiskVoid/Security-Agent-Kit/issues/168)):
+    the fixed sweeps become the default phase of web testing — `probe_map` as the second half of the recon pass,
+    the authenticated surface swept when identities exist, and coverage gaps arriving as pre-shaped
+    `delegate_task` offers — because the free-model benchmark campaign measured the model skipping them in half
+    its web runs at 11–13M planner tokens each. With the capability gaps the same runs exposed: blind-SSRF
+    payloads approval-tiered instead of flatly refused, and `update_coverage`'s refusals teaching their shape.
 
 ## Later
 
