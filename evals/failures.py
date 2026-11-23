@@ -327,7 +327,7 @@ def run_data(result_path, res):
                     con.row_factory = sqlite3.Row
                     data["findings"] = _rows(con, "SELECT * FROM findings")
                     data["observations"] = _rows(con, "SELECT * FROM observations")
-                    data["plan"] = _rows(con, "SELECT id, title, state FROM plan_items")
+                    data["plan"] = _rows(con, "SELECT id, title, state, area, refs, identity, evidence FROM plan_items")
                     con.close()
             for name, m in sorted(members.items()):
                 if re.fullmatch(r"evidence/tasks/[^/]+/task\.json", name):
@@ -335,6 +335,18 @@ def run_data(result_path, res):
                         data["tasks"].append(json.load(tar.extractfile(m)))
                     except ValueError:
                         pass
+            # requests the run sent to the target (#79's coverage-per-budget denominator): the sweeps record
+            # their own request counts, every other request leaves one file under evidence/http
+            requests = 0
+            for name in members:
+                if re.fullmatch(r"evidence/sweep/[^/]+\.json", name):
+                    try:
+                        requests += int(json.load(tar.extractfile(members[name])).get("requests") or 0)
+                    except (ValueError, TypeError, AttributeError):
+                        pass
+                elif name.startswith("evidence/http/"):
+                    requests += 1
+            data["target_requests"] = requests or None
     conv = os.path.join(d, "conversation.json")
     if os.path.isfile(conv):
         try:

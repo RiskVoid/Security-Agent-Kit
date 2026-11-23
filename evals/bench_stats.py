@@ -96,20 +96,32 @@ def group_summary(runs):
     curve = lambda key, fn: {str(k): _r(avg(lambda it: fn(it[key], n, k))) for k in ks}
     all_found = sum(1 for r in runs if r["score"].get("per_expected") and all(_strict(p) for p in r["score"]["per_expected"]))
     figures = {}
-    for key, get in (("recall", lambda r: r["score"].get("recall")),
-                     ("strict_recall", lambda r: r["score"].get("strict_recall")),
-                     ("recorded_recall", lambda r: r["score"].get("recorded_recall")),
-                     ("precision", lambda r: r["score"].get("precision")),
-                     ("cost_usd", lambda r: r.get("cost_usd")),
-                     ("tokens_total", lambda r: run_tokens(r)["total"]),
-                     ("minutes", lambda r: (r.get("seconds") or 0) / 60),
-                     ("cost_per_verified", lambda r: (r.get("operator") or {}).get("cost_per_verified")),
-                     ("approvals_requested", lambda r: ((r.get("operator") or {}).get("approvals") or {}).get("requested")),
-                     ("questions", lambda r: (r.get("operator") or {}).get("questions")),
-                     ("tool_errors", lambda r: sum(((r.get("operator") or {}).get("tool_errors") or {}).values())
-                      if (r.get("operator") or {}).get("tool_errors") is not None else None)):
+    ev = lambda r, *path: ((r.get("efficiency") or {})  # noqa: E731  a #79 measure, None on runs without it
+                            .get(path[0]) or {}).get(path[1])
+    pairs = [("recall", lambda r: r["score"].get("recall")),
+             ("strict_recall", lambda r: r["score"].get("strict_recall")),
+             ("recorded_recall", lambda r: r["score"].get("recorded_recall")),
+             ("precision", lambda r: r["score"].get("precision")),
+             ("cost_usd", lambda r: r.get("cost_usd")),
+             ("tokens_total", lambda r: run_tokens(r)["total"]),
+             ("minutes", lambda r: (r.get("seconds") or 0) / 60),
+             ("cost_per_verified", lambda r: (r.get("operator") or {}).get("cost_per_verified")),
+             ("approvals_requested", lambda r: ((r.get("operator") or {}).get("approvals") or {}).get("requested")),
+             ("questions", lambda r: (r.get("operator") or {}).get("questions")),
+             ("tool_errors", lambda r: sum(((r.get("operator") or {}).get("tool_errors") or {}).values())
+              if (r.get("operator") or {}).get("tool_errors") is not None else None),
+             ("repeat_share", lambda r: ev(r, "repeated_tool_work", "share")),
+             ("duplicate_experiments", lambda r: ev(r, "duplicate_experiments", "duplicates")),
+             ("rebriefs", lambda r: ev(r, "rebriefs", "same_goal_again")),
+             ("first_verified_min", lambda r: ev(r, "first_verified", "min")),
+             ("first_verified_tokens", lambda r: ev(r, "first_verified", "tokens")),
+             ("queue_delay_s", lambda r: ev(r, "queue_delay", "mean_s")),
+             ("verified_cells", lambda r: ev(r, "verified_coverage", "cells")),
+             ("cells_per_usd", lambda r: ev(r, "verified_coverage", "per_usd"))]
+    for key, get in pairs:
         m, se, k = mean_se(get(r) for r in runs)
         figures[key] = {"mean": _r(m), "se": _r(se), "n": k}
+
     first = runs[0]
     return {"benchmark": first.get("benchmark"), "group": first.get("group"), "label": first.get("label"),
             "agent": first.get("agent"), "models": first.get("models"), "lookup": first.get("lookup_mode", "open"),
@@ -147,6 +159,14 @@ def print_group(g, out=print):
         out(f"    {bar:{max(n, 3)}} {it['id']:26} {it['severity'] or '':9} found {it['found']} of {n}, "
             f"with evidence {it['strict']} of {n}" + (f", left as a candidate {c} of {n}" if c else ""))
     out(f"    statuses {', '.join(map(str, g['statuses']))}")
+    fv, qd = f.get("first_verified_min") or {}, f.get("queue_delay_s") or {}
+    if (f.get("repeat_share") or {}).get("n"):   # runs saved since #79 carry the efficiency measures
+        out(f"    efficiency (#79): repeated tool work {fmt(f['repeat_share']['mean'], f['repeat_share']['se'], pct=True)}"
+            f" of worker calls, duplicate experiments {fmt(f['duplicate_experiments']['mean'])}, "
+            f"rebriefs {fmt(f['rebriefs']['mean'])}, first verified finding {fmt(fv.get('mean'), fv.get('se'))} min "
+            f"({fmt_tokens((f.get('first_verified_tokens') or {}).get('mean'))} tokens), "
+            f"queue delay {fmt(qd.get('mean'))}s, verified cells {fmt((f.get('verified_cells') or {}).get('mean'))} "
+            f"({fmt((f.get('cells_per_usd') or {}).get('mean'))} per $)")
 
 
 # ---------------------------------------------------------------- comparing two labelled sets
@@ -338,6 +358,175 @@ def operator_line(op):
             f"question(s) to the user, worker tasks {', '.join(f'{k} {v}' for k, v in sorted(wt.items())) or 'none'}, "
             f"tool errors {', '.join(f'{k} {v}' for k, v in te.items() if v) or 'none'}, cost per verified finding "
             f"{fmt(op.get('cost_per_verified'), money=True)}")
+
+
+# ---------------------------------------------------------------- efficiency measures (#79)
+# What a run did with its budget besides finding things: the same work twice, the same cell delegated again, the
+# goal told twice, how long the first verified finding took, and how long tasks waited for the model. Every figure
+# comes from the run's kept data (failures.run_data: task records, plan items, findings; calls from the
+# conversation), with no model. A figure the run didn't record is None: runs saved before #79 have no queue
+# delay, and the tokens at the first verified finding need the gateway's usage rows.
+STAMP_RX = re.compile(r"\d{8}T\d{6}Z?\b|\d{8}-\d{6}\b|\d{4}-\d{2}-\d{2}\b|[0-9a-f]{8}-[0-9a-f]{4}\b")
+
+
+def _clean_arg(x):
+    if isinstance(x, str):
+        return STAMP_RX.sub("<stamp>", re.sub(r"\s+", " ", x))
+    if isinstance(x, dict):
+        return {str(k): _clean_arg(v) for k, v in sorted(x.items(), key=lambda kv: str(kv[0]))}
+    if isinstance(x, list):
+        return [_clean_arg(v) for v in x]
+    return x
+
+
+def _call_key(tool, args):
+    """One tool call as a comparable key: tool + arguments with run stamps, uuids and dates replaced, keys
+    sorted, whitespace collapsed. Two calls with the same key did the same work."""
+    return f"{tool} {json.dumps(_clean_arg(args or {}), sort_keys=True, default=str)}"
+
+
+def _steps_of(task):
+    """The tool calls that ran: steps with a state, finish excluded (it ends the task, it isn't work)."""
+    return [s for s in task.get("steps") or [] if s.get("state") and (s.get("tool") or "") != "finish"]
+
+
+def _j(x):
+    """A JSON column read from the findings database, or its raw self when it isn't JSON."""
+    if isinstance(x, str):
+        try:
+            return json.loads(x)
+        except ValueError:
+            return x
+    return x
+
+
+def efficiency(res, data, usage=None):
+    """The #79 measures of one run. res: the result; data: failures.run_data(result_path, res); usage: the
+    gateway's per-call rows ({ts, model, engagement, prompt_tokens, completion_tokens}), or None when they
+    weren't kept. Returns None when the run kept no data at all."""
+    if not data:
+        return None
+    tasks = sorted(data.get("tasks") or [], key=lambda t: t.get("started") or 0)
+
+    # repeated tool work: a call whose (tool, arguments) an EARLIER task in the same engagement already ran
+    seen, calls, repeated = set(), 0, 0
+    for t in tasks:
+        own = set()
+        for s in _steps_of(t):
+            calls += 1
+            k = _call_key(s.get("tool"), s.get("args"))
+            own.add(k)
+            if k in seen:
+                repeated += 1
+        seen |= own
+    repeat = {"calls": calls or None, "repeated": repeated or None,
+              "share": round(repeated / calls, 3) if calls else None}
+
+    # duplicate experiments: a task delegated for a cell (class, entries, identity) a finished task already
+    # covered - the planner paid for the same experiment twice
+    plan = {p.get("id"): p for p in data.get("plan") or []}
+    done, dupes, celled = set(), 0, 0
+    for t in tasks:
+        cell = (t.get("contract") or {}).get("cell") or {}
+        if not cell.get("class"):
+            continue                      # not bound to a coverage cell: the rebrief measure carries it
+        celled += 1
+        key = (cell.get("class"), tuple(cell.get("entries") or []),
+               (plan.get(cell.get("plan_item")) or {}).get("identity"))
+        if key in done:
+            dupes += 1
+        elif t.get("status") == "done":
+            done.add(key)
+    dupes = {"cells": celled or None, "duplicates": dupes or None}
+
+    # rebriefs: the planner delegated the same goal again, and pasted `inputs` by hand (what the packet is to
+    # replace, #83): counted from the conversation's delegate calls, worker-side repeats above are separate
+    goals, delegates, rebriefs, pasted = {}, 0, 0, 0
+    for c in data.get("calls") or []:
+        if "delegate" not in (c.get("tool") or ""):
+            continue
+        delegates += 1
+        body = c.get("body")
+        if not isinstance(body, dict):
+            try:
+                body = json.loads(c.get("args") or "{}")
+            except ValueError:
+                body = {}
+        g = re.sub(r"\s+", " ", str(body.get("goal") or "")).strip().lower()
+        if g:
+            rebriefs += 1 if g in goals else 0
+            goals[g] = goals.get(g, 0) + 1
+        pasted += len(body.get("inputs") or [])
+    rebriefs = {"delegate_calls": delegates or None, "same_goal_again": rebriefs or None,
+                "inputs_pasted": pasted or None}
+
+    # time to first verified finding: the earliest verified_at among the findings the score confirmed with every
+    # requirement met, from the run's start. Tokens at that moment need the gateway's per-call usage rows.
+    start = (_ts(res.get("at")) or 0) - (res.get("seconds") or 0)
+    fnd = {f.get("id"): f for f in data.get("findings") or []}
+    vts = [_ts(fnd[p["found_by"]].get("verified_at")) for p in (res.get("score") or {}).get("per_expected") or []
+           if _strict(p) and fnd.get(p.get("found_by"))]
+    vts = [v for v in vts if v is not None and v >= start]
+    first = min(vts) if vts else None
+    tokens = None
+    if first is not None and usage:
+        eng = res.get("engagement")
+        rows = [u for u in usage if u.get("engagement") == eng and (_ts(u.get("ts")) or 0) <= first]
+        tokens = sum((u.get("prompt_tokens") or 0) + (u.get("completion_tokens") or 0) for u in rows) or None
+    first_verified = {"s": round(first - start, 1) if first is not None else None,
+                      "min": round((first - start) / 60, 1) if first is not None else None, "tokens": tokens}
+
+    # verified coverage per budget: coverage cells (map entry x class) a tested plan item with evidence
+    # covers, per dollar and per 1,000 requests the run sent to the target
+    cells = set()
+    for p in data.get("plan") or []:
+        if p.get("state") == "tested" and _j(p.get("evidence")):
+            for r in _j(p.get("refs")) or []:
+                cells.add((str(r), str(p.get("area"))))
+    cost, requests = res.get("cost_usd"), data.get("target_requests")
+    coverage = {"cells": len(cells) or None,
+                "per_usd": round(len(cells) / cost, 2) if cost and cells else None,
+                "per_1k_requests": round(len(cells) / requests * 1000, 2) if requests and cells else None}
+
+    # queue delay: how long each task waited (queued, or for the model lock) before its first model call - the
+    # worker records it as queue_s since #79; runs before have None
+    qs = [t["queue_s"] for t in tasks if isinstance(t.get("queue_s"), (int, float))]
+    m, se, n = mean_se(qs)
+    queue = {"tasks": n, "mean_s": round(m, 1) if m is not None else None,
+             "max_s": round(max(qs), 1) if qs else None}
+    return {"repeated_tool_work": repeat, "duplicate_experiments": dupes, "rebriefs": rebriefs,
+            "first_verified": first_verified, "verified_coverage": coverage, "queue_delay": queue,
+            "restarts": res.get("restarts") or 0}
+
+
+def efficiency_line(e):
+    """'repeated tool work 3 of 41 calls (7%), ...' - one line for the run summary, n/a where unrecorded."""
+    if not e:
+        return "efficiency n/a (no kept data)"
+    r, d, rb = e.get("repeated_tool_work") or {}, e.get("duplicate_experiments") or {}, e.get("rebriefs") or {}
+    fv, cov, q = e.get("first_verified") or {}, e.get("verified_coverage") or {}, e.get("queue_delay") or {}
+    parts = [
+        f"repeated tool work {fmt_pct(r.get('repeated'), r.get('calls'))}",
+        f"duplicate experiments {d.get('duplicates') or 0} of {d.get('cells') or 0} celled tasks",
+        f"rebriefs {rb.get('same_goal_again') or 0}" + (f" ({rb.get('inputs_pasted')} inputs pasted)"
+                                                        if rb.get("inputs_pasted") else ""),
+        "first verified finding " + (f"at {fv.get('min')} min ({fmt_tokens(fv.get('tokens'))} tokens)"
+                                     if fv.get("min") is not None else "n/a"),
+        "queue delay " + (f"mean {q.get('mean_s')}s max {q.get('max_s')}s over {q.get('tasks')} task(s)"
+                          if q.get("tasks") else "n/a"),
+        f"verified cells {cov.get('cells') or 0}"
+        + (f" ({fmt(cov.get('per_usd'))} per $, {fmt(cov.get('per_1k_requests'))} per 1k requests)"
+           if cov.get("cells") else ""),
+    ]
+    if e.get("restarts"):
+        parts.append(f"{e['restarts']} restart(s)")
+    return ", ".join(parts)
+
+
+def fmt_pct(k, n):
+    if not n:
+        return "none"
+    return f"{k or 0} of {n} calls ({fmt((k or 0) / n, pct=True)})"
 
 
 # ---------------------------------------------------------------- token use by role (#78)
