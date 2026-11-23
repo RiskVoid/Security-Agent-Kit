@@ -175,13 +175,14 @@ def gql_ops_in_js(text):
 
 
 def build(eng, url, depth=2, crawl_seconds=120, probe=True, max_tier=None, task=None, identity="",
-          max_scripts=None, max_probes=None):
+          max_scripts=None, max_probes=None, sweep=True):
     """Map one web target. Returns the summary text; the map is saved as evidence/map/map-<time>.json.
 
     identity: an engagement identity (./rvkit identity) whose session rides the second probe pass, so the
     surface behind login enters the map; entries it reaches are tagged seen_by. max_scripts and max_probes
     size the script and probe passes (defaults MAX_SCRIPTS and MAX_PROBES: Juice Shop-scale apps exceed
-    both)."""
+    both). sweep: run the kit's fixed checks on the map that was just built (#169) — the default second half
+    of the recon pass, not an instruction the model may skip; sweep=false maps only."""
     i = core.info(eng)
     entry = {"engagement": eng, "uid": i["uid"], "action": "recon_map", "url": url, **({"task": task} if task else {})}
     pol = core.policy_of(eng)
@@ -511,4 +512,34 @@ def build(eng, url, depth=2, crawl_seconds=120, probe=True, max_tier=None, task=
     text += [f"  note: {n}" for n in notes]
     text.append("get_map (findings) shows the merged map with entry ids (E-xxxxxx) to reference in plan_tests.")
     text.append(f"[map saved as verified evidence: /work/{eng}/{rel}]")
+    if sweep and obs:
+        # #169: the fixed checks run on the map that was just built — the free-model campaign measured the
+        # model skipping them in 2 of 4 web runs and hand-rolling 40-70 requests instead, at 11-13M planner
+        # tokens a run. The writes are only proposed as a matrix here; the reads are the same checks
+        # probe_map runs when called alone, and the sweep must never cost the map its delivery.
+        try:
+            import sweep as rvsweep
+            text += ["", "The kit's fixed checks ran on this map (recon_map sweeps by default; sweep=false maps "
+                     "only):", rvsweep.probe_map(eng, task=task, identity=identity)]
+        except Exception as e:  # noqa: BLE001
+            text.append(f"  (the fixed checks could not run: {type(e).__name__}: {e}; call probe_map yourself)")
+        # #170: every identity the engagement has gets its own pass — the surface behind login is where
+        # BOLA/BFLA live, and waiting for the model to remember identity= left it unmapped in half the
+        # measured runs. An identity that can't reach an entry reports as a skip with its reason, never a
+        # silence; a broken identity never costs the map its delivery.
+        try:
+            import identities
+            others = [i.get("name") for i in identities.identity_list(eng)
+                      if i.get("name") and i.get("name") != identity][:8]
+            for name in others:
+                try:
+                    text += [f"The same checks as {name} (the behind-login surface, #170):",
+                             rvsweep.probe_map(eng, checks="injection,redos,cors,headers,jwt", task=task,
+                                               identity=name)]
+                except Exception as e:  # noqa: BLE001
+                    text.append(f"  (the fixed checks as {name} could not run: {type(e).__name__}: {e})")
+            if len(others) == 8 and len(identities.identity_list(eng)) > 8:
+                text.append("  (further identities exist: call probe_map with identity=<name> for each)")
+        except Exception:  # noqa: BLE001  identities are optional; the sweep above already ran
+            pass
     return core.scrub(eng, "\n".join(text))

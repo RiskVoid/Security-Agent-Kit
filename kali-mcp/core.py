@@ -1110,6 +1110,30 @@ def _email_domain(seg, start, prog):
     return EMAIL.fullmatch(seg[a:b].rstrip(".")) is not None
 
 
+def payload_position(command, host):
+    """True when every occurrence of the host in the command sits inside a quoted argument that carries data -
+    JSON, a key=value body, a header value - a payload the target will fetch, dereference or display, not the
+    command's own destination. A quoted string that IS a URL is shell quoting of a destination and stays
+    refused flat; the firewall still blocks the kit's own connections to payload hosts, and the approval
+    names what the target is being asked to fetch (#173)."""
+    DATA_FLAGS = re.compile(r"--data\b|--body\b|--json\b|-d\b|-H\b|--header\b", re.I)
+    for m in re.finditer(re.escape(host), command):
+        pos = m.start()
+        before = command[:pos]
+        if not (before.count("'") % 2 == 1 or before.count('"') % 2 == 1):
+            return False                                   # unquoted: the tool's own destination
+        quote_char = "'" if before.count("'") % 2 == 1 else '"'
+        open_pos = before.rfind(quote_char)
+        close_pos = command.find(quote_char, m.end())
+        span = command[open_pos:close_pos + 1] if close_pos >= 0 else command[open_pos:]
+        if re.match(r"['\"]https?://", span):
+            return False        # the quoted string IS a URL: shell quoting of a destination, not a payload
+        if "{" in span or "}" in span or DATA_FLAGS.search(before[:open_pos]):
+            continue            # JSON structure, or a data/header flag: the target reads this
+        return False            # a bare quoted string with no data markers: treat as a destination (safe side)
+    return bool(re.search(re.escape(host), command))
+
+
 def precheck(command, info_, pol=None):
     """Early, readable refusal for obvious out-of-scope targets in network-tool commands. The firewall is the
     real enforcement; this only looks at segments that run network tools (no false positives on grep/python).
@@ -1330,8 +1354,19 @@ def run(command, eng, timeout_s=600, approval_id=None, max_tier=None, task=None)
                        "otherwise the transport has no TLS configuration to review.")
     pol = policy_of(eng)
     bad = precheck(command, i, pol)
-    if bad:
+    payload_hosts = [t for t in bad if payload_position(command, t)] if bad else []
+    if bad and len(payload_hosts) < len(bad):
         return refuse(f"targets not in scope for {eng}: {bad}")
+    if payload_hosts:
+        # #173: the out-of-scope hosts in this command are all in payload position - data the target will
+        # fetch or dereference, not the kit's destination. The firewall still blocks our own connections to
+        # them; what needs deciding is whether the target should be asked, and that is the approval's job.
+        # Fall through: the tier machinery (or the target-content origins bump) routes this to an approval
+        # that names the payload hosts.
+        entry["payload_hosts"] = payload_hosts
+        if "intrusive" not in rules["tiers"]:
+            return refuse(f"targets not in scope for {eng}: {bad} - payload testing is tier 'intrusive', "
+                          f"RULES.md allows only {rules['tiers']}")
     network = not (controlled and tier == "passive" and not any(p in PASSIVE_NET for p, _ in _segments(command)))
     parallel = network and tier != "passive"
     if parallel and _busy(eng) >= rules["max_parallel"]:
@@ -1347,7 +1382,9 @@ def run(command, eng, timeout_s=600, approval_id=None, max_tier=None, task=None)
     if tier == "intrusive" or bumped:
         action = run_action(eng, command)
         if not approval_id:
-            flags = pattern_hits(command) + ([f"target content approval: {bumped}"] if bumped else [])
+            flags = pattern_hits(command) + ([f"target content approval: {bumped}"] if bumped else []) \
+                + [f"payload destination: the target, not the kit, fetches or connects to {', '.join(payload_hosts)}"
+                   for _ in [1] if payload_hosts]
             a = request_approval(eng, action, tier, command, task, flags=flags, origins=origins)
             told = rvorigins.line(origins) if origins else ""
             return (f"APPROVAL REQUIRED ({tier}{': ' + '; '.join(flags) if flags else ''}). "

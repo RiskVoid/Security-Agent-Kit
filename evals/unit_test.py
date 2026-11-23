@@ -10,6 +10,7 @@ from unittest import mock
 KIT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path[:0] = [os.path.join(KIT, "kali-mcp"), os.path.join(KIT, "harness"), os.path.join(KIT, "scripts")]
 import core  # noqa: E402
+core_module = core
 import policy  # noqa: E402
 import reconmap  # noqa: E402
 import tierconf  # noqa: E402
@@ -1427,6 +1428,31 @@ class BenchmarkScore(unittest.TestCase):
         spec = importlib.util.spec_from_file_location("rv_bench", os.path.join(KIT, "evals", "run_benchmark.py"))
         cls.rb = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(cls.rb)
+
+    def test_lab_auto_approval_covers_the_sweeps_write_matrix_only(self):
+        """#169: unattended lab runs approve the sweep's write matrix (the kit's own fixed checks — without this
+        the write checks could never run: both web runs left them 'not approved'), but an agent-proposed
+        access-control matrix still waits for a person."""
+        calls = []
+
+        def rvkit(*args, check=True):
+            calls.append(args)
+            if args[:2] == ("approvals", "eng-x"):
+                return '[{"id": "ab12cd34"}]'
+            if args[:3] == ("authz", "eng-x", "list"):
+                return json.dumps([{"name": "sweep-20261123T101010", "state": "proposed"},
+                                   {"name": "api-security-tests", "state": "proposed"}])
+            return ""
+        real = self.rb.rvkit
+        self.rb.rvkit = rvkit
+        try:
+            n = self.rb.approve_pending("eng-x")
+        finally:
+            self.rb.rvkit = real
+        self.assertEqual(n, 2)                       # the command approval and the sweep matrix
+        self.assertIn(("approve", "eng-x", "ab12cd34"), calls)
+        self.assertIn(("authz", "eng-x", "approve", "sweep-20261123T101010"), calls)
+        self.assertNotIn(("authz", "eng-x", "approve", "api-security-tests"), calls)   # a person reads that one
 
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -3680,6 +3706,34 @@ class FindingTools(unittest.TestCase):
         out = self.t.update_coverage("e", pid, "tested", evidence=["evidence/runs/nope.txt: see above"])
         self.assertEqual(out, "REFUSED: evidence/runs/nope.txt: no such file")
 
+    def test_a_blind_ssrf_payload_is_tiered_not_refused(self):
+        """#173: a command passing an out-of-scope host as data to an in-scope target (JSON body, --data,
+        a header) is the approval's business; the tool's own destination and a bare quoted URL stay refused."""
+        cases = [
+            ("rv-llm mcp-call http://10.250.0.15:8000/mcp run_diagnostics '{\"host\": \"http://169.254.169.254/\"}'", "169.254.169.254", True),
+            ("curl -s http://ok/x --data '{\"url\": \"http://169.254.169.254/\"}'", "169.254.169.254", True),
+            ("ffuf -u http://ok/FUZZ -H 'X-Backend: http://169.254.169.254'", "169.254.169.254", True),
+            ("nuclei -u http://out.com/x -t /opt/nuclei-templates", "out.com", False),
+            ("curl http://169.254.169.254/latest/", "169.254.169.254", False),
+            ("sqlmap -u 'http://out.com/x?id=1' --batch", "out.com", False),
+        ]
+        for command, host, want in cases:
+            self.assertEqual(core_module.payload_position(command, host), want,
+                             f"payload_position({command[:60]!r}, {host!r}) should be {want}")
+
+    def test_a_gap_arrives_pre_shaped_as_two_calls(self):
+        """#171: a coverage gap in the matrix listing carries the plan item to add and the delegate_task goal to
+        send, so filling a cell is a decision the planner sends, not a composition it writes by hand."""
+        r = self.t.gap_offer({"entry": "E-1a2b3c", "method": "GET", "path": "/u/{}/email", "class": "redos"})
+        self.assertEqual(r["offer"]["plan"], {"title": "redos on /u/{}/email", "area": "redos",
+                                              "refs": ["E-1a2b3c"]})
+        self.assertIn("Test redos on GET /u/{}/email (map entry E-1a2b3c) only", r["offer"]["delegate"]["goal"])
+        self.assertEqual(r["offer"]["delegate"]["tier"], "active")        # a read-probe class
+        r = self.t.gap_offer({"entry": "E-9f8e7d", "method": "POST", "path": "/users/v1/register",
+                              "class": "mass-assignment"})
+        self.assertEqual(r["offer"]["delegate"]["tier"], "intrusive")     # a class that writes
+        self.assertIn("One class, one endpoint", r["offer"]["delegate"]["goal"])
+
     def test_not_applicable_is_refused_while_a_sweep_hit_stands(self):
         """A benchmark run marked ReDoS items not-applicable with the sweep's timing hit untriaged: the update
         is refused with the hit's class, cell and evidence until it is triaged, whatever door it comes through."""
@@ -3707,6 +3761,32 @@ class FindingTools(unittest.TestCase):
             self.assertEqual(out["state"], "not-applicable")   # a broken map never blocks a write
         finally:
             reconmap.matrix = real
+
+    def test_coverage_refusals_teach_their_shape(self):
+        """#174: the recurring first-use refusals answer with the valid form, and the no-map-entry guard
+        fires only for items that name a vulnerability class — an orientation item may be tested without refs."""
+        import reconmap
+        import workspace
+        pid = workspace.plan_add("e", "agent:planner", [{"title": "Inventory: languages and entry points",
+                                                         "area": "Orientation"}])[0]
+        out = json.loads(self.t.update_coverage("e", pid, "tested", evidence=["evidence/runs/r1.txt"]))
+        self.assertEqual(out["state"], "tested")          # no class named: no map refs needed, ever
+        out = self.t.update_coverage("e", updates=[{"item": pid, "state": "tested", "refs": ["E-1a2b3c"],
+                                                    "evidence": ["evidence/runs/r1.txt"]}])
+        self.assertIn("unknown keys refs", out)
+        self.assertIn("refs are set when the item is planned", out)
+        self.assertIn("get_coverage matrix=true", out)
+        real_has = reconmap.has_map
+        reconmap.has_map = lambda eng: True              # a web engagement: the guard is armed
+        try:
+            cls = workspace.plan_add("e", "agent:planner", [{"title": "redos on the search field",
+                                                            "area": "redos"}])[0]
+            out = self.t.update_coverage("e", cls, "tested", evidence=["evidence/runs/r1.txt"])
+            self.assertIn("tests redos and references no recon map entry", out)
+            self.assertIn("get_map", out)
+            self.assertIn("not-applicable", out)
+        finally:
+            reconmap.has_map = real_has
 
     def test_a_worker_transcript_cited_as_evidence_is_refused_with_the_doctrine(self):
         """A run cited the task's step files as coverage evidence: the refusal names the doctrine and where the
