@@ -371,8 +371,12 @@ async def race_request(engagement: str, method: str, url: str, n: int = 10, head
     A race is intrusive: it needs the operator's approval, exactly as any state-changing request."""
     import actions
     try:
-        return await _thread(actions.race, engagement, method, url, headers or {}, body, n,
-                             approval_id or None, identity or None, task or None)
+        r = await _thread(actions.race, engagement, method, url, headers or {}, body, n,
+                          approval_id or None, identity or None, task or None)
+        # the tool answers as text (verify's convention): actions.race returns dicts on its refused, approval
+        # and success paths, and a dict against the -> str annotation fails MCP output validation - the tool
+        # answered only "validation error" through the whole MCP surface, and a run missed its race item to it
+        return r["text"] if isinstance(r, dict) and r.get("text") else json.dumps(r, indent=1)
     except ValueError as e:
         return f"REFUSED: {e}"
 
