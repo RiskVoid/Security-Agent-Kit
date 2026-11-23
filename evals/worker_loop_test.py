@@ -1165,6 +1165,90 @@ class Packet(Loop):
         # a large record stays within the bound
         big = self.ws.add_manual("eng", "agent:planner", "huge", "http://lab", "x" * 9000, "info")["id"]
         self.assertLess(len(worker.read_record(t, big)), worker.RECORD_CHARS + 60)
+class Ledger(Loop):
+    """#115: the call ledger - a second task's identical scan carries the first one's entry, an unchanged read is
+    answered with no new call, a changed file is read again, a stale entry is never reused. #120: a note
+    survives compactions in the pinned block. #116: recall finds a task's agent notes."""
+
+    def setUp(self):
+        super().setUp()
+        self.file = os.path.join(self.tmp.name, "eng", "evidence", "r1.txt")
+        open(self.file, "w").write("line one\nline two\n")
+        self.info = dict(worker.engagement_info("eng"))
+        worker.engagement_info = lambda eng: dict(self.info)
+
+    def test_a_second_tasks_identical_scan_carries_the_firsts_entry(self):
+        cmd = lambda: [[call("kali_run", {"command": "curl -s http://lab/api/fetch"})]]  # noqa: E731
+        first, _ = self.run_script(cmd(), id="l1")
+        second, msgs2 = self.run_script(cmd(), id="l2")
+        tool2 = [m for m in msgs2 if m.get("role") == "tool"][-1]
+        self.assertIn("[ledger] an earlier call in this engagement already did this", tool2["content"])
+        self.assertIn("run by l1", tool2["content"])
+        self.assertEqual(second["ledger"], {"notices": 1})
+        self.assertEqual(first.get("ledger"), None)          # the first call had nothing to point at
+        # and a command that differs in a run stamp only is still the same work
+        third, msgs3 = self.run_script(cmd(), id="l3")
+        self.assertIn("[ledger]", [m for m in msgs3 if m.get("role") == "tool"][-1]["content"])
+
+    def test_an_unchanged_read_is_answered_and_a_changed_file_is_not(self):
+        read = lambda: [[call("read_file", {"path": "evidence/r1.txt"})]]  # noqa: E731
+        _, _ = self.run_script(read(), id="r1")
+        second, msgs2 = self.run_script(read(), id="r2")
+        tool2 = [m for m in msgs2 if m.get("role") == "tool"][-1]
+        self.assertIn("from the ledger, no new call", tool2["content"])
+        self.assertIn("unchanged since", tool2["content"])
+        self.assertEqual(second["ledger"]["reused"], 1)
+        # fresh=true reads it anyway
+        self.run_script([[call("read_file", {"path": "evidence/r1.txt", "fresh": True})]], id="r3")
+        tool3 = [m for m in self.run_script(read(), id="r3b")[1] if m.get("role") == "tool"][-1]
+        self.assertIn("line one", tool3["content"])
+        # a changed file is read again, not answered from the ledger
+        open(self.file, "w").write("line one changed\nline two\n")
+        tool4 = [m for m in self.run_script(read(), id="r4")[1] if m.get("role") == "tool"][-1]
+        self.assertIn("line one changed", tool4["content"])
+
+    def test_a_stale_entry_is_shown_and_never_reused(self):
+        read = lambda: [[call("read_file", {"path": "evidence/r1.txt"})]]  # noqa: E731
+        self.info["policy_version"] = 5
+        self.run_script(read(), id="s1")
+        import workspace
+        workspace.set_value("eng", "agent:planner", "current_policy_revision", "6")
+        tool = [m for m in self.run_script(read(), id="s2")[1] if m.get("role") == "tool"][-1]
+        self.assertIn("line one", tool["content"])           # the entry is stale: the read runs, no reuse
+
+    def test_a_note_survives_compactions_in_the_pinned_block(self):
+        task, _ = self.run_script([[call("note", {"fact": "the session token from login works on /api/fetch",
+                                                  "evidence": "evidence/http/r1.txt"})],
+                                   [call("note", {"fact": "a hunch without proof"})],
+                                   [call("kali_run", {"command": "curl -s http://lab/api/fetch"})]], id="n1")
+        messages = worker.load_messages(task)
+        blocks = [m for m in messages if str(m.get("content") or "").startswith("# Established so far")]
+        self.assertEqual(len(blocks), 1)
+        self.assertIn("the session token from login works on /api/fetch", blocks[0]["content"])
+        self.assertIn("[rests on evidence/http/r1.txt]", blocks[0]["content"])
+        self.assertIn("a hunch without proof [unsupported]", blocks[0]["content"])
+        before = blocks[0]["content"]
+        worker.compact(messages, task.get("lines"), task=task)
+        worker.compact(messages, task.get("lines"), task=task)   # twice: the block is rebuilt, never shrunk
+        blocks2 = [m for m in messages if str(m.get("content") or "").startswith("# Established so far")]
+        self.assertEqual(len(blocks2), 1)
+        self.assertEqual(blocks2[0]["content"], before)
+        self.assertIn("the session token", blocks2[0]["content"])
+        # and the typed finish carries them back to the planner: the default finish still injects them
+        self.assertIn("notes", task["result"])
+        self.assertEqual(task["result"]["notes"][0]["fact"], "the session token from login works on /api/fetch")
+        self.assertEqual(task["result"]["notes"][1]["evidence"], None)   # kept, and marked unsupported
+
+    def test_recall_finds_a_tasks_notes_and_the_packet_carries_them(self):
+        import workspace
+        self.run_script([[call("note", {"fact": "parameter role reflects on the fetch endpoint"})],
+                         [call("kali_run", {"command": "curl -s http://lab/api/fetch"})]], id="k1")
+        out = workspace.recall("eng", "fetch endpoint")
+        self.assertIn("k1", out)
+        self.assertIn("agent notes", out)
+        self.assertIn("parameter role reflects", out)
+        # a query for another engagement's subject finds nothing here
+        self.assertIn("nothing in eng matches", workspace.recall("eng", "parcels routing table"))
 
 
 

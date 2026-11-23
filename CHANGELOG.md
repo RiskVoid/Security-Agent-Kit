@@ -220,6 +220,19 @@ changes to the harness are measured.
   engagement takes no message. Each one is in the audit log with who did it.
 
 ### Benchmarks
+- The memory surfaces around the packet (#115, #116, #117, #120, phase A of the research loop #77): the call
+  ledger built with no model from the audit log and the worker's task records - after a command or request runs
+  (it always runs) the reply carries the earlier equivalent call's entry, the planner's calls through kali-mcp
+  and the worker's through the harness ledger; an unchanged file read (hash compared) or a repeated vuln_intel
+  lookup is answered from the ledger, `fresh=true` forces a run, a stale entry is shown and never reused, and
+  the task result counts notices and reuse. `recall` is one search across what the engagement knows -
+  observations, findings, plan items, map entries, earlier task results with their agent notes, ledger entries -
+  one line per hit with its state, a worker tool and a planner tool on the same implementation. `get_briefing`
+  gives the planner the packet for a cell before delegating or testing it; `delegate_task`'s reply lists the
+  record ids the worker started from, so pointers survive a context summary. The worker's `note(fact, evidence)`
+  writes down what the task established - kept unsupported when no evidence is named, pinned in the
+  never-shrunk 'established so far' block that compaction rebuilds from the record, returned in the typed
+  finish, and visible to later tasks as agent notes. `RV_LEDGER=0` turns the ledger off.
 - The research packet (#83, #84, #85, #86, phase A of the research loop #77): a worker task bound to a plan
   item starts from what the engagement's records already say about its coverage cell - map entries,
   observations and findings with their states, earlier tasks for the same cell with their typed result

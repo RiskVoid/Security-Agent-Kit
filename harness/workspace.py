@@ -669,8 +669,10 @@ def packet(eng, goal, pid=None, chars=6000, exclude_task=None):
         summ = (t.get("result") or {}).get("summary") or t.get("last_text") or ""
         ev = ", ".join(str(p).split("/work/" + eng + "/")[-1] for p in (t.get("run_evidence") or [])[:3])
         identity = (tcell.get("identity") or t.get("identity") or "")
+        notes = "; ".join(n["fact"][:110] for n in (t.get("notes") or [])[:3])
         line = (f"task {t['id']} {status}" + (f" as {identity}" if identity else "")
                 + f" - {(t.get('goal') or '')[:110]} - worker summary (not a verified fact): {summ[:200]}"
+                + (f" - agent notes (the worker's own, not verified facts): {notes[:240]}" if notes else "")
                 + (f" - evidence: {ev}" if ev else ""))
         tried.append((t["id"], line))
     for f in db.list_(eng):
@@ -733,3 +735,76 @@ def _packet_tasks(eng):
         except (OSError, ValueError):
             pass
     return sorted(out, key=lambda x: x.get("started") or 0)
+
+
+# ---------------------------------------------------------------- one search across the records (#116)
+def recall(eng, query, kind="", state="", limit=20):
+    """What this engagement knows that matches a query: observations, findings, plan items, map entries,
+    earlier task results and ledger entries - one line per hit with its state and age, ids first (the query is
+    an id), then the route group or path it names, then words. Same engagement only; the text is bounded, and
+    target-controlled text arrives quoted through the records' own truncated lines. read_record (the worker)
+    or the ops layer opens any hit in full."""
+    import reconmap
+    from ledger import entries as ledger_entries, norm as _norm
+    q = str(query or "").strip()
+    if not q:
+        return "REFUSED: a query needs words or a record id"
+    limit = max(1, min(int(limit or 20), 50))
+    kinds = {k.strip().lower() for k in str(kind or "").split(",") if k.strip()} or None
+    want_state = str(state or "").strip().lower()
+    words = {w for w in re.findall(r"[a-z][a-z0-9_-]{3,}", q.lower()) if w not in PACKET_STOP}
+    hits = []
+
+    def take(k, rid, line, st):
+        if kinds and k not in kinds:
+            return
+        if want_state and want_state not in str(st or "").lower():
+            return
+        hits.append(f"{rid} [{k}] {st or '-'} - {line}")
+
+    rid = q if re.fullmatch(r"(?:[OFPE]-[0-9a-zA-Z]+|\d{8}-\d{6}-[0-9a-f]{4})", q) else ""
+    for o in list_observations(eng, limit=5000):
+        text = f"{o['title']} {o.get('location') or ''}"
+        if (o["id"] == rid or (not rid and (words & {w for w in re.findall(r"[a-z][a-z0-9_-]{3,}", text.lower())} or
+                                              q.lower() in text.lower()))):
+            take("observation", o["id"], f"{o['title'][:90]}" + (f" at {o.get('location')}" if o.get("location")
+                                                                 else ""), o["status"])
+    for f in db.list_(eng):
+        text = f"{f['title']} {f.get('asset') or ''}"
+        st = f["status"] + (f", {f['verification']}" if f.get("verification") not in (None, "unverified") else "")
+        if (f["id"] == rid or (not rid and (words & {w for w in re.findall(r"[a-z][a-z0-9_-]{3,}", text.lower())} or
+                                             q.lower() in text.lower()))):
+            take("finding", f["id"], f"{f['title'][:90]}" + (f" on {f['asset']}" if f.get("asset") else ""), st)
+    for it in plan_list(eng):
+        text = f"{it['title']} {' '.join(it.get('refs') or [])}"
+        if (it["id"] == rid or (not rid and (words & {w for w in re.findall(r"[a-z][a-z0-9_-]{3,}", text.lower())} or
+                                             q.lower() in text.lower()))):
+            st = it["state"] + (" (stale)" if it.get("stale") else "")
+            take("plan", it["id"], f"{it['title'][:90]}", st)
+    if reconmap.has_map(eng):
+        for e in reconmap.build(eng)["entries"]:
+            text = f"{e['method']} {e['host']}{e['path']} {e.get('example') or ''}"
+            if (e["id"] == rid or (not rid and (q.lower() in text.lower() or
+                                                words & {w for w in re.findall(r"[a-z][a-z0-9_-]{3,}", text.lower())}))):
+                take("map", e["id"], f"{e['method']} {e['host']}{e['path']}", e.get("auth"))
+    for t in _packet_tasks(eng):
+        text = f"{t.get('goal')} {(t.get('result') or {}).get('summary') or ''}"
+        notes = " ".join(n.get("fact") or "" for n in t.get("notes") or [])
+        if not rid and (words & {w for w in re.findall(r"[a-z][a-z0-9_-]{3,}", (text + " " + notes).lower())}
+                        or q.lower() in text.lower()):
+            st = (t.get("result") or {}).get("status") or t.get("status")
+            line = f"task {(t.get('goal') or '')[:80]}"
+            if t.get("notes"):
+                line += " - agent notes: " + "; ".join(n["fact"][:90] for n in t["notes"][:3])
+            take("task", t["id"], line, st)
+    for e in ledger_entries(eng):
+        if q.lower() in str(e.get("key") or "").lower():
+            take("ledger", str(e.get("who") or "?"), f"{e['tool']} {str(e.get('key'))[:90]}"
+                + (f" - {e['digest']}" if e.get("digest") else ""),
+                "stale" if e.get("build") else ("reusable" if e.get("exit") in (0, "0", None) else str(e.get("exit"))))
+    if not hits:
+        return (f"nothing in {eng} matches {q!r}" + (f" of kind {sorted(kinds)}" if kinds else "")
+                + ". The records are scoped to this engagement; read_record-style ids are O-..., F-..., P-..., "
+                "E-...... or a task id.")
+    return f"{len(hits[:limit])} match(es) in {eng} (read_record opens any by id):\n" + "\n".join(hits[:limit]) \
+        + (f"\n... and {len(hits) - limit} more" if len(hits) > limit else "")

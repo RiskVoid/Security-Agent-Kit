@@ -1296,6 +1296,48 @@ def record(eng, event):
     return entry
 
 
+LEDGER_STAMP_RX = re.compile(r"\d{8}T\d{6}Z?\b|\d{8}-\d{6}\b|\d{4}-\d{2}-\d{2}\b|[0-9a-f]{8}-[0-9a-f]{4}\b")
+
+
+def _ledger_notice(eng, command, before=None):
+    """#115/#117: an earlier equivalent command in this engagement's audit log, appended to a planner call's
+    result - a notice, never a skip: the command ran, and its result is right above. The worker's own calls
+    carry their notice from the harness ledger instead (their audit rows name a task, and those are skipped
+    here so a worker result never shows two). Normalised like the harness ledger: whitespace and run stamps
+    folded; anything else is its own call. RV_LEDGER=0 turns it off."""
+    if os.environ.get("RV_LEDGER", "1") == "0" or not command:
+        return ""
+    key = LEDGER_STAMP_RX.sub("<stamp>", re.sub(r"\s+", " ", str(command)).strip())
+    best = None
+    try:
+        for line in open(AUDIT, errors="replace"):
+            try:
+                r = json.loads(line)
+            except ValueError:
+                continue
+            if r.get("engagement") != eng or "exit" not in r or r.get("refused") or r.get("task"):
+                continue
+            if before is not None:   # the caller's own row was just written after `before`
+                try:
+                    if datetime.datetime.fromisoformat(str(r.get("ts")).replace("Z", "+00:00")).timestamp() \
+                            >= before:
+                        continue
+                except ValueError:
+                    continue
+            k = LEDGER_STAMP_RX.sub("<stamp>", re.sub(r"\s+", " ", str(r.get("command") or "")).strip())
+            if k == key:
+                best = r          # newest last: keep the last match
+    except OSError:
+        return ""
+    if not best:
+        return ""
+    ev = next(iter(best.get("outputs") or {}), None)
+    return ("\n[ledger] an earlier call in this engagement already ran this (exit " + str(best.get("exit"))
+            + ", by " + str(best.get("actor") or "?") + (f", evidence {ev}" if ev else "")
+            + "). It ran again above - a target can answer differently - but don't repeat this work unless it "
+            "may have changed; the evidence file is already in the engagement folder.")
+
+
 def _audit(entry):
     entry = {"ts": datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds"), "actor": ACTOR,
              **entry}
@@ -1484,8 +1526,12 @@ def _execute(eng, i, entry, final, tier, timeout_s, network, approval_id, note="
                 f"at={datetime.datetime.now(datetime.timezone.utc).isoformat(timespec='seconds')}"
                 f"{'' if network else ' network=none'}\n\n{res}")
     outputs[rel] = sha256_file(full)
+    _t_notice = t0 - 1                # only rows from before this call started can be "earlier" (ts is
+                                     # second-resolution, so a same-second earlier call can be missed: fine)
     _audit({**entry, "exit": code, "seconds": seconds, "outputs": outputs})
     res = note + res
+    if not entry.get("task"):   # a planner call: the worker's own notice comes from the harness ledger
+        res += _ledger_notice(eng, final, before=_t_notice)
     files = sorted(k for k in outputs if k != rel)
     if files:
         res += "\n[evidence recorded: " + ", ".join(files[:20]) + (" …" if len(files) > 20 else "") + "]"
