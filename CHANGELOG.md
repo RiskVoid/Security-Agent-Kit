@@ -220,6 +220,21 @@ changes to the harness are measured.
   engagement takes no message. Each one is in the audit log with who did it.
 
 ### Benchmarks
+- Efficiency measures in every result, under `efficiency` (#79): the share of worker tool calls an earlier task
+  already ran (run stamps normalised), tasks delegated for a coverage cell a finished task already covered, goals
+  delegated twice with `inputs` pasted by hand, wall time and tokens to the first finding the score confirmed with
+  its evidence, coverage cells tested with evidence per dollar and per 1,000 target requests, and per task the
+  wait before its first model call. Computed from the run's kept data with no model; a figure the run didn't
+  record is `n/a`, never 0. The gateway writes a per-call usage ledger (`.rvkit/events/usage.jsonl`) for the
+  tokens-at-first-finding figure, and the worker records each task's queue wait as `queue_s`.
+- Timed benchmark events (#80): a benchmark's `events` field fires mid-run — `identity` supplies an identity
+  partway through (the credential, the target's accounts file, and the kit identity spec), `rebuild_fixed` flips
+  the target's fixed marker — and the runner resets both before every run; the result records which fired.
+- Route Family Research Lab (`http://10.250.0.21:8000`, compose `lab-research`, benchmark `api-research`, tuning
+  side): the research-loop epic's own tuning cases (#80) — a route family (read, export, download) sharing one
+  tenant-isolation defect with a protected sibling as the clean control, an admin surface unreachable until the
+  timed identity event supplies the account, and a reflected callback that the mid-run rebuild event fixes. The
+  seed test drives the app's handlers with no sockets, no container and no model.
 - Repeated runs (`--repeat N`): per expected finding, found in k of n runs; pass^k and pass@k; every mean with its
   standard error. `--compare A B` pairs two labelled sets of runs with a 95% interval.
 - Clean runs (`--clean`) limit lookups to vendor documentation and vulnerability records and flag any lookup of a

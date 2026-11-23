@@ -4,7 +4,7 @@ credential vault, identity specs, capture sanitizing and authorization-matrix va
 They run on every pull request in about a second. The full stack is tested by the Integration workflow.
 Run: python3 evals/unit_test.py
 """
-import importlib.util, json, os, re, sys, tempfile, time, unittest
+import importlib.util, json, os, re, shutil, sys, tempfile, time, unittest
 from unittest import mock
 
 KIT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -1921,6 +1921,154 @@ class BenchStats(unittest.TestCase):
         self.st.print_compare(c, "old", "new", out=lines.append)
         self.assertIn("old cost $1.00, tokens n/a (0 of 2 runs recorded them); new cost $1.00, tokens 7k", lines[-2])
         json.dumps(tu)
+
+    def test_efficiency_measures(self):   # #79: repeated work, duplicates, rebriefs, first verified, per budget
+        eng = "bench-b"
+        res = {"benchmark": "b", "engagement": eng, "at": "2026-11-23T12:20:00+00:00", "seconds": 1200,
+               "cost_usd": 2.0, "restarts": 1,
+               "score": {"per_expected": [{"id": "x", "severity": "high", "found_by": "F-1",
+                                           "requirements": {"evidence": True, "reproduction": True}}]}}
+        step = lambda tool, cmd, n: {"id": f"s{n}", "tool": tool, "args": {"command": cmd}, "state": "done"}  # noqa: E731
+        cell = {"class": "bola", "entries": ["E-1"], "plan_item": "P-1"}
+        tasks = [
+            {"id": "t1", "started": 100, "status": "done", "queue_s": 10.0,
+             "steps": [step("kali_run", "curl -s http://t/api/orders", 1),
+                       step("kali_run", "ffuf -u http://t/FUZZ -w words -o evidence/20261123T111111.json", 2)]},
+            {"id": "t2", "started": 200, "status": "done", "queue_s": 120.0, "contract": {"cell": cell},
+             "steps": [step("kali_run", "curl -s http://t/api/orders", 3), {"id": "s4", "tool": "finish",
+                                                                            "state": "done"}]},
+            {"id": "t3", "started": 300, "status": "done",
+             "steps": [step("kali_run", "ffuf -u http://t/FUZZ -w words -o evidence/20261123T222222.json", 5),
+                       step("kali_run", "curl -s http://t/api/users", 6)]},
+            {"id": "t4", "started": 400, "status": "done", "contract": {"cell": dict(cell)},
+             "steps": []}]
+        plan = [{"id": "P-1", "state": "tested", "area": "bola", "refs": '["E-1", "E-2"]', "identity": "alice",
+                 "evidence": '["evidence/sweep/s.json"]'},
+                {"id": "P-2", "state": "tested", "area": "xss", "refs": '["E-3"]', "identity": None, "evidence": "[]"},
+                {"id": "P-3", "state": "planned", "area": "csrf", "refs": '["E-4"]', "identity": None,
+                 "evidence": "[]"}]
+        findings = [{"id": "F-1", "verified_at": "2026-11-23T12:10:00+00:00"},
+                    {"id": "F-2", "verified_at": "2026-11-23T12:02:00+00:00"}]   # not score-confirmed: not counted
+        calls = [{"tool": "delegate_task", "body": {"goal": "Test bola on /orders", "inputs": ["token A", "hint B"]}},
+                 {"tool": "delegate_task", "body": {"goal": "test  BOLA  on /orders"}},
+                 {"tool": "kali_run", "body": {"command": "curl http://t"}}]
+        usage = [{"engagement": eng, "ts": "2026-11-23T12:01:00Z", "prompt_tokens": 100, "completion_tokens": 10},
+                 {"engagement": eng, "ts": "2026-11-23T12:05:00Z", "prompt_tokens": 200, "completion_tokens": 20},
+                 {"engagement": eng, "ts": "2026-11-23T12:15:00Z", "prompt_tokens": 999, "completion_tokens": 99},
+                 {"engagement": "other", "ts": "2026-11-23T12:02:00Z", "prompt_tokens": 500, "completion_tokens": 50}]
+        e = self.st.efficiency(res, {"tasks": tasks, "plan": plan, "findings": findings, "calls": calls,
+                                     "target_requests": 500}, usage=usage)
+        self.assertEqual(e["repeated_tool_work"], {"calls": 5, "repeated": 2, "share": 0.4})  # stamps normalize
+        self.assertEqual(e["duplicate_experiments"], {"cells": 2, "duplicates": 1})
+        self.assertEqual(e["rebriefs"], {"delegate_calls": 2, "same_goal_again": 1, "inputs_pasted": 2})
+        self.assertEqual(e["first_verified"], {"s": 600.0, "min": 10.0, "tokens": 330})
+        self.assertEqual(e["verified_coverage"], {"cells": 2, "per_usd": 1.0, "per_1k_requests": 4.0})
+        self.assertEqual(e["queue_delay"], {"tasks": 2, "mean_s": 65.0, "max_s": 120.0})
+        self.assertEqual(e["restarts"], 1)
+        line = self.st.efficiency_line(e)
+        for part in ("repeated tool work 2 of 5 calls (40%)", "duplicate experiments 1 of 2 celled tasks",
+                     "rebriefs 1 (2 inputs pasted)", "first verified finding at 10.0 min (330 tokens)",
+                     "queue delay mean 65.0s max 120.0s over 2 task(s)",
+                     "verified cells 2 (1.00 per $, 4.00 per 1k requests)", "1 restart(s)"):
+            self.assertIn(part, line)
+        # the figures of repeated runs carry the measures; a run without them reports None, not 0
+        g = self.st.group_summary([{**self.run_([1, 1, 1]), "efficiency": e},
+                                   self.run_([1, 1, 0])])
+        self.assertEqual(g["figures"]["repeat_share"], {"mean": 0.4, "se": None, "n": 1})
+        self.assertEqual(g["figures"]["first_verified_tokens"]["mean"], 330.0)
+        bare = self.st.group_summary([self.run_([1, 1, 0]), self.run_([1, 1, 0])])   # no run carries the measures
+        self.assertIsNone(bare["figures"]["repeat_share"]["mean"])
+        self.assertIsNone(bare["figures"]["first_verified_tokens"]["mean"])
+        # a run saved before #79 kept nothing: no measures, and no queue_s means no queue delay
+        old = self.st.efficiency({**res, "restarts": 0}, {"tasks": [{"id": "t", "started": 1, "status": "done",
+                                                                    "steps": []}]})
+        self.assertEqual(old["queue_delay"], {"tasks": 0, "mean_s": None, "max_s": None})
+        self.assertIsNone(old["repeated_tool_work"]["calls"])
+        self.assertIsNone(self.st.efficiency(res, None))
+        self.assertEqual(self.st.efficiency_line(None), "efficiency n/a (no kept data)")
+
+
+class ResearchLab(unittest.TestCase):
+    """#80: the three research-loop fixtures in evals/targets/rv-research-lab, driven through app.handle() with
+    no model, no sockets and no container: the route family with its protected sibling, the identity that
+    arrives late, and the build that changes mid-run."""
+
+    @classmethod
+    def setUpClass(cls):
+        spec = importlib.util.spec_from_file_location("rv_research_lab",
+                                                      os.path.join(KIT, "evals", "targets", "rv-research-lab",
+                                                                  "app.py"))
+        cls.app = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(cls.app)
+
+    def login(self, username, password):
+        s, _, b = self.app.handle("POST", "/api/v1/login", {},
+                                  json.dumps({"username": username, "password": password}).encode(), "")
+        return b["token"] if s == 200 else None
+
+    def test_the_route_family_shares_one_defect_and_one_control(self):
+        alice, bob = self.login("alice@acme.test", "alice-pass"), self.login("bob@brit.test", "bob-pass")
+        self.assertTrue(alice and bob)
+        for op in ("", "/export", "/download"):   # read, export, download: one shared check, one defect
+            s, _, b = self.app.handle("GET", f"/api/v1/orders/O-1001{op}", {}, b"", bob)
+            self.assertEqual(s, 200, f"bob reading alice's order via {op or 'read'} must reach it")
+        s, _, b = self.app.handle("GET", "/api/v1/orders/O-1001/audit", {}, b"", bob)
+        self.assertEqual(s, 403)                   # the protected sibling: the tenant check the family lacks
+        self.assertIn("another tenant", b["error"])
+        s, _, b = self.app.handle("GET", "/api/v1/orders/O-1001/audit", {}, b"", alice)
+        self.assertEqual(s, 200)                   # its own tenant's audit works
+        self.assertEqual(self.app.handle("GET", "/api/v1/orders", {}, b"", "")[0], 401)   # no session, nothing
+        self.assertEqual(self.app.handle("GET", "/api/v1/orders", {}, b"", alice)[2]["orders"],
+                         ["O-1001", "O-1002", "O-1003"])                                  # own tenant only
+
+    def test_the_admin_surface_waits_for_its_identity(self):
+        alice = self.login("alice@acme.test", "alice-pass")
+        s, _, b = self.app.handle("GET", "/api/v1/admin/users", {}, b"", alice)
+        self.assertEqual(s, 403)                   # no admin identity is provisioned yet
+        self.assertIn("admin identity", b["error"])
+        with tempfile.TemporaryDirectory() as d:   # the runner's timed event swaps in the admin accounts
+            active = os.path.join(d, "identities-active.json")
+            shutil.copy(os.path.join(KIT, "evals", "targets", "rv-research-lab", "identities-admin.json"), active)
+            saved = os.environ.get("RV_IDENTITIES")
+            os.environ["RV_IDENTITIES"] = active
+            try:
+                admin = self.login("admin@acme.test", "admin-pass")
+                self.assertTrue(admin)
+                s, _, b = self.app.handle("GET", "/api/v1/admin/users", {}, b"", admin)
+                self.assertEqual(s, 200)
+                self.assertIn("alice-pass", json.dumps(b))   # the flaw behind the late identity: API3
+            finally:
+                if saved is None:
+                    os.environ.pop("RV_IDENTITIES", None)
+                else:
+                    os.environ["RV_IDENTITIES"] = saved
+        self.assertEqual(self.app.handle("GET", "/api/v1/admin/users", {}, b"", alice)[0], 403)  # reset again
+
+    def test_the_changed_build_fixes_the_reflection(self):
+        alice = self.login("alice@acme.test", "alice-pass")
+        payload = {"callback": ["<script>alert(1)</script>"]}
+        pre = self.app.handle("GET", "/api/v1/users/alice", payload, b"", alice, force_fixed=False)
+        self.assertIn("<script>alert(1)</script>", pre[2])       # the old build reflects it raw
+        post = self.app.handle("GET", "/api/v1/users/alice", payload, b"", alice, force_fixed=True)
+        self.assertNotIn("<script>", post[2])                    # the rebuilt build escapes it
+        self.assertIn("&lt;script&gt;", post[2])
+
+    def test_every_benchmarks_events_are_well_formed(self):   # the timed events the fixtures run on
+        for f in os.listdir(os.path.join(KIT, "evals", "benchmarks")):
+            b = json.load(open(os.path.join(KIT, "evals", "benchmarks", f)))
+            for e in b.get("events") or []:
+                with self.subTest(benchmark=f, event=e):
+                    self.assertIsInstance(e.get("at_min"), (int, float))
+                    self.assertGreaterEqual(e["at_min"], 0)
+                    self.assertIn(e.get("do"), ("identity", "rebuild_fixed"))
+                    self.assertTrue(e.get("service"), "an event names the compose service it acts on")
+                    if e["do"] == "identity":
+                        self.assertTrue(e.get("name") and e.get("cred") and e.get("secret_value"))
+                        spec = e["spec"]
+                        for key in ("kind", "login_url", "body", "token_path", "secret"):
+                            self.assertTrue(spec.get(key), f"the identity spec needs {key}")
+        b = json.load(open(os.path.join(KIT, "evals", "benchmarks", "api-research.json")))
+        self.assertEqual([e["do"] for e in b["events"]], ["identity", "rebuild_fixed"])   # late, then fixed
 
 
 class RulesPinned(unittest.TestCase):

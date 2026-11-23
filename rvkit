@@ -191,7 +191,7 @@ lab_vampi_init() { # VAmPI starts with an empty database: /createdb fills it wit
   done
   warn "VAmPI database setup didn't complete: check ./rvkit logs lab-vampi"
 }
-LAB="lab-juice-shop lab-dvwa lab-dvwa-db lab-vampi lab-dvga lab-llm lab-laravel lab-laravel-fixed lab-hostile lab-oauth lab-oauth-fixed"
+LAB="lab-juice-shop lab-dvwa lab-dvwa-db lab-vampi lab-dvga lab-llm lab-laravel lab-laravel-fixed lab-hostile lab-oauth lab-oauth-fixed lab-research"
 
 # Who acts, for the audit log: cli:<login> here; the console sets RVKIT_ACTOR=console:<login> when it calls rvkit.
 actor() { local a="${RVKIT_ACTOR:-cli:$(id -un 2>/dev/null | tr -cd 'A-Za-z0-9._@-' | cut -c1-64)}"

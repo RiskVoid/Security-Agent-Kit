@@ -290,6 +290,13 @@ services:
     networks: {rvlab: {ipv4_address: 10.250.0.20}}    # http://10.250.0.20:8000
     restart: "no"
 
+  lab-research:   # Route Family Research Lab: the research-loop tuning cases (evals/targets/rv-research-lab)
+    build: ./evals/targets/rv-research-lab
+    image: riskvoid-lab-research:local
+    profiles: ["lab"]
+    networks: {rvlab: {ipv4_address: 10.250.0.21}}    # http://10.250.0.21:8000 (alice@acme.test / alice-pass)
+    restart: "no"
+
   php-runner:   # the optional PHP profile (RW-013), started only by ./rvkit php: no network, read-only, no capabilities
     build: ./php-runner
     image: riskvoid-php-runner:local
