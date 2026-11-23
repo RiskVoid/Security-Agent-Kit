@@ -3705,6 +3705,19 @@ class FindingTools(unittest.TestCase):
         out = self.t.update_coverage("e", pid, "tested", evidence=["evidence/runs/nope.txt: see above"])
         self.assertEqual(out, "REFUSED: evidence/runs/nope.txt: no such file")
 
+    def test_a_gap_arrives_pre_shaped_as_two_calls(self):
+        """#171: a coverage gap in the matrix listing carries the plan item to add and the delegate_task goal to
+        send, so filling a cell is a decision the planner sends, not a composition it writes by hand."""
+        r = self.t.gap_offer({"entry": "E-1a2b3c", "method": "GET", "path": "/u/{}/email", "class": "redos"})
+        self.assertEqual(r["offer"]["plan"], {"title": "redos on /u/{}/email", "area": "redos",
+                                              "refs": ["E-1a2b3c"]})
+        self.assertIn("Test redos on GET /u/{}/email (map entry E-1a2b3c) only", r["offer"]["delegate"]["goal"])
+        self.assertEqual(r["offer"]["delegate"]["tier"], "active")        # a read-probe class
+        r = self.t.gap_offer({"entry": "E-9f8e7d", "method": "POST", "path": "/users/v1/register",
+                              "class": "mass-assignment"})
+        self.assertEqual(r["offer"]["delegate"]["tier"], "intrusive")     # a class that writes
+        self.assertIn("One class, one endpoint", r["offer"]["delegate"]["goal"])
+
     def test_not_applicable_is_refused_while_a_sweep_hit_stands(self):
         """A benchmark run marked ReDoS items not-applicable with the sweep's timing hit untriaged: the update
         is refused with the hit's class, cell and evidence until it is triaged, whatever door it comes through."""

@@ -134,8 +134,11 @@ like a senior penetration tester and code auditor, and you keep a clear record o
    integrity check). Worker step files under `evidence/tasks/` are transcripts, not evidence: cite the
    `evidence/runs/` file the worker's command produced instead. `evidence_provenance` shows the hash and the producing command.
 6. **Fill the gaps, then report.** Call `get_coverage` with `matrix=true`: every map entry x each class that
-   applies to it. For each gap, plan it and delegate a narrow task, or record why it's skipped
-   (`skip_coverage_cells`: not-applicable or excluded, with the rationale). The report readiness check lists the
+   applies to it. Each gap arrives pre-shaped (#171): the plan item to add (title, area, refs) and the
+   delegate_task goal to send — two calls and the cell is covered by a worker task. The offer is a suggestion:
+   send it, or record why it's skipped
+   (`skip_coverage_cells`: not-applicable or excluded, with the rationale — and a sweep hit on that cell refuses
+   the skip until triaged). The report readiness check lists the
    gaps left. When testing is done: triage every candidate, write `report/executive-summary.md` (3–5 paragraphs
    for a non-technical reader: what was assessed, overall posture, the top risks in business terms, priorities)
    and optionally `report/methodology.md` / `report/conclusion.md` with `write_file`, then call

@@ -483,12 +483,34 @@ def update_coverage(engagement: str, item: str = "", state: str = "", rationale:
     return "\n".join([head] + lines)
 
 
+# which tier a gap's class needs: reads probe at active; the classes that write or burst are intrusive
+GAP_TIER = {"mass-assignment": "intrusive", "rate-limit": "intrusive", "csrf": "intrusive"}
+
+
+def gap_offer(cell):
+    """#171: a coverage gap arrives pre-shaped, so filling it is two calls the planner sends (plan_tests the
+    item, delegate_task the task), not a composition it writes. The offer is a suggestion in the tool result,
+    never an automatic dispatch: the planner decides, exactly as the gaps rule says."""
+    c = {k: cell.get(k) for k in ("entry", "method", "path", "class")}
+    where = f"{c['method']} {c['path']}".strip()
+    c["offer"] = {
+        "plan": {"title": f"{c['class']} on {c['path']}", "area": c["class"], "refs": [c["entry"]]},
+        "delegate": {"goal": f"Test {c['class']} on {where} (map entry {c['entry']}) only: probe it, and report "
+                              f"candidates with the evidence files your commands produced. One class, one "
+                              "endpoint - anything else you notice goes in open_questions, don't test it.",
+                      "tier": GAP_TIER.get(c["class"], "active"),
+                      "plan_item": "the item the plan call above returns"},
+    }
+    return c
+
+
 @mcp.tool()
 def get_coverage(engagement: str, state: str = "", matrix: bool = False) -> str:
     """Planned tests and their outcomes, counts per state and per standard, stale items (the build or policy
     changed since they ran), blocked items with the reason. matrix=true: the coverage matrix instead: each recon
     map entry x each vulnerability class that applies to it, with the plan items that cover it; "gaps" are cells
-    no plan item covers (plan them, delegate them, or record why they're skipped).
+    no plan item covers, and each gap arrives pre-shaped (#171): the plan item to add and the delegate_task goal
+    to send — the offer is a suggestion, the decision is yours (send it, or record why it's skipped).
     state: list only the items in that state (planned, tested, blocked, ...) — a run's full listing is long, so
     ask for the state you're working through, not everything."""
     if matrix:
@@ -498,7 +520,7 @@ def get_coverage(engagement: str, state: str = "", matrix: bool = False) -> str:
             return f"REFUSED: {e}"
         open_ = [c for c in m["cells"] if c["state"] in ("gap", "planned", "blocked")]
         return _out({"entries": m["entries"], "counts": m["counts"], "complete": m["complete"],
-                     "gaps": [{k: c[k] for k in ("entry", "method", "path", "class")} for c in m["gaps"][:150]],
+                     "gaps": [gap_offer(c) for c in m["gaps"][:150]],
                      "open": [{k: c[k] for k in ("entry", "method", "path", "class", "state", "items")}
                               for c in open_ if c["state"] != "gap"][:150],
                      "more": max(0, len(m["gaps"]) - 150), "plan_items_without_map_refs": m["unmapped_items"][:50]})
