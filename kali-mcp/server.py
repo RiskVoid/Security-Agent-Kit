@@ -321,7 +321,9 @@ async def recon_map(engagement: str, url: str, depth: int = 2, crawl_seconds: in
     (defaults are sized for a typical app). sweep (default true): after the map is built, the kit's fixed checks
     run on it in the same call (#169) - injection, JWT, ReDoS, CORS and headers over every entry, and the write
     checks proposed as one authorization matrix. Approve that matrix (console or ./rvkit authz approve), then
-    call probe_map with matrix=<name> for the writes. sweep=false maps only: say why when you use it."""
+    call probe_map with matrix=<name> for the writes. Every identity the engagement has gets its own sweep
+    pass too (#170): the behind-login surface is covered without asking, and an identity that can't reach an
+    entry reports as a skip with its reason. sweep=false maps only: say why when you use it."""
     import recon
     try:
         return await _thread(recon.build, engagement, url, depth, crawl_seconds, probe, max_tier or None,

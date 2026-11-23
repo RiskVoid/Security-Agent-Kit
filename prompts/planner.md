@@ -76,8 +76,8 @@ like a senior penetration tester and code auditor, and you keep a clear record o
     injection probes on every parameter (path parameters included), JWT keys, ReDoS timing, CORS and headers on
     every entry, and the write checks proposed as one authorization matrix. Approve that matrix (console or
     `./rvkit authz approve`), then call the kali `probe_map` with `matrix=<name>` to run the writes. Run
-    `recon_map` with `identity=` for the authenticated surface too - entries no identity can reach are skipped,
-    not left silent. Import the
+    Every identity the engagement has is swept too, each with its own pass - the behind-login surface is
+    covered without asking. Import the
     evidence with `import_observations` and triage what it found: a hit is a lead with the exact requests, not a
     finding until you confirm it. The cells it covered count as tested; the cells it couldn't reach are still
     yours. Use `sweep=false` on `recon_map` only with a reason: the checks are the cheap half of the work.

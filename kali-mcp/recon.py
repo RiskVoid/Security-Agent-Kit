@@ -523,4 +523,23 @@ def build(eng, url, depth=2, crawl_seconds=120, probe=True, max_tier=None, task=
                      "only):", rvsweep.probe_map(eng, task=task, identity=identity)]
         except Exception as e:  # noqa: BLE001
             text.append(f"  (the fixed checks could not run: {type(e).__name__}: {e}; call probe_map yourself)")
+        # #170: every identity the engagement has gets its own pass — the surface behind login is where
+        # BOLA/BFLA live, and waiting for the model to remember identity= left it unmapped in half the
+        # measured runs. An identity that can't reach an entry reports as a skip with its reason, never a
+        # silence; a broken identity never costs the map its delivery.
+        try:
+            import identities
+            others = [i.get("name") for i in identities.identity_list(eng)
+                      if i.get("name") and i.get("name") != identity][:8]
+            for name in others:
+                try:
+                    text += [f"The same checks as {name} (the behind-login surface, #170):",
+                             rvsweep.probe_map(eng, checks="injection,redos,cors,headers,jwt", task=task,
+                                               identity=name)]
+                except Exception as e:  # noqa: BLE001
+                    text.append(f"  (the fixed checks as {name} could not run: {type(e).__name__}: {e})")
+            if len(others) == 8 and len(identities.identity_list(eng)) > 8:
+                text.append("  (further identities exist: call probe_map with identity=<name> for each)")
+        except Exception:  # noqa: BLE001  identities are optional; the sweep above already ran
+            pass
     return core.scrub(eng, "\n".join(text))
