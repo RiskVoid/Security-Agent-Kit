@@ -552,7 +552,8 @@ $(bold "Now open $UI_URL, pick the riskvoid-planner agent and paste:")
 
   Engagement \`lab-juice\`: web application test of OWASP Juice Shop at http://10.250.0.10:3000 (a deliberately
   vulnerable practice app in the isolated lab). Follow the web-app playbook, passive and active tiers only,
-  record what you find, then write the executive summary and generate the report.
+  hand the scanner and recon runs to the worker with delegate_task (one narrow task per plan item) and run only
+  single checks yourself, record what you find, then write the executive summary and generate the report.
 
 Then, in another terminal: ./rvkit watch   (approve or deny intrusive commands)
 EOF

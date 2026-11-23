@@ -211,11 +211,39 @@ def plan_from_playbook(engagement, actor, playbook):
 def plan_update(engagement, actor, id, fields, expected_revision=None):
     if not isinstance(fields, dict):
         raise OpError("fields must be an object")
+    if str(fields.get("state") or "").lower() in ("not-applicable", "excluded"):
+        problem = na_contradiction(engagement, id)
+        if problem:
+            raise OpError(problem)
     try:
         r = ws.plan_update(engagement, actor, id, expected_revision, **fields)
     except db.Conflict as e:
         raise OpError(str(e), 409)
     return r, _event("coverage-updated", actor, id, None, r["revision"], state=r["state"])
+
+
+def na_contradiction(engagement, item_id):
+    """Why an item may not be marked not-applicable or excluded: a probe_map sweep already hit the same class on
+    one of the entries the item covers. Rationalising recorded evidence away is how a run misses an issue it had
+    already found (a benchmark run marked ReDoS items not-applicable with the sweep's timing hit untriaged).
+    None when nothing contradicts, or when there is no map to check against."""
+    import reconmap
+    try:
+        m = reconmap.matrix(engagement)
+    except Exception:  # noqa: BLE001 - no map or a broken one: the guard is best effort
+        return None
+    hits = [{"class": c["class"], "method": c["method"], "path": c["path"], "evidence": c["swept"]}
+            for c in (m or {}).get("cells") or []
+            if item_id in (c.get("items") or []) and c.get("swept")]
+    if not hits:
+        return None
+    h = hits[0]
+    where = f"{h['method']} {h['path']}".strip()
+    more = f" (and {len(hits) - 1} more cell(s))" if len(hits) > 1 else ""
+    return (f"{item_id} can't be not-applicable or excluded: the probe_map sweep hit {h['class']} on {where}{more}, "
+            f"in {', '.join(h['evidence'][:2])}. Triage what the sweep found (import_observations, then link it to "
+            "a finding or dismiss it with the reason); only then can the item be not-applicable, with a rationale "
+            "that says why the hit doesn't apply.")
 
 
 @op("map.get", mutates=False)

@@ -72,19 +72,27 @@ def url(cid):
     return f"http://localhost:{E.get('GATEWAY_PORT') or 8000}/canvas/conversations/{cid}"
 
 
-def new(eng, actor="cli:host", message=""):
+def new(eng, actor="cli:host", message="", title="", profile="", max_iterations=None, max_budget_per_run=None):
+    """Create a conversation bound to the engagement and send the first message. profile: force an agent profile
+    (the default is the engagement's own choice by its Client data rule). max_iterations and max_budget_per_run:
+    OpenHands' own caps, when a caller wants them. Every conversation the kit starts goes through here: the
+    console, ./rvkit conversation new, and the unattended benchmark runs."""
     info = json.loads(ctl(actor, "show", eng))
     if info.get("halted"):
         raise Fail(f"{eng} is halted: resume it first")
-    name = profile_for(info["rules"])
+    name = profile or profile_for(info["rules"])
     profiles = {p["name"]: p["id"] for p in api("GET", "/api/agent-profiles").get("profiles", [])}
     if name not in profiles:
         raise Fail(f"agent profile {name} is missing: run ./rvkit openhands")
     body = {"agent_profile_id": profiles[name], "tags": {"engagement": eng}, "autotitle": False,
             "workspace": {"working_dir": "/home/openhands/workspace/project", "kind": "LocalWorkspace"}}
+    if max_iterations:
+        body["max_iterations"] = int(max_iterations)
+    if max_budget_per_run is not None:
+        body["max_budget_per_run"] = float(max_budget_per_run)
     conv = api("POST", "/api/conversations", body)
     cid = conv["id"]
-    title = f"Engagement {eng}"
+    title = title or f"Engagement {eng}"
     try:
         # bind before the first message, so the first model call already follows the engagement
         ctl(actor, "bind", eng, cid, title)
@@ -96,9 +104,15 @@ def new(eng, actor="cli:host", message=""):
     except Fail:
         pass
     if message.strip():
+        delegation = ("Hand the scanner and review runs to the worker with delegate_task (static analysis, secret "
+                      "scans, dependency and SBOM scans, recon and crawling: one narrow task per plan item, "
+                      "plan_item set) and run only single checks yourself; its output stays out of your context. "
+                      "Collect each result with get_task, and no task may still be running when you are done "
+                      "(list_tasks).") if name == "riskvoid-planner" else ""
         api("POST", f"/api/conversations/{cid}/events",
-            {"role": "user", "content": [{"type": "text", "text": f"Engagement `{eng}`: {message.strip()}"}],
-             "run": True})
+            {"role": "user", "content": [{"type": "text",
+                                         "text": f"Engagement `{eng}`: {message.strip()}"
+                                                 + (f"\n\n{delegation}" if delegation else "")}], "run": True})
     return {"id": cid, "engagement": eng, "agent": name, "url": url(cid), "title": title}
 
 

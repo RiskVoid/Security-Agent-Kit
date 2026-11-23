@@ -1132,6 +1132,22 @@ class AuthenticatedTesting(Credentials):
         self.assertEqual(out, "<pre>Authorization: {{session:bob}}\nX-Echo: {{session:bob}}\npw {{cred:PW}}</pre>")
         self.assertNotIn(b64.encode(), core.scrub("e1", page.encode()))
 
+    def test_semgrep_rulesets_by_the_names_a_model_gives(self):
+        # benchmark runs: ["python", "owasp-top-ten"] and ["nodejs", "owasp-top-ten"] were refused whole, though the
+        # code-review playbook names p/owasp-top-ten
+        import actions
+        rules = os.path.join(self.tmp.name, "rules")
+        for d in ("python", "javascript", "typescript", "php", "generic"):
+            os.makedirs(os.path.join(rules, d))
+        pick = lambda names: actions.pick_rulesets(names, rules)
+        self.assertEqual(pick(["python", "owasp-top-ten"]), (["python"], ["owasp-top-ten"]))
+        self.assertEqual(pick(["nodejs", "owasp-top-ten"]), (["javascript"], ["owasp-top-ten"]))
+        self.assertEqual(pick(["p/python", "Python", "py", "p/javascript", "js", "TS", "laravel"]),
+                         (["python", "javascript", "typescript", "php"], []))
+        self.assertEqual(pick(["p/owasp-top-ten", "p/ci", "ruby"]), ([], ["p/owasp-top-ten", "p/ci", "ruby"]))
+        self.assertEqual(pick(["../python", "python/../../etc", "/etc", ""]), ([], ["../python", "python/../../etc", "/etc", ""]))
+        self.assertEqual(pick(None), ([], []))
+
     def test_source_links_out_of_scope(self):  # F5: a link in /work to another client's code, or into /control
         import actions
         i = core.info("e1")
@@ -1512,22 +1528,33 @@ class BenchmarkScore(unittest.TestCase):
 
     def drive(self, statuses, finals, agent="riskvoid-planner"):
         """run_conversation against a made-up OpenHands: statuses and finals are per conversation, in the order
-        the runner sees them (the last status of a conversation repeats)."""
+        the runner sees them (the last status of a conversation repeats). Conversations are created through the
+        real path (scripts/conversations.py): only its HTTP and control-plane edges are stubbed, so the test
+        checks the same door an engagement uses."""
         from unittest import mock
-        convs, sent, seen = [], [], {}
+        convs, sent, firsts, seen = [], [], set(), {}
 
-        def oh(method, path, body=None):
+        def api(method, path, body=None, timeout=30):
             if path == "/api/agent-profiles":
                 return {"profiles": [{"name": agent, "id": "p1"}]}
             if method == "POST" and path == "/api/conversations":
-                convs.append(body["initial_message"]["content"][0]["text"])
-                return {"id": f"c{len(convs)}"}
+                return {"id": f"c{len(firsts) + 1}"}
             cid = path.split("/")[3]
-            if path.endswith("/events"):
-                sent.append((cid, body["content"][0]["text"]))
+            if path.endswith("/events"):   # the first message opens a conversation; later ones are operator talk
+                text = body["content"][0]["text"]
+                if cid in firsts:
+                    sent.append((cid, text))
+                else:
+                    firsts.add(cid)
+                    convs.append(text)
                 return {}
-            if path.endswith(("/run", "/pause")):
-                return {}
+            return {}    # PATCH title, run, pause
+
+        def ctl(actor, *args):
+            return json.dumps({"halted": False, "rules": {}}) if args and args[0] == "show" else "ok"
+
+        def oh(method, path, body=None):
+            cid = path.split("/")[3]
             if path.endswith("/agent_final_response"):
                 return {"response": finals[int(cid[1:]) - 1]}
             mine = statuses[int(cid[1:]) - 1]
@@ -1538,7 +1565,8 @@ class BenchmarkScore(unittest.TestCase):
         obs = {"kind": "ObservationEvent", "tool_name": "findings_update_finding", "observation": {"content": [
             {"type": "text", "text": "REFUSED: F-001 needs status=confirmed"}]}}
         b = {"task": "Review {src}", "max_minutes": 60, "max_budget_usd": 5}
-        with mock.patch.object(self.rb, "oh", oh), mock.patch.object(self.rb.time, "sleep", lambda s: None), \
+        with mock.patch.object(self.rb.conversations, "api", api), mock.patch.object(self.rb.conversations, "ctl", ctl), \
+                mock.patch.object(self.rb, "oh", oh), mock.patch.object(self.rb.time, "sleep", lambda s: None), \
                 mock.patch.object(self.rb, "openrouter_usage", lambda: 1.0), \
                 mock.patch.object(self.rb, "conversation_events", lambda cid: [obs]), \
                 mock.patch.object(self.rb, "open_work", lambda *a, **k: []):
@@ -2106,6 +2134,32 @@ class Validator(unittest.TestCase):
         self.assertEqual(self.v._requests("> GET http://lab/search?q=%3Cb%3Erv1%3C/b%3E\n< 200 OK"),
                          ["GET http://lab/search?q=<b>rv1</b>"])
 
+    def test_an_empty_answer_is_asked_again_without_the_json_format(self):
+        """A fifth of the validator's calls on one benchmark day came back empty with the JSON format, and each
+        one cost the fallback model the same packet again: the same model is asked once more without the format,
+        and both calls' usage is kept."""
+        import io
+        import urllib.request as urlreq
+        from unittest import mock
+        bodies = []
+
+        def urlopen(req, timeout=180):
+            bodies.append(json.loads(req.data.decode()))
+            content = "" if len(bodies) == 1 else \
+                '{"verdict": "stands", "reason": "the code shows it", "evidence_ref": "r1.txt"}'
+            return io.BytesIO(json.dumps({
+                "choices": [{"message": {"content": content}}], "model": "validator/1",
+                "usage": {"prompt_tokens": 10, "completion_tokens": 2}}).encode())
+
+        with mock.patch.object(urlreq, "urlopen", urlopen):
+            a, model, usage = self.v._chat("validator", "acme", [{"role": "user", "content": "x"}])
+        self.assertEqual(len(bodies), 2)
+        self.assertIn("response_format", bodies[0])
+        self.assertNotIn("response_format", bodies[1])
+        self.assertIn('"stands"', a)
+        self.assertEqual(usage["prompt_tokens"], 20)          # both calls are spent and counted
+        self.assertEqual(usage["completion_tokens"], 4)
+
     def test_stands(self):
         r = self.v.validate("acme", self.f["id"], chat=self.chat(['{"verdict": "stands", "reason": "rv123 is '
                                                                    'reflected inside <b>", "evidence_ref": "r1.txt"}']))
@@ -2163,6 +2217,43 @@ class Validator(unittest.TestCase):
         self.assertIn("Cited but not readable here", text)           # a missing file is named, not dropped
         self.assertIn("evidence/runs/gone.txt", text)
         self.assertIn("needs no request to a running system", self.v.SYSTEM)
+
+    def test_a_source_file_cited_without_a_line_is_shown(self):
+        # a benchmark run: the dependency finding cited /src/.../app.py in its evidence and "app.py:24" in its steps;
+        # the validator was shown neither and disproved a real finding because "app.py is not provided"
+        os.makedirs(os.path.join(self.tmp.name, "src", "demo", "lib"))
+        with open(os.path.join(self.tmp.name, "src", "demo", "app.py"), "w") as f:
+            f.write("".join(f"# line {i}\n" for i in range(1, 24)) + "cfg = yaml.load(request.data, Loader=yaml.Loader)\n"
+                    + "".join(f"# line {i}\n" for i in range(25, 301)))
+        with open(os.path.join(self.tmp.name, "src", "demo", "requirements.txt"), "w") as f:
+            f.write("PyYAML==5.3\n")
+        with open(os.path.join(self.tmp.name, "src", "demo", "lib", "util.py"), "w") as f:
+            f.write("".join(f"# util {i}\n" for i in range(1, 80)))
+        f = db.record("acme", actor="agent:planner", method="source-review", title="Vulnerable dependency: PyYAML 5.3",
+                      severity="high", asset="/src/demo/requirements.txt", status="confirmed",
+                      description="The app uses the unsafe loader in /config.",
+                      reproduction="1. requirements.txt pins PyYAML==5.3 2. yaml.load at app.py:24, helper at "
+                                   "lib/util.py:70-72, see also nothere.py:3 and version 5.3:1",
+                      evidence=["/src/demo/requirements.txt", "/src/demo/missing.py", "/src/../etc/passwd"])
+        text, files = self.v.packet("acme", db.get("acme", f["id"]))
+        self.assertIn("SOURCE FILE /src/demo/requirements.txt, lines 1-2 of 2 (cited without a line", text)
+        self.assertIn("    1 PyYAML==5.3", text)
+        self.assertIn("SOURCE FILE /src/demo/app.py, around the cited line(s) 24 (the file has 301 lines", text)
+        self.assertIn("   24 cfg = yaml.load(request.data, Loader=yaml.Loader)", text)
+        self.assertNotIn("# line 60", text)                          # still 25 lines each side
+        self.assertIn("SOURCE FILE /src/demo/lib/util.py, around the cited line(s) 70-72", text)
+        self.assertNotIn("SOURCE FILE /src/demo/nothere.py", text)   # a name that is no file there shows nothing
+        self.assertEqual(text.count("SOURCE FILE "), 3)
+        self.assertNotIn("root:", text)                              # nothing outside /src
+        unread = text.split("Cited but not readable here")[1].split("\n")[0]
+        self.assertIn("/src/demo/missing.py", unread)                # named, not dropped
+        self.assertNotIn("requirements.txt", unread)                 # shown, so not listed as unreadable
+        # a long file cited whole is shown from its top only
+        g = db.record("acme", actor="agent:planner", method="source-review", title="Debug mode", severity="low",
+                      asset="/src/demo", status="confirmed", description="debug=True", evidence=["/src/demo/app.py"])
+        text, _ = self.v.packet("acme", db.get("acme", g["id"]))
+        self.assertIn(f"SOURCE FILE /src/demo/app.py, lines 1-{self.v.SRC_HEAD} of 301", text)
+        self.assertNotIn(f"# line {self.v.SRC_HEAD + 5}\n", text)
 
     def test_a_long_file_is_shown_around_what_the_finding_quotes(self):
         hit = '"check_id": "tainted-sql-string", "path": "src/server.js"'
@@ -2607,6 +2698,44 @@ class Oracles(unittest.TestCase):
                                        send=noisy)["result"], "fail")
         with self.assertRaises(ValueError):
             self.o.verify("acme", "timing", {"url": "http://t/slow"}, send=slow)   # no control
+
+    def test_rate_limit(self):
+        """The brokered burst (actions.rate_burst) is faked: pass when every shot is answered like the cooldown
+        control, fail - rate limiting IS present - when some are refused while the control isn't, inconclusive
+        when the control fails, and an approval still needed surfaces as every oracle's does."""
+        req = {"method": "POST", "url": "http://t/login", "body": "u=x"}
+        self.shape = {"n": 30, "statuses": [200] * 30, "control": 200, "seconds": 1.5, "gap": 0.05,
+                      "evidence": "evidence/rate/1.json", "text": "ok"}
+        self.burst_calls = []
+        real = self.o.actions.rate_burst
+
+        def fake(eng, method, url, headers=None, body="", n=30, cooldown=10.0, approval_id=None, identity=None,
+                 task=None, timeout_s=30):
+            self.burst_calls.append((n, cooldown, approval_id))
+            return dict(self.shape)
+        self.o.actions.rate_burst = fake
+        try:
+            r = self.o.verify("acme", "rate_limit", req, samples=5, timeout=10.0)
+            self.assertEqual(r["result"], "pass", r["reason"])
+            self.assertEqual(self.burst_calls[0][0], 30)          # a tiny samples value means the default burst
+            self.assertIn("no rate limiting", r["reason"])
+            self.assertIn("evidence/rate/1.json", json.dumps(r["steps"]))
+            self.shape = {**self.shape, "n": 50, "statuses": [200] * 45 + [429] * 5}
+            r = self.o.verify("acme", "rate_limit", req, samples=50)
+            self.assertEqual(r["result"], "fail")
+            self.assertIn("rate limiting IS present", r["reason"])
+            self.assertEqual(self.burst_calls[-1][0], 50)
+            self.shape = {**self.shape, "control": None}
+            self.assertEqual(self.o.verify("acme", "rate_limit", req)["result"], "inconclusive")
+            self.shape = {"approval": "ab12cd34", "text": "APPROVAL REQUIRED"}
+            stopped = None
+            try:
+                self.o.rate_limit("acme", req, send_kw={})
+            except self.o.Stopped as s:
+                stopped = s.result
+            self.assertEqual((stopped or {}).get("approval"), "ab12cd34")
+        finally:
+            self.o.actions.rate_burst = real
 
     def test_findings_side(self):
         import verification
@@ -3513,6 +3642,19 @@ class FindingTools(unittest.TestCase):
         self.assertIn("refers to source that isn't there", f["note"])
         self.assertIn("the file has 4 lines", f["note"])
 
+    def test_a_likely_duplicate_is_named_at_record_time(self):
+        """A benchmark run confirmed three SQL injection findings on the same endpoint before merging them: the
+        second one names the first in its reply."""
+        one = self.record(title="SQL injection in /user", method="source-review", reproduction=self.REPRO)
+        self.assertNotIn("note", one)
+        two = self.record(title="Blind SQL injection in /user", method="source-review", reproduction=self.REPRO,
+                          description="The name parameter is concatenated into the query, differently.")
+        self.assertIn(f"Same CWE and asset as confirmed {one['id']}", (two.get("validation") or {}).get("note", ""))
+        self.assertIn("duplicate_of", (two.get("validation") or {}).get("note", ""))
+        merged = self.update(two["id"], status="duplicate", duplicate_of=one["id"],
+                              reason="same root cause as " + one["id"])
+        self.assertEqual(merged["status"], "duplicate")
+
     def test_a_method_alone_that_cannot_confirm_is_refused(self):
         f = self.record()
         out = self.update(f["id"], method="source-review")
@@ -3537,6 +3679,34 @@ class FindingTools(unittest.TestCase):
         self.assertEqual(out["evidence"], ["evidence/runs/r1.txt", "evidence/runs/r1.txt"])
         out = self.t.update_coverage("e", pid, "tested", evidence=["evidence/runs/nope.txt: see above"])
         self.assertEqual(out, "REFUSED: evidence/runs/nope.txt: no such file")
+
+    def test_not_applicable_is_refused_while_a_sweep_hit_stands(self):
+        """A benchmark run marked ReDoS items not-applicable with the sweep's timing hit untriaged: the update
+        is refused with the hit's class, cell and evidence until it is triaged, whatever door it comes through."""
+        import reconmap
+        import workspace
+        from unittest import mock
+        with mock.patch.object(workspace, "_map_refs", lambda eng, refs: None):   # the map itself is stubbed below
+            pid = workspace.plan_add("e", "agent:planner", [{"title": "redos on E-1a2b3c", "area": "redos",
+                                                            "refs": ["E-1a2b3c"]}])[0]
+        cells = {"cells": [{"entry": "E-1a2b3c", "method": "GET", "path": "/u/{}/email", "host": "h",
+                            "class": "redos", "items": [pid], "swept": ["evidence/sweep/sweep-1.json"]}]}
+        real = reconmap.matrix
+        reconmap.matrix = lambda eng, plan=None: cells
+        try:
+            out = self.t.update_coverage("e", pid, "not-applicable", rationale="no regex here")
+            self.assertIn("can't be not-applicable or excluded", out)
+            self.assertIn("sweep hit redos on GET /u/{}/email", out)
+            self.assertIn("evidence/sweep/sweep-1.json", out)
+            self.assertIn("import_observations", out)
+            cells["cells"][0]["swept"] = None
+            out = json.loads(self.t.update_coverage("e", pid, "not-applicable", rationale="no regex here"))
+            self.assertEqual(out["state"], "not-applicable")
+            reconmap.matrix = lambda eng, plan=None: (_ for _ in ()).throw(ValueError("no map"))
+            out = json.loads(self.t.update_coverage("e", pid, "not-applicable", rationale="no map at all"))
+            self.assertEqual(out["state"], "not-applicable")   # a broken map never blocks a write
+        finally:
+            reconmap.matrix = real
 
     def test_coverage_of_several_items_in_one_call(self):
         """#112: update_coverage was 21 of 59, 52 of 125 and 22 of 102 tool calls in three runs, one item each."""

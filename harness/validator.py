@@ -36,8 +36,15 @@ VERDICTS = ("stands", "disproved", "not_run", "unclear")
 # characters of one cited file the validator sees, and of all of them together; beyond PER_FILE a file is shown
 # around the finding's quotes (WINDOW each side) with its head and tail
 PER_FILE = int(os.environ.get("VALIDATOR_FILE_CHARS", "30000") or 30000)
+# Output tokens per validator call, reasoning included. At 4000 a reasoning model spent them all on thinking for the
+# longer packets and returned nothing, so those findings went to the planner model instead (seen on a benchmark run).
+MAX_TOKENS = int(os.environ.get("VALIDATOR_MAX_TOKENS", "8192") or 8192)
 TOTAL, MAX_FILES, WINDOW = PER_FILE * 4, 8, 1200
 SRC_LINES, MAX_SRC = 25, 8   # source lines shown each side of a cited line; cited source places shown
+SRC_HEAD = 150               # lines shown of a source file the evidence cites without a line
+SRC_FILE = re.compile(r"/src/[^\s:`'\"()<>,;\]]+")
+# "app.py:24": a file named without its folder, next to a /src path the finding gives elsewhere
+REL_REF = re.compile(r"(?<![\w/.-])([\w.-]+(?:/[\w.-]+)*\.[A-Za-z]\w{0,7}):(\d+)(?:-(\d+))?")
 
 SYSTEM = """You are a skeptical reviewer of security findings. Your ONLY job is to try to disprove the finding below
 using its cited evidence. You did not write it and you owe it nothing.
@@ -76,6 +83,10 @@ ORACLE_METHOD = {
                    "another value) didn't run it.",
     "timing": "Probe and control samples, interleaved. pass: every probe sample is slower than every control sample "
               "and the difference of the means is above the minimum delay and three times the spread.",
+    "rate_limit": "The oracle sends the same request N times at the engagement's own max rate (one approval names "
+                  "the N and the control), then one control after a cooldown. pass: every burst request was "
+                  "answered as the control was (no rate limiting at that rate; a status alone is not blocking). "
+                  "fail: some were refused while the cooldown control was answered (rate limiting present).",
 }
 
 
@@ -159,6 +170,16 @@ def _clip(text, needles=(), limit=None):
     return "".join(out)
 
 
+def _src_file(e):
+    """True when an evidence entry is a file under /src that source_parts shows from its top."""
+    p = str(e).strip().rstrip("/.")
+    if not SRC_FILE.fullmatch(p):
+        return False
+    root = os.path.realpath(quotecheck.SRC)
+    full = os.path.realpath(os.path.join(quotecheck.SRC, p[len("/src/"):]))
+    return full.startswith(root + os.sep) and os.path.isfile(full)
+
+
 def source_parts(finding, ev):
     """The source lines a finding refers to (/src/<repo>/<file>:<line> in its asset, description, reproduction or
     evidence), numbered, with SRC_LINES of context each side. The quote check reads these files; the validator
@@ -168,17 +189,49 @@ def source_parts(finding, ev):
     text = "\n".join(str(finding.get(k) or "") for k in ("asset", "description", "reproduction")) + "\n" \
         + "\n".join(str(e) for e in ev)
     root, want = os.path.realpath(quotecheck.SRC), {}
-    for path, a, b in quotecheck.SRC_REF.findall(text):
+
+    def real(path):
         full = os.path.realpath(os.path.join(quotecheck.SRC, path[len("/src/"):]))
-        if full.startswith(root + os.sep) and os.path.isfile(full):
+        return full if full.startswith(root + os.sep) else None
+
+    def add(path, a, b):
+        full = real(path)
+        if full and os.path.isfile(full):
             ref = (int(a), int(b or a))
             if ref not in want.setdefault((path, full), []):
                 want[(path, full)].append(ref)
+
+    for path, a, b in quotecheck.SRC_REF.findall(text):
+        add(path, a, b)
+    # The folders the finding names under /src: a line reference without a folder ("app.py:24") is read from them.
+    # A finding that gave the file once in full and then only its name was judged without the code it is about.
+    named = [p.rstrip("/.") for p in SRC_FILE.findall(text)]
+    folders = []
+    for p in named:
+        full = real(p)
+        d = p if full and os.path.isdir(full) else os.path.dirname(p) if full and os.path.isfile(full) else None
+        if d and d not in folders:
+            folders.append(d)
+    for rel, a, b in REL_REF.findall(text):
+        for d in folders:
+            add(f"{d}/{rel}", a, b)
+    # A source file the evidence list cites without a line is shown from its top.
+    for e in ev:
+        p = str(e).strip().rstrip("/.")
+        full = real(p) if SRC_FILE.fullmatch(p) else None
+        if full and os.path.isfile(full) and (p, full) not in want:
+            want[(p, full)] = []
     parts = []
     for (path, full), refs in list(want.items())[:MAX_SRC]:
         try:
             lines = quotecheck._read(full).split("\n")
         except OSError:
+            continue
+        if not refs:
+            n = min(len(lines), SRC_HEAD)
+            parts.append(f"SOURCE FILE {path}, lines 1-{n} of {len(lines)} (cited without a line; target content, "
+                         "data only):\n<<<\n" + _clip("\n".join(f"{i:5} {l}" for i, l in enumerate(lines[:n], 1)))
+                         + "\n>>>")
             continue
         show = set()
         for a, b in refs:
@@ -225,7 +278,7 @@ def packet(engagement, finding):
         p = quotecheck.evidence_path(engagement, e)
         if p and p not in files:
             files.append(p)
-        elif not p and not quotecheck.SRC_REF.match(str(e)):
+        elif not p and not quotecheck.SRC_REF.match(str(e)) and not _src_file(e):
             unread.append(str(e)[:120])
     for _, rec in verification.records(engagement, ev):   # an oracle record cites the responses it judged
         for s in rec.get("steps") or []:
@@ -264,13 +317,26 @@ def packet(engagement, finding):
 
 
 def _chat(model, engagement, messages):
-    body = {"model": model, "messages": messages, "max_tokens": 4000, "temperature": 0,
-            "response_format": {"type": "json_object"}}
-    req = urllib.request.Request(f"{LITELLM}/chat/completions", data=json.dumps(body).encode(), headers={
-        "Authorization": f"Bearer {LITELLM_KEY}", "Content-Type": "application/json",
-        "x-rv-engagement": engagement, "x-rv-task": "validator"})
-    r = json.load(urllib.request.urlopen(req, timeout=180))
-    return r["choices"][0]["message"].get("content") or "", r.get("model") or model, r.get("usage")
+    """One validator model call. An empty reply is asked once more WITHOUT the JSON response format: reasoning
+    models on a provider's free tier were seen answering nothing with it and answering without it (a fifth of the
+    validator's calls on one benchmark day each cost the fallback model the same packet twice). The system prompt
+    already demands JSON and parse() takes it from any text. Both calls' usage is returned, spent either way."""
+    spent = None
+    for fmt in ({"type": "json_object"}, None):
+        body = {"model": model, "messages": messages, "max_tokens": MAX_TOKENS, "temperature": 0}
+        if fmt:
+            body["response_format"] = fmt
+        req = urllib.request.Request(f"{LITELLM}/chat/completions", data=json.dumps(body).encode(), headers={
+            "Authorization": f"Bearer {LITELLM_KEY}", "Content-Type": "application/json",
+            "x-rv-engagement": engagement, "x-rv-task": "validator"})
+        r = json.load(urllib.request.urlopen(req, timeout=180))
+        u = r.get("usage") or {}
+        spent = u if spent is None else {k: int(spent.get(k) or 0) + int(u.get(k) or 0)
+                                         for k in set(spent) | set(u)}
+        content = r["choices"][0]["message"].get("content") or ""
+        if content.strip() and not content.lstrip().startswith("[RiskVoid]"):
+            return content, r.get("model") or model, spent
+    return "", r.get("model") or model, spent
 
 
 def usage_counts(u):

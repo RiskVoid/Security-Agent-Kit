@@ -25,11 +25,60 @@ changes to the harness are measured.
 - `record_finding` and `update_finding` read a `method` without `status` as a confirmation attempt, with the same
   checks as `status="confirmed"`. When the checks fail, the finding and the other fields are saved and the reply
   says why it is still a candidate. Before, the finding was recorded as a candidate without a word.
+- The planner prompt says what the Kali sandbox doesn't ship — no npm, Node, PHP or Composer, and a `/tmp` that is a
+  fresh mount per command — and that the planner's own terminal is a different environment. On one benchmark run the
+  planner spent six steps trying `npm audit` variants after finding npm in its own terminal.
+- The Kali `run` tool refuses a command that names a runtime the sandbox doesn't ship (npm, node, yarn, pnpm, php,
+  composer), with what to use instead: one refused call instead of a loop of `command not found` variants.
+- A worker model call judges "busy" by its error text, not only by the status code: the gateway explains a rate
+  limit in the text, but litellm's error envelope can lose the 429 on the way out, and a worker task died as
+  `model_refused` on a limit that resets within the minute. `BUSY_RX` is what a busy model says.
+- The worker's prompt points static analysis of in-scope code at `analyze_source` and its offline rules: a delegated
+  semgrep task spent 9 of its 15 steps hunting an owasp ruleset that exists only in the registry, which the
+  sandbox cannot reach (the `run` tool's description claimed otherwise and is corrected).
+- The worker's prompt names the per-command `/tmp`: a worker built a virtualenv there and lost it 90 seconds later.
+- A confirmed finding whose evidence entry names no file (neither an engagement file nor a `/src` reference) says so
+  in the confirmation reply. On one run the planner cited "the intel_prioritize output" — inline tool text — and
+  only the validator noticed, after the report's strict score had already lost the finding.
+- The model gateway reads a call's engagement from the `x-rv-engagement` header first: worker and validator calls
+  name no engagement in their content, so their model events were recorded with no engagement to group them by.
+- The gateway classifies OpenRouter's free-model daily limit as a rate limit that resets at UTC midnight, not as a
+  credits problem: the limit's own name ("free-models-per-day-high-balance") matched the bare word "balance", and
+  the run was told to top up.
+- Delegation is harness behavior, not benchmark behavior. The first message of a new conversation names the worker
+  alongside the playbooks (`./rvkit conversation new`, the console, the quickstart prompt, the unattended benchmark
+  preamble alike), and a scanner or recon command the planner ran itself — `run` with no worker task — ends its
+  result with a delegate reminder, in the same place as the rules line, up to three times per engagement. The
+  instruction in the system prompt alone was shown not to steer models under workload (two runs spent 4M and 12M
+  planner tokens with zero worker calls). Worker runs and single checks never see the reminder.
+- Every conversation the kit starts goes through one door: `conversations.new()` in scripts/conversations.py
+  (profile by the engagement's rules, bind before the first message, the standing first-message line) — the
+  console, `./rvkit conversation new`, and the benchmark runner alike. The runner's own conversation-creation
+  path (a different workspace, no tags, its own profile lookup, a message sent in the create call) is gone: a
+  benchmark run must exercise exactly what a real engagement runs, and its unit tests stub the same module's
+  HTTP and control-plane edges instead of a private path. The runner keeps only what is genuinely unattended:
+  the auto-approved approvals, the nudges, the caps — all through the shared `send` and `pause_one`.
 
 ### Verification
 - A confirmed finding's quotes are compared with its evidence files. Quotes that are not there are listed in the
   reply, in `get_finding` and as a warning before delivery. A `/src/<file>:<line>` that doesn't exist refuses the
   confirmation.
+- A plan item can no longer be marked not-applicable or excluded while the probe_map sweep has a recorded hit on
+  one of the cells it covers: the update is refused with the hit's class, entry and evidence, through
+  `update_coverage` and `skip_coverage_cells` alike, until what the sweep found is triaged. A run rationalised
+  ReDoS items away with the sweep's timing hit untriaged and lost two expected issues to it.
+- A likely duplicate is named at record time: a confirmed finding with the same CWE on the same asset as one
+  already confirmed says so in its reply, with the merge instruction. A run confirmed three SQL injection
+  findings on one endpoint and merged them only at the end.
+- The validator asks the same model once more without the JSON response format when it answers nothing: on one
+  benchmark day a fifth of its calls came back empty with it and each one cost the fallback model the same
+  packet again. The retry's usage is kept with the first's.
+- A seventh oracle, `rate_limit`, proves the presence or absence of rate limiting with a brokered burst: the same
+  request N times at the engagement's own max rate (never past it), then one control after a cooldown. ONE
+  approval names the N and the control (like the race's, bound to that exact action); the evidence file holds
+  every response. pass is the proof a 'missing rate limit' finding needs (a run once offered five rapid requests
+  and the validator rightly refused); fail names rate limiting present — the record is its proof, record that
+  instead. Lab-verified by `oracle_test.sh`; the fail verdict by the unit tests.
 - Oracles prove a finding with a check the kit runs itself: a response marker, the difference between two
   identities, a read-back, script execution in the sandboxed browser, and timing. Each runs a negative control, and
   the report shows the oracle and its control for each verified finding.
@@ -184,6 +233,16 @@ changes to the harness are measured.
   the lab can use OpenRouter's free models. It is on by default and applies to every OpenRouter model the kit calls.
   While it is off, `./rvkit status` and `./rvkit doctor` warn, and each benchmark result records it
   (`models.openrouter_zero_retention`). Not for client work: providers may then keep prompts or train on them.
+- Progress lines appear live when the runner's output is piped to a file: before, nothing showed until the run
+  ended, and a long benchmark could not be watched.
+- Each benchmark conversation is bound to its engagement, as `./rvkit conversation new` binds one: the console and
+  `./rvkit conversation list` show it, and a deleted engagement refuses its model calls. Before, benchmark
+  conversations were invisible to the kit's own tooling, and a crashed session left nothing to find.
+- A conversation that stopped on a transient provider error (a per-minute rate limit, an empty reply) is sent back
+  to work within its time budget, up to the nudge limit. Before, any `error` state ended the run; one run lost
+  eight remaining minutes and six finished worker tasks to a per-minute limit.
+- The free-model daily limit stops the whole suite: every remaining benchmark would fail at its first model call,
+  so the runner says so and skips them instead of spending a run each.
 
 ### Fixed
 - Worker delegation didn't work with a reasoning model as the worker. A model call was capped at 2,048 output

@@ -82,6 +82,17 @@ def _validated(engagement, row):
                      "signs the report. Read the reason once. If it is right, correct the finding (cite the evidence "
                      "that shows it, narrow the claim, or mark it false-positive). If the evidence already shows "
                      "what the finding says, leave it and go on with the plan: do not send this call again.")
+    missing = _missing_evidence(engagement, row)
+    if missing:
+        v["note"] = (str(v.get("note") or "") + " " if v.get("note") else "") + \
+            (f"Evidence entry(ies) {', '.join(missing)} name no file of this engagement: cite the path a tool "
+             "printed (evidence/runs/...), or a /src/<file>:<line> reference, or drop the entry.")
+    dup = _duplicate_hint(engagement, row)
+    if dup:
+        v["note"] = (str(v.get("note") or "") + " " if v.get("note") else "") + \
+            (f"Same CWE and asset as confirmed {', '.join(dup)}: if this is the same root cause, merge it "
+             "(status duplicate, duplicate_of the finding to keep, after adding its evidence there); if it is a "
+             "separate one, say why in the description.")
     return {**row, **({"quotes": quotes} if quotes else {}), "validation": v}
 
 
@@ -91,6 +102,38 @@ def _quotes(engagement, row):
         return quotecheck.flag(engagement, row.get("description"), row.get("reproduction"), row.get("evidence"))
     except Exception:  # noqa: BLE001  a list for the reader; the confirmation doesn't depend on it
         return None
+
+
+def _missing_evidence(engagement, row):
+    """Evidence entries that name no file (neither an engagement file nor a /src reference): a note at record time.
+    The validator and the report find them later, when fixing them costs another round; a model was seen citing
+    'the intel_prioritize output' — inline tool text, not a file — as evidence."""
+    out = []
+    for e in row.get("evidence") or []:
+        p = str(e).strip()
+        if not p or p.startswith("/src/"):
+            continue
+        try:
+            if quotecheck.evidence_path(engagement, p):
+                continue
+        except Exception:  # noqa: BLE001  the note is a convenience, never a refusal
+            continue
+        out.append(p.split(" ")[0][:80])
+    return out
+
+
+def _duplicate_hint(engagement, row):
+    """Confirmed findings that already cover the same CWE on the same asset: a likely duplicate, named at record
+    time. One finding per root cause is the rule; a benchmark run recorded three SQL injection findings on the
+    same endpoint and confirmed each before merging them."""
+    try:
+        same = [f for f in db.list_(engagement)
+                if f.get("id") != row.get("id") and f.get("status") == "confirmed"
+                and (f.get("cwe") or "").strip().lower() == (row.get("cwe") or "").strip().lower()
+                and (f.get("asset") or "").strip().lower() == (row.get("asset") or "").strip().lower()]
+    except Exception:  # noqa: BLE001  the note is a convenience, never a refusal
+        return []
+    return [f"{f['id']} ({str(f.get('title'))[:60]})" for f in same]
 
 
 def _disproved(engagement, finding_id):

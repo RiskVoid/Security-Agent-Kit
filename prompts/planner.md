@@ -161,6 +161,14 @@ like a senior penetration tester and code auditor, and you keep a clear record o
   exploited), EPSS and CVSS; `vuln_lookup` gives details; `package_vulns` checks one package version;
   `kev_search` checks a vendor/product against the KEV catalog. Use KEV/EPSS in severity and impact reasoning,
   and cite the fixed version in remediation.
+- The Kali sandbox and your own terminal are different environments. Node, npm, PHP and Composer are **not
+  in the Kali container**, and what `which npm` finds in your terminal does not exist there: check dependencies
+  from the manifest and lockfile instead (osv-scanner, trivy, the intel tools), and never install or run the
+  client's project from either environment. A command naming one of those runtimes is refused with the
+  alternative to use.
+- Every command in the sandbox starts with a fresh `/tmp`: nothing left there survives to the next command.
+  Install nothing into it either — write working files under `/work/<engagement>/` (the current directory of
+  every command) and use the tools the image ships.
 - For "Network: offline" engagements, use local rule sets (`semgrep --config /opt/semgrep-rules/<lang>`) and
   skip tools that download databases.
 

@@ -18,6 +18,10 @@
 #                        this test turns on. With the DVGA lab up, its importPaste SSRF is verified the same way;
 #                        that probe is a POST mutation, so it needs an approval (printed; run again with
 #                        RV_OOB_APPROVAL=<id> RV_OOB_MARKER=<token>).
+#   rate_limit           the same request 10 times at the engagement's own max rate, then one control after a
+#                        cooldown (pass: the lab has no limiter). The burst is a brokered action: ONE approval
+#                        names the N and the control (printed; run again with RV_RATE_APPROVAL=<id>). The fail
+#                        verdict - some refused while the control is answered - is covered by the unit tests.
 # The read_back and persistence pass cases write, so they need the user's approval: the test prints the approval
 # ids and commands, and runs them on the next run with RV_ORACLE_APPROVAL=<id> RV_ORACLE_MARKER=<marker> and
 # RV_PERSIST_APPROVAL=<id> RV_PERSIST_MARKER=<token> (same engagement kept).
@@ -182,6 +186,29 @@ if [ -z "$RV_ORACLE_APPROVAL" ]; then
   check "response_diff: a page without the text fails" "$(v "$A")" '^fail'
   A="'response_diff', {'url': '$L/api/docs'}, control={'url': '$L/api/docs'}, expect='openapi'"
   check "response_diff: a text both answers contain is inconclusive" "$(v "$A")" '^inconclusive'
+fi
+
+# ---------------------------------------------------------------- rate limiting (the proof a burst gives)
+# The burst is a brokered action: one approval names the N requests and the cooldown control. The lab has no
+# limiter, so the burst passes; the fail verdict (some refused, control clean) is covered by the unit tests.
+if [ -z "$RV_RATE_APPROVAL" ]; then
+  A="'rate_limit', {'url': '$L/api/docs'}, samples=10, timeout=2"
+  r="$(v "$A")"
+  check "rate_limit: the burst asks for one approval that names the N and the control" "$r" '^approval'
+  check "rate_limit: the approval text names the burst at the max rate and the control" "$r" \
+        'same request 10 times at the engagement.s max rate.*then one control request after 2s'
+  rid="$(echo "$r" | grep -oE 'Approval id: [a-f0-9]{8}' | head -1 | cut -d' ' -f3)"
+  echo "      The rate_limit case sends a burst to the lab and needs your approval. To run it:"
+  echo "        ./rvkit approve $ENG $rid"
+  echo "        RV_ORACLE_APPROVAL=$id RV_ORACLE_MARKER=$mk RV_RATE_APPROVAL=$rid bash evals/oracle_test.sh"
+  RV_ORACLE_KEEP=1
+else
+  A="'rate_limit', {'url': '$L/api/docs'}, samples=10, timeout=2, approval_id='$RV_RATE_APPROVAL'"
+  r="$(v "$A")"
+  check "rate_limit: a burst the lab answers without limiting passes" "$r" '^pass'
+  recr="$(echo "$r" | tail -1)"
+  check "rate_limit: the record holds the shots and the cooldown control" \
+        "$(docker compose exec -T kali-mcp cat "$recr" </dev/null)" '"role": "10 rapid requests, then the cooldown control"'
 fi
 
 # ---------------------------------------------------------------- out-of-band on DVGA: the importPaste SSRF (#58)

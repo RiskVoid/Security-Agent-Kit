@@ -42,9 +42,51 @@ def with_rules(fn):
     @functools.wraps(fn)
     async def wrap(*args, **kw):
         out = await fn(*args, **kw)
-        line = rules_line(sig.bind_partial(*args, **kw).arguments.get("engagement") or "")
-        return f"{out}\n{line}" if line and isinstance(out, str) else out
+        bound = sig.bind_partial(*args, **kw).arguments
+        line = rules_line(bound.get("engagement") or "")
+        extra = delegate_note(fn, bound)
+        if not isinstance(out, str):
+            return out
+        for text in (line, extra):
+            if text:
+                out = f"{out}\n{text}"
+        return out
     return wrap
+
+
+# Scanner and recon programs a run-tool command can name. Models skip planner.md's "Delegate tool work" section
+# when the first message doesn't name the worker (two benchmark runs spent 4M and 12M planner tokens with zero
+# worker calls), so a run made by the planner itself ends with the reminder, up to DELEGATE_NOTE_MAX times per
+# engagement: a note on every result is noise, and one the model never reads is worse.
+DELEGATE_TOOLS = {
+    "semgrep", "bandit", "gitleaks", "trufflehog", "rv-joern", "osv-scanner", "pip-audit", "trivy", "syft", "grype",
+    "nmap", "naabu", "dnsx", "subfinder", "amass", "katana", "httpx-toolkit", "whatweb", "gowitness", "nuclei",
+    "nikto", "ffuf", "feroxbuster", "gobuster", "arjun", "wafw00f", "wpscan", "dalfox", "commix", "zaproxy",
+    "sqlmap", "testssl", "sslscan", "schemathesis", "jwt_tool", "graphw00f", "graphql-cop", "clairvoyance",
+    "rv-llm", "garak",
+}
+DELEGATE_NOTES = {}   # engagement -> notes shown (this server process)
+DELEGATE_NOTE_MAX = 3
+
+
+def delegate_note(fn, arguments):
+    """The reminder appended to a bulk scanner or recon run the planner made itself (task empty: worker calls
+    carry one). Empty for everything else, and never a reason a result fails (like the rules line)."""
+    if fn.__name__ != "run" or arguments.get("task"):
+        return ""
+    try:
+        progs = [prog for prog, _ in core._segments(str(arguments.get("command") or ""))]
+        if not any(prog in DELEGATE_TOOLS for prog in progs):
+            return ""
+    except Exception:  # noqa: BLE001 - a reminder is best effort
+        return ""
+    eng = str(arguments.get("engagement") or "")
+    if DELEGATE_NOTES.get(eng, 0) >= DELEGATE_NOTE_MAX:
+        return ""
+    DELEGATE_NOTES[eng] = DELEGATE_NOTES.get(eng, 0) + 1
+    return ("[delegate: scanner and recon runs belong to the worker — hand the next one over with delegate_task "
+            "(one narrow task per plan item, plan_item set) and collect it with get_task; its output stays out of "
+            "your context. A single check (one request, one file) is yours.]")
 
 
 @mcp.tool()
@@ -162,7 +204,8 @@ async def run(command: str, engagement: str, timeout_s: int = 600, approval_id: 
       AI/LLM/MCP:   rv-llm (`rv-llm help`: `probe` adversarial prompt library with canaries against a chat API,
                     `mcp <url>` audit an MCP server, `mcp-call` call one MCP tool, `payloads` indirect-injection
                     payloads), garak (LLM vulnerability scanner; `--target_type rest -G <config.json>`)
-      code/secrets: semgrep (registry configs like p/python when online; offline rules in /opt/semgrep-rules),
+      code/secrets: semgrep (offline rules in /opt/semgrep-rules, e.g. --config /opt/semgrep-rules/python; the
+                     semgrep registry is NOT reachable from the sandbox, also on online engagements),
                     bandit, gitleaks, trufflehog, rv-joern (Joern data-flow: `rv-joern taint /src/<repo>` writes
                     input-to-sink flows with full paths to joern-flows.json; `rv-joern scan` for C/C++/Java queries)
       supply chain: osv-scanner, pip-audit, trivy (fs/config/secret), syft (SBOM), grype (scan an SBOM or dir)
@@ -211,6 +254,11 @@ async def verify(engagement: str, oracle: str, request: dict, marker: str = "", 
                            the callback token. Passes only when that token arrives at the kit's own catcher and
                            the control's does not (timeout seconds to wait, default 10). Needs RULES.md
                            'Out-of-band callbacks: on'; the rules line shows the catcher URL to embed.
+       rate_limit           the same request N times at the engagement's own max rate, then one control after a
+                            cooldown (samples: N, default 30, max 100; timeout: the cooldown, default 10s). One
+                            approval names the N and the control. pass: no rate limiting at that rate (every
+                            response in the record - the evidence a 'missing rate limit' finding needs); fail:
+                            rate limiting IS present (the record is its proof - record that instead).
     Result: pass (holds and the control is clean), fail, or inconclusive. Each run is saved as a verification record
     (evidence/verify/...json): cite it as evidence and confirm the finding with method=oracle. Requests go through
     the same scope, tier, approval and identity checks as http_request; a write needs an approval (call again with

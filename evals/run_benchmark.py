@@ -50,10 +50,13 @@ Cost is measured from your OpenRouter key's usage: don't use the key for anythin
 """
 import datetime, glob, hashlib, json, os, re, shutil, sqlite3, subprocess, sys, time, urllib.error, urllib.request
 
+sys.stdout.reconfigure(line_buffering=True)   # progress lines must appear live, also when the output is piped
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import bench_stats as stats  # noqa: E402
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "harness"))
 import lookup  # noqa: E402
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "scripts"))
+import conversations  # noqa: E402  the one conversation path: console, ./rvkit conversation, benchmark runs
 
 KIT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 OH = os.environ.get("OPENHANDS_URL", "http://127.0.0.1:8000")
@@ -250,7 +253,7 @@ def plain_preamble(eng, b, target):
     approvals = ("Some commands return an approval id: the benchmark harness approves them within about 30 "
                  "seconds. Wait (`sleep 30` in your terminal), then call run again with the identical command and the "
                  "approval_id." if b.get("lab") else "Intrusive commands are not allowed in this engagement.")
-    return (f"UNATTENDED BENCHMARK RUN. Engagement: `{eng}` (pass it to every tool call). Target: {target}.\n\n"
+    return (f"UNATTENDED BENCHMARK RUN (pass the engagement to every tool call). Target: {target}.\n\n"
             f"Task: {plain_task(b['task'].format(src=target, url=b.get('url', target)))}\n\n"
             "No human is watching this run: never ask questions or wait for answers. " + approvals + "\n"
             "Record every vulnerability you find with record_finding, one per root cause, with a CWE and the "
@@ -265,7 +268,7 @@ def preamble(eng, b, target, resumed=None):
                  "30 seconds. Wait (`sleep 30` in your terminal), then call run again with the identical command and "
                  "the approval_id." if b.get("lab") else
                  "Intrusive tools are not allowed in this engagement.")
-    return (f"UNATTENDED BENCHMARK RUN. Engagement: `{eng}`. Target: {target}.\n\n"
+    return (f"UNATTENDED BENCHMARK RUN. Target: {target}.\n\n"
             f"Task: {b['task'].format(src=target, url=b.get('url', target))}\n\n"
             "No human is watching this run: never ask questions or wait for answers. Make reasonable decisions "
             "yourself and note them in PLAN.md. " + approvals + "\n"
@@ -301,6 +304,17 @@ def approve_pending(eng):
 LOOP_TAG = "[RiskVoid] Loop stopped"   # litellm/rv_repeats.py CUT_TAG: the gateway ended a turn that repeated one call
 MAX_CONVERSATIONS = 3                  # a run goes on in a new conversation at most twice
 MODEL_LOG = os.path.join(KIT, ".rvkit", "events", "model-events.jsonl")   # litellm/rv_events.py writes it
+STOP_SUITE = {"why": None}             # set when a whole-suite condition hits (the free-model daily limit)
+
+
+def error_kind(cid):
+    """(code, detail) of the newest ConversationErrorEvent: what stopped an errored conversation."""
+    try:
+        events = conversation_events(cid)
+    except (urllib.error.URLError, TimeoutError):
+        return "", ""
+    e = next((x for x in reversed(events) if x.get("kind") == "ConversationErrorEvent"), None)
+    return (e or {}).get("code") or "", str((e or {}).get("detail") or "")
 
 
 def loop_limit(eng, start, end, path=MODEL_LOG):
@@ -330,21 +344,13 @@ def final_response(cid):
 
 
 def run_conversation(eng, b, agent, target, log, before=None):
-    prof = next((p for p in oh("GET", "/api/agent-profiles")["profiles"] if p["name"] == agent), None)
-    if not prof:
-        raise SystemExit(f"agent profile {agent!r} not found: run ./rvkit openhands")
-
     def start(text):
-        conv = oh("POST", "/api/conversations", {
-            "workspace": {"working_dir": "/workspace/project"}, "agent_profile_id": prof["id"], "max_iterations": 300,
-            "max_budget_per_run": b.get("max_budget_usd", 5.0), "title": f"benchmark {eng}",
-            "initial_message": {"role": "user", "content": [{"type": "text", "text": text}]}})
-        try:
-            oh("POST", f"/api/conversations/{conv['id']}/run")
-        except urllib.error.HTTPError as e:
-            if e.code != 409:  # 409: the initial message already started it
-                raise
-        log(f"  conversation {conv['id']} (watch it at {OH}/canvas)")
+        # The same door every conversation goes through (scripts/conversations.py): the engagement's own profile
+        # choice or the caller's, bind before the first message, the standing first-message line. A benchmark run
+        # must not have a conversation path of its own, or it measures a harness nobody else runs.
+        conv = conversations.new(eng, "cli:bench", text, title=f"benchmark {eng}", profile=agent,
+                                max_iterations=300, max_budget_per_run=b.get("max_budget_usd", 5.0))
+        log(f"  conversation {conv['id']} (watch it at {conv['url']})")
         return conv["id"]
 
     cid = start((plain_preamble if agent == PLAIN else preamble)(eng, b, target))
@@ -380,7 +386,7 @@ def run_conversation(eng, b, agent, target, log, before=None):
                                  "minute": round((time.time() - t0) / 60)})
                 log(f"  {restarts[-1]['reason']}: continuing in a new conversation")
                 try:
-                    oh("POST", f"/api/conversations/{cid}/pause")
+                    conversations.pause_one(cid)
                 except Exception:  # noqa: BLE001  it has stopped already
                     pass
                 cid = start(preamble(eng, b, target, resumed={
@@ -388,6 +394,26 @@ def run_conversation(eng, b, agent, target, log, before=None):
                 cids.append(cid)
                 stuck_here, status = False, "running"
                 continue
+            if status == "error":
+                # An error is OpenHands giving up on the model call: a transient provider problem (a rate limit
+                # that resets within the minute, an empty reply) should not end a run that has time and work left,
+                # and the free-model daily limit ends the whole suite: no benchmark can run until it resets.
+                code, detail = error_kind(cid)
+                if re.search(r"free.tier.daily|per.day|daily limit", detail, re.I):
+                    STOP_SUITE["why"] = ("the OpenRouter free-model daily limit is used up (it resets at the next "
+                                         "UTC midnight)")
+                    log(f"  stopped: {STOP_SUITE['why']}")
+                    break
+                if len(nudges) < 3 and room:
+                    nudges.append([f"transient error {code}"])
+                    log(f"  stopped by a transient provider error ({code}): continuing")
+                    conversations.send(eng, cid, "The run stopped because a model call failed with a transient "
+                                        "provider error (a rate limit or an empty reply). Continue where you left "
+                                        "off: call get_coverage, work through the remaining plan items, and record "
+                                        "and confirm the findings.", "cli:bench")
+                    status = "running"
+                    continue
+                break
             if status == "stuck":
                 try:
                     todo = [stuck_note(conversation_events(cid))]
@@ -404,8 +430,7 @@ def run_conversation(eng, b, agent, target, log, before=None):
                 nudges.append(todo)
                 stuck_here = stuck_here or status == "stuck"
                 log(f"  {'stuck' if status == 'stuck' else 'not done yet'} ({'; '.join(todo)[:200]}): continuing")
-                oh("POST", f"/api/conversations/{cid}/events", {"role": "user", "run": True,
-                                                                "content": [{"type": "text", "text": text}]})
+                conversations.send(eng, cid, text, "cli:bench")
                 status = "running"
                 continue
             break
@@ -414,7 +439,7 @@ def run_conversation(eng, b, agent, target, log, before=None):
         now = openrouter_usage() if before is not None else None
         if now is not None and now - before > b.get("max_budget_usd", 5.0):
             try:
-                oh("POST", f"/api/conversations/{cid}/pause")
+                conversations.pause_one(cid)
             except Exception:
                 pass
             status = "budget"
@@ -422,7 +447,7 @@ def run_conversation(eng, b, agent, target, log, before=None):
             break
         if time.time() - t0 > b["max_minutes"] * 60:
             try:
-                oh("POST", f"/api/conversations/{cid}/pause")
+                conversations.pause_one(cid)
             except Exception:
                 pass
             status = "timeout"
@@ -1215,6 +1240,10 @@ def main(argv):
         if len(runs) > 1:
             stats.print_group(save_group(runs))
             print(f"  summary: evals/results/bench/groups/{group}.json")
+        if STOP_SUITE["why"]:
+            print(f"\nstopped after {n}: {STOP_SUITE['why']}. The remaining benchmarks are skipped: every run would "
+                  "fail at its first model call.")
+            break
     return 0
 
 
