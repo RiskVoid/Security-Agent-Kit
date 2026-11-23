@@ -250,8 +250,8 @@ def plain_task(task):
 
 def plain_preamble(eng, b, target):
     """The baseline's brief: the same task and the same unattended rules, none of the kit's workflow."""
-    approvals = ("Some commands return an approval id: the benchmark harness approves them within about 30 "
-                 "seconds. Wait (`sleep 30` in your terminal), then call run again with the identical command and the "
+    approvals = ("Some commands return an approval id: the benchmark harness approves them within about 15 "
+                 "seconds. Wait (`sleep 15` in your terminal), then call run again with the identical command and the "
                  "approval_id." if b.get("lab") else "Intrusive commands are not allowed in this engagement.")
     return (f"UNATTENDED BENCHMARK RUN (pass the engagement to every tool call). Target: {target}.\n\n"
             f"Task: {plain_task(b['task'].format(src=target, url=b.get('url', target)))}\n\n"
@@ -265,7 +265,7 @@ def preamble(eng, b, target, resumed=None):
     """The first message of an unattended run. resumed: {"why", "minutes"} when it continues an earlier
     conversation in a new one (resume_note)."""
     approvals = ("Intrusive commands return an approval id: the benchmark harness approves them within about "
-                 "30 seconds. Wait (`sleep 30` in your terminal), then call run again with the identical command and "
+                 "15 seconds. Wait (`sleep 15` in your terminal), then call run again with the identical command and "
                  "the approval_id." if b.get("lab") else
                  "Intrusive tools are not allowed in this engagement.")
     return (f"UNATTENDED BENCHMARK RUN. Target: {target}.\n\n"
@@ -305,6 +305,18 @@ LOOP_TAG = "[RiskVoid] Loop stopped"   # litellm/rv_repeats.py CUT_TAG: the gate
 MAX_CONVERSATIONS = 3                  # a run goes on in a new conversation at most twice
 MODEL_LOG = os.path.join(KIT, ".rvkit", "events", "model-events.jsonl")   # litellm/rv_events.py writes it
 STOP_SUITE = {"why": None}             # set when a whole-suite condition hits (the free-model daily limit)
+CURRENT = {"eng": None, "cid": None}   # the conversation the runner is watching right now
+
+
+def stop_signal(signum, _frame):
+    """A runner that is killed (SIGTERM: a timeout, a supervisor, Ctrl-C) must not leave its conversation
+    running unattended: pause it, then go. The engagement is left mid-run, which the next run resets."""
+    try:
+        if CURRENT["cid"]:
+            conversations.pause_one(CURRENT["cid"])
+    except Exception:  # noqa: BLE001  going down anyway: the paused conversation is best effort
+        pass
+    raise SystemExit(f"\nstopped by signal {signum}: conversation {CURRENT['cid'] or 'none'} paused")
 
 
 def error_kind(cid):
@@ -354,12 +366,14 @@ def run_conversation(eng, b, agent, target, log, before=None):
         return conv["id"]
 
     cid = start((plain_preamble if agent == PLAIN else preamble)(eng, b, target))
+    CURRENT.update(eng=eng, cid=cid)
     cids, restarts, stuck_here = [cid], [], False
     t0, approved, status, nudges = time.time(), 0, "running", []
     lab_only = b.get("lab") and (target.startswith(LAB_NET) or all(
         x.startswith(LAB_NET) for x in b.get("extra_targets", [])))
     while True:
-        time.sleep(15)
+        CURRENT.update(eng=eng, cid=cid)
+        time.sleep(8)   # a local status GET: 8s keeps approvals granted and stalls caught quickly
         try:
             status = oh("GET", f"/api/conversations/{cid}")["execution_status"]
         except (urllib.error.URLError, TimeoutError):
@@ -1232,6 +1246,9 @@ def main(argv):
     budget = float(argv[argv.index("--budget") + 1]) if "--budget" in argv else None
     label = argv[argv.index("--label") + 1] if "--label" in argv else None
     mode = "clean" if "--clean" in argv else "open"
+    import signal
+    for sig in (signal.SIGTERM, signal.SIGINT):
+        signal.signal(sig, stop_signal)   # a killed runner pauses its conversation instead of orphaning it
     names = sorted(f[:-5] for f in os.listdir(BENCH) if f.endswith(".json") and f != "smoke.json") \
         if argv[0] == "all" else [argv[0]]
     for n in names:

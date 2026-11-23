@@ -40,6 +40,8 @@ changes to the harness are measured.
 - A confirmed finding whose evidence entry names no file (neither an engagement file nor a `/src` reference) says so
   in the confirmation reply. On one run the planner cited "the intel_prioritize output" — inline tool text — and
   only the validator noticed, after the report's strict score had already lost the finding.
+- `get_coverage`'s description says to ask for the state being worked through: two full listings cost a run 38k
+  characters of its context, and the state filter was never advertised.
 - The model gateway reads a call's engagement from the `x-rv-engagement` header first: worker and validator calls
   name no engagement in their content, so their model events were recorded with no engagement to group them by.
 - The gateway classifies OpenRouter's free-model daily limit as a rate limit that resets at UTC midnight, not as a
@@ -58,6 +60,24 @@ changes to the harness are measured.
   benchmark run must exercise exactly what a real engagement runs, and its unit tests stub the same module's
   HTTP and control-plane edges instead of a private path. The runner keeps only what is genuinely unattended:
   the auto-approved approvals, the nudges, the caps — all through the shared `send` and `pause_one`.
+- A killed benchmark runner pauses its conversation instead of orphaning it (SIGTERM/SIGINT: a timeout killed a
+  run mid-flight and left the agent testing with nobody watching).
+- Unattended approval cadence: the runner polls every 8s and the preamble says sleep 15, not sleep 30 — each
+  approval round-trip was ~45s of wall time plus a full no-op model iteration, and a lab run spent most of its
+  budget sleeping through them.
+- The Kali sandbox refuses a TLS scanner pointed at a plain `http://` URL (testssl on a port that answers
+  unencrypted HTTP ground for five minutes of a run), and the `run` tool's description names the nuclei
+  templates where they are (`/opt/nuclei-templates`; `~/` does not resolve for the sandbox user and a run spent
+  four steps hunting for them).
+- `race_request` answers as text like every tool: `actions.race` returns dicts on its refused, approval and
+  success paths, and a dict against the `-> str` annotation fails MCP output validation. The tool has answered
+  "validation error" through the whole MCP surface — the CI tests call `actions.race` directly, so it was never
+  caught — and a run missed its race item to it.
+- Worker results name the citable evidence: `run_evidence` lists the verified-evidence files each of the task's
+  commands produced, the step files are called transcripts everywhere, and citing anything under
+  `evidence/tasks/` — as coverage evidence or a finding's evidence, existing or not — is refused with the
+  doctrine and where the citable files are. Before, the result named the step-file folder "evidence_dir" and a
+  planner did the reasonable thing with it.
 
 ### Verification
 - A confirmed finding's quotes are compared with its evidence files. Quotes that are not there are listed in the

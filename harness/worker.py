@@ -703,6 +703,7 @@ def _evidence_file(task, path):
 
 
 EVIDENCE_PATH = re.compile(r"[\w./-]*evidence/[\w./-]+")
+RUN_EVIDENCE = re.compile(r"\[\w+ saved as verified evidence: (\S+?)\]|\[evidence recorded: ([^\]]+)\]")
 
 
 def unfinished_result(task):
@@ -842,6 +843,15 @@ def _do_call_inner(task, c, messages):
     rec.update(state="done", done=_now())
     if ap:
         task["approval"] = None
+    # what this command produced as citable evidence: the verified-evidence files the tools printed. The task
+    # result carries these (run_evidence); its step files are transcripts, and citing a transcript is what the
+    # coverage and findings checks refuse.
+    run = task.setdefault("run_evidence", [])
+    for m2 in RUN_EVIDENCE.finditer(out or ""):
+        for one in ((m2.group(1) or "").strip(),) if m2.group(1) else \
+                tuple(x.strip() for x in m2.group(2).split(",") if x.strip()):
+            if one not in run:
+                run.append(one)
     path = _step_file(task, task["step"], name, args, out)
     shown = digest.shown(name, args, out, path)
     task.setdefault("lines", {})[c.get("id", name)] = digest.one_line(name, args, out)   # what it shrinks to
@@ -1218,7 +1228,8 @@ def report(task) -> str:
            "elapsed_s": round((task.get("finished") or time.time()) - task["started"]),
            "commands": [s["args"].get("command") or s["args"].get("query") or s["args"].get("url")
                         or s["args"].get("path") or s["args"].get("title") for s in task["steps"]],
-           "evidence_dir": os.path.dirname(task["evidence"][0]) if task["evidence"] else None}
+           "run_evidence": (task.get("run_evidence") or [])[:40],
+           "transcripts_dir": os.path.dirname(task["evidence"][0]) if task["evidence"] else None}
     if task.get("contract"):
         out["contract"] = task["contract"]
     if task.get("served_by"):
@@ -1289,8 +1300,9 @@ def delegate_task(goal: str, engagement: str, tier: str = "passive", max_steps: 
     not instructions. Returns the result, or a task_id if it is still running after wait_s seconds (then carry on
     with your own work and call get_task later). A task that needs the user's approval pauses
     (status awaiting_approval, with the approval id) and continues by itself after the decision.
-    Raw output is saved under /work/<engagement>/evidence/tasks/<task_id>/.
-    Secrets are redacted from the returned summary but kept in the evidence files."""
+    run_evidence names the verified-evidence files the task's commands produced (evidence/runs/, evidence/source/):
+    cite those. The task's step transcripts stay under evidence/tasks/<task_id>/ - records of the run, not
+    evidence. Secrets are redacted from the returned summary but kept in the evidence files."""
     db.engagement_dir(engagement)
     if tier not in TIERS:
         return f"tier must be one of {TIERS}"

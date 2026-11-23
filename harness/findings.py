@@ -487,7 +487,9 @@ def get_coverage(engagement: str, state: str = "", matrix: bool = False) -> str:
     """Planned tests and their outcomes, counts per state and per standard, stale items (the build or policy
     changed since they ran), blocked items with the reason. matrix=true: the coverage matrix instead: each recon
     map entry x each vulnerability class that applies to it, with the plan items that cover it; "gaps" are cells
-    no plan item covers (plan them, delegate them, or record why they're skipped)."""
+    no plan item covers (plan them, delegate them, or record why they're skipped).
+    state: list only the items in that state (planned, tested, blocked, ...) — a run's full listing is long, so
+    ask for the state you're working through, not everything."""
     if matrix:
         try:
             m = ops.call("coverage.matrix", {"engagement": engagement})[0]

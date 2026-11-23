@@ -94,6 +94,19 @@ MISSING_RUNTIMES = {
     "yarn": "Node.js", "pnpm": "Node.js", "bun": "Node.js",
     "php": "PHP", "composer": "PHP",
 }
+# TLS scanners on a plain-http URL: nothing to test there, and testssl on a non-TLS port has been seen
+# grinding for minutes of a run's budget. Refusing names the mistake and what the port answers.
+TLS_TOOLS = {"testssl", "testssl.sh", "sslscan", "sslscan-heartbleed"}
+
+
+def tls_on_plain_http(command):
+    """(tool, url) when a TLS scanner is pointed at a plain http:// URL, else None."""
+    for prog, _ in _segments(command):
+        if prog in TLS_TOOLS and re.search(r"http://[\w.-]+(:\d+)?", command) and "https://" not in command:
+            return prog, re.search(r"http://[\w.-]+(:\d+)?", command).group(0)
+    return None
+
+
 MISSING_ALTERNATIVES = {
     "Node.js": "dependency checks: osv-scanner or trivy on the lockfile (package-lock.json, yarn.lock, "
                "pnpm-lock.yaml) or syft for an SBOM; read the code with the file tools",
@@ -1310,6 +1323,11 @@ def run(command, eng, timeout_s=600, approval_id=None, max_tier=None, task=None)
     if miss:
         return refuse(f"{miss[0]} is not installed in the Kali sandbox: the kit reads code and lockfiles, it never "
                       f"installs or runs the target's own runtime. Use {miss[1]} instead.")
+    tls = tls_on_plain_http(command)
+    if tls:
+        return refuse(f"{tls[0]} tests TLS, and {tls[1]} is a plain http:// URL: that port answers unencrypted "
+                       "HTTP, and the run only grinds on it. Test the https:// endpoint if the target has one; "
+                       "otherwise the transport has no TLS configuration to review.")
     pol = policy_of(eng)
     bad = precheck(command, i, pol)
     if bad:

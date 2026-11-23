@@ -99,6 +99,12 @@ def _rel(eng, path):
     if real.startswith("..") or any(p.startswith(".") for p in rparts) or rparts[0] in DENIED \
             or rparts[0].startswith(("findings.db", "audit")):
         raise ValueError(f"{path}: leads outside the engagement's tool outputs (a link to {real})")
+    if "/evidence/tasks/" in str(path) or rel.startswith("evidence/tasks" + os.sep) or "evidence/tasks/" in rel:
+        # worker step files are records of the run, not evidence (the worker result's run_evidence names the
+        # evidence/runs/ and evidence/source/ files its commands produced); a planner cited a transcript twice
+        raise ValueError(f"{path}: worker step files under evidence/tasks/ are transcripts, not evidence: cite "
+                         "the evidence/runs/ or evidence/source/ file the task's command produced (the task "
+                         "result's run_evidence names them)")
     if not os.path.isfile(full):
         raise ValueError(f"{rel}: no such file")
     return rel, full
