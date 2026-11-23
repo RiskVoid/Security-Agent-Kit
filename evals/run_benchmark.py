@@ -250,8 +250,8 @@ def plain_task(task):
 
 def plain_preamble(eng, b, target):
     """The baseline's brief: the same task and the same unattended rules, none of the kit's workflow."""
-    approvals = ("Some commands return an approval id: the benchmark harness approves them within about 30 "
-                 "seconds. Wait (`sleep 30` in your terminal), then call run again with the identical command and the "
+    approvals = ("Some commands return an approval id: the benchmark harness approves them within about 15 "
+                 "seconds. Wait (`sleep 15` in your terminal), then call run again with the identical command and the "
                  "approval_id." if b.get("lab") else "Intrusive commands are not allowed in this engagement.")
     return (f"UNATTENDED BENCHMARK RUN (pass the engagement to every tool call). Target: {target}.\n\n"
             f"Task: {plain_task(b['task'].format(src=target, url=b.get('url', target)))}\n\n"
@@ -265,7 +265,7 @@ def preamble(eng, b, target, resumed=None):
     """The first message of an unattended run. resumed: {"why", "minutes"} when it continues an earlier
     conversation in a new one (resume_note)."""
     approvals = ("Intrusive commands return an approval id: the benchmark harness approves them within about "
-                 "30 seconds. Wait (`sleep 30` in your terminal), then call run again with the identical command and "
+                 "15 seconds. Wait (`sleep 15` in your terminal), then call run again with the identical command and "
                  "the approval_id." if b.get("lab") else
                  "Intrusive tools are not allowed in this engagement.")
     return (f"UNATTENDED BENCHMARK RUN. Target: {target}.\n\n"
@@ -373,7 +373,7 @@ def run_conversation(eng, b, agent, target, log, before=None):
         x.startswith(LAB_NET) for x in b.get("extra_targets", [])))
     while True:
         CURRENT.update(eng=eng, cid=cid)
-        time.sleep(15)
+        time.sleep(8)   # a local status GET: 8s keeps approvals granted and stalls caught quickly
         try:
             status = oh("GET", f"/api/conversations/{cid}")["execution_status"]
         except (urllib.error.URLError, TimeoutError):
