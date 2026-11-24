@@ -1086,6 +1086,8 @@ def summarize_conclusions(task):
     Returns what was recorded, or None (off, a private worker, no facts, or the call failed)."""
     if not SUMMARY_CONCLUSIONS or task["info"]["rules"].get("worker") == "private":
         return None
+    if not task.get("experiment"):   # conclusions belong to a question; a task bound to no plan item has none
+        return None
     try:
         import quotecheck, workspace
         facts = workspace.captured_of(task["engagement"], task["id"])
