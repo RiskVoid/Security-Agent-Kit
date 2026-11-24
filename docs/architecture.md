@@ -240,6 +240,33 @@ kali-mcp publishes the inputs as a routing table, `routes.json` on the `kali-rou
 LiteLLM): each engagement's `Client data:` list, in-scope paths and halt state, and the conversation bindings. It
 rewrites it on every scope change, bind, halt, resume and delete, and at startup.
 
+### The record chain (schema 5, #89)
+
+```
+question -> experiment -> observations -> conclusion
+                 ^                           |
+                 |------ next question ------|
+```
+
+Every table lives in the engagement's existing SQLite database (`findings.db`):
+
+- **`experiments`** (`X-001`, #90): written by the harness when a task bound to a plan item ends - the question,
+  the task, the method, the identity, the policy revision, what it required, the outcome (`ran`, `blocked`,
+  `inconclusive`, `not run`), and its evidence hashes pinned like a finding's evidence. The model is never
+  asked to write it; negative and inconclusive outcomes are recorded with their exact conditions.
+- **`conclusions`** (`C-001`, #90/#119): a claim with its state (`supported`, `refuted`, `unresolved`), the exact
+  conditions it holds under - never widened - the experiment it came from, and its origin (a rule, a checked
+  summary, or an agent whose words are marked as such).
+- **`links`** (#89): `supports`, `contradicts`, `requires` and `next` between plan items, experiments,
+  conclusions, observations and findings; both ends must exist.
+- **observations carry their origin** (#118's column, #89's schema): the task or conversation, the call, the
+  identity, the build and the policy revision a fact came from.
+- The `validations` and `evidence_pins` tables are created by the versioned migrations (v5), where they used to
+  be created ad hoc by their modules.
+
+The packet's "what was tried" reads experiments (#93), the board shows each question's last experiment, and a
+cell whose experiment concluded with a standing result says so before a new task repeats it.
+
 ### Worker task lifecycle
 
 `worker-mcp` saves each task (`task.json`: status, lease, steps; `messages.json`: the model conversation) next to

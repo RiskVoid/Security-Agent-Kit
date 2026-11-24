@@ -1092,21 +1092,24 @@ class Packet(Loop):
                                                     "confidence": "low"})]], id="r1", contract=self.contract())
         messages = worker.load_messages(task)
         n = len(messages)
-        worker._packet_refresh(task, messages)    # nothing changed: nothing is appended
-        self.assertEqual(len(messages), n)
+        worker._packet_refresh(task, messages)    # the task's own experiment arrived with its finish: a change
+        self.assertEqual(len(messages), n + 1)
+        self.assertIn("new experiment(s): X-001", messages[-1]["content"])
+        worker._packet_refresh(task, messages)    # nothing further changed: nothing more is appended
+        self.assertEqual(len(messages), n + 1)
         # the build moves, a second finding lands on the same route, the earlier task is re-run
         self.ws.set_value("eng", "agent:planner", "current_build", "def789abc012")
         fid2 = worker.db.record("eng", actor="agent:planner", title="org field accepted too", severity="high",
                          asset="http://lab/api/fetch", status="candidate")["id"]
         worker._packet_refresh(task, messages)
-        self.assertEqual(len(messages), n + 1)     # exactly the change, as one message
+        self.assertEqual(len(messages), n + 2)     # exactly the change, as one more message
         text = messages[-1]["content"]
         self.assertTrue(text.startswith("[harness] Since this task started"))
         self.assertIn(f"new finding(s): {fid2}", text)
         self.assertIn("build now def789abc012", text)
-        self.assertIn("# Packet:", text)           # the current packet rides with the change
+        self.assertIn("# Packet:", text)            # the current packet rides with the change
         worker._packet_refresh(task, messages)     # and a second no-change refresh appends nothing
-        self.assertEqual(len(messages), n + 1)
+        self.assertEqual(len(messages), n + 2)
 
     def test_compact_keeps_the_latest_packet(self):
         old = {"role": "user", "content": "# Packet: test mass-assignment on POST /api/fetch\n"
@@ -1342,6 +1345,73 @@ class Capacity(Loop):
         self.assertEqual(len(ws), 3)
         intrusive = ws[:2]
         self.assertLess(intrusive[0][1], intrusive[1][0])   # the two writers never overlapped
+
+
+class Experiment(Loop):
+    """#90: every finished task bound to a plan item leaves an experiment record - a completed, a blocked and a
+    stalled task each - and the finish's conclusions keep their exact conditions and rest on the experiment."""
+
+    def contract(self):
+        return {"cell": {"class": "mass-assignment", "entries": [], "plan_item": "P-plan",
+                         "identity": "alice", "endpoints": ["POST http://lab/x (E-1)"]}}
+
+    def setUp(self):
+        super().setUp()
+        import workspace
+        self.ws = workspace
+        self.pid = workspace.plan_add("eng", "agent:planner", [
+            {"title": "mass-assignment on POST /api/fetch", "area": "mass-assignment",
+             "identity": "alice"}])[0]   # the question's identity: the repeat matches on it
+        self.contract = lambda: {"cell": {"class": "mass-assignment", "entries": [],
+                                          "plan_item": self.pid, "identity": "alice",
+                                          "endpoints": ["POST http://lab/x (E-1)"]}}
+
+    def test_a_completed_task_leaves_its_experiment_and_conclusions(self):
+        task, _ = self.run_script(
+            [[call("finish", {"status": "completed", "summary": "role rejected on register",
+                              "confidence": "medium",
+                              "conclusions": [{"claim": "role is not writable through register",
+                                               "state": "refuted",
+                                               "conditions": "identity alice, POST /register",
+                                               "evidence": "evidence/http/r1.txt"}]})]],
+            id="x-done", contract=self.contract())
+        self.assertEqual(task["experiment"], "X-001")
+        x = self.ws.experiments_of("eng", plan_item=self.pid)[0]
+        self.assertEqual((x["outcome"], x["status"], x["identity"], x["task"]), ("ran", "completed", "alice", "x-done"))
+        self.assertEqual(x["method"], "mass-assignment")
+        c = self.ws.conclusions_of("eng", experiment="X-001")[0]
+        self.assertEqual((c["state"], c["conditions"]), ("refuted", "identity alice, POST /register"))
+        self.assertEqual(task["result"]["conclusions"][0]["claim"], "role is not writable through register")
+        # the report carries the experiment id, and a repeat shows on the next packet
+        rep = json.loads(worker.report(task))
+        self.assertEqual(rep["experiment"], "X-001")
+        pk = self.ws.packet("eng", "Test mass-assignment on POST /api/fetch", self.pid, chars=4000)
+        self.assertEqual(pk["repeat"][0]["experiment"], "X-001")
+
+    def test_a_blocked_and_a_stalled_task_leave_their_records(self):
+        blocked, _ = self.run_script(
+            [[call("finish", {"status": "blocked", "summary": "no second identity", "confidence": "low",
+                              "needs": ["a second tenant identity"]})]], id="x-blocked", contract=self.contract())
+        self.assertEqual(blocked["experiment"], "X-001")
+        x = [e for e in self.ws.experiments_of("eng", plan_item=self.pid) if e["task"] == "x-blocked"][0]
+        self.assertEqual((x["outcome"], x["status"]), ("blocked", "blocked"))
+        # a stalled task ends without calling finish: run_task writes the record on its way out
+        saved_limit = worker.NO_ANSWER_LIMIT
+        worker.NO_ANSWER_LIMIT = 2
+        try:
+            task = worker._defaults({"id": "x-stall", "goal": "g", "engagement": "eng", "tier": "passive",
+                                     "info": worker.engagement_info("eng"), "max_steps": 6, "timeout_min": 5,
+                                     "status": "running", "started": time.time(),
+                                     "contract": self.contract()})
+            os.makedirs(worker.task_dir(task), exist_ok=True)
+            worker.chat = lambda messages, model=None, task=None: {"role": "assistant", "content": None}
+            worker.run_task(task)
+            self.assertEqual(task["status"], "stalled")
+            self.assertEqual(task["experiment"], "X-002")
+            xs = [e for e in self.ws.experiments_of("eng", plan_item=self.pid) if e["task"] == "x-stall"][0]
+            self.assertEqual(xs["outcome"], "inconclusive")
+        finally:
+            worker.NO_ANSWER_LIMIT = saved_limit
 
 
 

@@ -2472,7 +2472,8 @@ class Validator(unittest.TestCase):
 
     def test_a_verdict_keeps_its_tokens_and_model(self):   # #78; a validations table from before keeps opening
         import sqlite3
-        with sqlite3.connect(db.db_path("acme")) as con:     # the table as validator.py made it before the columns
+        with sqlite3.connect(db.db_path("acme")) as con:     # the table as it exists in a database from before
+            con.execute("DROP TABLE IF EXISTS validations")  # (v5's migration creates it; a legacy db keeps its own)
             con.execute("""CREATE TABLE validations (id INTEGER PRIMARY KEY AUTOINCREMENT, finding_id TEXT NOT NULL,
                 revision INTEGER, verdict TEXT NOT NULL, reason TEXT, evidence_ref TEXT, model TEXT, at TEXT)""")
             con.execute("INSERT INTO validations (finding_id, verdict, reason, model) VALUES (?,?,?,?)",
@@ -4105,6 +4106,100 @@ class FindingTools(unittest.TestCase):
         self.assertEqual(self.validated, [])
         got = self.update(f["id"], status="confirmed", method="source-review")   # said outright: allowed, as before
         self.assertEqual(got["status"], "confirmed")
+
+
+class Experiments(unittest.TestCase):
+    """#89/#90/#93: schema v5 migrates with its data intact; experiments, conclusions and links record with
+    their exact conditions; the packet's 'what was tried' comes from experiments, with the repeat notice when a
+    result still stands, stale ones marked; the board shows the last experiment."""
+
+    def setUp(self):
+        import reconmap, workspace
+        self.ws = workspace
+        self.tmp = tempfile.TemporaryDirectory()
+        self.saved = db.WORK
+        db.WORK = self.tmp.name
+        e = os.path.join(self.tmp.name, "acme")
+        for d in ("evidence/map", "evidence/http", "evidence/tasks/20261123-100000-aaaa"):
+            os.makedirs(os.path.join(e, d))
+        json.dump({"observations": [
+            {"method": "POST", "url": "http://lab/api/fetch", "source": "openapi", "status": 200,
+             "auth": "unknown", "params": {"body": ["role"]}}]},
+            open(os.path.join(e, "evidence/map/map-1.json"), "w"))
+        open(os.path.join(e, "evidence/http/r1.txt"), "w").write("POST /fetch 200\n")
+        self.eid = next(x["id"] for x in reconmap.build("acme")["entries"])
+        self.pid = workspace.plan_add("acme", "agent:planner", [
+            {"title": "mass-assignment on POST /api/fetch", "area": "mass-assignment", "refs": [self.eid],
+             "hypothesis": "role may be writable"}])[0]
+
+    def tearDown(self):
+        db.WORK = self.saved
+        self.tmp.cleanup()
+
+    def test_a_v4_database_migrates_to_v5_with_its_data(self):
+        import sqlite3
+        con = sqlite3.connect(db.db_path("acme"))
+        con.execute("PRAGMA user_version=4")
+        con.execute("INSERT INTO findings (id, title, severity, status) VALUES ('F-099', 'kept', 'low', 'candidate')")
+        con.commit()
+        con.close()
+        con = db._db("acme")          # opening it migrates
+        v = con.execute("PRAGMA user_version").fetchone()[0]
+        tabs = {r[0] for r in con.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        ocols = {r[1] for r in con.execute("PRAGMA table_info(observations)")}
+        self.assertEqual(v, db.SCHEMA_VERSION)
+        for t in ("experiments", "conclusions", "links", "validations", "evidence_pins"):
+            self.assertIn(t, tabs)
+        for c in ("origin_task", "origin_call", "identity", "build", "policy_revision"):
+            self.assertIn(c, ocols)
+        self.assertTrue(con.execute("SELECT 1 FROM findings WHERE id='F-099'").fetchone())   # data intact
+
+    def test_records_with_their_exact_conditions(self):
+        x = self.ws.experiment_record("acme", "agent:worker", plan_item=self.pid, task="t-100",
+                                      method="mass-assignment", identity="alice", policy_revision=6,
+                                      outcome="ran", status="completed", summary="role rejected on register",
+                                      evidence=["evidence/http/r1.txt"])
+        self.assertEqual(x["id"], "X-001")
+        self.assertEqual(x["evidence"][0]["sha256"][:8],
+                         __import__("hashlib").sha256(open(os.path.join(self.tmp.name, "acme", "evidence",
+                                                "http/r1.txt"), "rb").read()).hexdigest()[:8])
+        c = self.ws.conclusion_record("acme", "agent:worker", "role is not writable through register",
+                                      "refuted", conditions="identity alice, build abc, POST /register",
+                                      experiment=x["id"], plan_item=self.pid, origin="agent:worker")
+        self.assertEqual((c["state"], c["experiment"]), ("refuted", "X-001"))
+        with self.assertRaises(ValueError):
+            self.ws.experiment_record("acme", "agent:worker", plan_item=self.pid, outcome="wonderful")
+        with self.assertRaises(ValueError):
+            self.ws.conclusion_record("acme", "agent:worker", "claim", "maybe")
+        lk = self.ws.link_record("acme", "agent:planner", src=self.pid, dst=c["id"], kind="supports")
+        self.assertEqual(lk, {"src": self.pid, "dst": "C-001", "kind": "supports"})
+        with self.assertRaises(ValueError):    # both ends must exist
+            self.ws.link_record("acme", "agent:planner", "P-999", c["id"], "supports")
+        self.assertEqual(self.ws.experiments_of("acme", plan_item=self.pid)[0]["task"], "t-100")
+        self.assertEqual(self.ws.conclusions_of("acme", experiment=x["id"])[0]["id"], "C-001")
+
+    def test_the_packet_reads_experiments_and_warns_on_a_repeat(self):
+        self.ws.plan_update("acme", "agent:planner", self.pid, identity="alice")   # the question's identity
+        x = self.ws.experiment_record("acme", "agent:worker", plan_item=self.pid, task="t-100",
+                                      method="mass-assignment", identity="alice", outcome="ran",
+                                      summary="role rejected")
+        self.ws.conclusion_record("acme", "agent:worker", "role not writable", "refuted",
+                                   conditions="identity alice, build abc", experiment=x["id"])
+        pk = self.ws.packet("acme", "Test mass-assignment on POST /api/fetch", self.pid, chars=4000)
+        self.assertIn("X-001 ran", pk["text"])
+        self.assertIn("conclusion: refuted under [identity alice, build abc]", pk["text"])
+        self.assertIn("Already tried for this cell, and the result stands", pk["text"])   # #93: the notice
+        self.assertEqual(pk["repeat"][0]["experiment"], "X-001")
+        # a stale conclusion is shown as stale and never repeats
+        with db._db("acme") as con:
+            con.execute("UPDATE conclusions SET stale=1, stale_reason='build changed: retest'")
+        pk2 = self.ws.packet("acme", "Test mass-assignment on POST /api/fetch", self.pid, chars=4000)
+        self.assertIn("stale: build changed: retest", pk2["text"])
+        self.assertIsNone(pk2["repeat"])
+        # the board shows the last experiment for the question (#90)
+        row = next(r for r in self.ws.board("acme") if r["item"] == self.pid)
+        self.assertEqual(row["last_result"]["experiment"], "X-001")
+        self.assertEqual(row["last_result"]["status"], "ran")
 
 
 class ResearchPacket(unittest.TestCase):

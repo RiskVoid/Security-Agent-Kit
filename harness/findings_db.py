@@ -35,7 +35,7 @@ METHODS = ("runtime-reproduction", "replay", "authorization-matrix", "source-rev
 PRIORITIES = ("P1", "P2", "P3", "P4")   # remediation priority: the client's order of work, not the severity
 NEEDS_REASON = ("false-positive", "accepted-risk")
 COVERAGE = ("planned", "tested", "failed", "blocked", "excluded", "not-applicable")
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 ACTOR_RX = re.compile(r"^(console|cli|agent|test):[A-Za-z0-9._@-]{1,64}$")
 FIELDS = ("title", "severity", "cvss_vector", "cvss_score", "cwe", "asset", "description", "impact",
           "reproduction", "remediation", "evidence", "status", "source", "notes", "duplicate_of", "priority",
@@ -164,6 +164,29 @@ def _migrate(con: sqlite3.Connection) -> None:
             CREATE TABLE IF NOT EXISTS notices (id TEXT PRIMARY KEY, finding_id TEXT NOT NULL, finding_revision INTEGER,
                 state TEXT NOT NULL, path TEXT, sha256 TEXT, actor TEXT, at TEXT, reviewed_by TEXT, reviewed_at TEXT);
         """)
+    if v < 5:  # the research loop's evidence links (#89): experiments, conclusions, links, observation origin
+        script("""
+            CREATE TABLE IF NOT EXISTS experiments (id TEXT PRIMARY KEY, plan_item TEXT NOT NULL, task TEXT,
+                method TEXT, identity TEXT, build TEXT, policy_revision TEXT, required TEXT DEFAULT '[]',
+                outcome TEXT NOT NULL, status TEXT, summary TEXT, evidence TEXT DEFAULT '[]', conclusion TEXT,
+                created TEXT, updated TEXT, actor TEXT, revision INTEGER NOT NULL DEFAULT 1);
+            CREATE TABLE IF NOT EXISTS conclusions (id TEXT PRIMARY KEY, claim TEXT NOT NULL,
+                state TEXT NOT NULL, conditions TEXT, experiment TEXT, plan_item TEXT, origin TEXT,
+                stale INTEGER NOT NULL DEFAULT 0, stale_reason TEXT, revision INTEGER NOT NULL DEFAULT 1,
+                created TEXT, updated TEXT, actor TEXT);
+            CREATE TABLE IF NOT EXISTS links (src TEXT NOT NULL, dst TEXT NOT NULL, kind TEXT NOT NULL,
+                actor TEXT, at TEXT, note TEXT, PRIMARY KEY (src, dst, kind));
+            CREATE TABLE IF NOT EXISTS validations (id INTEGER PRIMARY KEY AUTOINCREMENT,
+                finding_id TEXT NOT NULL, revision INTEGER, verdict TEXT NOT NULL, reason TEXT, evidence_ref TEXT,
+                model TEXT, at TEXT, prompt_tokens INTEGER, completion_tokens INTEGER, cached_tokens INTEGER);
+            CREATE TABLE IF NOT EXISTS evidence_pins (finding_id TEXT NOT NULL, path TEXT NOT NULL,
+                sha256 TEXT NOT NULL, size INTEGER NOT NULL, at TEXT, PRIMARY KEY (finding_id, path));
+        """)   # validations and evidence_pins were created ad hoc by their modules until now: the versioned
+               # migration carries them, the modules' idempotent _ensure stays as a belt over older databases
+        ocols = {r[1] for r in con.execute("PRAGMA table_info(observations)")}
+        for col in ("origin_task", "origin_call", "identity", "build", "policy_revision"):
+            if col not in ocols:      # #118: the origin a fact came from - task or conversation, call, identity
+                con.execute(f"ALTER TABLE observations ADD COLUMN {col} TEXT")
     con.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
 
 
