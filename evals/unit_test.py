@@ -4253,6 +4253,125 @@ class Experiments(unittest.TestCase):
         self.assertEqual(row["last_result"]["status"], "ran")
 
 
+class Queue(unittest.TestCase):
+    """#96: the queue over plan items - the ranking with its reasons, the reserved share for hard classes,
+    the decision log and its validation. #98: the work key - the same cell is the same work whatever plan item
+    names it, loose questions key on their own question, and claims live in each engagement's own database."""
+
+    def setUp(self):
+        import reconmap, workspace
+        self.ws = workspace
+        self.tmp = tempfile.TemporaryDirectory()
+        self.saved = db.WORK
+        db.WORK = self.tmp.name
+        e = os.path.join(self.tmp.name, "acme")
+        os.makedirs(os.path.join(e, "evidence", "map"))
+        json.dump({"observations": [
+            {"method": "POST", "url": "http://lab/api/fetch", "source": "openapi", "status": 200,
+             "auth": "unknown", "params": {"body": ["role"]}}]},
+            open(os.path.join(e, "evidence/map/map-1.json"), "w"))
+        self.eid = next(x["id"] for x in reconmap.build("acme")["entries"])
+        self.hard = workspace.plan_add("acme", "agent:planner", [
+            {"title": "tenant isolation on POST /api/fetch", "area": "access-control", "refs": [self.eid],
+             "identity": "alice"}])[0]
+        self.easy = workspace.plan_add("acme", "agent:planner", [
+            {"title": "security headers on the API", "area": "security-headers", "refs": [self.eid]},
+            {"title": "xss in the search field", "area": "xss", "refs": [self.eid]},
+            {"title": "redos in the list filter", "area": "redos", "refs": [self.eid]}])
+        self.loose = workspace.plan_add("acme", "agent:planner", [
+            {"title": "confirm the deployed build is the one under review"}])[0]
+
+    def tearDown(self):
+        db.WORK = self.saved
+        self.tmp.cleanup()
+
+    def test_ranking_with_reasons_and_the_reserved_share(self):
+        # however many easy questions are ready, a hard one holds a top slot: the reserved share; among
+        # equals the order is stable (by id)
+        q = self.ws.queue("acme")
+        self.assertEqual([x["item"] for x in q], [self.hard, *sorted(self.easy), self.loose])
+        self.assertTrue(q[0]["hard"])
+        self.assertFalse(any(x["hard"] for x in q[1:]))
+        self.assertIn("reserved", q[0]["reason"])
+        self.assertIn("open and ready", q[1]["reason"])
+        # a waiting question ranks below every ready one, and its reason names what it waits for
+        self.ws.link_record("acme", "agent:planner", self.easy[0], "identity:admin", "requires")
+        q = self.ws.queue("acme")
+        row = next(x for x in q if x["item"] == self.easy[0])
+        self.assertEqual(row["rank"], len([x for x in q if x["readiness"]["ready"]]) + 1)
+        self.assertIn("waiting", row["reason"])
+        self.assertIn("identity admin", row["reason"])
+        # an untouched question goes before one whose experiments were inconclusive, and an answered
+        # question goes last with the reason saying so
+        self.ws.experiment_record("acme", "agent:worker", plan_item=self.easy[1], task="t-1",
+                                  method="xss", outcome="inconclusive", summary="no reflection found")
+        self.ws.experiment_record("acme", "agent:worker", plan_item=self.easy[2], task="t-2",
+                                  method="redos", outcome="ran", summary="timed the regex")
+        self.ws.conclusion_record("acme", "agent:worker", "the regex is not slow", "refuted",
+                                  conditions="identity none", experiment="X-002")
+        q = self.ws.queue("acme")
+        by = {x["item"]: x for x in q}
+        self.assertLess(by[self.loose]["rank"], by[self.easy[1]]["rank"])   # untouched before inconclusive
+        self.assertEqual(q[-1]["item"], self.easy[2])                       # answered last
+        self.assertIn("answered already", q[-1]["reason"])
+        self.assertIn("1 experiment(s) ran", by[self.easy[1]]["reason"])
+        # the board carries the same ranking (#96: the queue is on the board)
+        brow = next(r for r in self.ws.board("acme") if r["item"] == self.hard)
+        self.assertEqual(brow["queue_rank"], 1)
+
+    def test_the_queue_log_and_its_validation(self):
+        self.ws.queue_log("acme", self.hard, "dispatched", rank=1, reason="top and ready")
+        self.ws.queue_log("acme", self.easy[0], "paused", reason="waiting for an identity", actor="console:ru")
+        self.ws.queue_log("acme", self.easy[1], "reopened", reason="the build changed")
+        rows = self.ws.queue_log_rows("acme")
+        self.assertEqual([r["action"] for r in rows], ["dispatched", "paused", "reopened"])
+        self.assertEqual(rows[1]["actor"], "console:ru")
+        self.assertEqual(self.ws.queue_log_rows("acme", item=self.easy[0])[0]["item"], self.easy[0])
+        with self.assertRaises(ValueError):    # a bogus action never reaches the table
+            self.ws.queue_log("acme", self.hard, "reprioritised")
+        with self.assertRaises(ValueError):    # and neither does a decision on a question that doesn't exist
+            self.ws.queue_log("acme", "P-999", "paused")
+
+    def test_work_keys_same_cell_same_work_loose_questions_never_collide(self):
+        cell = {"class": "access-control", "entries": [self.eid], "identity": "alice"}
+        other = self.ws.plan_add("acme", "agent:planner", [
+            {"title": "can bob read alice's records", "area": "access-control", "refs": [self.eid],
+             "identity": "bob"}])[0]
+        # two plan items over the same cell are the same work: the plan item is not in the key
+        self.assertEqual(self.ws.work_key("acme", self.hard, cell),
+                         self.ws.work_key("acme", other, cell))
+        self.assertNotEqual(self.ws.work_key("acme", self.hard, {**cell, "identity": "bob"}),
+                            self.ws.work_key("acme", self.hard, cell))          # another identity is not
+        # the build is in the key: a new build is new work, not a duplicate
+        self.ws.set_value("acme", "agent:planner", "current_build", "build-1")
+        on_build_1 = self.ws.work_key("acme", self.hard, cell)
+        self.ws.set_value("acme", "agent:planner", "current_build", "build-2")
+        self.assertNotEqual(self.ws.work_key("acme", self.hard, cell), on_build_1)
+        # a loose question keys on itself: two loose questions never collide, the same one is the same work
+        self.assertNotEqual(self.ws.work_key("acme", self.loose), self.ws.work_key("acme", other))
+        self.assertEqual(self.ws.work_key("acme", self.loose), self.ws.work_key("acme", self.loose))
+
+    def test_claims_live_in_the_engagements_own_database(self):
+        key = self.ws.work_key("acme", self.hard, {"class": "access-control", "entries": [self.eid],
+                                                   "identity": "alice"})
+
+        def parked(tid, status):
+            json.dump({"id": tid, "engagement": "acme", "goal": "g", "status": status, "started": 1,
+                       "steps": []}, open(os.path.join(self.tmp.name, "acme", "evidence", "tasks", tid,
+                                                       "task.json"), "w"))
+
+        os.makedirs(os.path.join(self.tmp.name, "acme", "evidence", "tasks", "t-1"))
+        parked("t-1", "queued")                                  # the holder's own record: the claim is live
+        self.assertIsNone(self.ws.claim_work("acme", "t-1", key))
+        self.assertEqual(self.ws.claim_work("acme", "t-2", key), "t-1")   # a live holder is named
+        self.assertIsNone(self.ws.claim_work("acme", "t-1", key))        # re-claiming your own key is fine
+        parked("t-1", "done")                                    # the holder ended: the claim expires
+        self.assertIsNone(self.ws.claim_work("acme", "t-2", key))        # ...and the work is free again
+        self.ws.release_work("acme", "t-2")
+        os.makedirs(os.path.join(self.tmp.name, "acme2"))               # another engagement's database
+        self.assertIsNone(self.ws.claim_work("acme2", "t-9", key))      # acme's claim doesn't reach into it
+
+
 class ResearchPacket(unittest.TestCase):
     """#83: the packet builder - selection by the cell's stable ids first, a budget that lists what didn't fit
     as ids, every line keeping its state, and the ids and revisions a resume diff (#84) compares against."""

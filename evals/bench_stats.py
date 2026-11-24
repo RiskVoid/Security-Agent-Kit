@@ -116,6 +116,7 @@ def group_summary(runs):
              ("first_verified_min", lambda r: ev(r, "first_verified", "min")),
              ("first_verified_tokens", lambda r: ev(r, "first_verified", "tokens")),
              ("queue_delay_s", lambda r: ev(r, "queue_delay", "mean_s")),
+             ("queue_follow_share", lambda r: ev(r, "queue_follow", "share")),
              ("verified_cells", lambda r: ev(r, "verified_coverage", "cells")),
              ("cells_per_usd", lambda r: ev(r, "verified_coverage", "per_usd"))]
     for key, get in pairs:
@@ -166,7 +167,9 @@ def print_group(g, out=print):
             f"rebriefs {fmt(f['rebriefs']['mean'])}, first verified finding {fmt(fv.get('mean'), fv.get('se'))} min "
             f"({fmt_tokens((f.get('first_verified_tokens') or {}).get('mean'))} tokens), "
             f"queue delay {fmt(qd.get('mean'))}s, verified cells {fmt((f.get('verified_cells') or {}).get('mean'))} "
-            f"({fmt((f.get('cells_per_usd') or {}).get('mean'))} per $)")
+            f"({fmt((f.get('cells_per_usd') or {}).get('mean'))} per $), "
+            f"queue top suggestion followed {fmt((f.get('queue_follow_share') or {}).get('mean'), pct=True)} "
+            f"of dispatches")
 
 
 # ---------------------------------------------------------------- comparing two labelled sets
@@ -494,9 +497,16 @@ def efficiency(res, data, usage=None):
     m, se, n = mean_se(qs)
     queue = {"tasks": n, "mean_s": round(m, 1) if m is not None else None,
              "max_s": round(max(qs), 1) if qs else None}
+
+    # the queue's advice against the planner's choices (#96): delegate_task logs the rank it dispatched
+    # against, so the share of dispatches that went to the top suggestion is one SELECT, no model
+    qlog = [r for r in data.get("queue_log") or [] if r.get("action") == "dispatched"]
+    tops = sum(1 for r in qlog if r.get("rank") == 1)
+    follow = {"dispatches": len(qlog) or None, "top_suggestion": tops or None,
+              "share": round(tops / len(qlog), 3) if qlog else None}
     return {"repeated_tool_work": repeat, "duplicate_experiments": dupes, "rebriefs": rebriefs,
             "first_verified": first_verified, "verified_coverage": coverage, "queue_delay": queue,
-            "restarts": res.get("restarts") or 0}
+            "queue_follow": follow, "restarts": res.get("restarts") or 0}
 
 
 def efficiency_line(e):
@@ -517,6 +527,9 @@ def efficiency_line(e):
         f"verified cells {cov.get('cells') or 0}"
         + (f" ({fmt(cov.get('per_usd'))} per $, {fmt(cov.get('per_1k_requests'))} per 1k requests)"
            if cov.get("cells") else ""),
+        "queue followed " + (f"{qf.get('top_suggestion')} of {qf.get('dispatches')} dispatches "
+                             f"({fmt(qf.get('share'), pct=True)})" if (qf := e.get("queue_follow") or {})
+                            .get("dispatches") else "n/a"),
     ]
     if e.get("restarts"):
         parts.append(f"{e['restarts']} restart(s)")

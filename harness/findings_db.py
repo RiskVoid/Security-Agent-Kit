@@ -35,7 +35,7 @@ METHODS = ("runtime-reproduction", "replay", "authorization-matrix", "source-rev
 PRIORITIES = ("P1", "P2", "P3", "P4")   # remediation priority: the client's order of work, not the severity
 NEEDS_REASON = ("false-positive", "accepted-risk")
 COVERAGE = ("planned", "tested", "failed", "blocked", "excluded", "not-applicable")
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 7
 ACTOR_RX = re.compile(r"^(console|cli|agent|test):[A-Za-z0-9._@-]{1,64}$")
 FIELDS = ("title", "severity", "cvss_vector", "cvss_score", "cwe", "asset", "description", "impact",
           "reproduction", "remediation", "evidence", "status", "source", "notes", "duplicate_of", "priority",
@@ -192,6 +192,17 @@ def _migrate(con: sqlite3.Connection) -> None:
         for col, decl in (("stale", "INTEGER NOT NULL DEFAULT 0"), ("stale_reason", "TEXT")):
             if col not in ecols:
                 con.execute(f"ALTER TABLE experiments ADD COLUMN {col} {decl}")
+    if v < 7:  # the queue and work keys (#96, #98): decisions logged, claims that survive a restart, and an
+        # explicit reproduction marked as one on its experiment (#98's independent_reproduction flag)
+        script("""
+            CREATE TABLE IF NOT EXISTS queue_log (id INTEGER PRIMARY KEY AUTOINCREMENT, item TEXT NOT NULL,
+                action TEXT NOT NULL, rank INTEGER, reason TEXT, actor TEXT, at TEXT);
+            CREATE TABLE IF NOT EXISTS work_claims (key TEXT PRIMARY KEY, task TEXT NOT NULL, at TEXT,
+                actor TEXT);
+        """)
+        ecols = {r[1] for r in con.execute("PRAGMA table_info(experiments)")}
+        if ecols and "reproduction" not in ecols:
+            con.execute("ALTER TABLE experiments ADD COLUMN reproduction INTEGER NOT NULL DEFAULT 0")
     con.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
 
 

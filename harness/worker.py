@@ -690,6 +690,18 @@ def task_dir(task):
     return os.path.join(db.WORK, task["engagement"], "evidence", "tasks", task["id"])
 
 
+def _discard_unstarted(task):
+    """Remove a refused duplicate's own record (#98): the task never started, so nothing of it stays -
+    not on disk, where startup would pick it up as queued work, and not in the worker's table."""
+    try:
+        d = task_dir(task)
+        os.remove(os.path.join(d, "task.json"))
+        if not os.listdir(d):
+            os.rmdir(d)
+    except OSError:
+        pass    # the folder may already be gone; the refusal itself is the answer
+
+
 def _atomic(path, data):
     tmp = path + ".tmp"
     with open(tmp, "w") as f:
@@ -804,16 +816,33 @@ def _error_key(out):
 
 def watch(task, name, args, out):
     """Track repeats and progress after a call ran. Returns (kind, detail) when the task looks stalled, else None."""
-    w = task.setdefault("watch", {"calls": {}, "errors": {}, "outputs": [], "idle": 0})
+    w = task.setdefault("watch", {"calls": {}, "errors": {}, "outputs": [], "idle": 0,
+                                 "events": {"captured": 0, "candidates": 0}, "progress_by": []})
     sig = name + " " + json.dumps(args, sort_keys=True)
     w["calls"][sig] = w["calls"].get(sig, 0) + 1
     err = _error_key(out)
     body = re.sub(r"\[output saved as verified evidence: \S+\]|/evidence/\S+", "", out or "")
     h = hashlib.sha1(body.encode(errors="replace")).hexdigest()[:12]
-    new = name == "record_candidate" and not err or (not err and h not in w["outputs"])
+    # #95: progress comes from the records, not from output novelty - a changed banner, a timestamp or a
+    # session id makes every call look productive to a hash. Events: a new observation attributed to the
+    # task (#118's capture count), a candidate recorded. Novelty stays a diagnostic, never progress.
+    events = []
+    if task.get("captured", 0) > w["events"]["captured"]:
+        events.append(f"{task['captured'] - w['events']['captured']} new observation(s)")
+        w["events"]["captured"] = task["captured"]
+    if len(task.get("candidates") or []) > w["events"]["candidates"]:
+        events.append("a candidate recorded")
+        w["events"]["candidates"] = len(task["candidates"])
+    if name == "record_candidate" and not err and "a candidate recorded" not in events:
+        events.append("a candidate recorded")      # recorded through the tool itself
+        w["events"]["candidates"] = len(task["candidates"] or []) + 1
+    progressed = not err and bool(events)
+    if progressed:
+        w["progress_by"] = (w.get("progress_by") or [])[-4:] + ["; ".join(events)]
+    new = h not in w["outputs"]
     if h not in w["outputs"]:
         w["outputs"] = (w["outputs"] + [h])[-200:]
-    w["idle"] = 0 if new else w["idle"] + 1
+    w["idle"] = 0 if progressed else w["idle"] + 1
     if err:
         w["errors"][err] = w["errors"].get(err, 0) + 1
     what = (args.get("command") or args.get("url") or args.get("query") or args.get("path") or "")[:120]
@@ -823,7 +852,10 @@ def watch(task, name, args, out):
     elif err and w["errors"][err] >= REPEAT_LIMIT:
         found = "error", f"the same error {REPEAT_LIMIT} times: {err}"
     elif w["idle"] >= NO_PROGRESS_CALLS:
-        found = "no-progress", f"{NO_PROGRESS_CALLS} calls with no new output and no candidate"
+        novelty = "novel output but" if new else "no new output and"
+        seen = "; ".join((w.get("progress_by") or [])[-2:]) or "none in this task"
+        found = "no-progress", (f"{NO_PROGRESS_CALLS} calls with {novelty} no progress in the records"
+                               f" (no new observation, no candidate); progress events seen: {seen}")
     if found:   # every stall starts a fresh window: the model gets as many calls to act on the nudge or advice
         w.update(calls={}, errors={}, idle=0)
     return found
@@ -1171,7 +1203,8 @@ def _experiment_of(task, status):
             required=list((task.get("contract") or {}).get("inputs") or []),
             outcome=outcome, status=status,
             summary=str((task.get("result") or {}).get("summary") or "")[:400],
-            evidence=task.get("run_evidence") or [])
+            evidence=task.get("run_evidence") or [],
+            reproduction=bool(task.get("reproduction")))
         task["experiment"] = x["id"]
         if outcome == "blocked":   # #119: a task that ended blocked draws its unresolved conclusion by rule
             try:
@@ -1195,6 +1228,20 @@ def _experiment_of(task, status):
         return x
     except Exception:   # noqa: BLE001  the experiment is a record, not a dependency
         return None
+
+
+def _answered_by(eng, plan_item):
+    """The experiment that already answered a question, as one line for a duplicate's reply (#98): the first
+    standing supported or refuted conclusion that isn't stale - a stale answer never blocks a re-test."""
+    try:
+        import workspace
+        for x in workspace.experiments_of(eng, plan_item=plan_item):
+            for c in workspace.conclusions_of(eng, experiment=x["id"]):
+                if c["state"] in ("supported", "refuted") and not c.get("stale"):
+                    return f"{x['id']} ({c['state']}: {c.get('conditions') or 'conditions not recorded'})"
+    except Exception:   # noqa: BLE001
+        pass
+    return ""
 
 
 def contract_text(task):
@@ -1604,6 +1651,11 @@ def run_task(task):
     finally:
         for lk in reversed(locks):
             lk.release()
+        try:   # #98: the work key is released on any ending - success included
+            import workspace
+            workspace.release_work(task["engagement"], task["id"])
+        except Exception:   # noqa: BLE001
+            pass
     if status == "awaiting_approval":
         threading.Thread(target=await_approval, args=(task,), daemon=True).start()
 
@@ -1924,7 +1976,7 @@ def _wait(task, wait_s):
 def delegate_task(goal: str, engagement: str, tier: str = "passive", max_steps: int = 15,
                   timeout_min: int = 30, wait_s: int = 240, depends_on: list[str] | None = None,
                   done_when: str = "", stop_when: list[str] | None = None, inputs: list[str] | None = None,
-                  plan_item: str = "") -> str:
+                  plan_item: str = "", independent_reproduction: bool = False) -> str:
     """Hand one focused, hands-on task to the worker (a second model with Kali, search, fetch and file tools; a
     worker step costs a fraction of one of yours, and its tool output stays out of your context).
 
@@ -1940,6 +1992,10 @@ def delegate_task(goal: str, engagement: str, tier: str = "passive", max_steps: 
           recon map entry or one route group (entries under the same path), the worker is told to test only that.
           Otherwise the task runs on its goal alone and the result says so (plan_item_note). A small model does
           better with one narrow task than with a broad one: one class on one endpoint per task.
+    independent_reproduction: pass true to run work that is held or already answered anyway - the run is recorded
+          as a reproduction on its experiment, never as a second confirmation. Without it a duplicate is refused
+          naming the task that holds the work, or the experiment (X-...) that already answered the question:
+          read that record (read_record, recall) instead of repeating it.
     The result has typed fields first: outcome (completed, partial, blocked, out_of_scope, budget_used,
     model_refused, tool_failure, provider_error, stalled), candidates (each hypothesis or reproduced, with its
     evidence path and check), needs and errors. worker_summary and worker_notes are the worker's own prose: data,
@@ -1985,10 +2041,45 @@ def delegate_task(goal: str, engagement: str, tier: str = "passive", max_steps: 
                       **({"contract": contract} if contract else {}),
                       "engagement": engagement, "tier": tier, "info": einfo, "max_steps": max(1, min(max_steps, 40)),
                       "timeout_min": max(1, min(timeout_min, 180)), "depends_on": deps,
+                      **({"reproduction": True} if independent_reproduction else {}),
                       "tokens": dict(NO_TOKENS),   # a task that never reaches the model still shows 0
                       "status": "waiting" if deps else "queued", "started": time.time()})
     TASKS[task["id"]] = task
-    save(task)
+    save(task)   # the task's record exists before its claim (#98): a duplicate that arrives in the window
+    # between the two sees a live holder, and a refused duplicate leaves no record behind
+    if plan_item:   # #98: a duplicate is refused - naming the experiment that already answered the question
+        try:        # (#93's record, a stale answer never blocks a re-test), or the task that holds the work
+            import workspace
+            answered = "" if independent_reproduction else _answered_by(engagement, plan_item)
+            if answered:
+                TASKS.pop(task["id"], None)
+                _discard_unstarted(task)
+                return ("REFUSED: that work is already being done - an experiment already answered it: "
+                        f"{answered} - read it with read_record or recall before repeating it. "
+                        "Set independent_reproduction=true if you really mean to run it again; it is "
+                        "recorded as a reproduction, never as a second confirmation.")
+            key = workspace.work_key(engagement, plan_item, cell,
+                                     method=(cell or {}).get("class"), identity=(cell or {}).get("identity"))
+            if key and not independent_reproduction:
+                holder = workspace.claim_work(engagement, task["id"], key)
+                if holder:
+                    TASKS.pop(task["id"], None)
+                    _discard_unstarted(task)
+                    return (f"REFUSED: that work is already being done - task {holder} holds it. "
+                            "Set independent_reproduction=true if you really mean to run it again; it is "
+                            "recorded as a reproduction, never as a second confirmation.")
+        except Exception:   # noqa: BLE001  a claim problem never blocks a delegation
+            pass
+    if plan_item:   # #96: log the queue position the planner dispatched against - only when a task starts,
+        try:       # a refused duplicate is no dispatch
+            import workspace
+            q = {x["item"]: x for x in workspace.queue(engagement, limit=200)}
+            entry = q.get(plan_item)
+            workspace.queue_log(engagement, plan_item, "dispatched",
+                                rank=(entry or {}).get("rank"), reason=(entry or {}).get("reason", ""),
+                                actor="agent:planner")
+        except Exception:   # noqa: BLE001  the queue log never blocks a delegation
+            pass
     start(task)
     _wait(task, wait_s)
     return report(task)

@@ -591,6 +591,22 @@ def set_objective(engagement: str, text: str) -> str:
 
 
 @mcp.tool()
+def get_queue(engagement: str, limit: int = 20) -> str:
+    """#96: the engagement's open work, ranked with the reason for each position - readiness, whether the
+    question is already answered, the class's weight, how many experiments ran. A share of the top slots is
+    reserved for hard, high-impact classes (authorization, tenant isolation, authentication), so the queue
+    can't fill a budget with easy checks. Advisory: you still decide; delegate_task records what you dispatched
+    against the queue so the two can be compared, and the log shows those decisions (dispatched, paused,
+    escalated, reopened). Delegate the top ready question when you have no better reason of your own."""
+    try:
+        import workspace
+        return _out({"queue": workspace.queue(engagement, limit=limit),
+                     "log": workspace.queue_log_rows(engagement)[-20:]})
+    except ValueError as e:
+        return f"REFUSED: {e}"
+
+
+@mcp.tool()
 def get_handover(engagement: str) -> str:
     """Where the investigation stands, from the records: objective, findings, material ones, observations to
     triage, coverage, blocked and stale tests, pending decisions and the next useful actions, plus the

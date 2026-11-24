@@ -306,6 +306,7 @@ def investigation_get(engagement, actor=None):
     return {"handover": {**h, "markdown": ws.handover_markdown(engagement, h)},
             "objective": h["objective"] or "", "objective_digest": digest(h["objective"] or ""),
             "plan": ws.plan_list(engagement), "coverage": ws.coverage(engagement),
+            "queue": ws.queue(engagement, limit=50), "queue_log": ws.queue_log_rows(engagement)[-50:],
             "observations": ws.list_observations(engagement), "imports": ws.imports(engagement),
             "groups": ws.suggest_groups(engagement)}, None
 
@@ -556,6 +557,30 @@ def conclusion_list(engagement, actor=None, plan_item=None, experiment=None):
 def link_record(engagement, actor, src, dst, kind, note=None):
     r = ws.link_record(engagement, actor, src, dst, kind, note)
     return r, _event("link-recorded", actor, f"{src}->{dst}", None, kind)
+
+
+# ---------------------------------------------------------------- the queue (#96)
+@op("queue.get", mutates=False)
+def queue_get(engagement, actor=None, limit=20):
+    """The engagement's open work ranked with reasons, and the decisions taken on it so far."""
+    limit = max(1, min(int(limit or 20), 200))
+    return {"queue": ws.queue(engagement, limit=limit), "log": ws.queue_log_rows(engagement)[-50:]}, None
+
+
+@op("queue.decide")
+def queue_decide(engagement, actor, item, action, reason="", rank=None):
+    """Record one decision on the queue: suggested, paused, escalated or reopened (dispatched is written by
+    delegate_task itself, when a task actually starts). The log is what the queue proposed against what the
+    planner did, so a pause or an escalation belongs in it as much as a dispatch."""
+    if action == "dispatched":
+        raise OpError("dispatched is written by delegate_task; record one of suggested, paused, "
+                       "escalated, reopened")
+    try:
+        ws.queue_log(engagement, item, action, rank=rank, reason=reason, actor=actor)
+    except ValueError as e:
+        raise OpError(str(e))
+    return {"item": item, "action": action}, _event(f"queue-{action}", actor, item, None, action,
+                                                   reason=str(reason or "")[:200])
 
 
 

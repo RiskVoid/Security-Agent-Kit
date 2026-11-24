@@ -1251,9 +1251,17 @@ async function paneInvestigation() {
           <dt>Coverage</dt><dd>${cov.total ? `${done} of ${cov.total} tests have an outcome${covLine ? `<div class="rv-dim">${covLine}</div>` : ""}` : "no plan yet"}</dd>
           <dt>Imports</dt><dd>${h.imports}</dd></dl></div></div>
       </div>
+      ${r.queue && r.queue.length ? `<div class="rv-card"><div class="rv-card-head"><h3>Queue: what to run next <span class="rv-dim">${r.queue.filter((q) => !q.answered && q.readiness.ready).length} ready</span></h3></div>
+        <div class="rv-dl" style="--cols:64px minmax(0, 1fr) 240px;--minw:560px"><div class="rv-dl-in">
+          ${r.queue.slice(0, 8).map((q) => `<div class="rv-dl-row"><span class="mono">#${q.rank}${q.hard ? " ⬤" : ""}</span>
+            <span><b>${esc(q.question)}</b>${q.identity ? `<div class="rv-dim">identity ${esc(q.identity)} · ${q.ran} experiment(s)</div>` : ""}
+              <div class="rv-dim mono">${esc(q.item)} ${esc(q.class || "")}</div></span>
+            <span>${q.answered ? "answered already" : `<b>${q.readiness.ready ? "ready" : "waiting"}</b>`}<div class="rv-dim">${esc(q.reason)}</div></span></div>`).join("")}
+        </div></div>
+        <div class="rv-card-body"><p class="hint">Advisory (#96): the harness ranks, the agent still decides. ⬤ marks the hard, high-impact classes that keep a share of the top slots. Dispatches are logged against the queue.</p></div></div>` : ""}
       ${h.board && h.board.length ? `<div class="rv-card"><div class="rv-card-head"><h3>Board: open questions <span class="rv-dim">${h.board.length}</span></h3></div>
         <div class="rv-dl" style="--cols:150px minmax(0, 1fr) 190px;--minw:560px"><div class="rv-dl-in">
-          ${h.board.map((b) => `<div class="rv-dl-row"><span class="mono">${esc(b.item)} <span class="rv-dim">${esc(b.state)}${b.stale ? " (stale)" : ""}</span></span>
+          ${h.board.map((b) => `<div class="rv-dl-row"><span class="mono">${esc(b.item)} <span class="rv-dim">${esc(b.state)}${b.stale ? " (stale)" : ""}${b.queue_rank ? ` · queue #${b.queue_rank}` : ""}</span></span>
             <span><b>${esc(b.question)}</b>${b.last_result ? `<div class="rv-dim">last: ${esc(b.last_result.status)} - ${esc(b.last_result.summary || "")}</div>` : ""}
               ${b.blocker ? `<div class="rv-dim">blocker: ${esc(b.blocker)}</div>` : ""}</span>
             <span><b>${esc(b.next)}</b><div class="rv-dim">${esc(b.why)}</div>

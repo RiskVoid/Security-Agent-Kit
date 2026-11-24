@@ -523,6 +523,7 @@ def board(eng):
     rows = []
     items = [i for i in plan_list(eng) if i["state"] in ("planned", "blocked") or (i.get("stale") and
              i["state"] in ("tested", "failed"))]
+    q_ranks = {q["item"]: q["rank"] for q in queue(eng, limit=200)}
     tasks = _packet_tasks(eng)
     led = ledger_entries(eng)
     for it in items:
@@ -552,6 +553,7 @@ def board(eng):
             why = "the cell is still open after " + (f"{len(related)} task(s)" if related else "no task")
         rd = readiness(eng, pid)
         rows.append({"item": pid, "question": it["title"], "state": it["state"], "readiness": rd,
+                     "queue_rank": q_ranks.get(pid),
                      "stale": bool(it.get("stale")), "identity": it.get("identity"),
                      "last_result": ({"experiment": xlast[-1]["id"], "task": xlast[-1].get("task"),
                                       "status": xlast[-1]["outcome"],
@@ -945,11 +947,12 @@ def _xrow(r):
 
 def experiment_record(eng, actor, plan_item, task=None, method=None, identity=None, build=None,
                       policy_revision=None, required=None, outcome="ran", status=None, summary="",
-                      evidence=None):
+                      evidence=None, reproduction=False):
     """#90: one experiment record, written by the harness when a task bound to a plan item ends - what was
     tried, under which conditions (identity, build, policy revision), with its evidence hashes. Negative and
     inconclusive outcomes are recorded with their exact conditions, never as a verdict about the target. The
-    model is never asked to write it; conclusions are a separate record."""
+    model is never asked to write it; conclusions are a separate record. #98: reproduction marks a deliberate
+    re-run the planner asked for with independent_reproduction, not the accident the work key refuses."""
     if outcome not in OUTCOMES:
         raise ValueError(f"outcome must be one of {', '.join(OUTCOMES)}")
     with db._db(eng) as con:
@@ -959,14 +962,15 @@ def experiment_record(eng, actor, plan_item, task=None, method=None, identity=No
         xid = _next_id(con, "experiments", "X")
         con.execute("INSERT INTO experiments (id, plan_item, task, method, identity, build, policy_revision,"
                     " required, outcome, status, summary, evidence, conclusion, created, updated, actor,"
-                    " revision, stale, stale_reason) VALUES "
+                    " revision, stale, stale_reason, reproduction) VALUES "
                     "(:id, :pid, :task, :method, :ident, :build, :pol, :req, :outcome, :status, :summary,"
-                    " :ev, NULL, :created, :updated, :actor, 1, 0, NULL)",
+                    " :ev, NULL, :created, :updated, :actor, 1, 0, NULL, :repro)",
                     {"id": xid, "pid": plan_item, "task": task, "method": method, "ident": identity,
                      "build": build, "pol": None if policy_revision is None else str(policy_revision),
                      "req": json.dumps(required or []), "outcome": outcome, "status": status,
                      "summary": str(summary or "")[:400], "ev": json.dumps(_pin(eng, evidence)),
-                     "created": _now(), "updated": _now(), "actor": db._actor(actor)})
+                     "created": _now(), "updated": _now(), "actor": db._actor(actor),
+                     "repro": int(bool(reproduction))})
         d = con.execute("SELECT * FROM experiments WHERE id=?", (xid,)).fetchone()
     return _xrow(d)
 
@@ -1233,3 +1237,112 @@ def readiness(eng, pid):
                                     (lk["dst"],)).fetchone():
                     waiting.append(f"{lk['dst']}: no such record yet")
     return {"ready": not waiting, "waiting": waiting}
+
+
+# ------------------------------------------------- the queue over plan items (#96, #95, #98)
+HARD_CLASSES = {"access-control", "mass-assignment", "authentication"}   # the reserved share's hard questions
+
+
+def queue(eng, limit=50):
+    """The open work of an engagement, ranked, with the reason for each position (#96) - computed from the
+    records with no model: readiness (#92), whether the question is answered already (#93), the class's
+    weight, and whether any experiment ran. A share of the top slots is reserved for hard, high-impact
+    questions (authorization, tenant isolation, authentication), so the queue can't fill a budget with easy
+    checks. Advisory: the planner reads this and still decides; delegate_task logs what it did."""
+    rows = []
+    for it in plan_list(eng):
+        if it["state"] not in ("planned", "blocked") and not (it.get("stale") and
+                it["state"] in ("tested", "failed")):
+            continue
+        rd = readiness(eng, it["id"])
+        xs = experiments_of(eng, plan_item=it["id"])
+        answered = any(x["outcome"] == "ran" and any(c["state"] in ("supported", "refuted") and not c["stale"]
+                            for c in conclusions_of(eng, experiment=x["id"])) for x in xs)
+        cls = next(iter(reconmap_classes(it)), "")
+        rows.append({"item": it["id"], "question": it["title"], "class": cls, "state": it["state"],
+                     "stale": bool(it.get("stale")), "identity": it.get("identity"),
+                     "readiness": rd, "answered": answered, "ran": len(xs),
+                     "hard": cls in HARD_CLASSES})
+    # rank: unanswered before answered, ready before waiting, hard classes carry the reserved share, and an
+    # untouched question goes before one whose experiments were inconclusive
+    def rank(r):
+        return (r["answered"], not r["readiness"]["ready"], not r["hard"], r["ran"] > 0, r["item"])
+    rows.sort(key=rank)
+    for i, r in enumerate(rows[:limit], 1):
+        r["rank"] = i
+        why = []
+        if r["answered"]:
+            why.append("answered already - a deliberate reproduction or closing it out")
+        if not r["readiness"]["ready"]:
+            why.append("waiting: " + "; ".join(r["readiness"]["waiting"][:2]))
+        if r["hard"]:
+            why.append("hard, high-impact class: a share of the top slots is reserved for it")
+        if r["ran"]:
+            why.append(f"{r['ran']} experiment(s) ran" + (", inconclusive" if not r["answered"] else ""))
+        r["reason"] = " - ".join(why or ["open and ready"])
+    return rows[:limit]
+
+
+def reconmap_classes(item):
+    """The vulnerability classes a plan item names, from its area or refs (reconmap's own rule, no import)."""
+    import reconmap
+    return [c for c in (reconmap._class_of(item) or [])]
+
+
+def queue_log(eng, item, action, rank=None, reason="", actor=None):
+    """One decision on the queue (#96): dispatched (written by delegate_task when a task actually starts),
+    suggested, paused, escalated, reopened - so what the queue proposed and what the planner did can be
+    compared later."""
+    with db._db(eng) as con:
+        if action not in ("dispatched", "suggested", "paused", "escalated", "reopened"):
+            raise ValueError("action must be one of dispatched, suggested, paused, escalated, reopened")
+        if not con.execute("SELECT 1 FROM plan_items WHERE id=?", (item,)).fetchone():
+            raise ValueError(f"no plan item {item}")
+        con.execute("INSERT INTO queue_log (item, action, rank, reason, actor, at) VALUES (?,?,?,?,?,?)",
+                    (item, action, rank, str(reason or "")[:200], db._actor(actor or "agent:planner"), _now()))
+
+
+def queue_log_rows(eng, item=None):
+    with db._db(eng) as con:
+        q, a = "SELECT * FROM queue_log WHERE 1=1", []
+        if item:
+            q += " AND item=?"; a.append(item)
+        return [dict(r) for r in con.execute(q + " ORDER BY id", a)]
+
+
+def work_key(eng, plan_item, cell=None, method=None, identity=None, build=None):
+    """The key that makes two delegated tasks the same work (#98): the engagement's current build, the coverage
+    cell, the method and the identity or fixture - two plan items over the same cell are the same work, so the
+    plan item itself is not in the key. A loose question (no cell, no method) keys on its plan item, so loose
+    questions never collide with each other."""
+    c = cell or {}
+    entries = ",".join(sorted(c.get("entries") or []))
+    ident = identity or c.get("identity") or ""
+    cur = build or (get_value(eng, "current_build") or {}).get("value") or ""
+    cls = c.get("class") or method or ""
+    if not entries and not cls:
+        return f"{cur}|{plan_item}"
+    return f"{cur}|{cls}|{entries}|{ident}"
+
+
+def claim_work(eng, task, key):
+    """Claim a work key (#98). Returns None when taken, or the holder's name when another live task holds it -
+    a claim whose task ended is stale and is taken over. Claims live in the database, so they survive a
+    worker restart with the task's own record."""
+    with db._db(eng) as con:
+        cur = con.execute("SELECT * FROM work_claims WHERE key=?", (key,)).fetchone()
+        if cur and cur["task"] != task:
+            t = next((x for x in _packet_tasks(eng) if x.get("id") == cur["task"]), None)
+            live = t and t.get("status") in ("queued", "waiting", "running", "awaiting_approval", "interrupted")
+            if live:
+                return cur["task"]
+            con.execute("DELETE FROM work_claims WHERE key=?", (key,))   # the holder ended: the claim expired
+        con.execute("INSERT OR REPLACE INTO work_claims VALUES (?,?,?,?)",
+                    (key, task, _now(), db._actor("agent:planner")))
+    return None
+
+
+def release_work(eng, task):
+    """Release every work key a task holds (#98) - called on any ending, success included."""
+    with db._db(eng) as con:
+        con.execute("DELETE FROM work_claims WHERE task=?", (task,))

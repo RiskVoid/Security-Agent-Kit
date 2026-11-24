@@ -301,6 +301,24 @@ conclusions on the validator's route; each claim must quote its evidence in back
 check decides - a missing quote is kept unresolved, marked as the agent's own. `WORKER_CONCLUSION_SUMMARY=0`
 turns the model call off.
 
+**The engagement's open work is ranked (#96), and the same experiment isn't started twice (#98):** the queue is
+computed from the records with no model - one row per open question with the reason for its position:
+readiness (#92), whether a standing conclusion already answered it (#93), the class's weight, how many
+experiments ran. A share of the top slots is reserved for hard, high-impact classes (authorization, tenant
+isolation, authentication), so the queue can't fill a budget with easy checks. It is advisory: the planner
+reads it (`get_queue`, the console's Investigation tab, `queue_rank` on each board row) and still decides;
+every `delegate_task` with a plan item logs the rank it dispatched against (`queue_log`), so what the queue
+proposed and what the planner did can be compared - the benchmark efficiency line reports the share of
+dispatches that went to the top suggestion, and `queue.get` / `queue.decide` (console, CLI) read the log and
+record pauses, escalations and reopenings on it. A duplicate delegation is refused (#98): the work key is the
+current build, the coverage cell, the method and the identity, and `delegate_task` claims it - a second task
+with the same key gets the task that holds it, or the experiment that already answered the question; claims
+live in the engagement's database (they survive a worker restart, and any ending releases them), and
+`independent_reproduction=true` runs anyway, with the experiment marked as a reproduction. Progress inside a
+task is counted from the records too (#95): a call only resets the idle count when it captured a new
+observation or recorded a candidate - output that merely looks new (a changed banner, a timestamp) doesn't,
+and the stall record says which fired.
+
 ### Worker task lifecycle
 
 `worker-mcp` saves each task (`task.json`: status, lease, steps; `messages.json`: the model conversation) next to
