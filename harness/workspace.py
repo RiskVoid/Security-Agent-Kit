@@ -447,7 +447,7 @@ def reassess(eng, actor, build=None, policy_revision=None):
     """The build or the policy changed: tested and failed items recorded against another one become stale."""
     if not build and not policy_revision:
         raise ValueError("give the current build (source digest or deployed build) and/or policy revision")
-    n = 0
+    n, n_con, n_exp = 0, 0, 0
     with db._db(eng) as con:
         con.execute("BEGIN IMMEDIATE")
         for r in con.execute("SELECT * FROM plan_items WHERE state IN ('tested', 'failed')").fetchall():
@@ -463,7 +463,19 @@ def reassess(eng, actor, build=None, policy_revision=None):
         for k, v in (("current_build", build), ("current_policy_revision", policy_revision)):
             if v:
                 con.execute("INSERT OR REPLACE INTO workspace VALUES (?,?,?,?)", (k, str(v), _now(), actor))
-    return {"stale": n}
+        # #91: a build change makes conclusions about the code and its behaviour stale - they need
+        # re-testing; a policy change makes only the AUTHORIZATION stale: conclusions already reached stand.
+        if build:
+            n_con = con.execute("UPDATE conclusions SET stale=1, stale_reason=?, revision=revision+1, updated=? "
+                                "WHERE stale=0 AND experiment IN (SELECT id FROM experiments WHERE build IS"
+                                " NOT NULL AND build != ?)",
+                                (f"build changed ({build[:12]}): retest", _now(), str(build))).rowcount
+        if policy_revision:
+            n_exp = con.execute("UPDATE experiments SET stale=1, stale_reason=? WHERE stale=0 AND "
+                                "policy_revision IS NOT NULL AND policy_revision != ?",
+                                (f"policy revision changed: the authorization needs re-checking",
+                                 str(policy_revision))).rowcount
+    return {"stale": n, "conclusions_stale": n_con, "experiments_stale": n_exp}
 
 
 def coverage(eng):
@@ -538,7 +550,8 @@ def board(eng):
         else:
             nxt = "triage the last result and record the outcome"
             why = "the cell is still open after " + (f"{len(related)} task(s)" if related else "no task")
-        rows.append({"item": pid, "question": it["title"], "state": it["state"],
+        rd = readiness(eng, pid)
+        rows.append({"item": pid, "question": it["title"], "state": it["state"], "readiness": rd,
                      "stale": bool(it.get("stale")), "identity": it.get("identity"),
                      "last_result": ({"experiment": xlast[-1]["id"], "task": xlast[-1].get("task"),
                                       "status": xlast[-1]["outcome"],
@@ -944,11 +957,16 @@ def experiment_record(eng, actor, plan_item, task=None, method=None, identity=No
         if not row:
             raise ValueError(f"no plan item {plan_item}")
         xid = _next_id(con, "experiments", "X")
-        con.execute("INSERT INTO experiments VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-                    (xid, plan_item, task, method, identity, build,
-                     None if policy_revision is None else str(policy_revision),
-                     json.dumps(required or []), outcome, status, str(summary or "")[:400],
-                     json.dumps(_pin(eng, evidence)), None, _now(), _now(), db._actor(actor), 1))
+        con.execute("INSERT INTO experiments (id, plan_item, task, method, identity, build, policy_revision,"
+                    " required, outcome, status, summary, evidence, conclusion, created, updated, actor,"
+                    " revision, stale, stale_reason) VALUES "
+                    "(:id, :pid, :task, :method, :ident, :build, :pol, :req, :outcome, :status, :summary,"
+                    " :ev, NULL, :created, :updated, :actor, 1, 0, NULL)",
+                    {"id": xid, "pid": plan_item, "task": task, "method": method, "ident": identity,
+                     "build": build, "pol": None if policy_revision is None else str(policy_revision),
+                     "req": json.dumps(required or []), "outcome": outcome, "status": status,
+                     "summary": str(summary or "")[:400], "ev": json.dumps(_pin(eng, evidence)),
+                     "created": _now(), "updated": _now(), "actor": db._actor(actor)})
         d = con.execute("SELECT * FROM experiments WHERE id=?", (xid,)).fetchone()
     return _xrow(d)
 
@@ -980,10 +998,13 @@ def link_record(eng, actor, src, dst, kind, note=None):
         raise ValueError(f"kind must be one of {', '.join(LINK_KINDS)}")
     with db._db(eng) as con:
         for rid in (src, dst):
+            if str(rid or "").split(":", 1)[0] in ("identity", "build", "conclusion", "capability"):
+                continue          # #92: a requires link may name a checkable requirement, not only a record
             p = str(rid or "").split("-", 1)[0]
             table = _LINK_PREFIXES.get(p)
             if not table or not con.execute(f"SELECT 1 FROM {table} WHERE id=?", (rid,)).fetchone():
-                raise ValueError(f"no record {rid}: a link's ends must exist (P-, X-, C-, O- or F- ids)")
+                raise ValueError(f"no record {rid}: a link's ends must exist (P-, X-, C-, O- or F- ids,"
+                                 " or a requirement identity:/build:/conclusion:/capability:...")
         con.execute("INSERT OR REPLACE INTO links VALUES (?,?,?,?,?,?)",
                     (str(src), str(dst), kind, db._actor(actor), _now(), note))
         return {"src": str(src), "dst": str(dst), "kind": kind}
@@ -1167,3 +1188,48 @@ def _conclusion_mutations(eng, cid, claim, state, conditions, plan_item):
                          "the standing conclusion became unresolved"))
             return {"contradicts": other["id"]}
     return None
+
+
+# ------------------------------------------------- readiness, computed from the records (#92)
+def readiness(eng, pid):
+    """Whether a question is ready to test, computed from its `requires` links (#89's links, #92's rule): an
+    identity (kali-mcp's identity store, which lives in the engagement folder), the current build, an
+    observation, a conclusion in a given state (P-002:supported), or a capability (a tier the rules allow).
+    Returns {"ready": bool, "waiting": [what it waits for, with the reason]} - computed, never stored, so a
+    missing prerequisite appearing (an identity is added, an observation is imported) makes it ready by
+    itself."""
+    waiting = []
+    for lk in links_of(eng, src=pid):
+        if lk["kind"] != "requires":
+            continue
+        what = str(lk["dst"] or "")
+        kind, _, value = what.partition(":")
+        if kind == "identity":
+            have = any(          # the identities themselves live in kali-mcp's control store, which the
+                (st.get("args") or {}).get("identity") == value  # harness can't read; a check_identity step
+                for t in _packet_tasks(eng) for st in t.get("steps") or []   # ran for it is the harness's own
+                if st.get("tool") == "check_identity" and st.get("state") == "done")   # record of it
+            if not have:
+                waiting.append(f"identity {value}: not checked on this engagement yet"
+                               " (kali-mcp's identity list says whether it exists)")
+        elif kind == "build":
+            cur = (get_value(eng, "current_build") or {}).get("value")
+            if str(cur or "") != str(value or ""):
+                waiting.append(f"build {value}: the current build is {cur or 'not recorded'}")
+        elif kind == "conclusion":
+            item, _, state = value.partition(":")
+            have = any(c["state"] == state for c in conclusions_of(eng, plan_item=item)) if state else \
+                bool(conclusions_of(eng, plan_item=item))
+            if not have:
+                waiting.append(f"conclusion {what}: not reached yet")
+        elif kind == "capability":
+            rules = open(os.path.join(db.engagement_dir(eng), "RULES.md"), errors="replace").read() \
+                if os.path.isfile(os.path.join(db.engagement_dir(eng), "RULES.md")) else ""
+            if value.lower() not in rules.lower():
+                waiting.append(f"capability {value}: the rules don't allow it")
+        elif str(lk["dst"] or "").split("-", 1)[0] in _LINK_PREFIXES:
+            with db._db(eng) as con:
+                if not con.execute(f"SELECT 1 FROM {_LINK_PREFIXES[lk['dst'].split('-', 1)[0]]} WHERE id=?",
+                                    (lk["dst"],)).fetchone():
+                    waiting.append(f"{lk['dst']}: no such record yet")
+    return {"ready": not waiting, "waiting": waiting}

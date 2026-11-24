@@ -4127,6 +4127,8 @@ class Experiments(unittest.TestCase):
             {"method": "POST", "url": "http://lab/api/fetch", "source": "openapi", "status": 200,
              "auth": "unknown", "params": {"body": ["role"]}}]},
             open(os.path.join(e, "evidence/map/map-1.json"), "w"))
+        open(os.path.join(e, "RULES.md"), "w").write(
+            "# Rules of engagement for acme (test)\n- Allowed tiers: passive, active, intrusive\n")
         open(os.path.join(e, "evidence/http/r1.txt"), "w").write("POST /fetch 200\n")
         self.eid = next(x["id"] for x in reconmap.build("acme")["entries"])
         self.pid = workspace.plan_add("acme", "agent:planner", [
@@ -4178,6 +4180,54 @@ class Experiments(unittest.TestCase):
             self.ws.link_record("acme", "agent:planner", "P-999", c["id"], "supports")
         self.assertEqual(self.ws.experiments_of("acme", plan_item=self.pid)[0]["task"], "t-100")
         self.assertEqual(self.ws.conclusions_of("acme", experiment=x["id"])[0]["id"], "C-001")
+
+    def test_staleness_per_kind_and_readiness(self):
+        """#91: a build change makes conclusions stale; a policy change only the authorization. #92: readiness
+        computed from requires links - identity, build, observation, conclusion, capability."""
+        x = self.ws.experiment_record("acme", "agent:worker", plan_item=self.pid, task="t-100",
+                                     method="mass-assignment", identity="alice", build="oldbuild",
+                                     policy_revision=6, outcome="ran", summary="tried")
+        self.ws.conclusion_record("acme", "agent:worker", "role writable on register", "supported",
+                                  conditions="identity alice, build oldbuild", experiment=x["id"])
+        r = self.ws.reassess("acme", "agent:planner", policy_revision="9")
+        self.assertEqual(r["experiments_stale"], 1)        # the authorization went stale
+        self.assertEqual(r["conclusions_stale"], 0)        # conclusions already reached stand
+        r2 = self.ws.reassess("acme", "agent:planner", build="newbuild")
+        self.assertEqual(r2["conclusions_stale"], 1)      # the build change makes them stale for retesting
+        conc = self.ws.conclusions_of("acme", experiment=x["id"])[0]
+        self.assertEqual(conc["stale"], 1)
+        self.assertIn("retest", conc["stale_reason"])
+        pk = self.ws.packet("acme", "Test mass-assignment on POST /api/fetch", self.pid, chars=4000)
+        self.assertIn("stale: build changed", pk["text"])  # and the packet shows them as stale
+
+        # readiness: each kind of prerequisite, computed (never stored)
+        pid2 = self.ws.plan_add("acme", "agent:planner", [{"title": "late identity question",
+                                                          "area": "access-control"}])[0]
+        self.ws.link_record("acme", "agent:planner", pid2, "identity:admin", "requires")
+        rd = self.ws.readiness("acme", pid2)
+        self.assertFalse(rd["ready"])
+        self.assertIn("identity admin", rd["waiting"][0])
+        self.ws.link_record("acme", "agent:planner", pid2, "build:newbuild", "requires")
+        self.ws.link_record("acme", "agent:planner", pid2, "conclusion:" + self.pid + ":supported",
+                            "requires")
+        self.ws.link_record("acme", "agent:planner", pid2, "capability:intrusive", "requires")
+        rd2 = self.ws.readiness("acme", pid2)
+        self.assertFalse(rd2["ready"])
+        self.assertEqual([w.split(" ")[0] for w in rd2["waiting"]], ["identity", "conclusion"])  # build ok now
+        # the identity appears (a check_identity step in a task record): waiting for it ends by itself
+        os.makedirs(os.path.join(self.tmp.name, "acme", "evidence/tasks/t-admin"), exist_ok=True)
+        json.dump({"id": "t-admin", "engagement": "acme", "goal": "check", "status": "done", "started": 1,
+                   "steps": [{"tool": "check_identity", "state": "done",
+                              "args": {"identity": "admin"}}]},
+                  open(os.path.join(self.tmp.name, "acme", "evidence/tasks/t-admin/task.json"), "w"))
+        rd3 = self.ws.readiness("acme", pid2)
+        self.assertEqual([w.split(" ")[0] for w in rd3["waiting"]], ["conclusion"])
+        # the board and get_coverage's items carry it (#92): the identity appeared, the conclusion waits
+        row = next(rw for rw in self.ws.board("acme") if rw["item"] == pid2)
+        self.assertEqual(row["readiness"]["ready"], False)
+        self.assertIn("conclusion", " ".join(row["readiness"]["waiting"]))
+        other = next(rw for rw in self.ws.board("acme") if rw["item"] == self.pid)
+        self.assertEqual(other["readiness"]["ready"], True)   # and a question with no requirements is ready
 
     def test_the_packet_reads_experiments_and_warns_on_a_repeat(self):
         self.ws.plan_update("acme", "agent:planner", self.pid, identity="alice")   # the question's identity

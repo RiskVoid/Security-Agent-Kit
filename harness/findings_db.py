@@ -35,7 +35,7 @@ METHODS = ("runtime-reproduction", "replay", "authorization-matrix", "source-rev
 PRIORITIES = ("P1", "P2", "P3", "P4")   # remediation priority: the client's order of work, not the severity
 NEEDS_REASON = ("false-positive", "accepted-risk")
 COVERAGE = ("planned", "tested", "failed", "blocked", "excluded", "not-applicable")
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 ACTOR_RX = re.compile(r"^(console|cli|agent|test):[A-Za-z0-9._@-]{1,64}$")
 FIELDS = ("title", "severity", "cvss_vector", "cvss_score", "cwe", "asset", "description", "impact",
           "reproduction", "remediation", "evidence", "status", "source", "notes", "duplicate_of", "priority",
@@ -187,6 +187,11 @@ def _migrate(con: sqlite3.Connection) -> None:
         for col in ("origin_task", "origin_call", "identity", "build", "policy_revision"):
             if col not in ocols:      # #118: the origin a fact came from - task or conversation, call, identity
                 con.execute(f"ALTER TABLE observations ADD COLUMN {col} TEXT")
+    if v < 6:  # #91: an experiment's staleness - a policy change makes the authorization stale
+        ecols = {r[1] for r in con.execute("PRAGMA table_info(experiments)")}
+        for col, decl in (("stale", "INTEGER NOT NULL DEFAULT 0"), ("stale_reason", "TEXT")):
+            if col not in ecols:
+                con.execute(f"ALTER TABLE experiments ADD COLUMN {col} {decl}")
     con.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
 
 

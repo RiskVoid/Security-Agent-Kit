@@ -524,9 +524,13 @@ def get_coverage(engagement: str, state: str = "", matrix: bool = False) -> str:
                      "open": [{k: c[k] for k in ("entry", "method", "path", "class", "state", "items")}
                               for c in open_ if c["state"] != "gap"][:150],
                      "more": max(0, len(m["gaps"]) - 150), "plan_items_without_map_refs": m["unmapped_items"][:50]})
+    import workspace
     r = ops.call("plan.list", {"engagement": engagement, "state": state or None})[0]
-    r["items"] = [{k: i[k] for k in ("id", "title", "area", "refs", "state", "rationale", "finding_id", "stale")}
-                  for i in r["items"]]
+    r["items"] = [{**{k: i[k] for k in ("id", "title", "area", "refs", "state", "rationale", "finding_id",
+                                       "stale")},
+                   "readiness": workspace.readiness(engagement, i["id"])}
+                  #92: ready, or waiting with what it waits for - computed, so a prerequisite appearing
+                  for i in r["items"]]          # (an identity checked, an observation) makes it ready alone
     return _out(r)
 
 
@@ -787,5 +791,19 @@ def link_records(engagement: str, src: str, dst: str, kind: str, note: str = "")
         import workspace
         return json.dumps(workspace.link_record(engagement, actor="agent:planner", src=src, dst=dst,
                                                 kind=kind, note=note or None))
+    except ValueError as e:
+        return f"REFUSED: {e}"
+
+
+@mcp.tool()
+def report_build(engagement: str, build: str) -> str:
+    """#91: report the target's current build (a source digest, a deployed build id) when you can establish
+    it - recon output, a version endpoint, a deployment note. A build change marks the conclusions recorded
+    against another build stale for re-testing, and plan items tested on it; the records keep everything, the
+    packet shows the stale ones as stale. The engagement's current build is remembered."""
+    try:
+        import workspace
+        r = workspace.reassess(engagement, "agent:planner", build=str(build or "").strip())
+        return json.dumps(r)
     except ValueError as e:
         return f"REFUSED: {e}"
