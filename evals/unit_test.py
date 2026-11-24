@@ -1916,10 +1916,11 @@ class BenchStats(unittest.TestCase):
                                                   "calls": 0}}]
         tu = self.st.token_use(res, tasks)
         self.assertEqual({r: tu[r] for r in self.st.ROLES}, {"planner": 1100, "worker": 5500, "advisor": 220,
-                                                             "validator": 330})
+                                                             "validator": 330, "summary": 0})
         self.assertEqual(tu["total"], 7150)
         self.assertEqual(tu["detail"]["planner"], {"prompt": 1000, "completion": 100, "cached": 800})
-        self.assertEqual(self.st.tokens_line(tu), "total 7k (planner 1k, worker 6k, advisor 220, validator 330)")
+        self.assertEqual(self.st.tokens_line(tu),
+                         "total 7k (planner 1k, worker 6k, advisor 220, validator 330, summary 0)")
         # no worker task and no validator verdict: those roles used nothing, and the total holds
         none = self.st.token_use({"tokens": res["tokens"], "score": {"validation": None}}, [])
         self.assertEqual((none["worker"], none["advisor"], none["validator"], none["total"]), (0, 0, 0, 1100))
