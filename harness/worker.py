@@ -30,6 +30,7 @@ from mcp.client.streamable_http import streamablehttp_client
 from mcp.server.fastmcp import FastMCP
 import findings_db as db
 import digest
+import ledger
 import tracing
 
 LITELLM = os.environ.get("LITELLM_URL", "http://litellm:4000/v1")
@@ -150,7 +151,10 @@ TOOLS = [
         "Read a text file under /src or the engagement folder. Lines are numbered.",
         "parameters": {"type": "object", "properties": {
             "path": {"type": "string"}, "start": {"type": "integer", "default": 1},
-            "lines": {"type": "integer", "default": 200}}, "required": ["path"]}}},
+            "lines": {"type": "integer", "default": 200},
+            "fresh": {"type": "boolean", "default": False, "description":
+                "read it again even though the ledger says an unchanged read exists (#115)"}},
+            "required": ["path"]}}},
     {"type": "function", "function": {"name": "record_candidate", "description":
         "Store a candidate finding with evidence. The lead consultant verifies it.",
         "parameters": {"type": "object", "properties": {
@@ -182,6 +186,26 @@ TOOLS = [
         "parameters": {"type": "object", "properties": {
             "id": {"type": "string", "description": "the record id, exactly as the packet names it"}},
             "required": ["id"]}}},
+    {"type": "function", "function": {"name": "note", "description":
+        "Write down one fact this task established (a session that works, a parameter that reflects input, an "
+        "id that belongs to another tenant), with the evidence path or call it rests on. The notes survive "
+        "compaction in the pinned 'established so far' block, go back to the planner in the finish, and reach "
+        "later tasks as agent notes - your words, not verified facts.",
+        "parameters": {"type": "object", "properties": {
+            "fact": {"type": "string", "description": "one short statement, as specific as you can make it"},
+            "evidence": {"type": "string", "description":
+                "the evidence file path or the call that showed it; empty means the note is kept as unsupported"}},
+            "required": ["fact"]}}},
+    {"type": "function", "function": {"name": "recall", "description":
+        "One search across what this engagement knows: observations, findings, plan items, map entries, earlier "
+        "task results and the call ledger. One line per hit with its state and age; read_record opens any hit. "
+        "Same engagement only.",
+        "parameters": {"type": "object", "properties": {
+            "query": {"type": "string", "description": "an endpoint, a parameter, an identity, a record id, or words"},
+            "kind": {"type": "string", "enum": ["observation", "finding", "plan", "map", "task", "ledger", ""],
+                     "description": "only this kind of record"},
+            "state": {"type": "string", "description": "only records in this state (new, confirmed, candidate, ...)"}},
+            "required": ["query"]}}},
 ]
 
 from redact import REDACT, redact  # noqa: E402,F401  (secrets stay in evidence files only)
@@ -250,7 +274,13 @@ def analyze_source(task, tool, path, rulesets=None):
                                           "rulesets": rulesets or [], "task": task["id"]}, 1900))
 
 
-def vuln_intel(task, ids):
+def vuln_intel(task, ids, fresh=False):
+    if not fresh:   # #115: a lookup the engagement already made, answered from the ledger
+        e = ledger_reply(task, "vuln_intel", {"ids": ids})
+        if e and e.get("digest"):
+            task.setdefault("ledger", {})["reused"] = task.get("ledger", {}).get("reused", 0) + 1
+            return ("from the ledger, no new call - this engagement already looked these up ("
+                    + ledger.entry_line(e) + "). Run it again with fresh=true if the answer may have changed.")
     async def go():
         async with streamablehttp_client(INTEL_MCP, timeout=30, sse_read_timeout=600) as (r, w, _):
             async with ClientSession(r, w) as s:
@@ -276,7 +306,7 @@ def fetch_url(task, url, start=0):
                                  f"start={m.group(2)}]", out)
 
 
-def read_file(task, path, start=1, lines=200):
+def read_file(task, path, start=1, lines=200, fresh=False):
     folder = os.path.realpath(db.engagement_dir(task["engagement"]))
     path = str(path or "")
     if path.startswith("/work/"):   # the engagement folder as the tools name it
@@ -291,8 +321,20 @@ def read_file(task, path, start=1, lines=200):
     if not os.path.isfile(real):
         return f"no such file: {path} (relative paths are read from /work/{task['engagement']}/)"
     start, lines = max(1, int(start or 1)), min(int(lines or 200), 500)
+    import hashlib
+    sha = hashlib.sha256(open(real, "rb").read()).hexdigest()
+    if not fresh:   # #115: a read whose file is unchanged is answered from the ledger, no new call
+        e = ledger_reply(task, "read_file", {"path": path, "start": start, "lines": lines})
+        if e and e.get("sha") == sha:
+            task.setdefault("ledger", {})["reused"] = task.get("ledger", {}).get("reused", 0) + 1
+            return ("from the ledger, no new call - the file is unchanged since "
+                    + ledger.entry_line(e)
+                    + ". Read it again with fresh=true if you need the text itself.")
     with open(real, errors="replace") as f:
         out = [f"{i}: {l.rstrip()}" for i, l in enumerate(f, 1) if start <= i < start + lines]
+    rec = _step_now(task)          # the ledger's next reader compares hashes
+    if rec is not None:
+        rec.update(sha=sha)
     return "\n".join(out) or "(no lines in that range)"
 
 
@@ -370,7 +412,11 @@ def read_record(task, id):
                               "summary (the worker words, not a verified fact): "
                               + ((t.get("result") or {}).get("summary") or t.get("last_text") or "-"),
                               f"tier: {t.get('tier')}; steps: {t.get('step')}",
-                              "run evidence: " + (", ".join(t.get("run_evidence") or []) or "none")])
+                              "run evidence: " + (", ".join(t.get("run_evidence") or []) or "none")]
+                      + (["agent notes (the worker's own, not verified facts):"]
+                         + [f"- {n['fact']}" + (f" [rests on {n['evidence']}]" if n.get("evidence")
+                                                 else " [unsupported]") for n in t.get("notes") or []]
+                         if t.get("notes") else []))
         else:
             return ("unrecognised id " + rid + ": a record id looks like O-012, F-001, P-003, E-1a2b3c or a "
                     "task id (20261123-122609-3599); the packet names the ids that matter for this task")
@@ -393,8 +439,12 @@ def record_candidate(task, title, severity, asset, description, evidence, cwe=""
     return f"recorded {f['id']} (candidate)"
 
 
-IMPL = {"kali_run": kali_run, "http_request": http_request, "check_identity": check_identity, "analyze_source": analyze_source, "vuln_intel": vuln_intel, "web_search": web_search, "fetch_url": fetch_url, "read_file": read_file,
-        "record_candidate": record_candidate, "read_record": read_record}
+def recall(task, query, kind="", state=""):
+    """#116: one search across what this engagement knows - the shared implementation in workspace.recall, the
+    same one the planner's tool uses."""
+    import workspace
+    return workspace.recall(task["engagement"], query, kind or "", state or "")
+
 
 
 # ---------------------------------------------------------------- model loop
@@ -416,6 +466,13 @@ ADVISOR = os.environ.get("WORKER_ADVISOR", "1") != "0"
 PACKET = os.environ.get("WORKER_PACKET", "1") != "0"      # the research packet (#83/#84): a task bound to a
                                                           # plan item starts from what the records already say
 PACKET_CHARS = int(os.environ.get("WORKER_PACKET_CHARS", "4000") or 4000)   # its allowance; packet_check.py measured it
+LEDGER = os.environ.get("RV_LEDGER", "1") != "0"           # the call ledger (#115), one setting for both
+                                                          # sides: earlier equivalent calls are pointed out;
+                                                          # unchanged reads answered from the ledger
+ESTABLISHED_CHARS = int(os.environ.get("WORKER_ESTABLISHED_CHARS", "2000") or 2000)   # #120's pinned block
+LEDGER = os.environ.get("WORKER_LEDGER", "1") != "0"      # the call ledger (#115): earlier equivalent calls are
+                                                          # pointed out; unchanged reads answered from it
+ESTABLISHED_CHARS = int(os.environ.get("WORKER_ESTABLISHED_CHARS", "2000") or 2000)   # #120's pinned block
 ADVISOR_MODEL = os.environ.get("WORKER_ADVISOR_MODEL", "planner")
 ADVISOR_MAX = 2
 SAFE_METHODS = ("GET", "HEAD", "OPTIONS")
@@ -551,11 +608,14 @@ def _is_packet(m):
                                         c.startswith("[harness] Since this task started"))
 
 
-def compact(messages, lines=None):
+def compact(messages, lines=None, task=None):
     """Keep the conversation under CTX_CHARS by shrinking the oldest tool results to one line each: the tool, what it
     ran, the exit status, the digest's summary and the evidence path (digest.one_line; the full output is on disk).
     The latest KEEP_RESULTS results stay whole; the system prompt and the goal are never shrunk; nothing is shrunk
-    twice."""
+    twice. The pinned 'established so far' block (#120) is not shrunk: with a task in hand it is rebuilt
+    from the task record, so what a long task learned early survives every compaction."""
+    if task is not None:
+        _refresh_established(task, messages)
     total = sum(len(json.dumps(m)) for m in messages)
     packets = [m for m in messages if _is_packet(m)]     # #84: an old packet is history, the latest isn't
     for m in packets[:-1]:
@@ -836,6 +896,106 @@ def _packet_refresh(task, messages):
     task["packet"] = {**new, "at": _now()}
 
 
+def _ledger_state(task):
+    """The engagement's current build and policy revision, for the ledger's staleness rule. The worker's own
+    calls carry the policy version of their task record; the build reaches the entries when phase B records
+    per-call builds (#91), so build staleness follows the workspace keys as they exist."""
+    try:
+        import workspace
+        return ((workspace.get_value(task["engagement"], "current_build") or {}).get("value"),
+                (workspace.get_value(task["engagement"], "current_policy_revision") or {}).get("value"))
+    except Exception:   # noqa: BLE001
+        return None, None
+
+
+def ledger_notice(task, name, args):
+    """#115: an earlier equivalent call in this engagement, appended to the result of one that always ran - a
+    notice, never a skip: the target can answer differently. Nothing when no earlier entry exists."""
+    if not LEDGER or name not in ("kali_run", "http_request"):
+        return ""
+    try:
+        build, pol = _ledger_state(task)
+        e = ledger.find(task["engagement"], name, args, exclude_task=task["id"], build=build, policy_revision=pol)
+    except Exception:   # noqa: BLE001  a ledger problem never blocks a call
+        return ""
+    if not e:
+        return ""
+    task.setdefault("ledger", {})["notices"] = task.get("ledger", {}).get("notices", 0) + 1
+    return ("\n[ledger] an earlier call in this engagement already did this (" + ledger.entry_line(e)
+            + "). This one ran anyway - its result can change - but don't repeat this work unless it may have.")
+
+
+def ledger_reply(task, tool, args):
+    """#115: an unchanged read answered from the ledger, no new call - the earlier entry's digest and evidence.
+    None when nothing usable is there (a stale entry is not reusable)."""
+    if not LEDGER:
+        return None
+    try:
+        build, pol = _ledger_state(task)
+        e = ledger.find(task["engagement"], tool, args, exclude_task=task["id"], build=build, policy_revision=pol)
+    except Exception:   # noqa: BLE001
+        return None
+    if not e or e.get("stale"):
+        return None
+    return e
+
+
+def _step_now(task):
+    """The step record currently running (the last one started), for a tool to record what the ledger needs."""
+    return next((s for s in reversed(task.get("steps") or []) if s.get("state") == "started"), None)
+
+
+def note(task, fact, evidence=""):
+    """#120: one short statement this task established, with the evidence path or call it rests on. Saved in the
+    task record, shown in the pinned 'established so far' block that compaction never shrinks, returned to the
+    planner in the typed finish, and visible to later tasks through the packet and recall as agent notes - data,
+    not verified facts. A note without evidence is kept and marked unsupported."""
+    f = re.sub(r"\s+", " ", str(fact or "")).strip()[:300]
+    if not f:
+        return "REFUSED: a note needs its fact"
+    ev = str(evidence or "").strip()[:200]
+    task.setdefault("notes", []).append({"fact": f, "evidence": ev or None, "step": task.get("step"),
+                                         "at": _now()})
+    return ("noted (the agent's words, not a verified fact): " + f) + ("" if ev else " - unsupported: no evidence named")
+
+
+def established_block(task):
+    """#120: what this task established so far, from the task record: its notes (marked as the agent's own),
+    its recorded candidates, the identities it checked. compact() rebuilds this block from the record, so what a
+    long task learned early survives; the block has its own allowance and the oldest lines fall back to the
+    task id read_record opens."""
+    lines = []
+    for n in task.get("notes") or []:
+        lines.append("note (agent's words, not a verified fact): " + n["fact"]
+                     + (f" [rests on {n['evidence']}]" if n.get("evidence") else " [unsupported]"))
+    lines += [f"candidate recorded: {f}" for f in task.get("candidates") or []]
+    checked = sorted({str((s.get("args") or {}).get("name") or "") for s in task.get("steps") or []
+                      if s.get("tool") == "check_identity" and s.get("state") == "done"} - {""})
+    if checked:
+        lines.append("identities checked: " + ", ".join(checked))
+    if not lines:
+        return ""
+    text = "# Established so far (kept whole through compaction; the writer's words are not verified facts):\n" \
+        + "\n".join(lines)
+    if len(text) > ESTABLISHED_CHARS:     # the oldest lines fall back to the ids read_record opens
+        keep = text[-int(ESTABLISHED_CHARS * 0.9):]
+        return (f"# Established so far (oldest lines cut: read_record(\"{task['id']}\") opens the task record "
+                "with every note)\n" + keep[keep.index("\n") + 1:])
+    return text
+
+
+def _refresh_established(task, messages):
+    """Rebuild the pinned block in place: after the packet, updated from the record, never shrunk by compact."""
+    text = established_block(task)
+    if not text:
+        return
+    for m in messages:
+        if m.get("role") == "user" and str(m.get("content") or "").startswith("# Established so far"):
+            m["content"] = text
+            return
+    messages.append({"role": "user", "content": text})
+
+
 def contract_text(task):
     """The task contract (#39) as a section of the worker's system prompt; empty without one."""
     c = task.get("contract") or {}
@@ -970,7 +1130,10 @@ def _do_call_inner(task, c, messages):
             save(task, messages)
             return "ok"
         task.pop("refused_finish", None)
-        task["result"] = args
+        task["result"] = {**args,
+                          "notes": [{"fact": n["fact"], "evidence": n.get("evidence")}
+                                    for n in task.get("notes") or []],   # #120: the agent's words, marked as such
+                          **({"ledger": task["ledger"]} if task.get("ledger") else {})}   # #115: notices and reuse
         return "finish"
     ap = task.get("approval") if (task.get("approval") or {}).get("call") == c.get("id") else None
     extra = {}
@@ -1037,14 +1200,22 @@ def _do_call_inner(task, c, messages):
     path = _step_file(task, task["step"], name, args, out)
     shown = digest.shown(name, args, out, path)
     task.setdefault("lines", {})[c.get("id", name)] = digest.one_line(name, args, out)   # what it shrinks to
+    notice = ledger_notice(task, name, args)   # #115: an earlier equivalent call, after the result
+    if name == "note":                         # #120: the pinned block follows the record
+        _refresh_established(task, messages)
     stall = watch(task, name, args, out)
     try:
         if stall:
             shown += on_stall(task, *stall)
     finally:   # a stop still records the result the model got
-        messages.append({"role": "tool", "tool_call_id": c.get("id", name), "content": shown + footer(task)})
+        messages.append({"role": "tool", "tool_call_id": c.get("id", name),
+                         "content": shown + footer(task) + (notice or "")})
         save(task, messages)
     return "ok"
+
+
+IMPL = {"kali_run": kali_run, "http_request": http_request, "check_identity": check_identity, "analyze_source": analyze_source, "vuln_intel": vuln_intel, "web_search": web_search, "fetch_url": fetch_url, "read_file": read_file,
+        "record_candidate": record_candidate, "read_record": read_record, "note": note, "recall": recall}
 
 
 def _loop(task, log):
@@ -1078,7 +1249,7 @@ def _loop(task, log):
         if task["step"] > task["max_steps"] + 1:
             task["result"] = unfinished_result(task)
             return "done"
-        compact(messages, task.get("lines"))
+        compact(messages, task.get("lines"), task=task)
         if task["step"] > task["max_steps"]:  # out of tool budget: force a final answer
             messages.append({"role": "user", "content": "Tool budget used up. Call finish now."})
         msg = chat(messages, model, task)
@@ -1346,6 +1517,7 @@ def resume(task_id, actor="agent:planner"):
             text = "NOT RUN: the worker restarted before this call. Call it again if you still need it."
         messages.append({"role": "tool", "tool_call_id": c.get("id", "call"), "content": text})
     _packet_refresh(task, messages)   # #84: what changed while the task was down, or nothing
+    _refresh_established(task, messages)   # #120: the pinned block is rebuilt from the task record
     task["pending_calls"], task["approval"] = [], None
     task.update(status="queued", error=None, finished=None, resumed=(task.get("resumed") or []) +
                 [{"at": _now(), "by": actor}])
@@ -1421,6 +1593,13 @@ def report(task) -> str:
            "transcripts_dir": os.path.dirname(task["evidence"][0]) if task["evidence"] else None}
     if task.get("contract"):
         out["contract"] = task["contract"]
+    if task.get("packet"):   # #117: the record ids the worker started from - pointers that survive a summary
+        out["packet_ids"] = {k: v for k, v in task["packet"].get("ids", {}).items() if v}
+    if task.get("notes"):     # #120: the worker's notes, marked as its own words in the finish
+        out["notes"] = r.get("notes") or [{"fact": n["fact"], "evidence": n.get("evidence")}
+                                          for n in task["notes"]]
+    if task.get("ledger"):    # #115: how often the ledger pointed at earlier work, or answered from it
+        out["ledger"] = task["ledger"]
     if task.get("served_by"):
         out["model"] = task["served_by"]  # which model did the work (the fallback model shows up here)
     if task.get("malformed"):

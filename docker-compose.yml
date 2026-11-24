@@ -141,6 +141,7 @@ services:
       - semgrep-rules:/opt/semgrep-rules                        # downloaded at first start (licence: not redistributable)
     environment:
       SEMGREP_RULES_COMMIT: ${SEMGREP_RULES_COMMIT:-16b9e6d45f10649f6a531ec4838ed9924372c3bc}   # 2026-10-21
+      RV_LEDGER: ${RV_LEDGER:-1}                # a planner call's result carries the ledger entry of an earlier equivalent
     # NET_ADMIN: per-engagement firewall (nftables). SYS_ADMIN: per-command mount namespace that shows only the
     # engagement's own folder. Agent commands run as an unprivileged per-engagement user with only CAP_NET_RAW.
     cap_add: [NET_RAW, NET_ADMIN, SYS_ADMIN]
@@ -172,6 +173,7 @@ services:
       WORKER_STALL_CALLS: ${WORKER_STALL_CALLS:-8} # calls with nothing new before a task counts as stalled
       WORKER_PACKET: ${WORKER_PACKET:-1}         # a task bound to a plan item starts from the records (#83/#84); 0: off
       WORKER_PACKET_CHARS: ${WORKER_PACKET_CHARS:-4000}  # the packet's character allowance (packet_check sets it)
+      RV_LEDGER: ${RV_LEDGER:-1}                # the call ledger (#115): earlier equivalent calls are pointed out; 0: off
     volumes:
       - ${ENGAGEMENTS_DIR:-~/riskvoid/engagements}:/work
       - ${PROJECTS_DIR:-~/riskvoid/projects}:/src:ro
