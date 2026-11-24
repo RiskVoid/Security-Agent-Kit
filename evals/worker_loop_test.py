@@ -1310,7 +1310,7 @@ class Capacity(Loop):
         windows = []          # (start, end) of each intrusive call through the same identity
 
         def slow_write(task, command, timeout_s=600, approval_id=""):
-            w = [time.time(), None]              # a local entry: windows[-1] would race with the other thread
+            w = [time.time(), None, task.get("tier")]   # local: windows[-1] would race; tier tells them apart
             windows.append(w)
             time.sleep(0.15)
             w[1] = time.time()
@@ -1344,10 +1344,14 @@ class Capacity(Loop):
             t.join(30)
         self.assertTrue(all(not t.is_alive() for t in threads))
         self.assertEqual((a["status"], b["status"]), ("done", "done"))
-        ws = sorted((w[0], w[1]) for w in windows if w[1])
-        self.assertEqual(len(ws), 3)
-        intrusive = ws[:2]
-        self.assertLess(intrusive[0][1], intrusive[1][0])   # the two writers never overlapped
+        self.assertEqual(len([w for w in windows if w[1]]), 3)
+        intrusive = sorted((w[0], w[1]) for w in windows if w[1] and w[2] == "intrusive")
+        self.assertEqual(len(intrusive), 2)
+        self.assertLess(intrusive[0][1], intrusive[1][0] + 0.01)   # serialized: 10ms of lock-release
+        self.assertGreater(intrusive[1][0] + 0.14, intrusive[0][1])  # bookkeeping aside, no real overlap
+        reader = [w for w in windows if w[1] and w[2] != "intrusive"][0]
+        self.assertLess(intrusive[0][1], reader[1] + 0.01)        # the reader waited for the target's task slot
+        self.assertLess(reader[0], intrusive[1][1])        # and never for the writers' identity lock
 
 
 class Experiment(Loop):
