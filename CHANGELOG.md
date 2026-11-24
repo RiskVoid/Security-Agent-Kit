@@ -232,6 +232,16 @@ changes to the harness are measured.
   retried after a bounded wait (`WORKER_TOOL_WAIT_S`) instead of an error the model may fumble. The
   engagement's rate and budgets hold across all tasks; every wait is recorded by kind (model, tool slot,
   target, fixture) and not charged to the task's timeout.
+- Staleness per claim and readiness (#91, #92, the last phase-B implementation slice): a build change marks
+  the conclusions recorded against another build stale for re-testing and a policy change only the
+  authorization - the experiments - with conclusions already reached standing, both triggered by the records
+  themselves (the worker re-assesses on seeing a new policy revision; the planner's new `report_build` tool
+  names a build when it can establish one); stale conclusions stay marked and the packet shows them as stale.
+  A `requires` link names what a question waits for - an identity, the build, an observation, a conclusion in a
+  given state, a capability - and readiness is computed from it, never stored, so a prerequisite appearing
+  makes the question ready by itself; `get_coverage` and the board show ready and waiting with their reasons,
+  and `delegate_task` can require an outcome from a dependency - one that ended without it leaves the
+  dependent task blocked with the reason, never started.
 - Facts at every tool call and conclusions from them (#118, #119, phase B of the research loop): after a worker
   call the kit's parsers store what they extract as new observations with their origin (task or conversation,
   call, identity, policy revision, the citable evidence path) - nmap's open ports, sqlmap's injection

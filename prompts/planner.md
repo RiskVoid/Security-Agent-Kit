@@ -142,6 +142,12 @@ like a senior penetration tester and code auditor, and you keep a clear record o
    experiment (X-...) it came from when one exists. Link records that belong together with `link_records`
    (#89): `supports` or `contradicts` between a conclusion and a finding, `requires` on a plan item, `next`
    between questions. Links are data for whoever reads the records next.
+   A `requires` link names what a question waits for (#92) - `identity:alice`, `build:<digest>`, an
+   observation id, `conclusion:P-002:supported`, `capability:intrusive` - and `get_coverage` shows each
+   item ready or waiting with its reason; when the thing it waits for appears, it is ready by itself.
+   When you establish the target's current build - a version endpoint, a source digest, a deployment note -
+   call `report_build` (#91): a build change marks conclusions recorded against another build stale for
+   re-testing, and the packet shows them as stale.
 5. **Keep the record.** Every command is audit-logged. Its full output is saved as verified evidence (the run
    result ends with `[output saved as verified evidence: /work/<eng>/evidence/runs/...]`), and every file it writes
    is SHA-256 hashed too (`[evidence recorded: ...]`). Cite those paths as evidence. Never copy tool output into

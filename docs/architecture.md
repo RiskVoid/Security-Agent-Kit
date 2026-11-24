@@ -276,6 +276,21 @@ planner import and without a model. A repeated call adds no row: the fingerprint
 the same way, each saved output parsed once. Target-controlled text is stored bounded inside the observation's
 own fields and reaches a prompt only as a record line, never as prose.
 
+**Staleness follows the change itself (#91):** the worker sees the engagement's policy revision on every
+task and re-assesses when it moved; the planner reports a build with `report_build` when it can establish
+one. A build change marks the conclusions recorded against another build stale - they need re-testing - and
+plan items tested on it; a policy change marks only the *authorization* stale (the experiments), and
+conclusions already reached stand. Everything stays in the record, marked; the packet shows stale conclusions
+as stale.
+
+**A question is ready when its evidence and access are (#92):** a `requires` link on a plan item names
+something checkable - `identity:alice` (the harness's own record of a checked identity; kali-mcp's identity
+list says whether it exists), `build:<digest>`, an observation id, `conclusion:P-002:supported`, or
+`capability:intrusive` - and readiness is computed from them, never stored: when the thing it waits for
+appears, the question is ready by itself. `get_coverage` and the board show ready and waiting items with the
+reason, and `delegate_task` can require an outcome from a dependency - a dependency that ended without it
+leaves the dependent task blocked with that reason, never started.
+
 **Conclusions are drawn from facts (#119):** by rule, with no model - an oracle record that passed with a
 clean control supports its claim under the record's conditions; an `identity_difference` whose positive request
 and negative control behaved the same refutes the difference; a task that ended blocked leaves an unresolved

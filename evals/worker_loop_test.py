@@ -1592,6 +1592,46 @@ class SummaryConclusions(Loop):
         return workspace.conclusions_of("eng", plan_item=pid)
 
 
+class Dependencies(Loop):
+    """#92: a dependency's outcome can be required - a task whose dependency ended done without the required
+    conclusion is left blocked with that reason, never started; one that reached it is released."""
+
+    def make(self, tid, deps, requires=None):
+        return worker._defaults({"id": tid, "goal": f"Goal {tid}.", "engagement": "eng", "tier": "passive",
+                                 "info": worker.engagement_info("eng"), "max_steps": 4, "timeout_min": 5,
+                                 "status": "waiting", "started": time.time(), "depends_on": deps,
+                                 "contract": {"requires": requires or []}})
+
+    def test_a_required_outcome_decides_the_dependent_task(self):
+        import workspace
+        a = worker._defaults({"id": "dep-a", "goal": "First.", "engagement": "eng", "tier": "passive",
+                              "info": worker.engagement_info("eng"), "status": "done", "started": time.time(),
+                              "result": {"status": "completed", "summary": "done"}})
+        worker.TASKS["dep-a"] = a
+        b = self.make("dep-b", ["dep-a"], requires=[{"task": "dep-a", "conclusion": "supported"}])
+        worker.TASKS["dep-b"] = b
+        worker.wait_dependencies(b)
+        self.assertEqual(b["status"], "blocked")            # the dependency finished, its conclusion didn't
+        self.assertIn("dep-a did not reach a supported conclusion", b["error"])
+        # and a dependency that reached it releases the dependent task
+        workspace.experiment_record("eng", "agent:worker", plan_item=workspace.plan_add(
+            "eng", "agent:planner", [{"title": "x", "area": "x"}])[0], task="dep-a", outcome="ran")
+        a["experiment"] = "X-001"
+        workspace.conclusion_record("eng", "agent:worker", "the question is answered", "supported",
+                                    experiment="X-001")
+        b2 = self.make("dep-b2", ["dep-a"], requires=[{"task": "dep-a", "conclusion": "supported"}])
+        worker.TASKS["dep-b2"] = b2
+        ran = []
+        real_run = worker.run_task
+        worker.run_task = lambda t: ran.append(t["id"]) or t.update(status="done")
+        try:
+            worker.wait_dependencies(b2)
+        finally:
+            worker.run_task = real_run
+        self.assertEqual(b2["status"], "done")              # released: the required conclusion stands
+        self.assertEqual(ran, ["dep-b2"])
+
+
 
 if __name__ == "__main__":
     warnings.simplefilter("ignore", ResourceWarning)

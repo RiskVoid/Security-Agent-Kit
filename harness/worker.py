@@ -1539,6 +1539,14 @@ def run_task(task):
         "rv.max_steps": task["max_steps"]}, trace_key=task["id"],
         content=tracing.content_allowed((task.get("info") or {}).get("rules")))
     sp.content_attr("rv.task.goal", task.get("goal"))
+    try:   # #91: the worker sees the engagement's policy revision on every task - a change from the recorded
+        import workspace as _ws   # one means the authorization to re-run experiments went stale, by itself
+        cur = (_ws.get_value(task["engagement"], "current_policy_revision") or {}).get("value")
+        now = str((task.get("info") or {}).get("policy_version") or "")
+        if cur and now and cur != now:
+            _ws.reassess(task["engagement"], "agent:worker", policy_revision=now)
+    except Exception:   # noqa: BLE001  the reassess never blocks the task
+        pass
     locks = []   # #107: the target's own task limit, then (for a writer) its identity lock
     for lk, kind in ((_eng_lock(task["engagement"]), "target"), (_write_lock(task), "fixture")):
         if lk is None:
@@ -1654,6 +1662,27 @@ def wait_dependencies(task):
             save(task)
             return
         if all(t["status"] == "done" for t in deps):
+            # #92: a dependency's outcome can be required (a supported conclusion, a ran experiment); a
+            # dependency that ended blocked leaves this task waiting with that reason, never started
+            req = (task.get("contract") or {}).get("requires") or []
+            unmet = []
+            for r in req if isinstance(req, list) else []:
+                dep = TASKS.get(r.get("task"))
+                if not dep or dep.get("status") != "done":
+                    continue
+                if r.get("conclusion") and not any(
+                        c.get("state") == r["conclusion"] for c in
+                        __import__("workspace").conclusions_of(task["engagement"],
+                                                               experiment=dep.get("experiment"))):
+                    unmet.append(f"{r['task']} did not reach a {r['conclusion']} conclusion")
+                if r.get("outcome") and (dep.get("result") or {}).get("status") != r["outcome"]:
+                    unmet.append(f"{r['task']} ended {((dep.get('result') or {}).get('status') or 'done')}"
+                                 f", not {r['outcome']}")
+            if unmet:
+                task.update(status="blocked", finished=time.time(),
+                            error="a dependency did not reach its required outcome: " + "; ".join(unmet))
+                save(task)
+                return
             task["status"] = "queued"
             save(task)
             run_task(task)
