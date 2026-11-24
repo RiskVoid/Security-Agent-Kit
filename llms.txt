@@ -15,12 +15,16 @@ Key facts:
   REST and GraphQL APIs (OWASP API Top 10), AI applications and MCP servers (OWASP LLM Top 10, MITRE ATLAS),
   external networks (PTES), authenticated multi-tenant testing, and Laravel as a complete reference workflow.
 - Not supported as complete workflows: Active Directory, cloud accounts, Kubernetes, mobile, Windows hosts.
+- Engagement memory: worker tasks start from what the engagement's records already say about their plan item;
+  experiments, conclusions (with their exact conditions) and verified methods are recorded; open questions are
+  ranked in an advisory queue, and repeated or already-answered work is refused with the record that holds it.
 
 ## Docs
 
 - [Overview](https://github.com/RiskVoid/Security-Agent-Kit/blob/main/docs/overview.md): what the kit is and how the parts fit
 - [Getting started](https://github.com/RiskVoid/Security-Agent-Kit/blob/main/docs/getting-started.md): requirements and setup
 - [Your first engagement](https://github.com/RiskVoid/Security-Agent-Kit/blob/main/docs/first-engagement.md): a guided run against the practice lab
+- [Running the agent](https://github.com/RiskVoid/Security-Agent-Kit/blob/main/docs/running-the-agent.md): writing the task, following and steering a run, how the agent remembers and picks up again
 - [Engagements and scope](https://github.com/RiskVoid/Security-Agent-Kit/blob/main/docs/engagements.md): scope, rules, tiers, approvals
 - [Architecture](https://github.com/RiskVoid/Security-Agent-Kit/blob/main/docs/architecture.md): containers, trust boundaries and data flow
 - [Models](https://github.com/RiskVoid/Security-Agent-Kit/blob/main/docs/models.md): planner and worker options, costs, where data goes

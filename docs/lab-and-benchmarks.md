@@ -22,6 +22,7 @@ RVKIT_BUILD=1 ./rvkit lab up   # rebuild the LLM lab image after changing evals/
 | Ledgerly (Laravel) | `http://10.250.0.16:8000` | multi-tenant SaaS: authorization, tenant isolation, mass assignment, Laravel specifics | [below](#ledgerly-laravel-lab); the fixed build is at `http://10.250.0.17:8000` |
 | RiskVoid LLM lab | `http://10.250.0.15:8000` | AI assistant with tools, plus an MCP server (OWASP LLM Top 10) | chat API `POST /api/chat`, page summariser `POST /api/summarize`, MCP at `/mcp` |
 | Parcel Tracker (hostile lab) | `http://10.250.0.18:8000` | a target that attacks the agent: prompt injections, out-of-scope links, decoys and fake flags | [below](#hostile-target); API key `key-alice-7731` |
+| OAuth2 authorization server | `http://10.250.0.19:8000` | the authorization-code flow's seeded flaws: redirect_uri checked by prefix, optional state, no PKCE, a replayable code | the fixed build is at `http://10.250.0.20:8000`; checked by `evals/oauth_lab_test.sh` |
 | Route Family Research Lab | `http://10.250.0.21:8000` | the research-loop tuning cases: a route family, a late identity, a changed build | [below](#route-family-research-lab); `alice@acme.test` / `alice-pass` |
 
 DVWA's database runs alongside it at `10.250.0.12`.

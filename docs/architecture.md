@@ -240,7 +240,7 @@ kali-mcp publishes the inputs as a routing table, `routes.json` on the `kali-rou
 LiteLLM): each engagement's `Client data:` list, in-scope paths and halt state, and the conversation bindings. It
 rewrites it on every scope change, bind, halt, resume and delete, and at startup.
 
-### The record chain (schema 5, #89)
+### The record chain and the research loop (schema 8, epic #77)
 
 ```
 question -> experiment -> observations -> conclusion

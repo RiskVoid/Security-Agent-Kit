@@ -12,31 +12,37 @@ and human decisions rather than working around them. What the kit is tested and 
 
 Independent validation: the November 2026 GTIG report on [agentic threat activity](https://cloud.google.com/blog/topics/threat-intelligence/agentic-threat-activity-crosses-a-significant-threshold) names the leading tradecraft — multi-agent frameworks, differential patch analysis, machine-readable attack recipes — and separately warns that LLM-generated exploits "claimed to work but don't" are flooding defenders, which is exactly the verification gap the kit's deterministic oracles answer. Items 8–10 below turn the transferable techniques into governed capability; the evasion and full-autonomy parts are deliberately not adopted.
 
-## Now (0.1.x): parity and proof
+## Now (0.2.x): measure the research loop, then parity
 
-Three fronts, one stance: the kit gains the offensive reach of the most capable autonomous frameworks —
-authenticated recon, governed exploitation, Active Directory and cloud — as packs with per-action approvals and
+0.2.0 shipped the research loop: the planner and the worker work from the engagement's records instead of their
+context. Two fronts now, one stance: every new capability is measured before it is relied on, and the kit gains
+the reach of the most capable autonomous frameworks as governed packs with per-action approvals and
 deterministic verification, so the reach never costs the moat.
 
-1. **Offensive parity** ([epic #144](https://github.com/RiskVoid/Security-Agent-Kit/issues/144)): the capability
-   gaps against the leading autonomous pentest agents, each shipped as a governed pack — identity-driven crawl
-   (#135), JS analysis and feedback loops into the map (#136), the sweep on form-login targets (#137), an
-   exploit pack with lockout-aware brute force (#139), the Active Directory pack (#140), the cloud pack (#141),
-   approval bundles (#142) and the unattended-mode contract (#143), with the OAuth lab target (#138) owed by
-   the sweep era.
-2. **The research loop** ([epic #77](https://github.com/RiskVoid/Security-Agent-Kit/issues/77)): research
-   packets, evidence links, a queue over open work and engagement-local method reuse — the planner and the worker
-   stop repeating what the engagement already knows. Its phase-0 fixtures are landed (#81); it begins when the
-   shared baseline (#82) runs.
-3. **Published detection numbers** (⏸ blocked on a model budget): the one batch measurement of the
-   harness-run checks (#75) and the fresh shared baseline it rides on (#82), then a nightly run, outside
-   benchmarks next to our own, a public results page with every run, and a matrix of planner and worker models.
-   A documented method so anyone can compare other tools.
+1. **The research loop, measured** ([epic #77](https://github.com/RiskVoid/Security-Agent-Kit/issues/77)):
+   research packets, facts at every tool call, experiments and conclusions, a queue over open work with work
+   keys, and engagement-local method reuse have landed (phases A to D, with capacity from phase E pulled
+   forward). Two runs on it are in the [baselines](docs/capability-baselines.md#the-research-loop-first-runs).
+   What's left: the fresh shared baseline (#82) and the measurement of each phase against it (#88, #94, #101,
+   #105, #109); then an escalation ladder with parking and reopening on record (#97), task profiles for bounded
+   reconnaissance and assumption review (#99, #108), replanning on events (#100), and playbook search (#103).
+   Whether the queue may dispatch on its own is decided by #101's numbers, not before.
+2. **Offensive parity** ([epic #144](https://github.com/RiskVoid/Security-Agent-Kit/issues/144)): the capability
+   gaps against the leading autonomous pentest agents, each shipped as a governed pack. Authenticated recon and
+   the sweep with an identity (#135, #136, #137) and the OAuth lab target (#138) have landed; still to come are
+   an exploit pack with lockout-aware brute force (#139), the Active Directory pack (#140), the cloud pack
+   (#141), approval bundles (#142) and the unattended-mode contract (#143).
+3. **Published detection numbers** (⏸ blocked on a model budget): repeated runs on a fixed model pair, then a
+   nightly run, outside benchmarks next to our own, a public results page with every run, and a matrix of
+   planner and worker models. A documented method so anyone can compare other tools. Until then the free-tier
+   model pair is the measured floor: the whole suite at $0, one run each.
 
-The harness-run checks era that this follows is done: deterministic sweeps over the recon map (injection on
-every parameter, JWT keys, mass assignment, ReDoS, CORS, headers), eight verification oracles with negative
-controls, an unforgeable out-of-band catcher, a brokered race action, and coverage gaps that count as open
-work — all lab-verified with no model, running in CI. [CHANGELOG](CHANGELOG.md) has the detail.
+Done since 0.1.0: the harness engineering epic (#52: worker context, the task contract, verification oracles,
+the validator, failure mining, the improvement loop), the harness-run checks (#76: deterministic sweeps over the
+recon map, eight verification oracles with negative controls, an unforgeable out-of-band catcher, a brokered
+race action, coverage gaps as open work), most of the web-workflow epic (#168: the sweep fused into the recon
+pass, every identity swept, gaps offered as pre-shaped tasks), and the research loop's phases A to D (#77). All
+lab-verified with no model and running in CI. [CHANGELOG](CHANGELOG.md) has the detail.
 
 ## Next
 
@@ -64,11 +70,10 @@ work — all lab-verified with no model, running in CI. [CHANGELOG](CHANGELOG.md
     machine-readable form of the playbooks the worker follows step by step, with per-step evidence and the normal
     approvals. Complements the Markdown playbooks; no new orchestrator.
 11. **Web workflow: the kit checks first** (epic [#168](https://github.com/RiskVoid/Security-Agent-Kit/issues/168)):
-    the fixed sweeps become the default phase of web testing — `probe_map` as the second half of the recon pass,
-    the authenticated surface swept when identities exist, and coverage gaps arriving as pre-shaped
-    `delegate_task` offers — because the free-model benchmark campaign measured the model skipping them in half
-    its web runs at 11–13M planner tokens each. With the capability gaps the same runs exposed: blind-SSRF
-    payloads approval-tiered instead of flatly refused, and `update_coverage`'s refusals teaching their shape.
+    the fixed sweeps are now the default phase of web testing (`probe_map` as the second half of the recon
+    pass, every identity swept, gaps offered as pre-shaped `delegate_task` calls, blind-SSRF payloads
+    approval-tiered, coverage refusals that teach their shape). What's left is the measured before-and-after
+    for each phase (#175).
 
 ## Later
 

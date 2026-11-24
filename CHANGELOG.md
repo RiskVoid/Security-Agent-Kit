@@ -6,9 +6,137 @@ settings or the findings database; `./rvkit update` migrates existing installs a
 
 ## [Unreleased]
 
-The harness engineering epic: how the worker keeps its context, what the planner and the worker hand each other,
-how a finding gets verified, how testing covers the target, how the kit holds up against hostile targets, and how
-changes to the harness are measured.
+## [0.2.0]
+
+The research loop and the harness engineering behind it. The planner and the worker now work from what the
+engagement already knows: a worker task starts from a research packet of the records for its coverage cell, every
+tool call leaves facts as observations, each task leaves an experiment and conclusions with their exact
+conditions, the open work is ranked in a queue with its reasons, a duplicate delegation is refused, and a method
+proven on one surface is proposed for its siblings. Around it: how the worker keeps its context, what the planner
+and the worker hand each other, how a finding gets verified, the kit's own fixed checks run on every recon map,
+how the kit holds up against hostile targets, and how changes to the harness are measured.
+
+### Upgrading
+- `./rvkit update` pulls the new images and migrates each engagement's `findings.db` from schema v4 to v8 when it
+  is next opened (experiments, conclusions, links, work claims, the queue log and methods). An engagement opened
+  by 0.2.0 can't be opened by 0.1.0 again.
+- New settings, all optional, with defaults that apply when they are unset: `WORKER_PACKET`,
+  `WORKER_PACKET_CHARS`, `RV_LEDGER`, `WORKER_CONCLUSION_SUMMARY`, `WORKER_PARALLEL_TOOLS`, `WORKER_ENG_PARALLEL`,
+  `WORKER_TOOL_WAIT_S`, `WORKER_MAX_TOKENS`, `VALIDATOR_MAX_TOKENS`, `WORKER_ADVISOR` and `OPENROUTER_ZDR` (see
+  `docs/configuration.md`).
+
+### Known issues
+- Five planner tools are documented but not offered in 0.2.0: `recall`, `get_briefing`, `record_conclusion`,
+  `link_records` and `report_build` are defined after the findings server's `mcp.run()`, which doesn't return,
+  so they never register. The worker's own `recall` and the research packet are not affected.
+- `RV_LEDGER=0` turns off the kali server's call ledger but not the worker's, which reads `WORKER_LEDGER`.
+  Set both to turn the ledger off.
+
+### The research loop and engagement memory (epic #77)
+- The research packet (#83, #84, #85, #86, phase A of the research loop #77): a worker task bound to a plan
+  item starts from what the engagement's records already say about its coverage cell - map entries,
+  observations and findings with their states, earlier tasks for the same cell with their typed result
+  (negative and inconclusive included), the plan item's hypothesis and blockers - selected by stable ids with
+  no model, in a character budget whose cuts are listed as ids. On resume the packet is rebuilt and only a
+  material change (ids or revisions differ) is appended as a message that names what changed; `compact` keeps
+  the latest packet whole and shrinks older ones to their id list; `inputs` still works beside it; the
+  `packet.get` op shows any task's packet on the console. `read_record` opens any record the packet names in
+  full, bounded, read-only, never across engagements. `evals/packet_check.py` judges the selection on a
+  reviewed labelled set from tuning-side runs (recall 1.00 at 3000-12000 chars, precision 0.13 at 3000), which
+  sets the default `WORKER_PACKET_CHARS=4000`; it runs in CI on committed lab-only fixtures, and
+  `WORKER_PACKET=0` turns the packet off for the baseline.
+- The memory surfaces around the packet (#115, #116, #117, #120, phase A of the research loop #77): the call
+  ledger built with no model from the audit log and the worker's task records - after a command or request runs
+  (it always runs) the reply carries the earlier equivalent call's entry, the planner's calls through kali-mcp
+  and the worker's through the harness ledger; an unchanged file read (hash compared) or a repeated vuln_intel
+  lookup is answered from the ledger, `fresh=true` forces a run, a stale entry is shown and never reused, and
+  the task result counts notices and reuse. `recall` is one search across what the engagement knows -
+  observations, findings, plan items, map entries, earlier task results with their agent notes, ledger entries -
+  one line per hit with its state, a worker tool and a planner tool on the same implementation. `get_briefing`
+  gives the planner the packet for a cell before delegating or testing it; `delegate_task`'s reply lists the
+  record ids the worker started from, so pointers survive a context summary. The worker's `note(fact, evidence)`
+  writes down what the task established - kept unsupported when no evidence is named, pinned in the
+  never-shrunk 'established so far' block that compaction rebuilds from the record, returned in the typed
+  finish, and visible to later tasks as agent notes. `RV_LEDGER=0` turns the ledger off.
+- The research board (#87): one row per open question - planned, blocked, or an outcome gone stale - with
+  the last result that changed something, the blocker, the budget used (tasks, worker steps, worker tokens,
+  target requests), and the next decision with its reason, computed from the records with no model. In
+  `get_handover` for the planner (the prompt says to pick up from there after a summary) and in the console's
+  Investigation tab for the person; recomputed whenever the records change. The harness images carry
+  ledger.py, which the live check caught them missing.
+- The record chain, phase B of the research loop (#89, #90, #93): schema v5 in findings.db - experiments
+  (X-...), conclusions (C-...) and links (supports, contradicts, requires, next), observations carry their
+  origin, and validations and evidence_pins move into the versioned migrations. Every task bound to a plan item
+  leaves an experiment when it ends - what was tried, under which conditions, with its evidence hashes -
+  whether it completed, was blocked or stalled, written by the harness with no model; the worker's finish can
+  state a conclusion per claim with its exact conditions, and the planner gets `record_conclusion` and
+  `link_records`. The packet's "what was tried" comes from the experiments, stale results are marked, and a
+  cell whose experiment concluded with a standing result says so at the top - a notice, never a refusal, and
+  the same notice rides `delegate_task`'s reply. The board shows each question's last experiment.
+- Facts at every tool call and conclusions from them (#118, #119, phase B of the research loop): after a worker
+  call the kit's parsers store what they extract as new observations with their origin (task or conversation,
+  call, identity, policy revision, the citable evidence path) - nmap's open ports, sqlmap's injection
+  verdicts, nuclei's matches and identity checks gain parsers, beside the existing JSON readers - with no
+  planner import and no model; a repeated call adds no row (the fingerprint is import_observations's own), and
+  the planner's calls are captured from the audit log the same way, each saved output parsed once.
+  Target-controlled text is stored bounded as a record's own fields. Conclusions are drawn by rule - an oracle
+  record that passed with a clean control supports its claim; an identity_difference whose positive request
+  and negative control behaved the same refutes it; a blocked task leaves an unresolved conclusion naming its
+  blocker; a reproduction is not a second row; a contradiction makes the standing conclusion unresolved with a
+  contradicts link - and, for the rest, one model call at the task's end on the validator's route proposes
+  conclusions whose evidence quotes are checked, a missing quote kept unresolved as the agent's own; the
+  call's tokens are counted under their own role, and WORKER_CONCLUSION_SUMMARY=0 turns it off.
+- Staleness per claim and readiness (#91, #92, the last phase-B implementation slice): a build change marks
+  the conclusions recorded against another build stale for re-testing and a policy change only the
+  authorization - the experiments - with conclusions already reached standing, both triggered by the records
+  themselves (the worker re-assesses on seeing a new policy revision; the planner's new `report_build` tool
+  names a build when it can establish one); stale conclusions stay marked and the packet shows them as stale.
+  A `requires` link names what a question waits for - an identity, the build, an observation, a conclusion in a
+  given state, a capability - and readiness is computed from it, never stored, so a prerequisite appearing
+  makes the question ready by itself; `get_coverage` and the board show ready and waiting with their reasons,
+  and `delegate_task` can require an outcome from a dependency - one that ended without it leaves the
+  dependent task blocked with the reason, never started.
+- The queue over open work and work keys (#96, #95, #98, phase C of the research loop): the engagement's open
+  questions are ranked with the reason for each position - readiness, whether a standing conclusion already
+  answered them, the class's weight, how many experiments ran - and a share of the top slots is reserved for
+  hard, high-impact classes (authorization, tenant isolation, authentication), so the queue can't fill a
+  budget with easy checks. It is advisory (`get_queue`, the console's Investigation tab, `queue_rank` on each
+  board row); every `delegate_task` with a plan item logs the rank it dispatched against (`queue_log`, with
+  pauses, escalations and reopenings recordable through `queue.get` / `queue.decide`), and the benchmark
+  efficiency line reports how often the top suggestion was taken. A duplicate delegation is refused: the work
+  key is the current build, the coverage cell, the method and the identity (a loose question keys on itself),
+  the task's record exists before its claim so a concurrent duplicate sees a live holder, claims live in the
+  engagement's database and survive a worker restart, any ending releases them, and the refusal names the task
+  that holds the work or the experiment that already answered the question - `independent_reproduction=true`
+  runs anyway and is recorded as a reproduction on its experiment (schema v7). Progress inside a task is
+  counted from the records too (#95): a call resets the idle count only when it captured a new observation or
+  recorded a candidate; output that merely looks new (a changed banner, a timestamp) doesn't, and the stall
+  record names which of the two fired and the progress events the task did produce.
+- Method records and their reuse (#102, #104, phase D of the research loop): confirming a finding with a
+  passing oracle derives a method - what worked, under which conditions: the oracle's procedure, its negative
+  control, the evidence to expect, the access it needs - and the plan link completes it with the route group
+  (or the source files the map names) it was proven on; methods live in each engagement's own database
+  (schema v8), nothing reads another's, and there is no promotion or export. The packet of a task whose cell
+  matches carries one line per matching method and the worker's `read_record` opens one in full; the planner
+  can add or correct one (`record_method`, `list_methods`). Each method proposes the related surfaces it
+  hasn't been proven on - the same route group, or the operations the map puts behind the same source code -
+  as pre-shaped plan items with the `delegate_task` goal to send (`get_queue`'s proposals, the console's
+  Investigation tab): the method transfers, the result doesn't, every proposed test runs its own negative
+  control at the new surface, a confirmed sibling becomes an instance of the finding that owns the root cause
+  (`record_instance` - the extent is recorded, the count isn't inflated, and the report shows every
+  instance), and a correctly protected sibling comes back refuted with its conditions, never as a finding.
+- Model capacity is released while a tool runs (#106, phase E pulled forward): the worker's model semaphore
+  is held only around each model call - the worker's and the advisor's - instead of across a task's whole loop,
+  so a long scan no longer keeps every other task away from an idle model endpoint. Tools get their own limit
+  (`WORKER_PARALLEL_TOOLS`), a task's own steps stay one at a time with every durable checkpoint kept, and a
+  task's timeout counts its own running time: time queued for the model is recorded as queue delay (#79), not
+  charged. `WORKER_PARALLEL_TASKS` keeps its meaning for existing setups.
+- Tasks wait their turn on the target (#107): an engagement-level limit on tasks at once
+  (`WORKER_ENG_PARALLEL`), intrusive tasks that write through the same identity serialized (read-only tasks
+  never take that lock), and a call refused because the engagement is at its parallel limit - it never ran -
+  retried after a bounded wait (`WORKER_TOOL_WAIT_S`) instead of an error the model may fumble. The
+  engagement's rate and budgets hold across all tasks; every wait is recorded by kind (model, tool slot,
+  target, fixture) and not charged to the task's timeout.
 
 ### Worker and planner
 - Long tool output keeps its head and its tail, with a digest for tools the kit reads (sqlmap's injection points,
@@ -219,111 +347,7 @@ changes to the harness are measured.
 - Console: message the planner from the **Agent** section, and pause or resume the conversation. A halted
   engagement takes no message. Each one is in the audit log with who did it.
 
-### Benchmarks
-- Model capacity is released while a tool runs (#106, phase E pulled forward): the worker's model semaphore
-  is held only around each model call - the worker's and the advisor's - instead of across a task's whole loop,
-  so a long scan no longer keeps every other task away from an idle model endpoint. Tools get their own limit
-  (`WORKER_PARALLEL_TOOLS`), a task's own steps stay one at a time with every durable checkpoint kept, and a
-  task's timeout counts its own running time: time queued for the model is recorded as queue delay (#79), not
-  charged. `WORKER_PARALLEL_TASKS` keeps its meaning for existing setups.
-- Tasks wait their turn on the target (#107): an engagement-level limit on tasks at once
-  (`WORKER_ENG_PARALLEL`), intrusive tasks that write through the same identity serialized (read-only tasks
-  never take that lock), and a call refused because the engagement is at its parallel limit - it never ran -
-  retried after a bounded wait (`WORKER_TOOL_WAIT_S`) instead of an error the model may fumble. The
-  engagement's rate and budgets hold across all tasks; every wait is recorded by kind (model, tool slot,
-  target, fixture) and not charged to the task's timeout.
-- Staleness per claim and readiness (#91, #92, the last phase-B implementation slice): a build change marks
-  the conclusions recorded against another build stale for re-testing and a policy change only the
-  authorization - the experiments - with conclusions already reached standing, both triggered by the records
-  themselves (the worker re-assesses on seeing a new policy revision; the planner's new `report_build` tool
-  names a build when it can establish one); stale conclusions stay marked and the packet shows them as stale.
-  A `requires` link names what a question waits for - an identity, the build, an observation, a conclusion in a
-  given state, a capability - and readiness is computed from it, never stored, so a prerequisite appearing
-  makes the question ready by itself; `get_coverage` and the board show ready and waiting with their reasons,
-  and `delegate_task` can require an outcome from a dependency - one that ended without it leaves the
-  dependent task blocked with the reason, never started.
-- The queue over open work and work keys (#96, #95, #98, phase C of the research loop): the engagement's open
-  questions are ranked with the reason for each position - readiness, whether a standing conclusion already
-  answered them, the class's weight, how many experiments ran - and a share of the top slots is reserved for
-  hard, high-impact classes (authorization, tenant isolation, authentication), so the queue can't fill a
-  budget with easy checks. It is advisory (`get_queue`, the console's Investigation tab, `queue_rank` on each
-  board row); every `delegate_task` with a plan item logs the rank it dispatched against (`queue_log`, with
-  pauses, escalations and reopenings recordable through `queue.get` / `queue.decide`), and the benchmark
-  efficiency line reports how often the top suggestion was taken. A duplicate delegation is refused: the work
-  key is the current build, the coverage cell, the method and the identity (a loose question keys on itself),
-  the task's record exists before its claim so a concurrent duplicate sees a live holder, claims live in the
-  engagement's database and survive a worker restart, any ending releases them, and the refusal names the task
-  that holds the work or the experiment that already answered the question - `independent_reproduction=true`
-  runs anyway and is recorded as a reproduction on its experiment (schema v7). Progress inside a task is
-  counted from the records too (#95): a call resets the idle count only when it captured a new observation or
-  recorded a candidate; output that merely looks new (a changed banner, a timestamp) doesn't, and the stall
-  record names which of the two fired and the progress events the task did produce.
-- Method records and their reuse (#102, #104, phase D of the research loop): confirming a finding with a
-  passing oracle derives a method - what worked, under which conditions: the oracle's procedure, its negative
-  control, the evidence to expect, the access it needs - and the plan link completes it with the route group
-  (or the source files the map names) it was proven on; methods live in each engagement's own database
-  (schema v8), nothing reads another's, and there is no promotion or export. The packet of a task whose cell
-  matches carries one line per matching method and the worker's `read_record` opens one in full; the planner
-  can add or correct one (`record_method`, `list_methods`). Each method proposes the related surfaces it
-  hasn't been proven on - the same route group, or the operations the map puts behind the same source code -
-  as pre-shaped plan items with the `delegate_task` goal to send (`get_queue`'s proposals, the console's
-  Investigation tab): the method transfers, the result doesn't, every proposed test runs its own negative
-  control at the new surface, a confirmed sibling becomes an instance of the finding that owns the root cause
-  (`record_instance` - the extent is recorded, the count isn't inflated, and the report shows every
-  instance), and a correctly protected sibling comes back refuted with its conditions, never as a finding.
-- Facts at every tool call and conclusions from them (#118, #119, phase B of the research loop): after a worker
-  call the kit's parsers store what they extract as new observations with their origin (task or conversation,
-  call, identity, policy revision, the citable evidence path) - nmap's open ports, sqlmap's injection
-  verdicts, nuclei's matches and identity checks gain parsers, beside the existing JSON readers - with no
-  planner import and no model; a repeated call adds no row (the fingerprint is import_observations's own), and
-  the planner's calls are captured from the audit log the same way, each saved output parsed once.
-  Target-controlled text is stored bounded as a record's own fields. Conclusions are drawn by rule - an oracle
-  record that passed with a clean control supports its claim; an identity_difference whose positive request
-  and negative control behaved the same refutes it; a blocked task leaves an unresolved conclusion naming its
-  blocker; a reproduction is not a second row; a contradiction makes the standing conclusion unresolved with a
-  contradicts link - and, for the rest, one model call at the task's end on the validator's route proposes
-  conclusions whose evidence quotes are checked, a missing quote kept unresolved as the agent's own; the
-  call's tokens are counted under their own role, and WORKER_CONCLUSION_SUMMARY=0 turns it off.
-- The record chain, phase B of the research loop (#89, #90, #93): schema v5 in findings.db - experiments
-  (X-...), conclusions (C-...) and links (supports, contradicts, requires, next), observations carry their
-  origin, and validations and evidence_pins move into the versioned migrations. Every task bound to a plan item
-  leaves an experiment when it ends - what was tried, under which conditions, with its evidence hashes -
-  whether it completed, was blocked or stalled, written by the harness with no model; the worker's finish can
-  state a conclusion per claim with its exact conditions, and the planner gets `record_conclusion` and
-  `link_records`. The packet's "what was tried" comes from the experiments, stale results are marked, and a
-  cell whose experiment concluded with a standing result says so at the top - a notice, never a refusal, and
-  the same notice rides `delegate_task`'s reply. The board shows each question's last experiment.
-- The research board (#87): one row per open question - planned, blocked, or an outcome gone stale - with
-  the last result that changed something, the blocker, the budget used (tasks, worker steps, worker tokens,
-  target requests), and the next decision with its reason, computed from the records with no model. In
-  `get_handover` for the planner (the prompt says to pick up from there after a summary) and in the console's
-  Investigation tab for the person; recomputed whenever the records change. The harness images carry
-  ledger.py, which the live check caught them missing.
-- The memory surfaces around the packet (#115, #116, #117, #120, phase A of the research loop #77): the call
-  ledger built with no model from the audit log and the worker's task records - after a command or request runs
-  (it always runs) the reply carries the earlier equivalent call's entry, the planner's calls through kali-mcp
-  and the worker's through the harness ledger; an unchanged file read (hash compared) or a repeated vuln_intel
-  lookup is answered from the ledger, `fresh=true` forces a run, a stale entry is shown and never reused, and
-  the task result counts notices and reuse. `recall` is one search across what the engagement knows -
-  observations, findings, plan items, map entries, earlier task results with their agent notes, ledger entries -
-  one line per hit with its state, a worker tool and a planner tool on the same implementation. `get_briefing`
-  gives the planner the packet for a cell before delegating or testing it; `delegate_task`'s reply lists the
-  record ids the worker started from, so pointers survive a context summary. The worker's `note(fact, evidence)`
-  writes down what the task established - kept unsupported when no evidence is named, pinned in the
-  never-shrunk 'established so far' block that compaction rebuilds from the record, returned in the typed
-  finish, and visible to later tasks as agent notes. `RV_LEDGER=0` turns the ledger off.
-- The research packet (#83, #84, #85, #86, phase A of the research loop #77): a worker task bound to a plan
-  item starts from what the engagement's records already say about its coverage cell - map entries,
-  observations and findings with their states, earlier tasks for the same cell with their typed result
-  (negative and inconclusive included), the plan item's hypothesis and blockers - selected by stable ids with
-  no model, in a character budget whose cuts are listed as ids. On resume the packet is rebuilt and only a
-  material change (ids or revisions differ) is appended as a message that names what changed; `compact` keeps
-  the latest packet whole and shrinks older ones to their id list; `inputs` still works beside it; the
-  `packet.get` op shows any task's packet on the console. `read_record` opens any record the packet names in
-  full, bounded, read-only, never across engagements. `evals/packet_check.py` judges the selection on a
-  reviewed labelled set from tuning-side runs (recall 1.00 at 3000-12000 chars, precision 0.13 at 3000), which
-  sets the default `WORKER_PACKET_CHARS=4000`; it runs in CI on committed lab-only fixtures, and
-  `WORKER_PACKET=0` turns the packet off for the baseline.
+### Web workflow: the kit checks first (epic #168)
 - The web-workflow epic (#168): the kit's fixed checks run on the map `recon_map` builds, in the same call
   (#169) — the free-model campaign measured the model skipping `probe_map` in 2 of 4 web runs and hand-rolling
   40–70 requests at 11–13M planner tokens each. The fusion makes the reads and the write-matrix proposal the
@@ -345,6 +369,8 @@ changes to the harness are measured.
 - Coverage refusals teach their shape (#174): unknown keys name the valid form and where refs belong, and the
   no-map-entry guard fires only for items that name a vulnerability class — orientation items may be tested
   without refs, and every run burned calls discovering that.
+
+### Benchmarks
 - Efficiency measures in every result, under `efficiency` (#79): the share of worker tool calls an earlier task
   already ran (run stamps normalised), tasks delegated for a coverage cell a finished task already covered, goals
   delegated twice with `inputs` pasted by hand, wall time and tokens to the first finding the score confirmed with
@@ -403,6 +429,7 @@ changes to the harness are measured.
   eight remaining minutes and six finished worker tasks to a per-minute limit.
 - The free-model daily limit stops the whole suite: every remaining benchmark would fail at its first model call,
   so the runner says so and skips them instead of spending a run each.
+- The first runs on the research loop are measured in `docs/capability-baselines.md`.
 
 ### Fixed
 - Worker delegation didn't work with a reasoning model as the worker. A model call was capped at 2,048 output
@@ -575,5 +602,6 @@ First public release.
 - Results per model pair, including GLM-5.3 with GLM-5.3 Flash, are in `docs/capability-baselines.md`.
 - An open conversation keeps its tools when a tool server restarts (`./rvkit update`).
 
-[Unreleased]: https://github.com/RiskVoid/Security-Agent-Kit/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/RiskVoid/Security-Agent-Kit/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/RiskVoid/Security-Agent-Kit/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/RiskVoid/Security-Agent-Kit/releases/tag/v0.1.0
