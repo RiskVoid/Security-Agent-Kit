@@ -4081,6 +4081,86 @@ class FindingTools(unittest.TestCase):
         self.assertEqual(got["status"], "confirmed")
 
 
+class ResearchPacket(unittest.TestCase):
+    """#83: the packet builder - selection by the cell's stable ids first, a budget that lists what didn't fit
+    as ids, every line keeping its state, and the ids and revisions a resume diff (#84) compares against."""
+
+    def setUp(self):
+        import reconmap, workspace
+        self.ws = workspace
+        self.tmp = tempfile.TemporaryDirectory()
+        self.saved = db.WORK
+        db.WORK = self.tmp.name
+        e = os.path.join(self.tmp.name, "acme")
+        for d in ("evidence/map", "evidence/http", "evidence/tasks/20261123-100000-aaaa",
+                  "evidence/tasks/20261123-100000-bbbb"):
+            os.makedirs(os.path.join(e, d))
+        json.dump({"observations": [
+            {"method": "POST", "url": "http://lab/api/fetch", "source": "openapi", "status": 200, "auth": "unknown",
+             "params": {"body": ["callback_url", "role"]}}]},
+            open(os.path.join(e, "evidence/map/map-1.json"), "w"))
+        self.eid = next(x["id"] for x in reconmap.build("acme")["entries"])
+        self.pid = workspace.plan_add("acme", "agent:planner", [
+            {"title": "mass-assignment on POST /api/fetch", "area": "mass-assignment", "refs": [self.eid],
+             "hypothesis": "role may be writable", "prerequisites": ["a session"]}])[0]
+        self.fid = db.record("acme", actor="agent:planner", title="mass-assignment on POST /api/fetch",
+                             severity="high", asset="http://lab/api/fetch", description="role accepted",
+                             status="candidate", evidence=["evidence/http/r1.txt"])["id"]
+        self.fnoise = db.record("acme", actor="agent:planner", title="injection on /api/other", severity="high",
+                                asset="http://lab/api/other", description="quote error", status="candidate")["id"]
+        self.fworker = db.record("acme", actor="agent:worker", title="org field accepted too", severity="high",
+                                 asset="http://lab/api/fetch", description="org", status="candidate",
+                                 source="worker:20261123-100000-aaaa")["id"]
+        workspace.set_value("acme", "agent:planner", "objective", "Authorisation test of the lab API")
+        workspace.set_value("acme", "agent:planner", "current_build", "abc123def456")
+        json.dump({"id": "20261123-100000-aaaa", "engagement": "acme",
+                   "goal": "Test mass-assignment on POST /api/fetch", "status": "done", "started": 100,
+                   "contract": {"cell": {"class": "mass-assignment", "entries": [self.eid], "plan_item": self.pid,
+                                         "identity": "alice"}},
+                   "result": {"status": "partial", "summary": "role rejected, org field not tried yet"},
+                   "run_evidence": ["/work/acme/evidence/runs/step-01.txt"]},
+                  open(os.path.join(e, "evidence/tasks/20261123-100000-aaaa/task.json"), "w"))
+        json.dump({"id": "20261123-100000-bbbb", "engagement": "acme",
+                   "goal": "Test injection on /api/other", "status": "done", "started": 200},
+                  open(os.path.join(e, "evidence/tasks/20261123-100000-bbbb/task.json"), "w"))
+
+    def tearDown(self):
+        db.WORK = self.saved
+        self.tmp.cleanup()
+
+    def test_selection_budget_states_and_recorded_ids(self):
+        pk = self.ws.packet("acme", "Test mass-assignment on POST /api/fetch", self.pid, chars=4000)
+        text = pk["text"]
+        for part in (f"Plan item {self.pid}", "hypothesis: role may be writable", "prerequisites: a session",
+                     f"{self.eid} POST lab/api/fetch",
+                     "task 20261123-100000-aaaa partial as alice",
+                     "worker summary (not a verified fact): role rejected, org field not tried yet",
+                     f"{self.fid} candidate (high)", f"{self.fworker} candidate (high)",
+                     "worker summary, not a verified fact", "Build abc123def456"):
+            self.assertIn(part, text)
+        self.assertNotIn("api/other", text)                 # off-route noise stays out of the packet
+        self.assertNotIn("20261123-100000-bbbb", text)      # a task for another subject is not "what was tried"
+        self.assertEqual(pk["ids"]["entries"], [self.eid])
+        self.assertEqual(pk["ids"]["tried"], ["20261123-100000-aaaa"])
+        self.assertEqual(sorted(pk["ids"]["findings"]), sorted([self.fid, self.fworker]))
+        self.assertEqual(pk["revisions"]["plan_item"], 1)
+        self.assertEqual(pk["revisions"]["build"], "abc123def456")
+        self.assertTrue(all(pk["revisions"]["findings"][f] == 1 for f in pk["ids"]["findings"]))
+
+        small = self.ws.packet("acme", "Test mass-assignment on POST /api/fetch", self.pid, chars=700)
+        self.assertTrue(small["cut"])                        # the budget cut something, and listed it as ids
+        self.assertIn("Not included (budget)", small["text"])
+        self.assertIn(f"Plan item {self.pid}", small["text"])        # the header survives every budget
+        self.assertLessEqual(small["chars"], 700 + 60)              # roughly its allowance
+
+        loose = self.ws.packet("acme", "Test mass-assignment on POST /api/fetch", None, chars=4000)
+        self.assertIn(self.fid, loose["ids"]["findings"])   # with no plan item, goal words still select - both
+        self.assertIn("20261123-100000-aaaa", loose["ids"]["tried"])   # the finding and the same-subject task
+
+        with self.assertRaises(ValueError):
+            self.ws.packet("no-such-engagement", "goal")
+
+
 class ReconClasses(unittest.TestCase):
     """W1 of the offensive PRD: the coverage matrix's classes. Every expected issue of the black-box benchmarks
     must map to at least one class, so nothing the benchmarks score is invisible to the coverage-driven method,

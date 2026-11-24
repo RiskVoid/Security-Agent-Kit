@@ -263,6 +263,17 @@ def plan_list(engagement, actor=None, state=None):
     return {"items": ws.plan_list(engagement, state), "coverage": ws.coverage(engagement)}, None
 
 
+@op("packet.get", mutates=False)
+def packet_get(engagement, actor=None, goal="", plan_item=None, chars=None):
+    """#83: the packet a worker task with this goal and plan item would start from. The worker sends it
+    automatically at dispatch (#84); this op is the console's way to see the same thing
+    (findings-mcp: python3 ops.py packet.get, with engagement, goal and plan_item on stdin)."""
+    try:
+        return ws.packet(engagement, goal or "", plan_item or None, chars or None), None
+    except ValueError as e:
+        raise OpError(str(e))
+
+
 @op("coverage.reassess")
 def coverage_reassess(engagement, actor, build=None, policy_revision=None):
     r = ws.reassess(engagement, actor, build, policy_revision)

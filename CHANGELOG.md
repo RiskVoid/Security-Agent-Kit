@@ -220,6 +220,18 @@ changes to the harness are measured.
   engagement takes no message. Each one is in the audit log with who did it.
 
 ### Benchmarks
+- The research packet (#83, #84, #85, #86, phase A of the research loop #77): a worker task bound to a plan
+  item starts from what the engagement's records already say about its coverage cell - map entries,
+  observations and findings with their states, earlier tasks for the same cell with their typed result
+  (negative and inconclusive included), the plan item's hypothesis and blockers - selected by stable ids with
+  no model, in a character budget whose cuts are listed as ids. On resume the packet is rebuilt and only a
+  material change (ids or revisions differ) is appended as a message that names what changed; `compact` keeps
+  the latest packet whole and shrinks older ones to their id list; `inputs` still works beside it; the
+  `packet.get` op shows any task's packet on the console. `read_record` opens any record the packet names in
+  full, bounded, read-only, never across engagements. `evals/packet_check.py` judges the selection on a
+  reviewed labelled set from tuning-side runs (recall 1.00 at 3000-12000 chars, precision 0.13 at 3000), which
+  sets the default `WORKER_PACKET_CHARS=4000`; it runs in CI on committed lab-only fixtures, and
+  `WORKER_PACKET=0` turns the packet off for the baseline.
 - The web-workflow epic (#168): the kit's fixed checks run on the map `recon_map` builds, in the same call
   (#169) — the free-model campaign measured the model skipping `probe_map` in 2 of 4 web runs and hand-rolling
   40–70 requests at 11–13M planner tokens each. The fusion makes the reads and the write-matrix proposal the

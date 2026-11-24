@@ -175,6 +175,13 @@ TOOLS = [
             "open_questions": {"type": "array", "items": {"type": "string"}},
             "confidence": {"type": "string", "enum": ["low", "medium", "high"]}},
             "required": ["status", "summary"]}}},
+    {"type": "function", "function": {"name": "read_record", "description":
+        "One record of this engagement in full, by id: an observation (O-...), a finding (F-...), a plan item "
+        "(P-...), a recon map entry (E-...) or an earlier worker task record (its task id, as the packet names "
+        "it). Bounded, read-only; read_file opens the evidence files a record names.",
+        "parameters": {"type": "object", "properties": {
+            "id": {"type": "string", "description": "the record id, exactly as the packet names it"}},
+            "required": ["id"]}}},
 ]
 
 from redact import REDACT, redact  # noqa: E402,F401  (secrets stay in evidence files only)
@@ -289,6 +296,96 @@ def read_file(task, path, start=1, lines=200):
     return "\n".join(out) or "(no lines in that range)"
 
 
+RECORD_CHARS = 4000          # read_record's bound: head and tail, like read_file's
+
+
+def read_record(task, id):
+    """#85: one record of this engagement in full, by id - an observation (O-...), a finding (F-...), a plan
+    item (P-...), a recon map entry (E-...) or an earlier task record (its 20261123-122609-3599 id, as the
+    packet names it). The packet carries one line per record; this opens the one the task cares about. Bounded
+    head and tail; read_file opens the evidence it names. Read-only, and records never cross engagements."""
+    eng, rid = task["engagement"], str(id or "").strip()
+    try:
+        import workspace, reconmap
+        if re.fullmatch(r"O-[0-9a-zA-Z]+", rid):
+            o = next((x for x in workspace.list_observations(eng, limit=100000) if x["id"] == rid), None)
+            if not o:
+                return _no_record(eng, rid)
+            body = "\n".join([f"{o['id']} {o['title']}", f"state: {o['status']}; severity: {o.get('severity')}",
+                               f"location: {o.get('location') or 'n/a'}; rule: {o.get('rule_id') or '-'}",
+                               f"tool: {o.get('tool')}"] + ([f"reason: {o['reason']}"] if o.get("reason") else [])
+                      + ([f"finding: {o['finding_id']}"] if o.get("finding_id") else [])
+                      + [f"detail: {o.get('detail') or ''}",
+                         "evidence: " + (", ".join(o.get("evidence") or []) or "none")])
+        elif re.fullmatch(r"F-[0-9a-zA-Z]+", rid):
+            try:
+                f = db.get(eng, rid)
+            except ValueError:   # findings_db raises on an unknown id
+                return _no_record(eng, rid)
+            body = "\n".join([f"{f['id']} {f['title']}",
+                              "state: " + f["status"] + "; verification: " + (f.get("verification") or "unverified")
+                              + (" by " + f["verified_method"] if f.get("verified_method") else ""),
+                              f"severity: {f['severity']}; asset: {f.get('asset') or 'n/a'}; cwe: {f.get('cwe')}",
+                              f"revision: {f.get('revision')}",
+                              "description: " + (f.get("description") or ""),
+                              "reproduction: " + (f.get("reproduction") or "not recorded"),
+                              "remediation: " + (f.get("remediation") or "not recorded"),
+                              "evidence: " + (", ".join(f.get("evidence") or []) or "none")])
+        elif re.fullmatch(r"P-[0-9a-zA-Z]+", rid):
+            it = next((x for x in workspace.plan_list(eng) if x["id"] == rid), None)
+            if not it:
+                return _no_record(eng, rid)
+            body = "\n".join([f"{it['id']} {it['title']}",
+                              "state: " + it["state"] + (" (stale: " + it["stale_reason"] + ")" if it.get("stale")
+                                                         else ""),
+                              f"area: {it.get('area') or '-'}; refs: {', '.join(it.get('refs') or [])}",
+                              "hypothesis: " + (it.get("hypothesis") or "-"),
+                              "prerequisites: " + (", ".join(str(x) for x in it.get("prerequisites") or [])
+                                                   or "-"),
+                              f"operation: {it.get('operation') or '-'}; identity: {it.get('identity') or '-'}",
+                              f"rationale: {it.get('rationale') or '-'}; revision: {it.get('revision')}",
+                              "evidence: " + (", ".join(it.get("evidence") or []) or "none")])
+        elif re.fullmatch(r"E-[0-9a-f]{6}", rid):
+            e = next((x for x in reconmap.build(eng)["entries"] if x["id"] == rid), None)
+            if not e:
+                return _no_record(eng, rid)
+            body = "\n".join([f"{e['id']} {e['method']} {e['host']}{e['path']}",
+                              f"example: {e.get('example')}",
+                              "auth: " + e.get("auth") + (" (" + e.get("auth_basis") + ")" if e.get("auth_basis")
+                                                          else ""),
+                              "params: " + json.dumps(e.get("params") or {}),
+                              f"sources: {', '.join(e.get('sources') or [])}",
+                              "seen as: " + (", ".join(e.get("seen_by") or []) or "no identity"),
+                              "evidence: " + (", ".join(e.get("evidence") or []) or "none")])
+        elif re.fullmatch(r"\d{8}-\d{6}-[0-9a-f]+", rid):
+            path = os.path.join(db.engagement_dir(eng), "evidence", "tasks", rid, "task.json")
+            if not os.path.isfile(path):
+                return _no_record(eng, rid)
+            t = json.load(open(path, errors="replace"))
+            if t.get("engagement") and t["engagement"] != eng:
+                return (f"REFUSED: {rid} is a task of engagement {t['engagement']}, not {eng}: records never "
+                        "cross engagements")
+            body = "\n".join([f"task {t['id']}: {t.get('goal')}",
+                              f"status: {t.get('status')}; result: {(t.get('result') or {}).get('status') or '-'}",
+                              "summary (the worker words, not a verified fact): "
+                              + ((t.get("result") or {}).get("summary") or t.get("last_text") or "-"),
+                              f"tier: {t.get('tier')}; steps: {t.get('step')}",
+                              "run evidence: " + (", ".join(t.get("run_evidence") or []) or "none")])
+        else:
+            return ("unrecognised id " + rid + ": a record id looks like O-012, F-001, P-003, E-1a2b3c or a "
+                    "task id (20261123-122609-3599); the packet names the ids that matter for this task")
+    except Exception as e:   # noqa: BLE001  a broken record must not break the task
+        return f"could not read {rid}: {type(e).__name__}: {e}"
+    if len(body) > RECORD_CHARS:
+        body = (body[:int(RECORD_CHARS * 0.75)] + f"\n... ({len(body) - RECORD_CHARS} characters cut) ...\n"
+                + body[-int(RECORD_CHARS * 0.2):])
+    return body
+
+
+def _no_record(eng, rid):
+    return f"no record {rid} in engagement {eng}: ids never cross engagements - it may belong to another one"
+
+
 def record_candidate(task, title, severity, asset, description, evidence, cwe=""):
     f = db.record(task["engagement"], actor="agent:worker", title=title, severity=severity, asset=asset, description=description,
                   evidence=evidence, cwe=cwe, status="candidate", source=f"worker:{task['id']}")
@@ -297,7 +394,7 @@ def record_candidate(task, title, severity, asset, description, evidence, cwe=""
 
 
 IMPL = {"kali_run": kali_run, "http_request": http_request, "check_identity": check_identity, "analyze_source": analyze_source, "vuln_intel": vuln_intel, "web_search": web_search, "fetch_url": fetch_url, "read_file": read_file,
-        "record_candidate": record_candidate}
+        "record_candidate": record_candidate, "read_record": read_record}
 
 
 # ---------------------------------------------------------------- model loop
@@ -316,6 +413,9 @@ MALFORMED_LIMIT = 3                  # malformed tool calls in a row before the 
 REPEAT_LIMIT = 3
 NO_PROGRESS_CALLS = int(os.environ.get("WORKER_STALL_CALLS", "8") or 8)
 ADVISOR = os.environ.get("WORKER_ADVISOR", "1") != "0"
+PACKET = os.environ.get("WORKER_PACKET", "1") != "0"      # the research packet (#83/#84): a task bound to a
+                                                          # plan item starts from what the records already say
+PACKET_CHARS = int(os.environ.get("WORKER_PACKET_CHARS", "4000") or 4000)   # its allowance; packet_check.py measured it
 ADVISOR_MODEL = os.environ.get("WORKER_ADVISOR_MODEL", "planner")
 ADVISOR_MAX = 2
 SAFE_METHODS = ("GET", "HEAD", "OPTIONS")
@@ -444,12 +544,27 @@ def _pause(task, seconds):
         left -= step
 
 
+def _is_packet(m):
+    """A message that carries a packet: the first one, or a refresh after a change (#84)."""
+    c = m.get("content") or ""
+    return m.get("role") == "user" and (c.startswith("# Packet:") or
+                                        c.startswith("[harness] Since this task started"))
+
+
 def compact(messages, lines=None):
     """Keep the conversation under CTX_CHARS by shrinking the oldest tool results to one line each: the tool, what it
     ran, the exit status, the digest's summary and the evidence path (digest.one_line; the full output is on disk).
     The latest KEEP_RESULTS results stay whole; the system prompt and the goal are never shrunk; nothing is shrunk
     twice."""
     total = sum(len(json.dumps(m)) for m in messages)
+    packets = [m for m in messages if _is_packet(m)]     # #84: an old packet is history, the latest isn't
+    for m in packets[:-1]:
+        ids = ", ".join(re.findall(r"(?m)^(?:P-|E-|F-|O-)[0-9a-zA-Z]+|^task \d{8}-\d{6}-[0-9a-f]+",
+                                   m["content"]))
+        before = len(m["content"])
+        m["content"] = ("[packet from earlier in this task, superseded by a newer one; records it named: "
+                        + (ids[:400] or "open them with read_record from the current packet") + "]")
+        total -= before - len(m["content"])
     if total <= CTX_CHARS:
         return
     results = [m for m in messages[2:] if m.get("role") == "tool"]
@@ -652,6 +767,73 @@ def on_stall(task, kind, detail):
         return (f"\n\n[harness] Still stuck: {detail}. Advice from the lead consultant (not a new goal): {advice}")
     rec["action"] = "stop"
     raise Stop("stalled", f"stalled: {detail}")
+
+
+def _packet_pid(task):
+    """The plan item a task serves: the contract's own when it ran loose, else its cell's."""
+    c = task.get("contract") or {}
+    return c.get("plan_item") or (c.get("cell") or {}).get("plan_item")
+
+
+def _packet(task):
+    """The packet of a task (#83), or None: never raises - a packet problem must not block the task."""
+    if not (PACKET and _packet_pid(task)):
+        return None
+    try:
+        import workspace
+        return workspace.packet(task["engagement"], task["goal"], _packet_pid(task), chars=PACKET_CHARS,
+                                exclude_task=task.get("id"))
+    except Exception:   # noqa: BLE001  no workspace (a source review without one), a broken map, anything
+        return None
+
+
+def packet_diff(old, new):
+    """What changed between two packets, one line: records added or gone by kind, revisions that moved, a new
+    build or policy revision. #84 appends it so a resumed task sees the change, not the whole packet again."""
+    o, n = old.get("ids") or {}, (new.get("ids") or {})
+    parts = []
+    for kind, label in (("findings", "finding"), ("observations", "observation"), ("tasks", "task"),
+                        ("entries", "map entry")):
+        for verb, a, b in (("new", n, o), ("gone", o, n)):
+            xs = [x for x in (a.get(kind) or []) if x not in (b.get(kind) or [])]
+            if xs:
+                parts.append(f"{verb} {label}(s): {', '.join(str(x) for x in xs[:6])}"
+                             + (" ..." if len(xs) > 6 else ""))
+    ro, rn = old.get("revisions") or {}, new.get("revisions") or {}
+    moved = [f"{k} r{ro['findings'][k]}->r{rn['findings'][k]}" for k in ro.get("findings") or {}
+             if k in (rn.get("findings") or {}) and ro["findings"][k] != rn["findings"][k]]
+    if moved:
+        parts.append("changed: " + ", ".join(moved[:6]))
+    if rn.get("build") != ro.get("build") and rn.get("build"):
+        parts.append(f"build now {str(rn['build'])[:12]}")
+    if rn.get("policy_revision") != ro.get("policy_revision") and rn.get("policy_revision"):
+        parts.append(f"policy revision now {rn['policy_revision']}")
+    return "; ".join(parts)
+
+
+def packet_text(pk):
+    """The packet as the first messages carry it, with its rules: every line keeps its state, a model's own
+    summary is marked as such, and what didn't fit is an id read_record can open."""
+    return (pk["text"] + "\n\n(Every line above keeps its state - verified, candidate, dismissed, stale - and "
+            "summaries are the writer's words, not verified facts. read_record(\"<id>\") opens any record "
+            "in full, read_file the evidence files it names.)")
+
+
+def _packet_refresh(task, messages):
+    """#84: a resumed task gets what changed while it was down. The packet is rebuilt; only a material change
+    (its ids or revisions differ) is appended, as its own message that names the change; an unchanged packet
+    is never sent again. The saved first message is not rewritten."""
+    pk = _packet(task)
+    if pk is None:
+        return
+    new = {"ids": pk["ids"], "revisions": pk["revisions"]}
+    old = task.get("packet") or {}
+    if new["ids"] == old.get("ids") and new["revisions"] == old.get("revisions"):
+        return
+    messages.append({"role": "user", "content":
+                     "[harness] Since this task started, the records changed (" + packet_diff(old, new)
+                     + "). The current packet:\n\n" + packet_text(pk)})
+    task["packet"] = {**new, "at": _now()}
 
 
 def contract_text(task):
@@ -873,6 +1055,10 @@ def _loop(task, log):
                                    scope=json.dumps(task["info"]["scope"]))
         messages = [{"role": "system", "content": sys_prompt + contract_text(task)},
                     {"role": "user", "content": task["goal"]}]
+        pk = _packet(task)   # #84: a task bound to a plan item starts from what the records already say
+        if pk:
+            messages.append({"role": "user", "content": packet_text(pk)})
+            task["packet"] = {"ids": pk["ids"], "revisions": pk["revisions"], "at": _now()}
     # "Worker model: private" in RULES.md: never use the fallback model (tool output and code stay on the endpoint)
     model = "private-llm" if task["info"]["rules"].get("worker") == "private" else WORKER_MODEL
     deadline = task["started"] + task["timeout_min"] * 60 + task.get("waited_s", 0)
@@ -1159,6 +1345,7 @@ def resume(task_id, actor="agent:planner"):
         else:
             text = "NOT RUN: the worker restarted before this call. Call it again if you still need it."
         messages.append({"role": "tool", "tool_call_id": c.get("id", "call"), "content": text})
+    _packet_refresh(task, messages)   # #84: what changed while the task was down, or nothing
     task["pending_calls"], task["approval"] = [], None
     task.update(status="queued", error=None, finished=None, resumed=(task.get("resumed") or []) +
                 [{"at": _now(), "by": actor}])

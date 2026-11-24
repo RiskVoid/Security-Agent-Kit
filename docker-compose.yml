@@ -170,6 +170,8 @@ services:
       RV_TRACE_DESTINATION: ${RV_TRACE_DESTINATION:-local}  # the Client data rule name the collector counts as
       WORKER_ADVISOR: ${WORKER_ADVISOR:-1}         # a stalled task asks the planner model for advice (at most twice); 0: off
       WORKER_STALL_CALLS: ${WORKER_STALL_CALLS:-8} # calls with nothing new before a task counts as stalled
+      WORKER_PACKET: ${WORKER_PACKET:-1}         # a task bound to a plan item starts from the records (#83/#84); 0: off
+      WORKER_PACKET_CHARS: ${WORKER_PACKET_CHARS:-4000}  # the packet's character allowance (packet_check sets it)
     volumes:
       - ${ENGAGEMENTS_DIR:-~/riskvoid/engagements}:/work
       - ${PROJECTS_DIR:-~/riskvoid/projects}:/src:ro

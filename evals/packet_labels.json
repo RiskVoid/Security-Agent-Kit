@@ -1,0 +1,98 @@
+[
+ {
+  "run": "code-flask-20261116T114531Z",
+  "task": "20261116-113754-d14c",
+  "goal": "Run automated passive scans on /src/rv-bench/rv-demo-app (a tiny single-file Flask app: app.py, requirements.txt, README.md). Write all JSON outputs to /work/be",
+  "plan_item": "P-002",
+  "cell": {
+   "class": null,
+   "entries": []
+  },
+  "needed": [
+   "P-002"
+  ]
+ },
+ {
+  "run": "web-dvwa-20261123T135310Z",
+  "task": "20261123-132537-b688",
+  "goal": "Run whatweb on http://10.250.0.11 for technology fingerprinting",
+  "plan_item": "P-027",
+  "cell": {
+   "class": null,
+   "entries": []
+  },
+  "needed": [
+   "P-027"
+  ]
+ },
+ {
+  "run": "web-dvwa-20261123T135310Z",
+  "task": "20261123-132615-6715",
+  "goal": "Run katana crawl on http://10.250.0.11 with depth 3, output to katana.txt",
+  "plan_item": "P-030",
+  "cell": {
+   "class": null,
+   "entries": []
+  },
+  "needed": [
+   "P-030"
+  ]
+ },
+ {
+  "run": "web-dvwa-20261123T135310Z",
+  "task": "20261123-132640-b1ff",
+  "goal": "Run gowitness to take screenshots of http://10.250.0.11",
+  "plan_item": "P-031",
+  "cell": {
+   "class": null,
+   "entries": []
+  },
+  "needed": [
+   "P-031"
+  ]
+ },
+ {
+  "run": "web-dvwa-20261123T135310Z",
+  "task": "20261123-132710-5daa",
+  "goal": "Run arjun parameter discovery on http://10.250.0.11/login.php",
+  "plan_item": "P-032",
+  "cell": {
+   "class": "xss",
+   "entries": [
+    "E-925689",
+    "E-f3ba10"
+   ]
+  },
+  "needed": [
+   "E-925689",
+   "E-f3ba10",
+   "P-032"
+  ]
+ },
+ {
+  "run": "web-dvwa-20261123T135310Z",
+  "task": "20261123-132725-1b3d",
+  "goal": "Run ffuf content discovery on http://10.250.0.11 with common wordlist",
+  "plan_item": "P-033",
+  "cell": {
+   "class": null,
+   "entries": []
+  },
+  "needed": [
+   "P-033"
+  ]
+ },
+ {
+  "run": "web-dvwa-20261123T135310Z",
+  "task": "20261123-133834-5321",
+  "goal": "Run nuclei scan on http://10.250.0.11 with low,medium,high,critical severity templates",
+  "plan_item": "P-036",
+  "cell": {
+   "class": null,
+   "entries": []
+  },
+  "needed": [
+   "P-036"
+  ]
+ }
+]

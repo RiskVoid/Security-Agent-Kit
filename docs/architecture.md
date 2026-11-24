@@ -116,6 +116,13 @@ What happens between "Engagement `acme`: review `/src/acme`…" and a finished r
    and a tier. `worker-mcp` asks `kali-mcp` for the authoritative scope and rules, refuses if the engagement is
    halted or the tier isn't allowed, and starts a tool-calling loop on the worker model through LiteLLM: model
    `colab-qwen`, or `private-llm` when `RULES.md` says `Worker model: private`. Tasks run one at a time.
+   A task bound to a plan item starts from the **research packet** (#83/#84): what the engagement's records
+   already say about its coverage cell - map entries, observations and findings with their states, earlier
+   tasks for the same cell with their typed result (negative and inconclusive included), the item's hypothesis
+   and blockers - selected by stable ids with no model, in a fixed character budget, every line keeping its
+   state. On resume the packet is rebuilt and only a material change (ids or revisions differ) is appended;
+   `compact` keeps the latest packet whole and shrinks older ones to their id list. `read_record` opens any
+   record the packet names in full. `WORKER_PACKET=0` turns it off.
 4. **Tool call.** The worker model calls `kali_run`, which calls the kali tool `run` (the planner can also call
    `run` directly). `kali-mcp` then:
    1. refuses if the engagement is halted or outside its testing window;

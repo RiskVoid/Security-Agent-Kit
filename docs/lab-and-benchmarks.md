@@ -373,6 +373,31 @@ calls, the sweep evidence) with no model; a figure the run didn't record is `n/a
 A run that went on in a new conversation after the gateway ended a looping turn is covered whole: the measures
 span every conversation, and the restart count is reported next to them.
 
+### The packet check
+
+Whether the research packet (#83) helps depends on whether it picked the right records - checked with no model,
+before any paid run (#86). `evals/packet_labels.json` is a reviewed labelled set built from saved tuning-side
+runs (`python3 evals/packet_check.py --label` writes the proposal from each task's own outcome - its cell's
+entries and plan item, the findings its result recorded - and a reviewer reads it before committing); the
+committed fixtures in `evals/packet_fixture/` carry only what the packet builder reads (the findings database,
+the map and request evidence, the labelled tasks' records), so CI runs the check without the saved runs, which
+stay uncommitted. `python3 evals/packet_check.py` reports, per task and overall, recall (needed records the
+packet included), precision (how much of the packet was needed) and the characters used, at three budgets.
+
+Current numbers over the 7 labelled tuning tasks (the free-model campaign delegated with cells rarely - that is
+the epic's finding; the set grows as runs do):
+
+| Budget | Recall | Precision |
+|---|---|---|
+| 3000 chars | 1.00 | 0.13 |
+| 6000 chars | 1.00 | 0.08 |
+| 12000 chars | 1.00 | 0.08 |
+
+Every needed record fits by 3059 characters; a bigger budget only carries more noise. The default
+`WORKER_PACKET_CHARS` is 4000 - just over what the labelled cells needed. The check fails below 0.7 recall, and
+its precision numbers are the evidence for whether anything beyond ids and word match is worth building (the
+selection is lexical only, per #83's rule).
+
 ### Failures by cause
 
 A score says how much a run found. The failure records say what went wrong, in a form that can be counted across
