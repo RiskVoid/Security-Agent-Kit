@@ -746,12 +746,13 @@ class FetchInParts(Loop):
 
 
 class LongToolBesideAShortTask(Loop):
-    """#81 (epic #77, phase 0): one task's tool runs long while a second, short task is dispatched. Baseline: the
-    short task's first model call waits for the first task's whole loop, because run_task holds MODEL_LOCK across
-    tool calls. The inequality is the baseline; the constant isn't. This is the fixture #106 ("release the model
-    while a tool runs") and #107 ("tasks wait their turn on the target") are judged against."""
+    """#81 (epic #77, phase 0), updated by #106: one task's tool runs long while a second, short task is
+    dispatched. Before #106 the short task's first model call waited for the first task's whole loop, because
+    run_task held MODEL_LOCK across tool calls; since #106 the semaphore is held only around each model call,
+    so the short task gets the model while the long tool runs. #107's waits (the engagement's own task limit,
+    a writer's identity lock, a busy target) are judged against this same fixture."""
 
-    def test_the_short_task_waits_for_the_whole_first_task(self):
+    def test_the_short_task_gets_the_model_while_the_long_tool_runs(self):
         sleep_s = 0.4
         tool_started, tool_done = threading.Event(), []
         chats = []                    # (task id, time) of every model call, in order
@@ -796,10 +797,9 @@ class LongToolBesideAShortTask(Loop):
         short_ts = [t for tid, t in chats if tid == "short"]
         self.assertEqual((len(long_ts), len(short_ts)), (2, 1))
         waited = short_ts[0] - dispatch_at
-        self.assertGreaterEqual(waited, sleep_s)          # it waited at least the tool's duration
-        self.assertGreater(short_ts[0], tool_done[0])    # no model call while the first task's tool ran
-        self.assertGreater(short_ts[0], long_ts[-1])     # and not until the first task had finished: MODEL_LOCK
-        self.assertLess(long_ts[0], tool_done[0])        # (the first task did get the model before its tool ran)
+        self.assertLess(waited, sleep_s)                 # #106: no waiting for the first task's whole loop
+        self.assertLess(short_ts[0], tool_done[0])       # its model call happens while the long tool runs
+        self.assertLess(long_ts[0], tool_done[0])         # (the first task did get the model before its tool)
 
     def tearDown(self):
         worker.TASKS.clear()   # run_task registers tasks; nothing after this class needs them
@@ -1165,6 +1165,183 @@ class Packet(Loop):
         # a large record stays within the bound
         big = self.ws.add_manual("eng", "agent:planner", "huge", "http://lab", "x" * 9000, "info")["id"]
         self.assertLess(len(worker.read_record(t, big)), worker.RECORD_CHARS + 60)
+class Ledger(Loop):
+    """#115: the call ledger - a second task's identical scan carries the first one's entry, an unchanged read is
+    answered with no new call, a changed file is read again, a stale entry is never reused. #120: a note
+    survives compactions in the pinned block. #116: recall finds a task's agent notes."""
+
+    def setUp(self):
+        super().setUp()
+        self.file = os.path.join(self.tmp.name, "eng", "evidence", "r1.txt")
+        open(self.file, "w").write("line one\nline two\n")
+        self.info = dict(worker.engagement_info("eng"))
+        worker.engagement_info = lambda eng: dict(self.info)
+
+    def test_a_second_tasks_identical_scan_carries_the_firsts_entry(self):
+        cmd = lambda: [[call("kali_run", {"command": "curl -s http://lab/api/fetch"})]]  # noqa: E731
+        first, _ = self.run_script(cmd(), id="l1")
+        second, msgs2 = self.run_script(cmd(), id="l2")
+        tool2 = [m for m in msgs2 if m.get("role") == "tool"][-1]
+        self.assertIn("[ledger] an earlier call in this engagement already did this", tool2["content"])
+        self.assertIn("run by l1", tool2["content"])
+        self.assertEqual(second["ledger"], {"notices": 1})
+        self.assertEqual(first.get("ledger"), None)          # the first call had nothing to point at
+        # and a command that differs in a run stamp only is still the same work
+        third, msgs3 = self.run_script(cmd(), id="l3")
+        self.assertIn("[ledger]", [m for m in msgs3 if m.get("role") == "tool"][-1]["content"])
+
+    def test_an_unchanged_read_is_answered_and_a_changed_file_is_not(self):
+        read = lambda: [[call("read_file", {"path": "evidence/r1.txt"})]]  # noqa: E731
+        _, _ = self.run_script(read(), id="r1")
+        second, msgs2 = self.run_script(read(), id="r2")
+        tool2 = [m for m in msgs2 if m.get("role") == "tool"][-1]
+        self.assertIn("from the ledger, no new call", tool2["content"])
+        self.assertIn("unchanged since", tool2["content"])
+        self.assertEqual(second["ledger"]["reused"], 1)
+        # fresh=true reads it anyway
+        self.run_script([[call("read_file", {"path": "evidence/r1.txt", "fresh": True})]], id="r3")
+        tool3 = [m for m in self.run_script(read(), id="r3b")[1] if m.get("role") == "tool"][-1]
+        self.assertIn("line one", tool3["content"])
+        # a changed file is read again, not answered from the ledger
+        open(self.file, "w").write("line one changed\nline two\n")
+        tool4 = [m for m in self.run_script(read(), id="r4")[1] if m.get("role") == "tool"][-1]
+        self.assertIn("line one changed", tool4["content"])
+
+    def test_a_stale_entry_is_shown_and_never_reused(self):
+        read = lambda: [[call("read_file", {"path": "evidence/r1.txt"})]]  # noqa: E731
+        self.info["policy_version"] = 5
+        self.run_script(read(), id="s1")
+        import workspace
+        workspace.set_value("eng", "agent:planner", "current_policy_revision", "6")
+        tool = [m for m in self.run_script(read(), id="s2")[1] if m.get("role") == "tool"][-1]
+        self.assertIn("line one", tool["content"])           # the entry is stale: the read runs, no reuse
+
+    def test_a_note_survives_compactions_in_the_pinned_block(self):
+        task, _ = self.run_script([[call("note", {"fact": "the session token from login works on /api/fetch",
+                                                  "evidence": "evidence/http/r1.txt"})],
+                                   [call("note", {"fact": "a hunch without proof"})],
+                                   [call("kali_run", {"command": "curl -s http://lab/api/fetch"})]], id="n1")
+        messages = worker.load_messages(task)
+        blocks = [m for m in messages if str(m.get("content") or "").startswith("# Established so far")]
+        self.assertEqual(len(blocks), 1)
+        self.assertIn("the session token from login works on /api/fetch", blocks[0]["content"])
+        self.assertIn("[rests on evidence/http/r1.txt]", blocks[0]["content"])
+        self.assertIn("a hunch without proof [unsupported]", blocks[0]["content"])
+        before = blocks[0]["content"]
+        worker.compact(messages, task.get("lines"), task=task)
+        worker.compact(messages, task.get("lines"), task=task)   # twice: the block is rebuilt, never shrunk
+        blocks2 = [m for m in messages if str(m.get("content") or "").startswith("# Established so far")]
+        self.assertEqual(len(blocks2), 1)
+        self.assertEqual(blocks2[0]["content"], before)
+        self.assertIn("the session token", blocks2[0]["content"])
+        # and the typed finish carries them back to the planner: the default finish still injects them
+        self.assertIn("notes", task["result"])
+        self.assertEqual(task["result"]["notes"][0]["fact"], "the session token from login works on /api/fetch")
+        self.assertEqual(task["result"]["notes"][1]["evidence"], None)   # kept, and marked unsupported
+
+    def test_recall_finds_a_tasks_notes_and_the_packet_carries_them(self):
+        import workspace
+        self.run_script([[call("note", {"fact": "parameter role reflects on the fetch endpoint"})],
+                         [call("kali_run", {"command": "curl -s http://lab/api/fetch"})]], id="k1")
+        out = workspace.recall("eng", "fetch endpoint")
+        self.assertIn("k1", out)
+        self.assertIn("agent notes", out)
+        self.assertIn("parameter role reflects", out)
+        # a query for another engagement's subject finds nothing here
+        self.assertIn("nothing in eng matches", workspace.recall("eng", "parcels routing table"))
+class Capacity(Loop):
+    """#106: a queued task's timeout no longer shrinks while it waits; #107: a busy engagement is waited for,
+    not handed to the model as an error, and two writers through one identity run one after another."""
+
+    def setUp(self):
+        super().setUp()
+        worker.TOOL_WAIT_S, self.saved_poll = 2.0, worker.BUSY_POLL_S
+        worker.BUSY_POLL_S = 0.08
+
+    def tearDown(self):
+        worker.BUSY_POLL_S = self.saved_poll
+        worker.TOOL_WAIT_S = 120.0
+        super().tearDown()
+
+    def test_a_queued_tasks_timeout_does_not_shrink_while_it_waits(self):
+        task = worker._defaults({"id": "q-timeout", "goal": "g", "engagement": "eng", "tier": "passive",
+                                 "info": worker.engagement_info("eng"), "max_steps": 4, "timeout_min": 5,
+                                 "status": "running", "started": time.time() - 3600})   # an hour in the queue
+        os.makedirs(worker.task_dir(task), exist_ok=True)
+        worker.chat = lambda messages, model=None, task=None: {
+            "role": "assistant", "content": None,
+            "tool_calls": [call("finish", {"status": "completed", "summary": "done", "confidence": "low"})]}
+        worker.run_task(task)
+        self.assertEqual(task["status"], "done")            # the timeout counts its own running time, not the wait
+        self.assertGreater(task["queue_s"], 3000)           # the wait itself is recorded, not charged
+
+    def test_a_busy_refusal_becomes_a_bounded_wait(self):
+        tries = []
+
+        def busy_then_ok(task, command, timeout_s=600, approval_id=""):
+            tries.append(command)
+            if len(tries) == 1:
+                return ("REFUSED: 2 network command(s) already running for eng (Max parallel: 2); "
+                        "wait for one to finish")
+            return "exit=0 tier=passive\nran fine"
+
+        worker.IMPL = {**worker.IMPL, "kali_run": busy_then_ok}
+        task, _ = self.run_script([[call("kali_run", {"command": "curl -s http://lab/api/fetch"})]], id="busy-1")
+        msgs = worker.load_messages(task)
+        tool = [m for m in msgs if m.get("role") == "tool"][-1]
+        self.assertIn("ran fine", tool["content"])           # the model never saw the refusal
+        self.assertEqual(len(tries), 2)                      # the refused call was sent again, and it never ran
+        self.assertGreater(task["queue"].get("tool", 0), 0)  # the wait is recorded by kind
+        self.assertGreater(task["waited_s"], 0)              # and not charged to the task's timeout
+        # past the bound the refusal goes to the model after all
+        worker.TOOL_WAIT_S = 0.0
+        tries.clear()
+        task2, msgs2 = self.run_script([[call("kali_run", {"command": "curl -s http://lab/api/other"})]], id="busy-2")
+        tool2 = [m for m in worker.load_messages(task2) if m.get("role") == "tool"][-1]
+        self.assertIn("REFUSED", tool2["content"])
+
+    def test_two_writers_on_one_identity_run_one_after_another(self):
+        windows = []          # (start, end) of each intrusive call through the same identity
+
+        def slow_write(task, command, timeout_s=600, approval_id=""):
+            w = [time.time(), None]              # a local entry: windows[-1] would race with the other thread
+            windows.append(w)
+            time.sleep(0.15)
+            w[1] = time.time()
+            return "exit=0 tier=passive\nwritten"
+
+        worker.IMPL = {**worker.IMPL, "kali_run": slow_write}
+        seen = {}
+        def chat(messages, model=None, task=None):
+            seen[task["id"]] = seen.get(task["id"], 0) + 1
+            return {"role": "assistant", "content": None,
+                    "tool_calls": [call("kali_run", {"command": "write --to shared-fixture"})] if
+                    seen[task["id"]] == 1 else
+                    [call("finish", {"status": "completed", "summary": "done", "confidence": "low"})]}
+        worker.chat = chat
+
+        def make(tid, tier, identity):
+            return worker._defaults({"id": tid, "goal": "g", "engagement": "eng", "tier": tier,
+                                     "info": worker.engagement_info("eng"), "max_steps": 4, "timeout_min": 5,
+                                     "status": "running", "started": time.time(),
+                                     "contract": {"cell": {"class": "mass-assignment", "identity": identity,
+                                                           "entries": [], "plan_item": None,
+                                                           "endpoints": ["POST http://lab/x (E-1)"]}}})
+        a, b = make("w-a", "intrusive", "alice"), make("w-b", "intrusive", "alice")
+        r_only = make("r-c", "active", "alice")            # read-only: no identity lock
+        for t in (a, b, r_only):
+            os.makedirs(worker.task_dir(t), exist_ok=True)
+        threads = [threading.Thread(target=worker.run_task, args=(t,)) for t in (a, b, r_only)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(30)
+        self.assertTrue(all(not t.is_alive() for t in threads))
+        self.assertEqual((a["status"], b["status"]), ("done", "done"))
+        ws = sorted((w[0], w[1]) for w in windows if w[1])
+        self.assertEqual(len(ws), 3)
+        intrusive = ws[:2]
+        self.assertLess(intrusive[0][1], intrusive[1][0])   # the two writers never overlapped
 
 
 

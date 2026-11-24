@@ -220,6 +220,37 @@ changes to the harness are measured.
   engagement takes no message. Each one is in the audit log with who did it.
 
 ### Benchmarks
+- Model capacity is released while a tool runs (#106, phase E pulled forward): the worker's model semaphore
+  is held only around each model call - the worker's and the advisor's - instead of across a task's whole loop,
+  so a long scan no longer keeps every other task away from an idle model endpoint. Tools get their own limit
+  (`WORKER_PARALLEL_TOOLS`), a task's own steps stay one at a time with every durable checkpoint kept, and a
+  task's timeout counts its own running time: time queued for the model is recorded as queue delay (#79), not
+  charged. `WORKER_PARALLEL_TASKS` keeps its meaning for existing setups.
+- Tasks wait their turn on the target (#107): an engagement-level limit on tasks at once
+  (`WORKER_ENG_PARALLEL`), intrusive tasks that write through the same identity serialized (read-only tasks
+  never take that lock), and a call refused because the engagement is at its parallel limit - it never ran -
+  retried after a bounded wait (`WORKER_TOOL_WAIT_S`) instead of an error the model may fumble. The
+  engagement's rate and budgets hold across all tasks; every wait is recorded by kind (model, tool slot,
+  target, fixture) and not charged to the task's timeout.
+- The research board (#87): one row per open question - planned, blocked, or an outcome gone stale - with
+  the last result that changed something, the blocker, the budget used (tasks, worker steps, worker tokens,
+  target requests), and the next decision with its reason, computed from the records with no model. In
+  `get_handover` for the planner (the prompt says to pick up from there after a summary) and in the console's
+  Investigation tab for the person; recomputed whenever the records change. The harness images carry
+  ledger.py, which the live check caught them missing.
+- The memory surfaces around the packet (#115, #116, #117, #120, phase A of the research loop #77): the call
+  ledger built with no model from the audit log and the worker's task records - after a command or request runs
+  (it always runs) the reply carries the earlier equivalent call's entry, the planner's calls through kali-mcp
+  and the worker's through the harness ledger; an unchanged file read (hash compared) or a repeated vuln_intel
+  lookup is answered from the ledger, `fresh=true` forces a run, a stale entry is shown and never reused, and
+  the task result counts notices and reuse. `recall` is one search across what the engagement knows -
+  observations, findings, plan items, map entries, earlier task results with their agent notes, ledger entries -
+  one line per hit with its state, a worker tool and a planner tool on the same implementation. `get_briefing`
+  gives the planner the packet for a cell before delegating or testing it; `delegate_task`'s reply lists the
+  record ids the worker started from, so pointers survive a context summary. The worker's `note(fact, evidence)`
+  writes down what the task established - kept unsupported when no evidence is named, pinned in the
+  never-shrunk 'established so far' block that compaction rebuilds from the record, returned in the typed
+  finish, and visible to later tasks as agent notes. `RV_LEDGER=0` turns the ledger off.
 - The research packet (#83, #84, #85, #86, phase A of the research loop #77): a worker task bound to a plan
   item starts from what the engagement's records already say about its coverage cell - map entries,
   observations and findings with their states, earlier tasks for the same cell with their typed result

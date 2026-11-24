@@ -3729,6 +3729,32 @@ class FindingTools(unittest.TestCase):
         out = self.t.update_finding("e", fid, **kw)
         return json.loads(out) if out.startswith("{") else out
 
+    def test_the_briefing_matches_the_workers_packet_and_recall_searches(self):
+        """#117: get_briefing is the packet a worker task for that cell would start from; #116: the planner's
+        recall finds the same records the worker's would."""
+        import reconmap, workspace
+        os.makedirs(os.path.join(self.tmp.name, "e", "evidence", "map"), exist_ok=True)
+        json.dump({"observations": [{"method": "POST", "url": "http://lab/api/fetch", "source": "openapi",
+                                     "status": 200, "auth": "unknown", "params": {"body": ["role"]}}]},
+                  open(os.path.join(self.tmp.name, "e", "evidence", "map", "map-1.json"), "w"))
+        eid = next(x["id"] for x in reconmap.build("e")["entries"])
+        pid = workspace.plan_add("e", "agent:planner", [
+            {"title": "mass-assignment on POST /api/fetch", "area": "mass-assignment", "refs": [eid],
+             "hypothesis": "role may be writable"}])[0]
+        fid = db.record("e", actor="agent:planner", title="mass-assignment on POST /api/fetch", severity="high",
+                        asset="http://lab/api/fetch", description="role accepted", status="candidate")["id"]
+        brief = self.t.get_briefing("e", plan_item=pid)
+        pk = workspace.packet("e", "Test mass-assignment on POST /api/fetch", pid,
+                              chars=int(os.environ.get("WORKER_PACKET_CHARS", "4000") or 4000))
+        self.assertIn(pk["text"], brief)                     # the same packet the worker gets, no model call
+        self.assertIn(f"Plan item {pid}", brief)
+        self.assertIn(eid, brief)
+        self.assertIn(fid, brief)
+        out = self.t.recall("e", "fetch")
+        self.assertIn(eid, out)
+        self.assertIn(pid, out)
+        self.assertIn(fid, out)
+
     def test_record_with_a_method_confirms(self):
         f = self.record(method="source-review", reproduction=self.REPRO)
         self.assertEqual((f["status"], f["verified_method"]), ("confirmed", "source-review"))
@@ -4159,6 +4185,56 @@ class ResearchPacket(unittest.TestCase):
 
         with self.assertRaises(ValueError):
             self.ws.packet("no-such-engagement", "goal")
+
+    def test_the_board_rows_and_the_handover_carry_them(self):
+        """#87: one row per open question - a blocked item with its blocker, a stale outcome with its retest
+        reason, a running cell with its last result and budget - and handover() returns the board."""
+        import workspace
+        for d in ("evidence/sweep", "evidence/tasks/20261123-100000-aaaa/evidence"):
+            os.makedirs(os.path.join(self.tmp.name, "acme", d), exist_ok=True)
+        open(os.path.join(self.tmp.name, "acme", "evidence/sweep/s.json"), "w").write("{}")
+        ids = self.ws.plan_add("acme", "agent:planner", [
+            {"title": "BOLA on /api/parcels", "area": "access-control"},
+            {"title": "SSRF on /api/fetch", "area": "ssrf", "refs": [self.eid]},
+            {"title": "injection on /search", "area": "injection"}])
+        self.ws.plan_update("acme", "agent:planner", ids[0], state="blocked",
+                            rationale="no second identity yet; the client will supply one")
+        self.ws.plan_update("acme", "agent:planner", ids[1], state="tested",
+                            evidence=["evidence/sweep/s.json"], build="oldbuild")
+        self.ws.reassess("acme", "agent:planner", build="newbuild")
+        json.dump({"id": "20261123-100000-aaaa", "engagement": "acme", "goal": "Test injection on /search",
+                   "status": "done", "started": 500, "step": 9,
+                   "tokens": {"prompt_tokens": 5000, "completion_tokens": 500},
+                   "contract": {"plan_item": ids[2]},
+                   "result": {"status": "partial", "summary": "quote in q errors; boolean probe next"}},
+                  open(os.path.join(self.tmp.name, "acme", "evidence/tasks/20261123-100000-aaaa/task.json"),
+                       "w"))
+        rows = {r["item"]: r for r in self.ws.board("acme")}
+        self.assertEqual(sorted(rows), sorted(ids + [self.pid]))   # and the setUp's planned item, still open
+        blocked = rows[ids[0]]
+        self.assertEqual((blocked["state"], blocked["next"]), ("blocked", "unblock it"))
+        self.assertIn("no second identity yet", blocked["why"])
+        stale = rows[ids[1]]
+        self.assertEqual((stale["state"], stale["stale"], stale["next"]),
+                         ("tested", True, "retest on the current build"))
+        self.assertIn("build changed", stale["why"])
+        running = rows[ids[2]]
+        self.assertEqual(running["last_result"]["task"], "20261123-100000-aaaa")
+        self.assertEqual(running["budget"], {"tasks": 1, "steps": 9, "tokens": 5500, "target_requests": 0})
+        self.assertIn("triage the last result", running["next"])
+        h = self.ws.handover("acme")
+        self.assertEqual([r["item"] for r in h["board"]], sorted(rows))   # the handover carries the board
+        self.assertTrue(all(r["next"] and r["why"] for r in h["board"]))  # every row names its next decision
+
+    def test_recall_searches_every_kind_by_words_and_id(self):
+        out = self.ws.recall("acme", "fetch")
+        for part in (self.eid, self.pid, self.fid, self.fworker, "20261123-100000-aaaa"):
+            self.assertIn(part, out, f"{part} missing from recall('fetch')")
+        self.assertNotIn(self.fnoise, out)          # the off-route finding is not a hit for this query
+        by_id = self.ws.recall("acme", self.fid)
+        self.assertIn(f"[finding]", by_id)           # a query that is an id opens straight to the record
+        self.assertIn(self.fid, by_id)
+        self.assertIn("nothing in acme matches", self.ws.recall("acme", "parcels routing table"))
 
 
 class ReconClasses(unittest.TestCase):

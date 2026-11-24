@@ -141,6 +141,7 @@ services:
       - semgrep-rules:/opt/semgrep-rules                        # downloaded at first start (licence: not redistributable)
     environment:
       SEMGREP_RULES_COMMIT: ${SEMGREP_RULES_COMMIT:-16b9e6d45f10649f6a531ec4838ed9924372c3bc}   # 2026-10-21
+      RV_LEDGER: ${RV_LEDGER:-1}                # a planner call's result carries the ledger entry of an earlier equivalent
     # NET_ADMIN: per-engagement firewall (nftables). SYS_ADMIN: per-command mount namespace that shows only the
     # engagement's own folder. Agent commands run as an unprivileged per-engagement user with only CAP_NET_RAW.
     cap_add: [NET_RAW, NET_ADMIN, SYS_ADMIN]
@@ -163,6 +164,9 @@ services:
       WORKER_MODEL: colab-qwen
       WORKER_CONTEXT_CHARS: ${WORKER_CONTEXT_CHARS:-90000}   # task context budget; raise for bigger model contexts
       WORKER_PARALLEL_TASKS: ${WORKER_PARALLEL_TASKS:-1}     # tasks at once; raise only if the endpoint serves parallel requests
+      WORKER_PARALLEL_TOOLS: ${WORKER_PARALLEL_TOOLS:-2}   # tool calls at once (#106/#107); the model lock covers model calls only
+      WORKER_ENG_PARALLEL: ${WORKER_ENG_PARALLEL:-2}       # tasks of one engagement at once (#107)
+      WORKER_TOOL_WAIT_S: ${WORKER_TOOL_WAIT_S:-120}       # a busy target is waited for, bounded (#107)
       WORKER_MAX_TOKENS: ${WORKER_MAX_TOKENS:-8192}          # output tokens per worker model call, reasoning included
       RV_TRACING: ${RV_TRACING:-off}                        # ./rvkit tracing on: spans of tasks, model and tool calls
       RV_TRACE_ENDPOINT: http://otel-collector:4318   # the bundled collector on rvtrace: the worker has no route out
@@ -172,6 +176,7 @@ services:
       WORKER_STALL_CALLS: ${WORKER_STALL_CALLS:-8} # calls with nothing new before a task counts as stalled
       WORKER_PACKET: ${WORKER_PACKET:-1}         # a task bound to a plan item starts from the records (#83/#84); 0: off
       WORKER_PACKET_CHARS: ${WORKER_PACKET_CHARS:-4000}  # the packet's character allowance (packet_check sets it)
+      RV_LEDGER: ${RV_LEDGER:-1}                # the call ledger (#115): earlier equivalent calls are pointed out; 0: off
     volumes:
       - ${ENGAGEMENTS_DIR:-~/riskvoid/engagements}:/work
       - ${PROJECTS_DIR:-~/riskvoid/projects}:/src:ro

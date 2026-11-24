@@ -501,6 +501,56 @@ def set_value(eng, actor, key, value, expected_digest=None):
     return {"key": key, "digest": hashlib.sha256(value.encode()).hexdigest()[:16]}
 
 
+def board(eng):
+    """#87: one row per open question, from the records, with no model: the question, the last result that
+    changed something, the blocker, the budget used (tasks, worker steps, worker tokens, target requests), the
+    next decision and its reason. Open means planned or blocked, and items whose outcome went stale (they need
+    a retest). Later phases add to the same rows: experiment outcomes (#90), queue reasons (#96), parked and
+    reopened questions (#97)."""
+    from ledger import entries as ledger_entries
+    rows = []
+    items = [i for i in plan_list(eng) if i["state"] in ("planned", "blocked") or (i.get("stale") and
+             i["state"] in ("tested", "failed"))]
+    tasks = _packet_tasks(eng)
+    led = ledger_entries(eng)
+    for it in items:
+        pid = it["id"]
+        related = [t for t in tasks if pid in ((t.get("contract") or {}).get("plan_item") or "")
+                   or pid == ((t.get("contract") or {}).get("cell") or {}).get("plan_item")]
+        last = max(related, key=lambda t: t.get("started") or 0) if related else None
+        tokens = sum((t.get("tokens") or {}).get("prompt_tokens", 0)
+                     + (t.get("tokens") or {}).get("completion_tokens", 0) for t in related)
+        entry_ids = set(r for r in it.get("refs") or [])
+        requests = sum(1 for e in led if entry_ids and any(x in (e.get("key") or "") for x in entry_ids))
+        if it.get("stale") and it["state"] in ("tested", "failed"):
+            nxt, why = "retest on the current build", it.get("stale_reason") or "the build or policy changed"
+        elif it["state"] == "blocked":
+            nxt, why = "unblock it", it.get("rationale") or ""
+        elif not related:
+            nxt, why = ("delegate the first task for this cell (a coverage gap arrives with the goal pre-shaped)"
+                        if entry_ids else "plan it against a recon map entry"), "no task has touched this cell yet"
+        elif last and (last.get("status") in ("blocked", "stalled") or
+                       (last.get("result") or {}).get("status") in ("blocked", "stalled")):
+            needs = (last.get("result") or {}).get("needs") or []
+            nxt = "unblock the task: " + ("; ".join(str(n) for n in needs[:2]) if needs else "see its result")
+            why = f"the last task for this cell ended {((last.get('result') or {}).get('status') or 'blocked')}"
+        else:
+            nxt = "triage the last result and record the outcome"
+            why = "the cell is still open after " + (f"{len(related)} task(s)" if related else "no task")
+        rows.append({"item": pid, "question": it["title"], "state": it["state"],
+                     "stale": bool(it.get("stale")), "identity": it.get("identity"),
+                     "last_result": ({"task": last["id"], "status": (last.get("result") or {}).get("status")
+                                      or last.get("status"),
+                                      "summary": ((last.get("result") or {}).get("summary") or "")[:160],
+                                      "at": last.get("started")} if last else None),
+                     "blocker": it.get("rationale") or ((last.get("result") or {}).get("needs") or [None])[0]
+                                if last and (last.get("result") or {}).get("needs") else None,
+                     "budget": {"tasks": len(related), "steps": sum(t.get("step") or 0 for t in related),
+                                "tokens": tokens, "target_requests": requests},
+                     "next": nxt, "why": why})
+    return rows
+
+
 def handover(eng):
     """Where the investigation stands, from the authoritative records, plus the editable note."""
     findings = db.list_(eng)
@@ -547,6 +597,7 @@ def handover(eng):
         nxt.append(f"{len(cov['open'])} planned test(s) not run yet, next: {cov['open'][0]['id']} "
                    f"{cov['open'][0]['title']}")
     return {"objective": objective["value"] if objective else None,
+            "board": board(eng),   # #87: per open question, where it stands and why it isn't moving
             "findings": {s: len(v) for s, v in st.items()},
             "material": [{"id": f["id"], "title": f["title"], "severity": f["severity"], "status": f["status"]}
                          for f in findings if f["severity"] in ("critical", "high") and f["status"] in
@@ -669,8 +720,10 @@ def packet(eng, goal, pid=None, chars=6000, exclude_task=None):
         summ = (t.get("result") or {}).get("summary") or t.get("last_text") or ""
         ev = ", ".join(str(p).split("/work/" + eng + "/")[-1] for p in (t.get("run_evidence") or [])[:3])
         identity = (tcell.get("identity") or t.get("identity") or "")
+        notes = "; ".join(n["fact"][:110] for n in (t.get("notes") or [])[:3])
         line = (f"task {t['id']} {status}" + (f" as {identity}" if identity else "")
                 + f" - {(t.get('goal') or '')[:110]} - worker summary (not a verified fact): {summ[:200]}"
+                + (f" - agent notes (the worker's own, not verified facts): {notes[:240]}" if notes else "")
                 + (f" - evidence: {ev}" if ev else ""))
         tried.append((t["id"], line))
     for f in db.list_(eng):
@@ -733,3 +786,76 @@ def _packet_tasks(eng):
         except (OSError, ValueError):
             pass
     return sorted(out, key=lambda x: x.get("started") or 0)
+
+
+# ---------------------------------------------------------------- one search across the records (#116)
+def recall(eng, query, kind="", state="", limit=20):
+    """What this engagement knows that matches a query: observations, findings, plan items, map entries,
+    earlier task results and ledger entries - one line per hit with its state and age, ids first (the query is
+    an id), then the route group or path it names, then words. Same engagement only; the text is bounded, and
+    target-controlled text arrives quoted through the records' own truncated lines. read_record (the worker)
+    or the ops layer opens any hit in full."""
+    import reconmap
+    from ledger import entries as ledger_entries, norm as _norm
+    q = str(query or "").strip()
+    if not q:
+        return "REFUSED: a query needs words or a record id"
+    limit = max(1, min(int(limit or 20), 50))
+    kinds = {k.strip().lower() for k in str(kind or "").split(",") if k.strip()} or None
+    want_state = str(state or "").strip().lower()
+    words = {w for w in re.findall(r"[a-z][a-z0-9_-]{3,}", q.lower()) if w not in PACKET_STOP}
+    hits = []
+
+    def take(k, rid, line, st):
+        if kinds and k not in kinds:
+            return
+        if want_state and want_state not in str(st or "").lower():
+            return
+        hits.append(f"{rid} [{k}] {st or '-'} - {line}")
+
+    rid = q if re.fullmatch(r"(?:[OFPE]-[0-9a-zA-Z]+|\d{8}-\d{6}-[0-9a-f]{4})", q) else ""
+    for o in list_observations(eng, limit=5000):
+        text = f"{o['title']} {o.get('location') or ''}"
+        if (o["id"] == rid or (not rid and (words & {w for w in re.findall(r"[a-z][a-z0-9_-]{3,}", text.lower())} or
+                                              q.lower() in text.lower()))):
+            take("observation", o["id"], f"{o['title'][:90]}" + (f" at {o.get('location')}" if o.get("location")
+                                                                 else ""), o["status"])
+    for f in db.list_(eng):
+        text = f"{f['title']} {f.get('asset') or ''}"
+        st = f["status"] + (f", {f['verification']}" if f.get("verification") not in (None, "unverified") else "")
+        if (f["id"] == rid or (not rid and (words & {w for w in re.findall(r"[a-z][a-z0-9_-]{3,}", text.lower())} or
+                                             q.lower() in text.lower()))):
+            take("finding", f["id"], f"{f['title'][:90]}" + (f" on {f['asset']}" if f.get("asset") else ""), st)
+    for it in plan_list(eng):
+        text = f"{it['title']} {' '.join(it.get('refs') or [])}"
+        if (it["id"] == rid or (not rid and (words & {w for w in re.findall(r"[a-z][a-z0-9_-]{3,}", text.lower())} or
+                                             q.lower() in text.lower()))):
+            st = it["state"] + (" (stale)" if it.get("stale") else "")
+            take("plan", it["id"], f"{it['title'][:90]}", st)
+    if reconmap.has_map(eng):
+        for e in reconmap.build(eng)["entries"]:
+            text = f"{e['method']} {e['host']}{e['path']} {e.get('example') or ''}"
+            if (e["id"] == rid or (not rid and (q.lower() in text.lower() or
+                                                words & {w for w in re.findall(r"[a-z][a-z0-9_-]{3,}", text.lower())}))):
+                take("map", e["id"], f"{e['method']} {e['host']}{e['path']}", e.get("auth"))
+    for t in _packet_tasks(eng):
+        text = f"{t.get('goal')} {(t.get('result') or {}).get('summary') or ''}"
+        notes = " ".join(n.get("fact") or "" for n in t.get("notes") or [])
+        if not rid and (words & {w for w in re.findall(r"[a-z][a-z0-9_-]{3,}", (text + " " + notes).lower())}
+                        or q.lower() in text.lower()):
+            st = (t.get("result") or {}).get("status") or t.get("status")
+            line = f"task {(t.get('goal') or '')[:80]}"
+            if t.get("notes"):
+                line += " - agent notes: " + "; ".join(n["fact"][:90] for n in t["notes"][:3])
+            take("task", t["id"], line, st)
+    for e in ledger_entries(eng):
+        if q.lower() in str(e.get("key") or "").lower():
+            take("ledger", str(e.get("who") or "?"), f"{e['tool']} {str(e.get('key'))[:90]}"
+                + (f" - {e['digest']}" if e.get("digest") else ""),
+                "stale" if e.get("build") else ("reusable" if e.get("exit") in (0, "0", None) else str(e.get("exit"))))
+    if not hits:
+        return (f"nothing in {eng} matches {q!r}" + (f" of kind {sorted(kinds)}" if kinds else "")
+                + ". The records are scoped to this engagement; read_record-style ids are O-..., F-..., P-..., "
+                "E-...... or a task id.")
+    return f"{len(hits[:limit])} match(es) in {eng} (read_record opens any by id):\n" + "\n".join(hits[:limit]) \
+        + (f"\n... and {len(hits) - limit} more" if len(hits) > limit else "")

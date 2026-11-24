@@ -30,6 +30,7 @@ from mcp.client.streamable_http import streamablehttp_client
 from mcp.server.fastmcp import FastMCP
 import findings_db as db
 import digest
+import ledger
 import tracing
 
 LITELLM = os.environ.get("LITELLM_URL", "http://litellm:4000/v1")
@@ -60,6 +61,40 @@ TASKS: dict[str, dict] = {}
 # How many tasks run at once. 1 (default) suits a single-slot llama-server on Colab; raise it for an endpoint that
 # serves parallel requests (an API, or llama-server with --parallel N).
 MODEL_LOCK = threading.BoundedSemaphore(max(1, int(os.environ.get("WORKER_PARALLEL_TASKS", "1") or 1)))
+TOOL_LOCK = threading.BoundedSemaphore(max(1, int(os.environ.get("WORKER_PARALLEL_TOOLS", "2") or 2)))
+ENG_TASK_LOCKS = {}   # #107: per engagement, WORKER_ENG_PARALLEL tasks at once (the target's own capacity)
+WRITE_LOCKS = {}      # #107: (engagement, identity) -> lock: intrusive tasks through one identity serialize
+TOOL_WAIT_S = float(os.environ.get("WORKER_TOOL_WAIT_S", "120") or 120)   # #107: a busy engagement's wait bound
+BUSY_POLL_S = 5.0     # how often a busy refusal is retried
+
+
+def _eng_lock(eng):
+    n = max(1, int(os.environ.get("WORKER_ENG_PARALLEL", "2") or 2))
+    with _LOCKS_GUARD:
+        return ENG_TASK_LOCKS.setdefault(eng, threading.BoundedSemaphore(n))
+
+
+def _write_lock(task):
+    """#107: intrusive tasks that act through the same identity serialize - two writers on one account or
+    fixture race each other and the target. Read-only tiers never take this lock."""
+    ident = ((task.get("contract") or {}).get("cell") or {}).get("identity") or task.get("identity")
+    if task.get("tier") != "intrusive" or not ident:
+        return None
+    with _LOCKS_GUARD:
+        return WRITE_LOCKS.setdefault((task["engagement"], str(ident)), threading.Lock())
+
+
+_LOCKS_GUARD = threading.Lock()
+
+
+def _queue_wait(task, kind, seconds):
+    """#107: a wait the task didn't choose - model, a tool slot, the target's task limit, a fixture - recorded
+    by kind and not charged to the task's own timeout (the deadline extends by waited_s)."""
+    if seconds <= 0.05:
+        return
+    q = task.setdefault("queue", {})
+    q[kind] = round(q.get(kind, 0.0) + seconds, 1)
+    task["waited_s"] = task.get("waited_s", 0) + seconds
 
 # finish (epic #52, issue #40): what the model can say about its task, and what the harness says when the task ends
 # another way. A task's outcome is one of OUTCOMES.
@@ -150,7 +185,10 @@ TOOLS = [
         "Read a text file under /src or the engagement folder. Lines are numbered.",
         "parameters": {"type": "object", "properties": {
             "path": {"type": "string"}, "start": {"type": "integer", "default": 1},
-            "lines": {"type": "integer", "default": 200}}, "required": ["path"]}}},
+            "lines": {"type": "integer", "default": 200},
+            "fresh": {"type": "boolean", "default": False, "description":
+                "read it again even though the ledger says an unchanged read exists (#115)"}},
+            "required": ["path"]}}},
     {"type": "function", "function": {"name": "record_candidate", "description":
         "Store a candidate finding with evidence. The lead consultant verifies it.",
         "parameters": {"type": "object", "properties": {
@@ -182,6 +220,26 @@ TOOLS = [
         "parameters": {"type": "object", "properties": {
             "id": {"type": "string", "description": "the record id, exactly as the packet names it"}},
             "required": ["id"]}}},
+    {"type": "function", "function": {"name": "note", "description":
+        "Write down one fact this task established (a session that works, a parameter that reflects input, an "
+        "id that belongs to another tenant), with the evidence path or call it rests on. The notes survive "
+        "compaction in the pinned 'established so far' block, go back to the planner in the finish, and reach "
+        "later tasks as agent notes - your words, not verified facts.",
+        "parameters": {"type": "object", "properties": {
+            "fact": {"type": "string", "description": "one short statement, as specific as you can make it"},
+            "evidence": {"type": "string", "description":
+                "the evidence file path or the call that showed it; empty means the note is kept as unsupported"}},
+            "required": ["fact"]}}},
+    {"type": "function", "function": {"name": "recall", "description":
+        "One search across what this engagement knows: observations, findings, plan items, map entries, earlier "
+        "task results and the call ledger. One line per hit with its state and age; read_record opens any hit. "
+        "Same engagement only.",
+        "parameters": {"type": "object", "properties": {
+            "query": {"type": "string", "description": "an endpoint, a parameter, an identity, a record id, or words"},
+            "kind": {"type": "string", "enum": ["observation", "finding", "plan", "map", "task", "ledger", ""],
+                     "description": "only this kind of record"},
+            "state": {"type": "string", "description": "only records in this state (new, confirmed, candidate, ...)"}},
+            "required": ["query"]}}},
 ]
 
 from redact import REDACT, redact  # noqa: E402,F401  (secrets stay in evidence files only)
@@ -227,18 +285,22 @@ def engagement_info(engagement):
     return json.loads(out)
 
 
+TARGET_BUSY_RX = re.compile(r"REFUSED: \d+ (?:network )?command\(s\) already running", re.I)
+
+
 def kali_run(task, command, timeout_s=600, approval_id=""):
     """kali-mcp enforces the task's tier (max_tier), not only the prompt."""
     t = min(int(timeout_s or 600), 3600)
-    return _arun(_kali("run", {"command": command, "engagement": task["engagement"], "timeout_s": t,
-                               "max_tier": task["tier"], "task": task["id"], "approval_id": approval_id or ""}, t))
+    body = {"command": command, "engagement": task["engagement"], "timeout_s": t,
+            "max_tier": task["tier"], "task": task["id"], "approval_id": approval_id or ""}
+    return _arun(_kali("run", body, t))
 
 
 def http_request(task, method, url, headers=None, body="", approval_id="", identity=""):
-    return _arun(_kali("http_request", {"engagement": task["engagement"], "method": method, "url": url,
-                                        "headers": headers or {}, "body": body or "", "max_tier": task["tier"],
-                                        "task": task["id"], "approval_id": approval_id or "",
-                                        "identity": identity or ""}, 300))
+    req = {"engagement": task["engagement"], "method": method, "url": url, "headers": headers or {},
+           "body": body or "", "max_tier": task["tier"], "task": task["id"], "approval_id": approval_id or "",
+           "identity": identity or ""}
+    return _arun(_kali("http_request", req, 300))
 
 
 def check_identity(task, identity):
@@ -250,7 +312,13 @@ def analyze_source(task, tool, path, rulesets=None):
                                           "rulesets": rulesets or [], "task": task["id"]}, 1900))
 
 
-def vuln_intel(task, ids):
+def vuln_intel(task, ids, fresh=False):
+    if not fresh:   # #115: a lookup the engagement already made, answered from the ledger
+        e = ledger_reply(task, "vuln_intel", {"ids": ids})
+        if e and e.get("digest"):
+            task.setdefault("ledger", {})["reused"] = task.get("ledger", {}).get("reused", 0) + 1
+            return ("from the ledger, no new call - this engagement already looked these up ("
+                    + ledger.entry_line(e) + "). Run it again with fresh=true if the answer may have changed.")
     async def go():
         async with streamablehttp_client(INTEL_MCP, timeout=30, sse_read_timeout=600) as (r, w, _):
             async with ClientSession(r, w) as s:
@@ -276,7 +344,7 @@ def fetch_url(task, url, start=0):
                                  f"start={m.group(2)}]", out)
 
 
-def read_file(task, path, start=1, lines=200):
+def read_file(task, path, start=1, lines=200, fresh=False):
     folder = os.path.realpath(db.engagement_dir(task["engagement"]))
     path = str(path or "")
     if path.startswith("/work/"):   # the engagement folder as the tools name it
@@ -291,8 +359,20 @@ def read_file(task, path, start=1, lines=200):
     if not os.path.isfile(real):
         return f"no such file: {path} (relative paths are read from /work/{task['engagement']}/)"
     start, lines = max(1, int(start or 1)), min(int(lines or 200), 500)
+    import hashlib
+    sha = hashlib.sha256(open(real, "rb").read()).hexdigest()
+    if not fresh:   # #115: a read whose file is unchanged is answered from the ledger, no new call
+        e = ledger_reply(task, "read_file", {"path": path, "start": start, "lines": lines})
+        if e and e.get("sha") == sha:
+            task.setdefault("ledger", {})["reused"] = task.get("ledger", {}).get("reused", 0) + 1
+            return ("from the ledger, no new call - the file is unchanged since "
+                    + ledger.entry_line(e)
+                    + ". Read it again with fresh=true if you need the text itself.")
     with open(real, errors="replace") as f:
         out = [f"{i}: {l.rstrip()}" for i, l in enumerate(f, 1) if start <= i < start + lines]
+    rec = _step_now(task)          # the ledger's next reader compares hashes
+    if rec is not None:
+        rec.update(sha=sha)
     return "\n".join(out) or "(no lines in that range)"
 
 
@@ -370,7 +450,11 @@ def read_record(task, id):
                               "summary (the worker words, not a verified fact): "
                               + ((t.get("result") or {}).get("summary") or t.get("last_text") or "-"),
                               f"tier: {t.get('tier')}; steps: {t.get('step')}",
-                              "run evidence: " + (", ".join(t.get("run_evidence") or []) or "none")])
+                              "run evidence: " + (", ".join(t.get("run_evidence") or []) or "none")]
+                      + (["agent notes (the worker's own, not verified facts):"]
+                         + [f"- {n['fact']}" + (f" [rests on {n['evidence']}]" if n.get("evidence")
+                                                 else " [unsupported]") for n in t.get("notes") or []]
+                         if t.get("notes") else []))
         else:
             return ("unrecognised id " + rid + ": a record id looks like O-012, F-001, P-003, E-1a2b3c or a "
                     "task id (20261123-122609-3599); the packet names the ids that matter for this task")
@@ -393,8 +477,12 @@ def record_candidate(task, title, severity, asset, description, evidence, cwe=""
     return f"recorded {f['id']} (candidate)"
 
 
-IMPL = {"kali_run": kali_run, "http_request": http_request, "check_identity": check_identity, "analyze_source": analyze_source, "vuln_intel": vuln_intel, "web_search": web_search, "fetch_url": fetch_url, "read_file": read_file,
-        "record_candidate": record_candidate, "read_record": read_record}
+def recall(task, query, kind="", state=""):
+    """#116: one search across what this engagement knows - the shared implementation in workspace.recall, the
+    same one the planner's tool uses."""
+    import workspace
+    return workspace.recall(task["engagement"], query, kind or "", state or "")
+
 
 
 # ---------------------------------------------------------------- model loop
@@ -416,6 +504,13 @@ ADVISOR = os.environ.get("WORKER_ADVISOR", "1") != "0"
 PACKET = os.environ.get("WORKER_PACKET", "1") != "0"      # the research packet (#83/#84): a task bound to a
                                                           # plan item starts from what the records already say
 PACKET_CHARS = int(os.environ.get("WORKER_PACKET_CHARS", "4000") or 4000)   # its allowance; packet_check.py measured it
+LEDGER = os.environ.get("RV_LEDGER", "1") != "0"           # the call ledger (#115), one setting for both
+                                                          # sides: earlier equivalent calls are pointed out;
+                                                          # unchanged reads answered from the ledger
+ESTABLISHED_CHARS = int(os.environ.get("WORKER_ESTABLISHED_CHARS", "2000") or 2000)   # #120's pinned block
+LEDGER = os.environ.get("WORKER_LEDGER", "1") != "0"      # the call ledger (#115): earlier equivalent calls are
+                                                          # pointed out; unchanged reads answered from it
+ESTABLISHED_CHARS = int(os.environ.get("WORKER_ESTABLISHED_CHARS", "2000") or 2000)   # #120's pinned block
 ADVISOR_MODEL = os.environ.get("WORKER_ADVISOR_MODEL", "planner")
 ADVISOR_MAX = 2
 SAFE_METHODS = ("GET", "HEAD", "OPTIONS")
@@ -551,11 +646,14 @@ def _is_packet(m):
                                         c.startswith("[harness] Since this task started"))
 
 
-def compact(messages, lines=None):
+def compact(messages, lines=None, task=None):
     """Keep the conversation under CTX_CHARS by shrinking the oldest tool results to one line each: the tool, what it
     ran, the exit status, the digest's summary and the evidence path (digest.one_line; the full output is on disk).
     The latest KEEP_RESULTS results stay whole; the system prompt and the goal are never shrunk; nothing is shrunk
-    twice."""
+    twice. The pinned 'established so far' block (#120) is not shrunk: with a task in hand it is rebuilt
+    from the task record, so what a long task learned early survives every compaction."""
+    if task is not None:
+        _refresh_established(task, messages)
     total = sum(len(json.dumps(m)) for m in messages)
     packets = [m for m in messages if _is_packet(m)]     # #84: an old packet is history, the latest isn't
     for m in packets[:-1]:
@@ -742,7 +840,10 @@ def advise(task, kind, detail):
     req = urllib.request.Request(f"{LITELLM}/chat/completions", data=json.dumps(body).encode(), headers=hdrs)
     rec = {"at": _now(), "kind": kind}
     try:
-        r = json.load(urllib.request.urlopen(req, timeout=180))
+        t_lock = time.time()
+        with MODEL_LOCK:            # #106: an advice call is a model call, nothing more
+            _queue_wait(task, "model", time.time() - t_lock)
+            r = json.load(urllib.request.urlopen(req, timeout=180))
         text = (r["choices"][0]["message"].get("content") or "").strip()
         rec.update(tokens=r.get("usage"), model=r.get("model"))
     except Exception as e:  # noqa: BLE001 - no advice: the task stops as stalled instead
@@ -834,6 +935,106 @@ def _packet_refresh(task, messages):
                      "[harness] Since this task started, the records changed (" + packet_diff(old, new)
                      + "). The current packet:\n\n" + packet_text(pk)})
     task["packet"] = {**new, "at": _now()}
+
+
+def _ledger_state(task):
+    """The engagement's current build and policy revision, for the ledger's staleness rule. The worker's own
+    calls carry the policy version of their task record; the build reaches the entries when phase B records
+    per-call builds (#91), so build staleness follows the workspace keys as they exist."""
+    try:
+        import workspace
+        return ((workspace.get_value(task["engagement"], "current_build") or {}).get("value"),
+                (workspace.get_value(task["engagement"], "current_policy_revision") or {}).get("value"))
+    except Exception:   # noqa: BLE001
+        return None, None
+
+
+def ledger_notice(task, name, args):
+    """#115: an earlier equivalent call in this engagement, appended to the result of one that always ran - a
+    notice, never a skip: the target can answer differently. Nothing when no earlier entry exists."""
+    if not LEDGER or name not in ("kali_run", "http_request"):
+        return ""
+    try:
+        build, pol = _ledger_state(task)
+        e = ledger.find(task["engagement"], name, args, exclude_task=task["id"], build=build, policy_revision=pol)
+    except Exception:   # noqa: BLE001  a ledger problem never blocks a call
+        return ""
+    if not e:
+        return ""
+    task.setdefault("ledger", {})["notices"] = task.get("ledger", {}).get("notices", 0) + 1
+    return ("\n[ledger] an earlier call in this engagement already did this (" + ledger.entry_line(e)
+            + "). This one ran anyway - its result can change - but don't repeat this work unless it may have.")
+
+
+def ledger_reply(task, tool, args):
+    """#115: an unchanged read answered from the ledger, no new call - the earlier entry's digest and evidence.
+    None when nothing usable is there (a stale entry is not reusable)."""
+    if not LEDGER:
+        return None
+    try:
+        build, pol = _ledger_state(task)
+        e = ledger.find(task["engagement"], tool, args, exclude_task=task["id"], build=build, policy_revision=pol)
+    except Exception:   # noqa: BLE001
+        return None
+    if not e or e.get("stale"):
+        return None
+    return e
+
+
+def _step_now(task):
+    """The step record currently running (the last one started), for a tool to record what the ledger needs."""
+    return next((s for s in reversed(task.get("steps") or []) if s.get("state") == "started"), None)
+
+
+def note(task, fact, evidence=""):
+    """#120: one short statement this task established, with the evidence path or call it rests on. Saved in the
+    task record, shown in the pinned 'established so far' block that compaction never shrinks, returned to the
+    planner in the typed finish, and visible to later tasks through the packet and recall as agent notes - data,
+    not verified facts. A note without evidence is kept and marked unsupported."""
+    f = re.sub(r"\s+", " ", str(fact or "")).strip()[:300]
+    if not f:
+        return "REFUSED: a note needs its fact"
+    ev = str(evidence or "").strip()[:200]
+    task.setdefault("notes", []).append({"fact": f, "evidence": ev or None, "step": task.get("step"),
+                                         "at": _now()})
+    return ("noted (the agent's words, not a verified fact): " + f) + ("" if ev else " - unsupported: no evidence named")
+
+
+def established_block(task):
+    """#120: what this task established so far, from the task record: its notes (marked as the agent's own),
+    its recorded candidates, the identities it checked. compact() rebuilds this block from the record, so what a
+    long task learned early survives; the block has its own allowance and the oldest lines fall back to the
+    task id read_record opens."""
+    lines = []
+    for n in task.get("notes") or []:
+        lines.append("note (agent's words, not a verified fact): " + n["fact"]
+                     + (f" [rests on {n['evidence']}]" if n.get("evidence") else " [unsupported]"))
+    lines += [f"candidate recorded: {f}" for f in task.get("candidates") or []]
+    checked = sorted({str((s.get("args") or {}).get("name") or "") for s in task.get("steps") or []
+                      if s.get("tool") == "check_identity" and s.get("state") == "done"} - {""})
+    if checked:
+        lines.append("identities checked: " + ", ".join(checked))
+    if not lines:
+        return ""
+    text = "# Established so far (kept whole through compaction; the writer's words are not verified facts):\n" \
+        + "\n".join(lines)
+    if len(text) > ESTABLISHED_CHARS:     # the oldest lines fall back to the ids read_record opens
+        keep = text[-int(ESTABLISHED_CHARS * 0.9):]
+        return (f"# Established so far (oldest lines cut: read_record(\"{task['id']}\") opens the task record "
+                "with every note)\n" + keep[keep.index("\n") + 1:])
+    return text
+
+
+def _refresh_established(task, messages):
+    """Rebuild the pinned block in place: after the packet, updated from the record, never shrunk by compact."""
+    text = established_block(task)
+    if not text:
+        return
+    for m in messages:
+        if m.get("role") == "user" and str(m.get("content") or "").startswith("# Established so far"):
+            m["content"] = text
+            return
+    messages.append({"role": "user", "content": text})
 
 
 def contract_text(task):
@@ -970,7 +1171,10 @@ def _do_call_inner(task, c, messages):
             save(task, messages)
             return "ok"
         task.pop("refused_finish", None)
-        task["result"] = args
+        task["result"] = {**args,
+                          "notes": [{"fact": n["fact"], "evidence": n.get("evidence")}
+                                    for n in task.get("notes") or []],   # #120: the agent's words, marked as such
+                          **({"ledger": task["ledger"]} if task.get("ledger") else {})}   # #115: notices and reuse
         return "finish"
     ap = task.get("approval") if (task.get("approval") or {}).get("call") == c.get("id") else None
     extra = {}
@@ -999,7 +1203,21 @@ def _do_call_inner(task, c, messages):
     rec.update(state="started", at=_now(), **({"approval": ap["id"]} if ap else {}))
     save(task, messages)  # checkpoint: the action may run from here on
     try:
-        out = IMPL[name](task, **args, **extra)
+        with TOOL_LOCK:            # #107: running tools have their own limit, separate from the model's
+            out = IMPL[name](task, **args, **extra)
+            if name in ("kali_run", "http_request") and TARGET_BUSY_RX.match(str(out or "").strip()):
+                # #107: the call was refused because the engagement is at its parallel limit, so it never
+                # ran - wait for a slot and send it again, bounded, instead of an error the model retries
+                waited = 0.0
+                while waited < TOOL_WAIT_S:
+                    poll = min(BUSY_POLL_S, TOOL_WAIT_S - waited)
+                    time.sleep(poll)
+                    waited += poll
+                    out = IMPL[name](task, **args, **extra)
+                    if not TARGET_BUSY_RX.match(str(out or "").strip()):
+                        break
+                if waited:
+                    _queue_wait(task, "tool", waited)
     except Exception as e:  # tool errors go back to the model
         out = f"ERROR: {type(e).__name__}: {e}"
     m = APPROVAL_RX.search(out) if name in ("kali_run", "http_request") and not extra else None
@@ -1037,14 +1255,22 @@ def _do_call_inner(task, c, messages):
     path = _step_file(task, task["step"], name, args, out)
     shown = digest.shown(name, args, out, path)
     task.setdefault("lines", {})[c.get("id", name)] = digest.one_line(name, args, out)   # what it shrinks to
+    notice = ledger_notice(task, name, args)   # #115: an earlier equivalent call, after the result
+    if name == "note":                         # #120: the pinned block follows the record
+        _refresh_established(task, messages)
     stall = watch(task, name, args, out)
     try:
         if stall:
             shown += on_stall(task, *stall)
     finally:   # a stop still records the result the model got
-        messages.append({"role": "tool", "tool_call_id": c.get("id", name), "content": shown + footer(task)})
+        messages.append({"role": "tool", "tool_call_id": c.get("id", name),
+                         "content": shown + footer(task) + (notice or "")})
         save(task, messages)
     return "ok"
+
+
+IMPL = {"kali_run": kali_run, "http_request": http_request, "check_identity": check_identity, "analyze_source": analyze_source, "vuln_intel": vuln_intel, "web_search": web_search, "fetch_url": fetch_url, "read_file": read_file,
+        "record_candidate": record_candidate, "read_record": read_record, "note": note, "recall": recall}
 
 
 def _loop(task, log):
@@ -1061,7 +1287,6 @@ def _loop(task, log):
             task["packet"] = {"ids": pk["ids"], "revisions": pk["revisions"], "at": _now()}
     # "Worker model: private" in RULES.md: never use the fallback model (tool output and code stay on the endpoint)
     model = "private-llm" if task["info"]["rules"].get("worker") == "private" else WORKER_MODEL
-    deadline = task["started"] + task["timeout_min"] * 60 + task.get("waited_s", 0)
     while True:
         while task["pending_calls"]:  # the rest of the current assistant turn (also after an approval)
             r = _do_call(task, task["pending_calls"][0], messages)
@@ -1072,16 +1297,24 @@ def _loop(task, log):
             task["pending_calls"].pop(0)
             save(task, messages)
         _stop_check(task)
+        if "queue_s" not in task:      # #79/#106: the queue ends at the first model call, and the timeout
+            with MODEL_LOCK:           # counts the task's own running time from there, not the wait
+                task["queue_s"] = round(max(0.0, time.time() - task["started"] - task.get("waited_s", 0)), 1)
+                task["started"] = time.time()
+        deadline = task["started"] + task["timeout_min"] * 60 + task.get("waited_s", 0)
         if time.time() > deadline:
             raise TimeoutError(f"task exceeded {task['timeout_min']} min")
         task["step"] += 1
         if task["step"] > task["max_steps"] + 1:
             task["result"] = unfinished_result(task)
             return "done"
-        compact(messages, task.get("lines"))
+        compact(messages, task.get("lines"), task=task)
         if task["step"] > task["max_steps"]:  # out of tool budget: force a final answer
             messages.append({"role": "user", "content": "Tool budget used up. Call finish now."})
-        msg = chat(messages, model, task)
+        t_lock = time.time()
+        with MODEL_LOCK:            # #106: held only for the model call, released before the tools run
+            _queue_wait(task, "model", time.time() - t_lock)
+            msg = chat(messages, model, task)
         if msg.get("_served_by") and msg["_served_by"] not in task["served_by"]:
             task["served_by"].append(msg["_served_by"])
         messages.append({k: v for k, v in msg.items() if k in ("role", "content", "tool_calls")})
@@ -1129,7 +1362,11 @@ def no_answer(task, msg, messages):
 
 
 def run_task(task):
-    """Run (or continue) a task until it finishes, pauses for an approval or stops."""
+    """Run (or continue) a task until it finishes, pauses for an approval or stops. #106: the model semaphore
+    is held only around each model call (below, in _loop and advise), released before a tool runs - a long scan
+    no longer keeps every other task away from an idle model endpoint. In its place the task holds the
+    engagement's own limit (#107) and, when it writes through an identity, that identity's lock; a task's own
+    steps stay one at a time and every durable checkpoint is kept."""
     _defaults(task)
     os.makedirs(task_dir(task), exist_ok=True)
     TASKS[task["id"]] = task
@@ -1139,49 +1376,59 @@ def run_task(task):
         "rv.max_steps": task["max_steps"]}, trace_key=task["id"],
         content=tracing.content_allowed((task.get("info") or {}).get("rules")))
     sp.content_attr("rv.task.goal", task.get("goal"))
-    with sp, MODEL_LOCK, open(os.path.join(task_dir(task), "transcript.jsonl"), "a") as log:
-        status, err = None, None
+    locks = []   # #107: the target's own task limit, then (for a writer) its identity lock
+    for lk, kind in ((_eng_lock(task["engagement"]), "target"), (_write_lock(task), "fixture")):
+        if lk is None:
+            continue
+        t0 = time.time()
+        lk.acquire()
+        _queue_wait(task, kind, time.time() - t0)
+        locks.append(lk)
+    status, err = None, None
+    try:
         task.pop("outcome", None)
-        if "queue_s" not in task:   # #79: the wait before this task's first model call - the lock, the queue,
-            task["queue_s"] = round(max(0.0, time.time() - task["started"] - task.get("waited_s", 0)), 1)
-        try:
-            _stop_check(task)
-            task["status"] = "running"
-            save(task)
-            status = _loop(task, log)
-        except Stop as s:
-            status, err = s.args[0], s.args[1]
-        except ModelBusy as e:
-            status, err = "error", (f"the worker model stayed rate-limited or overloaded after {len(BUSY_WAITS) + 1} "
-                                    f"tries (HTTP {e.code}): {e.detail}")
-            task["outcome"] = "provider_error"
-        except ModelRefused as e:
-            halted = False
+        with sp, open(os.path.join(task_dir(task), "transcript.jsonl"), "a") as log:
             try:
-                halted = engagement_info(task["engagement"]).get("halted")
-            except Exception:  # noqa: BLE001
-                pass
-            status, err = ("halted", f"engagement {task['engagement']} was halted") if halted else \
-                ("error", f"the model gateway refused the call: {e.detail}")
-            if not halted:
-                task["outcome"] = "model_refused"
-        except urllib.error.URLError as e:
-            status, err = "error", f"worker model unreachable ({e}). Start it with /rv-start, then retry."
-            task["outcome"] = "provider_error"
-        except Exception as e:
-            status, err = "error", f"{type(e).__name__}: {e}"
-        task["status"] = status
-        if err:
-            task["error"] = err
-        sp.set("rv.status", status).set("rv.outcome", task.get("outcome")).set("rv.steps", task.get("step"))
-        if err:
-            sp.error(err)
-        if status != "awaiting_approval":
-            task["finished"] = time.time()
-            task.pop("lease", None)
-            log.write(json.dumps({"ts": _now(), "end": status, "result": task.get("result"),
-                                  "error": task.get("error")}) + "\n")
-        save(task)
+                _stop_check(task)
+                task["status"] = "running"
+                save(task)
+                status = _loop(task, log)
+            except Stop as st:
+                status, err = st.args[0], st.args[1]
+            except ModelBusy as e:
+                status, err = "error", (f"the worker model stayed rate-limited or overloaded after "
+                                        f"{len(BUSY_WAITS) + 1} tries (HTTP {e.code}): {e.detail}")
+                task["outcome"] = "provider_error"
+            except ModelRefused as e:
+                halted = False
+                try:
+                    halted = engagement_info(task["engagement"]).get("halted")
+                except Exception:  # noqa: BLE001
+                    pass
+                status, err = ("halted", f"engagement {task['engagement']} was halted") if halted else \
+                    ("error", f"the model gateway refused the call: {e.detail}")
+                if not halted:
+                    task["outcome"] = "model_refused"
+            except urllib.error.URLError as e:
+                status, err = "error", f"worker model unreachable ({e}). Start it with /rv-start, then retry."
+                task["outcome"] = "provider_error"
+            except Exception as e:
+                status, err = "error", f"{type(e).__name__}: {e}"
+            task["status"] = status
+            if err:
+                task["error"] = err
+            sp.set("rv.status", status).set("rv.outcome", task.get("outcome")).set("rv.steps", task.get("step"))
+            if err:
+                sp.error(err)
+            if status != "awaiting_approval":
+                task["finished"] = time.time()
+                task.pop("lease", None)
+                log.write(json.dumps({"ts": _now(), "end": status, "result": task.get("result"),
+                                      "error": task.get("error")}) + "\n")
+            save(task)
+    finally:
+        for lk in reversed(locks):
+            lk.release()
     if status == "awaiting_approval":
         threading.Thread(target=await_approval, args=(task,), daemon=True).start()
 
@@ -1346,6 +1593,7 @@ def resume(task_id, actor="agent:planner"):
             text = "NOT RUN: the worker restarted before this call. Call it again if you still need it."
         messages.append({"role": "tool", "tool_call_id": c.get("id", "call"), "content": text})
     _packet_refresh(task, messages)   # #84: what changed while the task was down, or nothing
+    _refresh_established(task, messages)   # #120: the pinned block is rebuilt from the task record
     task["pending_calls"], task["approval"] = [], None
     task.update(status="queued", error=None, finished=None, resumed=(task.get("resumed") or []) +
                 [{"at": _now(), "by": actor}])
@@ -1421,6 +1669,13 @@ def report(task) -> str:
            "transcripts_dir": os.path.dirname(task["evidence"][0]) if task["evidence"] else None}
     if task.get("contract"):
         out["contract"] = task["contract"]
+    if task.get("packet"):   # #117: the record ids the worker started from - pointers that survive a summary
+        out["packet_ids"] = {k: v for k, v in task["packet"].get("ids", {}).items() if v}
+    if task.get("notes"):     # #120: the worker's notes, marked as its own words in the finish
+        out["notes"] = r.get("notes") or [{"fact": n["fact"], "evidence": n.get("evidence")}
+                                          for n in task["notes"]]
+    if task.get("ledger"):    # #115: how often the ledger pointed at earlier work, or answered from it
+        out["ledger"] = task["ledger"]
     if task.get("served_by"):
         out["model"] = task["served_by"]  # which model did the work (the fallback model shows up here)
     if task.get("malformed"):

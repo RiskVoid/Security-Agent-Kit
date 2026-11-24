@@ -727,3 +727,34 @@ def export_findings(engagement: str, draft: bool = False) -> str:
 
 if __name__ == "__main__":
     mcp.run(transport="streamable-http")
+
+
+@mcp.tool()
+def recall(engagement: str, query: str, kind: str = "", state: str = "", limit: int = 20) -> str:
+    """#116: one search across what this engagement knows - observations, findings, plan items, map entries,
+    earlier worker task results (with their agent notes) and the call ledger. One line per hit with its state
+    and age; ids first when the query is one, then the route group or path, then words. Same engagement only;
+    ask for a kind (observation, finding, plan, map, task, ledger) or a state to narrow it."""
+    import workspace
+    try:
+        return workspace.recall(engagement, query, kind, state, limit)
+    except ValueError as e:
+        return f"REFUSED: {e}"
+
+
+@mcp.tool()
+def get_briefing(engagement: str, plan_item: str = "", goal: str = "") -> str:
+    """#117: the briefing for a cell or target - the same research packet a worker task with this goal and plan
+    item would start from (#83), under the same budget and state rules, with no model call. Read it before
+    delegating a cell or testing it yourself, and again after a context summary: it says what is known about
+    exactly that cell (map entries, findings and observations with their states, earlier tasks with their typed
+    results and agent notes), not the whole engagement - get_handover carries the engagement-wide picture."""
+    import workspace
+    try:
+        pk = workspace.packet(engagement, goal or "", plan_item or None,
+                              chars=int(os.environ.get("WORKER_PACKET_CHARS", "4000") or 4000))
+        return (pk["text"] + "\n\n(Every line keeps its state - verified, candidate, dismissed, stale - and "
+                "summaries and agent notes are their writers' words, not verified facts. The worker gets this "
+                "same packet automatically; recall(...) searches across records, read-style tools open them.)")
+    except ValueError as e:
+        return f"REFUSED: {e}"

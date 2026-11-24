@@ -115,14 +115,27 @@ What happens between "Engagement `acme`: review `/src/acme`…" and a finished r
 3. **Delegation.** For hands-on work it calls the worker's `delegate_task` with one focused goal, the engagement
    and a tier. `worker-mcp` asks `kali-mcp` for the authoritative scope and rules, refuses if the engagement is
    halted or the tier isn't allowed, and starts a tool-calling loop on the worker model through LiteLLM: model
-   `colab-qwen`, or `private-llm` when `RULES.md` says `Worker model: private`. Tasks run one at a time.
+   `colab-qwen`, or `private-llm` when `RULES.md` says `Worker model: private`. The model semaphore is
+   held only around each model call (#106): a long scan no longer keeps every other task away from an
+   idle model endpoint. Tools have their own limit (`WORKER_PARALLEL_TOOLS`), each engagement its own
+   (`WORKER_ENG_PARALLEL`), and a task's timeout counts its own running time - waits (model, a tool slot,
+   the target, a fixture) are recorded as queue delay and not charged (#107: intrusive tasks through one
+   identity serialize; a busy target is waited for, bounded, not handed back as an error).
    A task bound to a plan item starts from the **research packet** (#83/#84): what the engagement's records
    already say about its coverage cell - map entries, observations and findings with their states, earlier
    tasks for the same cell with their typed result (negative and inconclusive included), the item's hypothesis
    and blockers - selected by stable ids with no model, in a fixed character budget, every line keeping its
    state. On resume the packet is rebuilt and only a material change (ids or revisions differ) is appended;
-   `compact` keeps the latest packet whole and shrinks older ones to their id list. `read_record` opens any
-   record the packet names in full. `WORKER_PACKET=0` turns it off.
+   `compact` keeps the latest packet whole and shrinks older ones to their id list, and rebuilds the pinned
+   'established so far' block from the task record - the task's `note`s (marked as the agent's own), its
+   candidates, its checked identities - so what a long task learned early survives every compaction (#120).
+   `read_record` opens any record the packet names in full; `recall` searches across everything the engagement
+   knows; `get_briefing` gives the planner the same packet for a cell before it delegates or tests it (#117).
+   The call ledger (#115) points at work already done: after a command or request runs (it always runs - a
+   target can answer differently) the reply carries the earlier equivalent call's entry, the planner's own
+   calls through kali-mcp and the worker's through the harness ledger; an unchanged file read or a repeated
+   vuln_intel lookup is answered from the ledger with no new call (`fresh=true` forces it), and a stale entry
+   is shown and never reused. `RV_LEDGER=0` and `WORKER_PACKET=0` turn each off.
 4. **Tool call.** The worker model calls `kali_run`, which calls the kali tool `run` (the planner can also call
    `run` directly). `kali-mcp` then:
    1. refuses if the engagement is halted or outside its testing window;
