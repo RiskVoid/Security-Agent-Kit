@@ -591,6 +591,65 @@ def set_objective(engagement: str, text: str) -> str:
 
 
 @mcp.tool()
+def get_queue(engagement: str, limit: int = 20) -> str:
+    """#96: the engagement's open work, ranked with the reason for each position - readiness, whether the
+    question is already answered, the class's weight, how many experiments ran. A share of the top slots is
+    reserved for hard, high-impact classes (authorization, tenant isolation, authentication), so the queue
+    can't fill a budget with easy checks. Advisory: you still decide; delegate_task records what you dispatched
+    against the queue so the two can be compared, and the log shows those decisions (dispatched, paused,
+    escalated, reopened). Delegate the top ready question when you have no better reason of your own.
+    `proposals` (#104) names related surfaces a verified method hasn't been proven on: each is the plan item
+    to add (title, area, refs, identity) and the delegate_task goal to send - the method transfers, the
+    result doesn't, and a protected sibling comes back refuted with its conditions, never as a finding."""
+    try:
+        import workspace
+        return _out({"queue": workspace.queue(engagement, limit=limit),
+                     "log": workspace.queue_log_rows(engagement)[-20:],
+                     "proposals": workspace.method_proposals(engagement)})
+    except ValueError as e:
+        return f"REFUSED: {e}"
+
+
+@mcp.tool()
+def list_methods(engagement: str, vclass: str = "") -> str:
+    """#102: the methods this engagement has proved - what worked, under which conditions, the access each
+    needs, its safe procedure and its negative control - plus the related surfaces each hasn't been proven on.
+    Engagement-local: a method never leaves this engagement's database, and nothing here reads another's.
+    The packet of a task whose cell matches carries the same methods; `read_record` (worker) opens one."""
+    return _call("method.list", engagement=engagement, **({"vclass": vclass} if vclass else {}))
+
+
+@mcp.tool()
+def record_method(engagement: str, title: str, vclass: str, procedure: str, assumes: str = "",
+                  access: str = "", groups: list[str] | None = None, expect: str = "", control: str = "",
+                  finding: str = "", experiment: str = "", id: str = "",
+                  expected_revision: int | None = None) -> str:
+    """#102: record or correct a method - what worked and under which conditions. The harness derives one
+    from a finding you confirm with a passing oracle; use this to add one it couldn't derive, or to correct
+    what it did (with `id` and `expected_revision`). `groups` are the route groups it was proven on, `control`
+    the negative control that makes a result mean something, `finding`/`experiment` where it came from."""
+    if id:
+        return _call("method.update", engagement=engagement, id=id, fields={
+            "title": title, "vclass": vclass, "procedure": procedure, "assumes": assumes, "access": access,
+            "groups": groups or [], "expect": expect, "control": control}, expected_revision=expected_revision)
+    return _call("method.record", engagement=engagement, title=title, vclass=vclass, procedure=procedure,
+                 assumes=assumes, access=access, groups=groups or [], expect=expect, control=control,
+                 **({"finding": finding} if finding else {}), **({"experiment": experiment} if experiment else {}))
+
+
+@mcp.tool()
+def record_instance(engagement: str, finding_id: str, where: str, evidence: list[str] | None = None,
+                    experiment: str = "", note: str = "") -> str:
+    """#104: record a confirmed result at a related surface as an instance of the finding that owns the root
+    cause, instead of a second finding: one finding carries the extent - each instance with its location, its
+    evidence and the experiment that proved it - and the count isn't inflated. Use it after re-proving the
+    method at the sibling with its own negative control; the finding stays one root cause, and get_finding
+    and the report show every instance."""
+    return _call("finding.instance", engagement=engagement, id=finding_id, where=where,
+                 evidence=evidence or [], experiment=experiment or None, note=note)
+
+
+@mcp.tool()
 def get_handover(engagement: str) -> str:
     """Where the investigation stands, from the records: objective, findings, material ones, observations to
     triage, coverage, blocked and stale tests, pending decisions and the next useful actions, plus the

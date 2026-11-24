@@ -210,12 +210,45 @@ class Stalls(Loop):
             self.outputs[f"echo {i}"] = "exit=0 tier=passive\nsame output"
         task, _ = self.run_script([[call("kali_run", {"command": f"echo {i}"})] for i in range(10)])
         self.assertEqual(task["stalls"][0]["kind"], "no-progress")
-        self.assertEqual(task["stalls"][0]["step"], 9)       # the first output was new; 8 idle calls after it
+        self.assertEqual(task["stalls"][0]["step"], 8)     # #95: novelty is not progress - idle from call one
+        self.assertIn("no progress in the records", task["stalls"][0]["detail"])
+        self.assertIn("progress events seen: none in this task", task["stalls"][0]["detail"])
 
     def test_progress_resets(self):
-        task, _ = self.run_script([[call("kali_run", {"command": f"echo {i}"})] for i in range(12)])
+        # #95: progress is a new observation in the records, not novel output - a tool whose every call
+        # captures a new port never counts as idle, however similar its outputs look
+        for i in range(12):
+            self.outputs[f"nmap -p {i}"] = (
+                "exit=0 tier=passive\nNmap scan report for lab (10.250.0.9)\n"
+                f"{i}/tcp open  http\nNmap done: 1 host up\n"
+                "[output saved as verified evidence: /work/eng/evidence/runs/n%d.txt]")
+        task, _ = self.run_script([[call("kali_run", {"command": f"nmap -p {i}"})] for i in range(12)])
         self.assertFalse(task.get("stalls"))
         self.assertEqual(task["status"], "done")
+        self.assertEqual(task["captured"], 12)            # every call left a record
+
+    def test_novelty_alone_does_not_reset_the_idle_count(self):
+        # a tool that returns a fresh timestamp on every call still reaches a stall (#95's own case)
+        import datetime
+        for i in range(12):
+            self.outputs[f"date {i}"] = (f"exit=0 tier=passive\nthe time is now "
+                                          f"{datetime.datetime(2026, 11, 24, 12, 0, i)}")
+        task, _ = self.run_script([[call("kali_run", {"command": f"date {i}"})] for i in range(12)])
+        self.assertEqual(task["stalls"][0]["kind"], "no-progress")
+        self.assertIn("novel output but no progress", task["stalls"][0]["detail"])
+
+    def test_a_stall_after_progress_names_the_events_it_saw(self):
+        # #95: the stall record names the progress events the task did produce before it went idle
+        self.outputs["nmap -p 8000"] = ("exit=0 tier=passive\nNmap scan report for lab (10.250.0.9)\n"
+                                       "8000/tcp open  http\nNmap done: 1 host up\n"
+                                       "[output saved as verified evidence: /work/eng/evidence/runs/n1.txt]")
+        for i in range(9):
+            self.outputs[f"echo {i}"] = "exit=0 tier=passive\nsame output"
+        task, _ = self.run_script([[call("kali_run", {"command": "nmap -p 8000"})]] +
+                                  [[call("kali_run", {"command": f"echo {i}"})] for i in range(9)],
+                                  max_steps=20)
+        self.assertEqual(task["stalls"][0]["kind"], "no-progress")
+        self.assertIn("1 new observation(s)", task["stalls"][0]["detail"])
 
 
 class Advisor(unittest.TestCase):
@@ -1630,6 +1663,121 @@ class Dependencies(Loop):
             worker.run_task = real_run
         self.assertEqual(b2["status"], "done")              # released: the required conclusion stands
         self.assertEqual(ran, ["dep-b2"])
+
+
+class WorkKeysAndQueue(Loop):
+    """#98 through the planner's own door, delegate_task: a duplicate is refused naming the task that holds
+    the work - or the experiment that already answered the question once the holder ended - a flagged
+    reproduction runs and is recorded as one, a claim survives the worker's own view of a restart and expires
+    with its task, and any ending releases it. #96: a delegation logs the queue rank it dispatched against."""
+
+    def setUp(self):
+        super().setUp()
+        import workspace
+        self.ws = workspace
+        self.addCleanup(worker.TASKS.clear)
+        self.pid = workspace.plan_add("eng", "agent:planner", [
+            {"title": "mass-assignment on POST /api/fetch", "area": "mass-assignment",
+             "identity": "alice"}])[0]
+
+    def delegate(self, **kw):
+        """delegate_task the way the planner drives it: start is stubbed so the task stays queued and its
+        claim is live; returns the reply and the task's id."""
+        saved = worker.start, worker._wait
+        worker.start, worker._wait = (lambda t: None), (lambda t, w: None)
+        try:
+            reply = worker.delegate_task("Test mass-assignment on POST /api/fetch.", "eng", tier="passive",
+                                         plan_item=self.pid, wait_s=0, **kw)
+            return reply, list(worker.TASKS)[-1]
+        finally:
+            worker.start, worker._wait = saved
+
+    def answer(self, tid, conclusions=()):
+        """Run a queued task to its end synchronously: the scripted model finishes at once, stating a
+        conclusion per claim the way the worker's finish does."""
+        worker.chat = lambda messages, model=None, task=None: {
+            "role": "assistant", "content": None,
+            "tool_calls": [call("finish", {"status": "completed", "summary": "done", "confidence": "low",
+                                           "conclusions": list(conclusions)})]}
+        task = worker.TASKS[tid]
+        worker.run_task(task)
+        return task
+
+    def test_a_duplicate_is_pointed_at_the_live_holder(self):
+        first, tid = self.delegate()
+        self.assertNotIn("REFUSED", first)
+        second, _ = self.delegate()
+        self.assertIn("REFUSED: that work is already being done", second)
+        self.assertIn(f"task {tid} holds it", second)
+        self.assertNotIn("already answered", second)      # nothing has answered it yet: the holder is the reason
+        self.assertIn("independent_reproduction=true", second)
+
+    def test_a_question_already_answered_is_refused_with_its_experiment(self):
+        _, tid = self.delegate()
+        task = self.answer(tid, [{"claim": "role is writable through register", "state": "supported",
+                                  "conditions": "identity alice, POST /register"}])
+        self.assertEqual(task["status"], "done")
+        self.assertEqual(task["experiment"], "X-001")     # the answer is a record, not prose
+        second, _ = self.delegate()                       # the holder ended, the answer stands
+        self.assertIn("REFUSED: that work is already being done", second)
+        self.assertIn("X-001", second)
+        self.assertIn("already answered", second)
+        self.assertIn("read_record", second)
+        # the escape hatch: a flagged reproduction runs anyway, and is recorded as one
+        third, tid3 = self.delegate(independent_reproduction=True)
+        self.assertNotIn("REFUSED", third)
+        self.answer(tid3)
+        xs = self.ws.experiments_of("eng", plan_item=self.pid)
+        self.assertEqual([bool(x["reproduction"]) for x in xs], [False, True])
+
+    def test_a_claim_survives_a_restart_and_expires_with_its_task(self):
+        key = self.ws.work_key("eng", self.pid, None, method="mass-assignment", identity="alice")
+        parked = lambda st: json.dump({"id": "old-1", "engagement": "eng", "goal": "g", "status": st,
+                                       "started": 1, "steps": []}, open(
+                                       os.path.join(self.tmp.name, "eng", "evidence", "tasks", "old-1",
+                                                    "task.json"), "w"))
+        os.makedirs(os.path.join(self.tmp.name, "eng", "evidence", "tasks", "old-1"))
+        parked("queued")                       # the task's own record: all the restarted worker has left
+        self.assertIsNone(self.ws.claim_work("eng", "old-1", key))
+        self.assertEqual(self.ws.claim_work("eng", "new-1", key), "old-1")   # the live holder is named
+        self.assertIsNone(self.ws.claim_work("eng", "old-1", key))           # re-claiming your own key is fine
+        parked("done")                        # the holder ended: the claim expires by itself
+        self.assertIsNone(self.ws.claim_work("eng", "new-1", key))
+
+    def test_any_ending_releases_the_key(self):
+        _, tid = self.delegate()
+        task = self.answer(tid)                       # a clean completion, the path most likely to be missed
+        self.assertEqual(task["status"], "done")
+        key = self.ws.work_key("eng", self.pid, None, method="mass-assignment", identity="alice")
+        self.assertIsNone(self.ws.claim_work("eng", "another-task", key))
+
+    def test_the_delegation_logs_the_queue_rank_it_dispatched_against(self):
+        q = self.ws.queue("eng")
+        self.assertEqual(q[0]["item"], self.pid)       # one open question: it is the top suggestion
+        self.assertTrue(q[0]["hard"])                  # mass-assignment: the reserved share's kind
+        self.assertIn("reserved", q[0]["reason"])
+        reply, _ = self.delegate()
+        self.assertNotIn("REFUSED", reply)
+        rows = self.ws.queue_log_rows("eng")
+        self.assertEqual([(r["action"], r["item"], r["rank"]) for r in rows], [("dispatched", self.pid, 1)])
+        # a refused duplicate is no dispatch: the log gains nothing
+        self.assertIn("REFUSED", self.delegate()[0])
+        self.assertEqual(len(self.ws.queue_log_rows("eng")), 1)
+
+    def test_read_record_opens_a_method_and_never_crosses_engagements(self):
+        m = self.ws.method_record("eng", "agent:planner", "tenant isolation by identity difference",
+                                  "access-control", groups=["/api/v1/orders"], assumes="the same family",
+                                  access="identity bob",
+                                  procedure="identity_difference with the owner's fixture marker",
+                                  control="the owner gets it, the anonymous request doesn't")
+        body = worker.read_record({"engagement": "eng"}, m["id"])
+        self.assertIn("M-001 tenant isolation", body)
+        self.assertIn("identity_difference with the owner's fixture marker", body)
+        self.assertIn("negative control: the owner gets it", body)
+        self.assertIn("assumes: the same family", body)
+        os.makedirs(os.path.join(self.tmp.name, "other"), exist_ok=True)
+        self.assertIn("ids never cross engagements",
+                      worker.read_record({"engagement": "other"}, m["id"]))
 
 
 

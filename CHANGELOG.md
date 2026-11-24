@@ -242,6 +242,35 @@ changes to the harness are measured.
   makes the question ready by itself; `get_coverage` and the board show ready and waiting with their reasons,
   and `delegate_task` can require an outcome from a dependency - one that ended without it leaves the
   dependent task blocked with the reason, never started.
+- The queue over open work and work keys (#96, #95, #98, phase C of the research loop): the engagement's open
+  questions are ranked with the reason for each position - readiness, whether a standing conclusion already
+  answered them, the class's weight, how many experiments ran - and a share of the top slots is reserved for
+  hard, high-impact classes (authorization, tenant isolation, authentication), so the queue can't fill a
+  budget with easy checks. It is advisory (`get_queue`, the console's Investigation tab, `queue_rank` on each
+  board row); every `delegate_task` with a plan item logs the rank it dispatched against (`queue_log`, with
+  pauses, escalations and reopenings recordable through `queue.get` / `queue.decide`), and the benchmark
+  efficiency line reports how often the top suggestion was taken. A duplicate delegation is refused: the work
+  key is the current build, the coverage cell, the method and the identity (a loose question keys on itself),
+  the task's record exists before its claim so a concurrent duplicate sees a live holder, claims live in the
+  engagement's database and survive a worker restart, any ending releases them, and the refusal names the task
+  that holds the work or the experiment that already answered the question - `independent_reproduction=true`
+  runs anyway and is recorded as a reproduction on its experiment (schema v7). Progress inside a task is
+  counted from the records too (#95): a call resets the idle count only when it captured a new observation or
+  recorded a candidate; output that merely looks new (a changed banner, a timestamp) doesn't, and the stall
+  record names which of the two fired and the progress events the task did produce.
+- Method records and their reuse (#102, #104, phase D of the research loop): confirming a finding with a
+  passing oracle derives a method - what worked, under which conditions: the oracle's procedure, its negative
+  control, the evidence to expect, the access it needs - and the plan link completes it with the route group
+  (or the source files the map names) it was proven on; methods live in each engagement's own database
+  (schema v8), nothing reads another's, and there is no promotion or export. The packet of a task whose cell
+  matches carries one line per matching method and the worker's `read_record` opens one in full; the planner
+  can add or correct one (`record_method`, `list_methods`). Each method proposes the related surfaces it
+  hasn't been proven on - the same route group, or the operations the map puts behind the same source code -
+  as pre-shaped plan items with the `delegate_task` goal to send (`get_queue`'s proposals, the console's
+  Investigation tab): the method transfers, the result doesn't, every proposed test runs its own negative
+  control at the new surface, a confirmed sibling becomes an instance of the finding that owns the root cause
+  (`record_instance` - the extent is recorded, the count isn't inflated, and the report shows every
+  instance), and a correctly protected sibling comes back refuted with its conditions, never as a finding.
 - Facts at every tool call and conclusions from them (#118, #119, phase B of the research loop): after a worker
   call the kit's parsers store what they extract as new observations with their origin (task or conversation,
   call, identity, policy revision, the citable evidence path) - nmap's open ports, sqlmap's injection

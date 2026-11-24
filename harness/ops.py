@@ -92,7 +92,12 @@ def finding_record(engagement, actor, fields, method=None):
         row = db.record(engagement, actor=actor, method=method, **_limit(fields))
     except ValueError as e:
         raise OpError(str(e))
-    return row, _event("finding-recorded", actor, row["id"], None, row["revision"])
+    derived = None
+    if row.get("status") == "confirmed":   # #102: a verified finding leaves the method that proved it
+        m = ws.method_from_finding(engagement, actor, row["id"])
+        derived = (m or {}).get("id")
+    return row, _event("finding-recorded", actor, row["id"], None, row["revision"],
+                       **({"derived_method": derived} if derived else {}))
 
 
 def _limit(fields):
@@ -115,14 +120,25 @@ def finding_update(engagement, actor, id, fields, expected_revision=None, reason
         raise OpError("expected_revision must be a number")
     if reason is not None and not isinstance(reason, str):
         raise OpError("reason must be text")
+    was = None
+    if fields.get("status") == "confirmed":      # #102: the method is derived when the status moves
+        try:
+            was = db.get(engagement, id).get("status")
+        except ValueError:
+            was = None
     try:
         row = db.update(engagement, id, expected_revision=expected_revision, actor=actor,
                         reason=(reason or "")[:2000] or None, method=method, **fields)
     except db.Conflict as e:
         raise OpError(str(e), 409)
     before = row.pop("previous_revision")
+    derived = None
+    if fields.get("status") == "confirmed" and was != "confirmed":
+        m = ws.method_from_finding(engagement, actor, id)
+        derived = (m or {}).get("id")
     return row, _event("finding-updated", actor, id, before, row["revision"], fields=sorted(fields),
-                       **({"reason": reason[:300]} if reason else {}), **({"method": method} if method else {}))
+                       **({"reason": reason[:300]} if reason else {}), **({"method": method} if method else {}),
+                       **({"derived_method": derived} if derived else {}))
 
 
 @op("finding.history", mutates=False)
@@ -219,6 +235,8 @@ def plan_update(engagement, actor, id, fields, expected_revision=None):
         r = ws.plan_update(engagement, actor, id, expected_revision, **fields)
     except db.Conflict as e:
         raise OpError(str(e), 409)
+    if fields.get("finding_id"):   # #102: the plan link names the position the method was proven on - the
+        ws.method_from_finding(engagement, actor, fields["finding_id"])   # derivation completes with it
     return r, _event("coverage-updated", actor, id, None, r["revision"], state=r["state"])
 
 
@@ -306,6 +324,8 @@ def investigation_get(engagement, actor=None):
     return {"handover": {**h, "markdown": ws.handover_markdown(engagement, h)},
             "objective": h["objective"] or "", "objective_digest": digest(h["objective"] or ""),
             "plan": ws.plan_list(engagement), "coverage": ws.coverage(engagement),
+            "queue": ws.queue(engagement, limit=50), "queue_log": ws.queue_log_rows(engagement)[-50:],
+            "methods": ws.methods_of(engagement), "proposals": ws.method_proposals(engagement),
             "observations": ws.list_observations(engagement), "imports": ws.imports(engagement),
             "groups": ws.suggest_groups(engagement)}, None
 
@@ -556,6 +576,74 @@ def conclusion_list(engagement, actor=None, plan_item=None, experiment=None):
 def link_record(engagement, actor, src, dst, kind, note=None):
     r = ws.link_record(engagement, actor, src, dst, kind, note)
     return r, _event("link-recorded", actor, f"{src}->{dst}", None, kind)
+
+
+# ---------------------------------------------------------------- the queue (#96)
+@op("queue.get", mutates=False)
+def queue_get(engagement, actor=None, limit=20):
+    """The engagement's open work ranked with reasons, and the decisions taken on it so far."""
+    limit = max(1, min(int(limit or 20), 200))
+    return {"queue": ws.queue(engagement, limit=limit), "log": ws.queue_log_rows(engagement)[-50:]}, None
+
+
+@op("queue.decide")
+def queue_decide(engagement, actor, item, action, reason="", rank=None):
+    """Record one decision on the queue: suggested, paused, escalated or reopened (dispatched is written by
+    delegate_task itself, when a task actually starts). The log is what the queue proposed against what the
+    planner did, so a pause or an escalation belongs in it as much as a dispatch."""
+    if action == "dispatched":
+        raise OpError("dispatched is written by delegate_task; record one of suggested, paused, "
+                       "escalated, reopened")
+    try:
+        ws.queue_log(engagement, item, action, rank=rank, reason=reason, actor=actor)
+    except ValueError as e:
+        raise OpError(str(e))
+    return {"item": item, "action": action}, _event(f"queue-{action}", actor, item, None, action,
+                                                   reason=str(reason or "")[:200])
+
+# ---------------------------------------------------------------- methods (#102, #104)
+@op("method.list", mutates=False)
+def method_list(engagement, actor=None, vclass=None, group=None):
+    """The engagement's own methods and the related surfaces they haven't been proven on (#104's proposals)."""
+    return {"methods": ws.methods_of(engagement, vclass, group),
+            "proposals": ws.method_proposals(engagement)}, None
+
+
+@op("method.record")
+def method_record(engagement, actor, title, vclass, groups=None, code=None, assumes="", access="",
+                  procedure="", expect="", control="", finding=None, experiment=None, origin=None):
+    try:
+        r = ws.method_record(engagement, actor, title, vclass, groups, code, assumes, access, procedure,
+                             expect, control, finding, experiment, origin)
+    except ValueError as e:
+        raise OpError(str(e))
+    return r, _event("method-recorded", actor, r["id"], None, r["revision"], vclass=vclass)
+
+
+@op("method.update")
+def method_update(engagement, actor, id, fields, expected_revision=None):
+    """Correct a method the harness derived, or amend one you recorded: fields are title, vclass, groups,
+    code, assumes, access, procedure, expect, control."""
+    if not isinstance(fields, dict):
+        raise OpError("fields must be an object")
+    try:
+        r = ws.method_update(engagement, actor, id, expected_revision, **fields)
+    except db.Conflict as e:
+        raise OpError(str(e), 409)
+    except ValueError as e:
+        raise OpError(str(e))
+    return r, _event("method-updated", actor, id, None, r["revision"], fields=sorted(fields))
+
+
+@op("finding.instance")
+def finding_instance(engagement, actor, id, where, evidence=None, experiment=None, note=""):
+    """#104: a confirmed result at a related surface becomes an instance of the finding that owns the root
+    cause - the extent is recorded, the count isn't inflated."""
+    try:
+        row = ws.finding_add_instance(engagement, actor, id, where, evidence, experiment, note)
+    except ValueError as e:
+        raise OpError(str(e))
+    return row, _event("finding-instance-added", actor, id, None, row["revision"], where=str(where)[:200])
 
 
 

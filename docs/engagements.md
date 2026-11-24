@@ -602,6 +602,16 @@ become `interrupted` with a recovery decision:
 The console's **Worker tasks** tab has Cancel and Resume from checkpoint buttons. Resuming checks the engagement's
 current policy first.
 
+A task bound to a plan item isn't started twice by accident (#98): the work key is the current build, the coverage
+cell, the method and the identity, and `delegate_task` claims it - a duplicate is refused naming the task that
+holds the work, or the experiment (X-...) that already answered the question (a stale answer never blocks a
+re-test). Claims live in the engagement's database, survive a worker restart with the task's own record, and are
+released when the task ends, on any ending. Pass `independent_reproduction=true` to run it anyway: the run is
+recorded as a reproduction on its experiment, never as a second confirmation. The engagement's open work is
+ranked for the planner (#96) - `get_queue` and the console's Investigation tab show the queue with the reason for
+each position, and every delegation logs the rank it dispatched against, so the queue's advice and the planner's
+choices can be compared (the benchmark efficiency line reports how often the top suggestion was taken).
+
 ---
 
 ## Halt and resume

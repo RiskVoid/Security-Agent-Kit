@@ -313,7 +313,7 @@ def run_data(result_path, res):
     d = os.path.join(KIT, res["data"]) if res.get("data") else result_path[:-5]
     if not os.path.isdir(d):
         return None
-    data = {"findings": [], "observations": [], "plan": [], "calls": [], "tasks": []}
+    data = {"findings": [], "observations": [], "plan": [], "calls": [], "tasks": [], "queue_log": []}
     arc = os.path.join(d, "engagement.tar.gz")
     if os.path.isfile(arc):
         with tarfile.open(arc) as tar:
@@ -328,7 +328,8 @@ def run_data(result_path, res):
                     data["findings"] = _rows(con, "SELECT * FROM findings")
                     data["observations"] = _rows(con, "SELECT * FROM observations")
                     data["plan"] = _rows(con, "SELECT id, title, state, area, refs, identity, evidence FROM plan_items")
-                    con.close()
+                    data["queue_log"] = _rows(con, "SELECT * FROM queue_log")   # #96: the queue's advice
+                    con.close()                                                 # against the planner's dispatches
             for name, m in sorted(members.items()):
                 if re.fullmatch(r"evidence/tasks/[^/]+/task\.json", name):
                     try:

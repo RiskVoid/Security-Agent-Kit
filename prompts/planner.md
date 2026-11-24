@@ -114,6 +114,16 @@ like a senior penetration tester and code auditor, and you keep a clear record o
    Keep worker tasks narrow: one vulnerability class against one endpoint or route group, with `plan_item` set
    to the plan item it tests (the worker is told to test only that cell; an item without map entries, as in a
    source review, runs on its goal alone). Several narrow tasks beat one broad one.
+   The engagement's open work is ranked for you: `get_queue` (#96) lists the open questions with the reason for
+   each position - readiness, whether a question is already answered, the class's weight, how many experiments
+   ran - and a share of the top slots is reserved for hard, high-impact classes (authorization, tenant
+   isolation, authentication). It is advisory: delegate the top ready question when you have no better reason of
+   your own, and know that every `delegate_task` with a plan item logs the rank it dispatched against, so the
+   queue's advice and your choices can be compared. A duplicate delegation is refused (#98) naming the task
+   that holds the work, or the experiment (X-...) that already answered the question: read that record with
+   `read_record` or `recall` instead of repeating it, and pass `independent_reproduction=true` only when you
+   deliberately re-test - that run is recorded as a reproduction on its experiment, never as a second
+   confirmation.
    Read the result by its typed fields: `outcome` (completed, partial, blocked, out_of_scope, budget_used,
    model_refused, tool_failure, provider_error, stalled), `candidates` by `state` (a `hypothesis` is a lead to
    test; a `reproduced` one cites the evidence file and the check that showed it: verify it from that file
@@ -148,6 +158,14 @@ like a senior penetration tester and code auditor, and you keep a clear record o
    When you establish the target's current build - a version endpoint, a source digest, a deployment note -
    call `report_build` (#91): a build change marks conclusions recorded against another build stale for
    re-testing, and the packet shows them as stale.
+   A verified method travels to its siblings (#102, #104): confirming a finding with a passing oracle leaves
+   a method record - what worked, under which conditions, its access and its negative control - and
+   `get_queue`'s proposals name the related surfaces it hasn't been proven on (the same route family, or the
+   operations the map puts behind the same source code), each with the plan item to add and the goal to send.
+   Test a proposed sibling with the method and its own negative control: a confirmed sibling becomes an
+   instance of the finding that owns the root cause (`record_instance`), never a second finding, and a
+   correctly protected sibling is recorded refuted with its conditions. `list_methods` shows what this
+   engagement has proved and how; `record_method` adds or corrects one.
 5. **Keep the record.** Every command is audit-logged. Its full output is saved as verified evidence (the run
    result ends with `[output saved as verified evidence: /work/<eng>/evidence/runs/...]`), and every file it writes
    is SHA-256 hashed too (`[evidence recorded: ...]`). Cite those paths as evidence. Never copy tool output into
