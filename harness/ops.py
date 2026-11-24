@@ -535,5 +535,29 @@ def main(argv):
         print(json.dumps({"error": str(e), "code": 400})); return 1
 
 
+@op("experiment.list", mutates=False)
+def experiment_list(engagement, actor=None, plan_item=None):
+    return {"experiments": ws.experiments_of(engagement, plan_item=plan_item)}, None
+
+
+@op("conclusion.record")
+def conclusion_record(engagement, actor, claim, state, conditions="", experiment=None, plan_item=None):
+    return ws.conclusion_record(engagement, actor, claim, state, conditions or "", experiment or None,
+                                plan_item or None, origin=actor), _event("conclusion-recorded", actor,
+                                str(claim)[:40], None, state)
+
+
+@op("conclusion.list", mutates=False)
+def conclusion_list(engagement, actor=None, plan_item=None, experiment=None):
+    return {"conclusions": ws.conclusions_of(engagement, plan_item=plan_item, experiment=experiment)}, None
+
+
+@op("link.record")
+def link_record(engagement, actor, src, dst, kind, note=None):
+    r = ws.link_record(engagement, actor, src, dst, kind, note)
+    return r, _event("link-recorded", actor, f"{src}->{dst}", None, kind)
+
+
+
 if __name__ == "__main__":
     sys.exit(main(sys.argv[1:]))

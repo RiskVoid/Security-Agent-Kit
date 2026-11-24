@@ -232,6 +232,15 @@ changes to the harness are measured.
   retried after a bounded wait (`WORKER_TOOL_WAIT_S`) instead of an error the model may fumble. The
   engagement's rate and budgets hold across all tasks; every wait is recorded by kind (model, tool slot,
   target, fixture) and not charged to the task's timeout.
+- The record chain, phase B of the research loop (#89, #90, #93): schema v5 in findings.db - experiments
+  (X-...), conclusions (C-...) and links (supports, contradicts, requires, next), observations carry their
+  origin, and validations and evidence_pins move into the versioned migrations. Every task bound to a plan item
+  leaves an experiment when it ends - what was tried, under which conditions, with its evidence hashes -
+  whether it completed, was blocked or stalled, written by the harness with no model; the worker's finish can
+  state a conclusion per claim with its exact conditions, and the planner gets `record_conclusion` and
+  `link_records`. The packet's "what was tried" comes from the experiments, stale results are marked, and a
+  cell whose experiment concluded with a standing result says so at the top - a notice, never a refusal, and
+  the same notice rides `delegate_task`'s reply. The board shows each question's last experiment.
 - The research board (#87): one row per open question - planned, blocked, or an outcome gone stale - with
   the last result that changed something, the blocker, the budget used (tasks, worker steps, worker tokens,
   target requests), and the next decision with its reason, computed from the records with no model. In

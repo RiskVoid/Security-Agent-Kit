@@ -211,6 +211,13 @@ TOOLS = [
             "needs": {"type": "array", "items": {"type": "string"},
                       "description": "What would unblock the task: an identity, an approval, a missing tool."},
             "open_questions": {"type": "array", "items": {"type": "string"}},
+            "conclusions": {"type": "array", "items": {"type": "object", "properties": {
+                "claim": {"type": "string", "description": "what you conclude, with its exact conditions"},
+                "state": {"type": "string", "enum": ["supported", "refuted", "unresolved"]},
+                "conditions": {"type": "string", "description":
+                    "the exact conditions it holds under - identity, build, input - never widened"},
+                "evidence": {"type": "string", "description": "the evidence file it rests on"}},
+                "required": ["claim", "state"]}},
             "confidence": {"type": "string", "enum": ["low", "medium", "high"]}},
             "required": ["status", "summary"]}}},
     {"type": "function", "function": {"name": "read_record", "description":
@@ -894,7 +901,7 @@ def packet_diff(old, new):
     o, n = old.get("ids") or {}, (new.get("ids") or {})
     parts = []
     for kind, label in (("findings", "finding"), ("observations", "observation"), ("tasks", "task"),
-                        ("entries", "map entry")):
+                        ("entries", "map entry"), ("tried", "experiment")):
         for verb, a, b in (("new", n, o), ("gone", o, n)):
             xs = [x for x in (a.get(kind) or []) if x not in (b.get(kind) or [])]
             if xs:
@@ -1037,6 +1044,42 @@ def _refresh_established(task, messages):
     messages.append({"role": "user", "content": text})
 
 
+def _experiment_of(task, status):
+    """#90: a task bound to a plan item leaves an experiment record when it ends - what was tried, under which
+    conditions, with its evidence hashes - whether it succeeded, was blocked or stalled. The model is never
+    asked; its finish may add conclusions, which is a separate record. Never raises."""
+    pid = _packet_pid(task)
+    if not pid:
+        return None
+    ran = any(st.get("state") == "done" for st in task.get("steps") or [])
+    outcome = {"completed": "ran", "partial": "inconclusive", "blocked": "blocked",
+               "stalled": "inconclusive"}.get(status, "not run" if not ran else "inconclusive")
+    try:
+        import workspace
+        x = workspace.experiment_record(
+            task["engagement"], actor="agent:worker", plan_item=pid, task=task["id"],
+            method=((task.get("contract") or {}).get("cell") or {}).get("class") or task.get("tier"),
+            identity=((task.get("contract") or {}).get("cell") or {}).get("identity") or task.get("identity"),
+            policy_revision=(task.get("info") or {}).get("policy_version"),
+            required=list((task.get("contract") or {}).get("inputs") or []),
+            outcome=outcome, status=status,
+            summary=str((task.get("result") or {}).get("summary") or "")[:400],
+            evidence=task.get("run_evidence") or [])
+        task["experiment"] = x["id"]
+        for c in (task.get("result") or {}).get("conclusions") or []:   # kept in the result for the planner too
+            try:
+                workspace.conclusion_record(
+                    task["engagement"], actor="agent:worker", claim=c.get("claim"),
+                    state=c.get("state"), conditions=c.get("conditions") or "",
+                    experiment=x["id"], plan_item=pid, origin="agent:worker",
+                    evidence=[c["evidence"]] if c.get("evidence") else None)
+            except (ValueError, KeyError, TypeError):
+                pass                      # a malformed conclusion never blocks the task's completion
+        return x
+    except Exception:   # noqa: BLE001  the experiment is a record, not a dependency
+        return None
+
+
 def contract_text(task):
     """The task contract (#39) as a section of the worker's system prompt; empty without one."""
     c = task.get("contract") or {}
@@ -1171,6 +1214,8 @@ def _do_call_inner(task, c, messages):
             save(task, messages)
             return "ok"
         task.pop("refused_finish", None)
+        task["result"] = args                    # #90: the experiment reads the finish's conclusions from it
+        _experiment_of(task, args.get("status") or "completed")
         task["result"] = {**args,
                           "notes": [{"fact": n["fact"], "evidence": n.get("evidence")}
                                     for n in task.get("notes") or []],   # #120: the agent's words, marked as such
@@ -1415,6 +1460,8 @@ def run_task(task):
             except Exception as e:
                 status, err = "error", f"{type(e).__name__}: {e}"
             task["status"] = status
+            if status not in ("awaiting_approval", "done") and not task.get("experiment"):
+                _experiment_of(task, status)   # #90: a blocked or stalled task leaves its record too
             if err:
                 task["error"] = err
             sp.set("rv.status", status).set("rv.outcome", task.get("outcome")).set("rv.steps", task.get("step"))
@@ -1671,6 +1718,10 @@ def report(task) -> str:
         out["contract"] = task["contract"]
     if task.get("packet"):   # #117: the record ids the worker started from - pointers that survive a summary
         out["packet_ids"] = {k: v for k, v in task["packet"].get("ids", {}).items() if v}
+    if task.get("experiment"):   # #90: the experiment record this task left
+        out["experiment"] = task["experiment"]
+    if (task.get("packet") or {}).get("repeat"):   # #93: this cell was already tried, and the result stands
+        out["packet_repeat"] = task["packet"]["repeat"]
     if task.get("notes"):     # #120: the worker's notes, marked as its own words in the finish
         out["notes"] = r.get("notes") or [{"fact": n["fact"], "evidence": n.get("evidence")}
                                           for n in task["notes"]]

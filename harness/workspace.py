@@ -518,6 +518,7 @@ def board(eng):
         related = [t for t in tasks if pid in ((t.get("contract") or {}).get("plan_item") or "")
                    or pid == ((t.get("contract") or {}).get("cell") or {}).get("plan_item")]
         last = max(related, key=lambda t: t.get("started") or 0) if related else None
+        xlast = experiments_of(eng, plan_item=pid)   # #90: the board shows the last experiment
         tokens = sum((t.get("tokens") or {}).get("prompt_tokens", 0)
                      + (t.get("tokens") or {}).get("completion_tokens", 0) for t in related)
         entry_ids = set(r for r in it.get("refs") or [])
@@ -539,10 +540,14 @@ def board(eng):
             why = "the cell is still open after " + (f"{len(related)} task(s)" if related else "no task")
         rows.append({"item": pid, "question": it["title"], "state": it["state"],
                      "stale": bool(it.get("stale")), "identity": it.get("identity"),
-                     "last_result": ({"task": last["id"], "status": (last.get("result") or {}).get("status")
-                                      or last.get("status"),
-                                      "summary": ((last.get("result") or {}).get("summary") or "")[:160],
-                                      "at": last.get("started")} if last else None),
+                     "last_result": ({"experiment": xlast[-1]["id"], "task": xlast[-1].get("task"),
+                                      "status": xlast[-1]["outcome"],
+                                      "summary": str(xlast[-1].get("summary") or "")[:160],
+                                      "at": xlast[-1].get("created")} if xlast else
+                      ({"task": last["id"], "status": (last.get("result") or {}).get("status")
+                        or last.get("status"),
+                        "summary": ((last.get("result") or {}).get("summary") or "")[:160],
+                        "at": last.get("started")} if last else None)),
                      "blocker": it.get("rationale") or ((last.get("result") or {}).get("needs") or [None])[0]
                                 if last and (last.get("result") or {}).get("needs") else None,
                      "budget": {"tasks": len(related), "steps": sum(t.get("step") or 0 for t in related),
@@ -708,9 +713,28 @@ def packet(eng, goal, pid=None, chars=6000, exclude_task=None):
         open_.append((item["id"], f"{item['id']} {item['state']}" + (" (stale)" if item.get("stale") else "")
                       + f" - {item['title'][:110]}" + (" - " + "; ".join(b for b in bits if b) if any(bits) else "")))
     tried, known_f, known_o = [], [], []
+    repeat = []
+    for x in experiments_of(eng, plan_item=pid):   # #93: what was tried, from the experiment records
+        conc = next((c for c in conclusions_of(eng, experiment=x["id"])), None)
+        line = (f"{x['id']} {x['outcome']}" + (f" ({x['status']})" if x.get("status") else "")
+                + f" - {x.get('method') or 'the cell'} as {x.get('identity') or 'anonymous'}"
+                + (f", policy {x['policy_revision']}" if x.get("policy_revision") else "")
+                + f" - {str(x.get('summary') or '')[:160]}"
+                + (f" - conclusion: {conc['state']} under [{conc['conditions']}]" if conc else "")
+                + (" (stale: " + conc["stale_reason"] + ")" if conc and conc.get("stale") else "")
+                + (" - worker summary (not a verified fact)" if x.get("summary") else "")
+                + (" - evidence: " + ", ".join(e.get("path", "") for e in (x.get("evidence") or [])[:3])
+                   if x.get("evidence") else ""))
+        tried.append((x["id"], line))
+        if (conc and conc["state"] in ("supported", "refuted") and not conc.get("stale")
+                and x.get("identity") in (None, (item or {}).get("identity"))):   # the question's identity
+            repeat.append({"experiment": x["id"], "outcome": x["outcome"], "conclusion": conc["state"],
+                           "conditions": conc.get("conditions"), "summary": str(x.get("summary") or "")[:120]})
     for t in _packet_tasks(eng):
         if exclude_task and t.get("id") == exclude_task:
             continue                      # a task never starts from what itself did (#84)
+        if any(e.get("task") == t.get("id") for e in experiments_of(eng, plan_item=pid)):
+            continue                      # #93: this task's experiment is already in the section above
         tcell = (t.get("contract") or {}).get("cell") or {}
         same = entries and set(tcell.get("entries") or []) & set(entries)
         if not same and not (cls and cls in (tcell.get("class") or "")):
@@ -761,14 +785,21 @@ def packet(eng, goal, pid=None, chars=6000, exclude_task=None):
         kind, rid, line = rows.pop()
         cut.append(rid)
         used -= len(line) + 1
-    text = "\n".join(header) + ("" if not rows else "\n\nWhat the records say (every line keeps its state):\n"
-                                 + "\n".join(l for _, _, l in rows))
+    text = "\n".join(header)
+    if repeat:   # #93: this cell was already tried, and the result still stands - a notice, never a refusal
+        text += ("\nAlready tried for this cell, and the result stands: "
+                 + "; ".join(f"{r['experiment']} {r['conclusion']} under [{r['conditions']}]"
+                             for r in repeat[:3])
+                 + ". A deliberate reproduction is still possible; say in your finish what it added.")
+    text += ("" if not rows else "\n\nWhat the records say (every line keeps its state):\n"
+             + "\n".join(l for _, _, l in rows))
     if cut:
         text += f"\nNot included (budget): {', '.join(cut[:12])}" + (" ..." if len(cut) > 12 else "")
     ids = {k: [r for kk, r, _ in rows if kk == k] for k in ("entries", "open", "tried", "findings", "observations")}
     frev = {f["id"]: f["revision"] for f in db.list_(eng)}
     tstat = {t.get("id"): t.get("status") for t in _packet_tasks(eng)}
     return {"text": text, "ids": ids, "cut": cut, "chars": len(text), "budget": chars, "objective": bool(objective),
+            "repeat": repeat or None,
             "cell": {"class": cls, "entries": entries, "endpoints": paths,
                      "note": loose[:120]} if (cls or entries) else None,
             "revisions": {"plan_item": (item or {}).get("revision"),
@@ -859,3 +890,126 @@ def recall(eng, query, kind="", state="", limit=20):
                 "E-...... or a task id.")
     return f"{len(hits[:limit])} match(es) in {eng} (read_record opens any by id):\n" + "\n".join(hits[:limit]) \
         + (f"\n... and {len(hits) - limit} more" if len(hits) > limit else "")
+
+# ------------------------------------------------- experiments, conclusions, links (#89, #90, #93)
+OUTCOMES = ("ran", "blocked", "inconclusive", "not run")
+CONCLUSION_STATES = ("supported", "refuted", "unresolved")
+LINK_KINDS = ("supports", "contradicts", "requires", "next")
+_LINK_PREFIXES = {"P": "plan_items", "X": "experiments", "C": "conclusions", "O": "observations",
+                  "F": "findings"}
+
+
+def _pin(eng, paths):
+    """Evidence as pins record it (#89): the engagement-relative path with its sha256 and size."""
+    import hashlib
+    out = []
+    for p in paths or []:
+        full = str(p)
+        if full.startswith("/work/"):
+            full = os.path.join(db.WORK, full[len("/work/"):])
+        elif not os.path.isabs(full):
+            full = os.path.join(db.engagement_dir(eng), full)
+        try:
+            h = hashlib.sha256()
+            with open(full, "rb") as f:
+                for chunk in iter(lambda: f.read(65536), b""):
+                    h.update(chunk)
+            out.append({"path": os.path.relpath(full, db.engagement_dir(eng)), "sha256": h.hexdigest(),
+                        "size": os.path.getsize(full)})
+        except OSError:
+            continue
+    return out
+
+
+def _xrow(r):
+    d = dict(r)
+    d["required"] = _jl(d.get("required"))
+    d["evidence"] = _jl(d.get("evidence"))
+    return d
+
+
+def experiment_record(eng, actor, plan_item, task=None, method=None, identity=None, build=None,
+                      policy_revision=None, required=None, outcome="ran", status=None, summary="",
+                      evidence=None):
+    """#90: one experiment record, written by the harness when a task bound to a plan item ends - what was
+    tried, under which conditions (identity, build, policy revision), with its evidence hashes. Negative and
+    inconclusive outcomes are recorded with their exact conditions, never as a verdict about the target. The
+    model is never asked to write it; conclusions are a separate record."""
+    if outcome not in OUTCOMES:
+        raise ValueError(f"outcome must be one of {', '.join(OUTCOMES)}")
+    with db._db(eng) as con:
+        row = con.execute("SELECT id FROM plan_items WHERE id=?", (plan_item,)).fetchone()
+        if not row:
+            raise ValueError(f"no plan item {plan_item}")
+        xid = _next_id(con, "experiments", "X")
+        con.execute("INSERT INTO experiments VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                    (xid, plan_item, task, method, identity, build,
+                     None if policy_revision is None else str(policy_revision),
+                     json.dumps(required or []), outcome, status, str(summary or "")[:400],
+                     json.dumps(_pin(eng, evidence)), None, _now(), _now(), db._actor(actor), 1))
+        d = con.execute("SELECT * FROM experiments WHERE id=?", (xid,)).fetchone()
+    return _xrow(d)
+
+
+def conclusion_record(eng, actor, claim, state, conditions="", experiment=None, plan_item=None,
+                      origin=None, evidence=None):
+    """#90/#119: a conclusion with its exact conditions, never widened: 'rejected for identity A on build B'
+    stays that claim. The experiment it came from is named when known; origin says who drew it (a rule, a
+    checked summary, or an agent - the last two are the writer's words, not facts)."""
+    if state not in CONCLUSION_STATES:
+        raise ValueError(f"state must be one of {', '.join(CONCLUSION_STATES)}")
+    with db._db(eng) as con:
+        cid = _next_id(con, "conclusions", "C")
+        con.execute("INSERT INTO conclusions VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                    (cid, str(claim or "")[:400].strip(), state, str(conditions or "")[:400], experiment,
+                     plan_item, origin or db._actor(actor), 0, None, 1, _now(), _now(), db._actor(actor)))
+        d = con.execute("SELECT * FROM conclusions WHERE id=?", (cid,)).fetchone()
+    return dict(d)
+
+
+def link_record(eng, actor, src, dst, kind, note=None):
+    """#89: a link between records - supports, contradicts, requires or next - between plan items, experiments,
+    conclusions, observations and findings. Both ends must exist; a link is data, never an instruction."""
+    if kind not in LINK_KINDS:
+        raise ValueError(f"kind must be one of {', '.join(LINK_KINDS)}")
+    with db._db(eng) as con:
+        for rid in (src, dst):
+            p = str(rid or "").split("-", 1)[0]
+            table = _LINK_PREFIXES.get(p)
+            if not table or not con.execute(f"SELECT 1 FROM {table} WHERE id=?", (rid,)).fetchone():
+                raise ValueError(f"no record {rid}: a link's ends must exist (P-, X-, C-, O- or F- ids)")
+        con.execute("INSERT OR REPLACE INTO links VALUES (?,?,?,?,?,?)",
+                    (str(src), str(dst), kind, db._actor(actor), _now(), note))
+        return {"src": str(src), "dst": str(dst), "kind": kind}
+
+
+def experiments_of(eng, plan_item=None, cell=None):
+    """The engagement's experiments, oldest first; plan_item or the cell's (class, entries) select a question's."""
+    with db._db(eng) as con:
+        rows = [_xrow(r) for r in con.execute("SELECT * FROM experiments ORDER BY rowid")]
+    if plan_item:
+        rows = [r for r in rows if r["plan_item"] == plan_item]
+    if cell:
+        rows = [r for r in rows if r["plan_item"] == (cell.get("plan_item") if isinstance(cell, dict) else cell)
+                or (cell.get("class") and r["method"] == cell["class"])]
+    return rows
+
+
+def conclusions_of(eng, plan_item=None, experiment=None):
+    with db._db(eng) as con:
+        rows = [dict(r) for r in con.execute("SELECT * FROM conclusions ORDER BY rowid")]
+    if plan_item:
+        rows = [r for r in rows if r["plan_item"] == plan_item]
+    if experiment:
+        rows = [r for r in rows if r["experiment"] == experiment]
+    return rows
+
+
+def links_of(eng, src=None, dst=None):
+    with db._db(eng) as con:
+        q, a = "SELECT * FROM links WHERE 1=1", []
+        if src:
+            q += " AND src=?"; a.append(src)
+        if dst:
+            q += " AND dst=?"; a.append(dst)
+        return [dict(r) for r in con.execute(q + " ORDER BY rowid", a)]
