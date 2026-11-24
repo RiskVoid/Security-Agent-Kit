@@ -4186,6 +4186,46 @@ class ResearchPacket(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.ws.packet("no-such-engagement", "goal")
 
+    def test_the_board_rows_and_the_handover_carry_them(self):
+        """#87: one row per open question - a blocked item with its blocker, a stale outcome with its retest
+        reason, a running cell with its last result and budget - and handover() returns the board."""
+        import workspace
+        for d in ("evidence/sweep", "evidence/tasks/20261123-100000-aaaa/evidence"):
+            os.makedirs(os.path.join(self.tmp.name, "acme", d), exist_ok=True)
+        open(os.path.join(self.tmp.name, "acme", "evidence/sweep/s.json"), "w").write("{}")
+        ids = self.ws.plan_add("acme", "agent:planner", [
+            {"title": "BOLA on /api/parcels", "area": "access-control"},
+            {"title": "SSRF on /api/fetch", "area": "ssrf", "refs": [self.eid]},
+            {"title": "injection on /search", "area": "injection"}])
+        self.ws.plan_update("acme", "agent:planner", ids[0], state="blocked",
+                            rationale="no second identity yet; the client will supply one")
+        self.ws.plan_update("acme", "agent:planner", ids[1], state="tested",
+                            evidence=["evidence/sweep/s.json"], build="oldbuild")
+        self.ws.reassess("acme", "agent:planner", build="newbuild")
+        json.dump({"id": "20261123-100000-aaaa", "engagement": "acme", "goal": "Test injection on /search",
+                   "status": "done", "started": 500, "step": 9,
+                   "tokens": {"prompt_tokens": 5000, "completion_tokens": 500},
+                   "contract": {"plan_item": ids[2]},
+                   "result": {"status": "partial", "summary": "quote in q errors; boolean probe next"}},
+                  open(os.path.join(self.tmp.name, "acme", "evidence/tasks/20261123-100000-aaaa/task.json"),
+                       "w"))
+        rows = {r["item"]: r for r in self.ws.board("acme")}
+        self.assertEqual(sorted(rows), sorted(ids + [self.pid]))   # and the setUp's planned item, still open
+        blocked = rows[ids[0]]
+        self.assertEqual((blocked["state"], blocked["next"]), ("blocked", "unblock it"))
+        self.assertIn("no second identity yet", blocked["why"])
+        stale = rows[ids[1]]
+        self.assertEqual((stale["state"], stale["stale"], stale["next"]),
+                         ("tested", True, "retest on the current build"))
+        self.assertIn("build changed", stale["why"])
+        running = rows[ids[2]]
+        self.assertEqual(running["last_result"]["task"], "20261123-100000-aaaa")
+        self.assertEqual(running["budget"], {"tasks": 1, "steps": 9, "tokens": 5500, "target_requests": 0})
+        self.assertIn("triage the last result", running["next"])
+        h = self.ws.handover("acme")
+        self.assertEqual([r["item"] for r in h["board"]], sorted(rows))   # the handover carries the board
+        self.assertTrue(all(r["next"] and r["why"] for r in h["board"]))  # every row names its next decision
+
     def test_recall_searches_every_kind_by_words_and_id(self):
         out = self.ws.recall("acme", "fetch")
         for part in (self.eid, self.pid, self.fid, self.fworker, "20261123-100000-aaaa"):

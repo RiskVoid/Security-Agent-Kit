@@ -220,6 +220,12 @@ changes to the harness are measured.
   engagement takes no message. Each one is in the audit log with who did it.
 
 ### Benchmarks
+- The research board (#87): one row per open question - planned, blocked, or an outcome gone stale - with
+  the last result that changed something, the blocker, the budget used (tasks, worker steps, worker tokens,
+  target requests), and the next decision with its reason, computed from the records with no model. In
+  `get_handover` for the planner (the prompt says to pick up from there after a summary) and in the console's
+  Investigation tab for the person; recomputed whenever the records change. The harness images carry
+  ledger.py, which the live check caught them missing.
 - The memory surfaces around the packet (#115, #116, #117, #120, phase A of the research loop #77): the call
   ledger built with no model from the audit log and the worker's task records - after a command or request runs
   (it always runs) the reply carries the earlier equivalent call's entry, the planner's calls through kali-mcp

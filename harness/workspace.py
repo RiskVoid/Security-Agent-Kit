@@ -501,6 +501,56 @@ def set_value(eng, actor, key, value, expected_digest=None):
     return {"key": key, "digest": hashlib.sha256(value.encode()).hexdigest()[:16]}
 
 
+def board(eng):
+    """#87: one row per open question, from the records, with no model: the question, the last result that
+    changed something, the blocker, the budget used (tasks, worker steps, worker tokens, target requests), the
+    next decision and its reason. Open means planned or blocked, and items whose outcome went stale (they need
+    a retest). Later phases add to the same rows: experiment outcomes (#90), queue reasons (#96), parked and
+    reopened questions (#97)."""
+    from ledger import entries as ledger_entries
+    rows = []
+    items = [i for i in plan_list(eng) if i["state"] in ("planned", "blocked") or (i.get("stale") and
+             i["state"] in ("tested", "failed"))]
+    tasks = _packet_tasks(eng)
+    led = ledger_entries(eng)
+    for it in items:
+        pid = it["id"]
+        related = [t for t in tasks if pid in ((t.get("contract") or {}).get("plan_item") or "")
+                   or pid == ((t.get("contract") or {}).get("cell") or {}).get("plan_item")]
+        last = max(related, key=lambda t: t.get("started") or 0) if related else None
+        tokens = sum((t.get("tokens") or {}).get("prompt_tokens", 0)
+                     + (t.get("tokens") or {}).get("completion_tokens", 0) for t in related)
+        entry_ids = set(r for r in it.get("refs") or [])
+        requests = sum(1 for e in led if entry_ids and any(x in (e.get("key") or "") for x in entry_ids))
+        if it.get("stale") and it["state"] in ("tested", "failed"):
+            nxt, why = "retest on the current build", it.get("stale_reason") or "the build or policy changed"
+        elif it["state"] == "blocked":
+            nxt, why = "unblock it", it.get("rationale") or ""
+        elif not related:
+            nxt, why = ("delegate the first task for this cell (a coverage gap arrives with the goal pre-shaped)"
+                        if entry_ids else "plan it against a recon map entry"), "no task has touched this cell yet"
+        elif last and (last.get("status") in ("blocked", "stalled") or
+                       (last.get("result") or {}).get("status") in ("blocked", "stalled")):
+            needs = (last.get("result") or {}).get("needs") or []
+            nxt = "unblock the task: " + ("; ".join(str(n) for n in needs[:2]) if needs else "see its result")
+            why = f"the last task for this cell ended {((last.get('result') or {}).get('status') or 'blocked')}"
+        else:
+            nxt = "triage the last result and record the outcome"
+            why = "the cell is still open after " + (f"{len(related)} task(s)" if related else "no task")
+        rows.append({"item": pid, "question": it["title"], "state": it["state"],
+                     "stale": bool(it.get("stale")), "identity": it.get("identity"),
+                     "last_result": ({"task": last["id"], "status": (last.get("result") or {}).get("status")
+                                      or last.get("status"),
+                                      "summary": ((last.get("result") or {}).get("summary") or "")[:160],
+                                      "at": last.get("started")} if last else None),
+                     "blocker": it.get("rationale") or ((last.get("result") or {}).get("needs") or [None])[0]
+                                if last and (last.get("result") or {}).get("needs") else None,
+                     "budget": {"tasks": len(related), "steps": sum(t.get("step") or 0 for t in related),
+                                "tokens": tokens, "target_requests": requests},
+                     "next": nxt, "why": why})
+    return rows
+
+
 def handover(eng):
     """Where the investigation stands, from the authoritative records, plus the editable note."""
     findings = db.list_(eng)
@@ -547,6 +597,7 @@ def handover(eng):
         nxt.append(f"{len(cov['open'])} planned test(s) not run yet, next: {cov['open'][0]['id']} "
                    f"{cov['open'][0]['title']}")
     return {"objective": objective["value"] if objective else None,
+            "board": board(eng),   # #87: per open question, where it stands and why it isn't moving
             "findings": {s: len(v) for s, v in st.items()},
             "material": [{"id": f["id"], "title": f["title"], "severity": f["severity"], "status": f["status"]}
                          for f in findings if f["severity"] in ("critical", "high") and f["status"] in
