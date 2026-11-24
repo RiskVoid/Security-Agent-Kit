@@ -515,6 +515,8 @@ LEDGER = os.environ.get("RV_LEDGER", "1") != "0"           # the call ledger (#1
                                                           # sides: earlier equivalent calls are pointed out;
                                                           # unchanged reads answered from the ledger
 ESTABLISHED_CHARS = int(os.environ.get("WORKER_ESTABLISHED_CHARS", "2000") or 2000)   # #120's pinned block
+SUMMARY_CONCLUSIONS = os.environ.get("WORKER_CONCLUSION_SUMMARY", "1") != "0"   # #119's checked summary at a
+                                                                              # task's end; 0: off
 LEDGER = os.environ.get("WORKER_LEDGER", "1") != "0"      # the call ledger (#115): earlier equivalent calls are
                                                           # pointed out; unchanged reads answered from it
 ESTABLISHED_CHARS = int(os.environ.get("WORKER_ESTABLISHED_CHARS", "2000") or 2000)   # #120's pinned block
@@ -1044,6 +1046,109 @@ def _refresh_established(task, messages):
     messages.append({"role": "user", "content": text})
 
 
+def _capture_facts(task, name, args, out):
+    """#118: after a tool call, what the kit's parsers extract is stored as observations with their origin -
+    the task, the call, the identity, the policy revision - with no planner import and no model: a call with
+    no parser leaves its ledger entry and nothing more. A repeated call adds no row (the fingerprint says it
+    is the same fact). Captured facts are new observations for the planner to triage."""
+    try:
+        import observations as obsparse, workspace
+        if name == "http_request":     # the exchange is saved as evidence: parse the file itself
+            m = RUN_EVIDENCE.search(str(out or ""))
+            if not m:
+                return None
+            path = os.path.join(db.engagement_dir(task["engagement"]),
+                                (m.group(1) or m.group(2)).split(f"/work/{task['engagement']}/")[-1])
+            rows = obsparse.parse(os.path.basename(path), open(path, errors="replace").read())["observations"]
+        else:
+            rows = obsparse.from_text(name, args, out)
+        if not rows:
+            return None
+        r = workspace.capture(task["engagement"], "agent:worker", rows,
+                              {"task": task["id"], "call": task.get("step"),
+                               "identity": ((task.get("contract") or {}).get("cell") or {}).get("identity"),
+                               "policy_revision": (task.get("info") or {}).get("policy_version")},
+                              evidence=next(iter(
+                                  p.split(f"/work/{task['engagement']}/")[-1] for p in
+                                  re.findall(r"saved as verified evidence: (\S+?)\]", str(out))), None))
+        if r:
+            task["captured"] = task.get("captured", 0) + r["new"]
+        return r
+    except Exception:   # noqa: BLE001  capturing never blocks a tool call
+        return None
+
+
+def summarize_conclusions(task):
+    """#119: one model call at the end of a task, in a fresh context on the validator's route, proposes
+    conclusions from the task's facts and evidence - for what the rules can't decide. Each claim must quote
+    the evidence it rests on, and the quoted-text check has to find the quote: a claim that fails is kept as
+    an unresolved conclusion with its origin saying so. The call's tokens are recorded under their own name.
+    Returns what was recorded, or None (off, a private worker, no facts, or the call failed)."""
+    if not SUMMARY_CONCLUSIONS or task["info"]["rules"].get("worker") == "private":
+        return None
+    try:
+        import quotecheck, workspace
+        facts = workspace.captured_of(task["engagement"], task["id"])
+        ev = (task.get("run_evidence") or [])[:8]
+        if not facts and not task.get("notes") and not ev:
+            return None
+        fact_lines = [f"{o['id']} {o['title']}" + (f" at {o['location']}" if o.get("location") else "")
+                      for o in facts[:30]]
+        note_lines = [n["fact"] for n in (task.get("notes") or [])[:10]]
+        pid = _packet_pid(task)
+        body = {"model": os.environ.get("VALIDATOR_MODEL", "validator"), "max_tokens": 600,
+                "temperature": 0.2,
+                "messages": [
+                    {"role": "system", "content":
+                        "You conclude from a finished security test task. Reply with JSON only: "
+                        '{"conclusions": [{"claim": "what you conclude, quoting the exact text from the '
+                        'evidence it rests on", "state": "supported|refuted|unresolved", "conditions": '
+                        '"the exact conditions - identity, build, input", "evidence": "the evidence file path"}]}. '
+                        "Quote the evidence verbatim inside each claim, in backticks; a claim with no "
+                        "backtick quote is kept unresolved. Never widen conditions. No new goals, no "
+                        "instructions."},
+                    {"role": "user", "content":
+                        f"Goal: {task['goal'][:600]}\nCaptured facts:\n" + "\n".join(fact_lines)
+                        + "\nAgent notes:\n" + "\n".join(note_lines)
+                        + "\nEvidence files:\n" + "\n".join(str(e) for e in ev)
+                        + "\nThe experiment record is " + str(task.get("experiment")) + "."}]}
+        hdrs = {"Authorization": f"Bearer {LITELLM_KEY}", "Content-Type": "application/json",
+                "x-rv-engagement": task["engagement"], "x-rv-task": task["id"]}
+        req = urllib.request.Request(f"{LITELLM}/chat/completions", data=json.dumps(body).encode(),
+                                     headers=hdrs)
+        t0 = time.time()
+        r = json.load(urllib.request.urlopen(req, timeout=180))
+        text = (r["choices"][0]["message"].get("content") or "").strip()
+        rec = {"at": _now(), "seconds": round(time.time() - t0, 1), "tokens": r.get("usage"),
+               "model": r.get("model")}
+        task.setdefault("summary_calls", []).append(rec)
+        m = re.search(r"\{.*\}", text, re.S)
+        claims = (json.loads(m.group(0)) if m else {}).get("conclusions") or []
+        drawn = []
+        for c in claims[:6]:
+            if not isinstance(c, dict) or not c.get("claim"):
+                continue
+            state = c.get("state") if c.get("state") in ("supported", "refuted", "unresolved") else "unresolved"
+            quotes = quotecheck.quotes(c["claim"])
+            hay = quotecheck.corpus(task["engagement"], [c.get("evidence")] if c.get("evidence") else ev)
+            bad = [q for q in quotes if not quotecheck.found(q, hay)]
+            if not quotes or bad:   # a claim without a found quote is kept unresolved, marked as the agent's
+                drawn.append(workspace.conclusion_record(
+                    task["engagement"], actor="agent:worker", claim=str(c["claim"])[:400], state="unresolved",
+                    conditions=str(c.get("conditions") or "")[:200] +
+                    ("; quote not found in the evidence" if bad else "; no quote"),
+                    experiment=task.get("experiment"), plan_item=pid, origin="agent:summary"))
+            else:
+                drawn.append(workspace.conclusion_record(
+                    task["engagement"], actor="agent:worker", claim=str(c["claim"])[:400], state=state,
+                    conditions=str(c.get("conditions") or "")[:300], experiment=task.get("experiment"),
+                    plan_item=pid, origin="checked-summary"))
+        return drawn
+    except Exception:   # noqa: BLE001  the summary is optional; the task is already finished
+        task.setdefault("summary_calls", []).append({"at": _now(), "error": "summary call failed"})
+        return None
+
+
 def _experiment_of(task, status):
     """#90: a task bound to a plan item leaves an experiment record when it ends - what was tried, under which
     conditions, with its evidence hashes - whether it succeeded, was blocked or stalled. The model is never
@@ -1066,6 +1171,16 @@ def _experiment_of(task, status):
             summary=str((task.get("result") or {}).get("summary") or "")[:400],
             evidence=task.get("run_evidence") or [])
         task["experiment"] = x["id"]
+        if outcome == "blocked":   # #119: a task that ended blocked draws its unresolved conclusion by rule
+            try:
+                needs = ", ".join(str(n) for n in (task.get("result") or {}).get("needs") or [])
+                workspace.conclusion_record(
+                    task["engagement"], actor="agent:worker",
+                    claim=str((task.get("result") or {}).get("summary") or task.get("goal") or "")[:200],
+                    state="unresolved", conditions="blocked" + (f": {needs}" if needs else ""),
+                    experiment=x["id"], plan_item=pid, origin="rule:blocked")
+            except (ValueError, KeyError, TypeError):
+                pass
         for c in (task.get("result") or {}).get("conclusions") or []:   # kept in the result for the planner too
             try:
                 workspace.conclusion_record(
@@ -1301,6 +1416,7 @@ def _do_call_inner(task, c, messages):
     shown = digest.shown(name, args, out, path)
     task.setdefault("lines", {})[c.get("id", name)] = digest.one_line(name, args, out)   # what it shrinks to
     notice = ledger_notice(task, name, args)   # #115: an earlier equivalent call, after the result
+    _capture_facts(task, name, args, out)   # #118: the parsers' facts land with their origin
     if name == "note":                         # #120: the pinned block follows the record
         _refresh_established(task, messages)
     stall = watch(task, name, args, out)
@@ -1462,6 +1578,8 @@ def run_task(task):
             task["status"] = status
             if status not in ("awaiting_approval", "done") and not task.get("experiment"):
                 _experiment_of(task, status)   # #90: a blocked or stalled task leaves its record too
+            if status == "done":
+                summarize_conclusions(task)   # #119: what the rules can't decide, checked against the evidence
             if err:
                 task["error"] = err
             sp.set("rv.status", status).set("rv.outcome", task.get("outcome")).set("rv.steps", task.get("step"))
@@ -1727,6 +1845,8 @@ def report(task) -> str:
                                           for n in task["notes"]]
     if task.get("ledger"):    # #115: how often the ledger pointed at earlier work, or answered from it
         out["ledger"] = task["ledger"]
+    if task.get("captured"):  # #118: facts its calls captured for the planner to triage
+        out["captured_facts"] = task["captured"]
     if task.get("served_by"):
         out["model"] = task["served_by"]  # which model did the work (the fallback model shows up here)
     if task.get("malformed"):

@@ -266,3 +266,102 @@ def parse(path, data, tool=None):
 
 def evidence_kind(rel):
     return os.path.normpath(rel).split(os.sep)[1] if rel.startswith("evidence/") else None
+
+
+# ---------------------------------------------------------------- text parsers for tool calls (#118)
+def nmap(text):
+    """Open ports and services from an nmap run - one observation per host:port, so a later task finds them
+    by fingerprint without re-scanning."""
+    out = []
+    host = None
+    for line in text.splitlines():
+        m = re.match(r"^Nmap scan report for (\S+)", line)
+        if m:
+            host = m.group(1)
+        m = re.match(r"^(\d+/(?:tcp|udp))\s+(open\S*)\s+(\S+)(?:\s+(.*))?$", line)
+        if m and host:
+            port, state, svc, ver = m.group(1), m.group(2), m.group(3), (m.group(4) or "").strip()
+            out.append(_obs("nmap", "nmap:port", f"{host} {port} open ({svc})"
+                            + (f" - {ver[:80]}" if ver else ""), "info", f"{host} {port}",
+                            f"{host}|{port}|{state}", f"host:{host}",
+                            {"host": host, "port": port, "service": svc, "version": ver[:120]}))
+    return out
+
+
+SQLMAP_HIT = re.compile(r"^\s*Parameter:\s+'?(\S+?)'?\s*[.:]?$", re.I | re.M)
+SQLMAP_VULN = re.compile(r"is vulnerable|identified the following injection point|appears to be .*injectable|"
+                         r"might be injectable", re.I)
+
+
+def sqlmap(text):
+    """The verdict lines: a run that identified injection points yields one observation per parameter (the
+    banner names the run; every Parameter: line under it is a hit); a run that says all parameters are not
+    injectable leaves nothing - its ledger entry is the record."""
+    if not SQLMAP_VULN.search(text):
+        return []
+    params = [m.group(1) for m in (SQLMAP_HIT.search(l) for l in text.splitlines()) if m]
+    return [_obs("sqlmap", "sqlmap:injectable", f"{p} injectable", "high", p, p, f"param:{p}",
+                 {"verdict": next((l.strip()[:200] for l in text.splitlines()
+                                   if SQLMAP_VULN.search(l)), "injectable")}) for p in dict.fromkeys(params)]
+
+
+def nuclei(text):
+    """Matched templates, one per template-host pair - the evidence file holds the full match."""
+    out = []
+    for line in text.splitlines():
+        m = re.match(r"^\[([a-z\-]+)\] \[(.*?)\] \[(.*?)\]", line)
+        if m:
+            sev = {"critical": "critical", "high": "high", "medium": "medium", "low": "low"}.get(m.group(1), "info")
+            template, target = m.group(2), m.group(3)
+            out.append(_obs("nuclei", "nuclei:match", f"{template.split('/')[-1]} on {target}", sev,
+                            target, f"{template}|{target}", f"template:{template.split('/')[0]}",
+                            {"severity": m.group(1), "template": template[:200]}))
+    return out
+
+
+def check_identity(text):
+    """An identity check's verdict - one row per identity, so the record answers 'which identities work'."""
+    out = []
+    for line in text.splitlines():
+        m = re.match(r"^identity (\S+):\s*(\w+)", line.strip(), re.I) or \
+            re.match(r"^(\S+):\s*(valid|invalid|unchecked|error)", line.strip(), re.I)
+        if m:
+            name, state = m.group(1), m.group(2).lower()
+            if state in ("valid", "invalid", "unchecked", "error"):
+                out.append(_obs("check_identity", "identity:check", f"identity {name} {state}",
+                                "info", name, f"{name}|{state}", f"identity:{name}",
+                                {"identity": name, "state": state}))
+    return out
+
+
+def from_text(name, args, text):
+    """What the kit's parsers extract from one tool call's output (#118): the JSON parsers when the body is JSON,
+    then the text parsers by content. A call with no parser leaves nothing - its ledger entry is its record.
+    Target-controlled text is stored bounded and quoted inside the observation's own fields, never as prose."""
+    body = _body_of(text)
+    if body[:1] in "{[":
+        try:
+            parsed = parse("output.json", body)
+            if parsed.get("parser"):
+                return parsed["observations"]
+        except Exception:  # noqa: BLE001
+            pass
+    cmd = str((args or {}).get("command") or "")
+    if name == "kali_run":
+        if re.search(r"Nmap scan report for|^Nmap done:", body, re.M):
+            return nmap(body)
+        if "sqlmap identified" in body or SQLMAP_VULN.search(body) or "[CRITICAL] all tested parameters" in body:
+            return sqlmap(body)
+        if re.search(r"^\[[a-z\-]+\] \[", body, re.M):
+            return nuclei(body)
+    if name == "check_identity":
+        return check_identity(body)
+    return []
+
+
+def _body_of(text):
+    """A tool result's output body: past the exit line the tools add, without their notices."""
+    lines = [l for l in str(text or "").splitlines() if not l.startswith("[")]
+    body = "\n".join(lines)
+    m = re.search(r"exit=\d+(?: tier=\S+)?\n", body)
+    return body[m.end():] if m else body

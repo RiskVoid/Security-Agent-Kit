@@ -530,7 +530,7 @@ def fmt_pct(k, n):
 
 
 # ---------------------------------------------------------------- token use by role (#78)
-ROLES = ("planner", "worker", "advisor", "validator")
+ROLES = ("planner", "worker", "advisor", "validator", "summary")
 
 
 def _usage(u):
@@ -562,6 +562,8 @@ def token_use(res, tasks=None):
                                       int(x["tokens"].get("cached_tokens") or 0)) for x in tasks])
         # each advice record holds its usage since the advisor exists (#37); a failed call used none
         detail["advisor"] = _sum([_usage(a.get("tokens")) for x in tasks for a in x.get("advisor") or []])
+        # the end-of-task conclusion summary (#119): its own records, like the advisor's
+        detail["summary"] = _sum([_usage(a.get("tokens")) for x in tasks for a in x.get("summary_calls") or []])
     s = res.get("score") or {}
     if "validation" in s:
         v = s["validation"]

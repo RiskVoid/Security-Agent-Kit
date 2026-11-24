@@ -267,6 +267,25 @@ Every table lives in the engagement's existing SQLite database (`findings.db`):
 The packet's "what was tried" reads experiments (#93), the board shows each question's last experiment, and a
 cell whose experiment concluded with a standing result says so before a new task repeats it.
 
+**Facts are captured at every tool call (#118):** after a worker call the kit's parsers - the JSON readers for
+semgrep, OSV-Scanner, pip-audit, bandit and gitleaks, and the text readers for nmap's open ports, sqlmap's
+injection verdicts, nuclei's matches and identity checks - store what they extract as `new` observations with
+their origin (task or conversation, call, identity, policy revision, the citable evidence path), without a
+planner import and without a model. A repeated call adds no row: the fingerprint is the same one
+`import_observations` uses, and the seen count grows. The planner's own calls are captured from the audit log
+the same way, each saved output parsed once. Target-controlled text is stored bounded inside the observation's
+own fields and reaches a prompt only as a record line, never as prose.
+
+**Conclusions are drawn from facts (#119):** by rule, with no model - an oracle record that passed with a
+clean control supports its claim under the record's conditions; an `identity_difference` whose positive request
+and negative control behaved the same refutes the difference; a task that ended blocked leaves an unresolved
+conclusion naming its blocker; the same outcome under the same conditions is a reproduction, not a second
+row; and a new conclusion that contradicts a standing one makes the standing one unresolved, with a
+`contradicts` link between them. For what the rules can't decide, one model call at the task's end proposes
+conclusions on the validator's route; each claim must quote its evidence in backticks, and the quoted-text
+check decides - a missing quote is kept unresolved, marked as the agent's own. `WORKER_CONCLUSION_SUMMARY=0`
+turns the model call off.
+
 ### Worker task lifecycle
 
 `worker-mcp` saves each task (`task.json`: status, lease, steps; `messages.json`: the model conversation) next to

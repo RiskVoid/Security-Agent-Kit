@@ -232,6 +232,19 @@ changes to the harness are measured.
   retried after a bounded wait (`WORKER_TOOL_WAIT_S`) instead of an error the model may fumble. The
   engagement's rate and budgets hold across all tasks; every wait is recorded by kind (model, tool slot,
   target, fixture) and not charged to the task's timeout.
+- Facts at every tool call and conclusions from them (#118, #119, phase B of the research loop): after a worker
+  call the kit's parsers store what they extract as new observations with their origin (task or conversation,
+  call, identity, policy revision, the citable evidence path) - nmap's open ports, sqlmap's injection
+  verdicts, nuclei's matches and identity checks gain parsers, beside the existing JSON readers - with no
+  planner import and no model; a repeated call adds no row (the fingerprint is import_observations's own), and
+  the planner's calls are captured from the audit log the same way, each saved output parsed once.
+  Target-controlled text is stored bounded as a record's own fields. Conclusions are drawn by rule - an oracle
+  record that passed with a clean control supports its claim; an identity_difference whose positive request
+  and negative control behaved the same refutes it; a blocked task leaves an unresolved conclusion naming its
+  blocker; a reproduction is not a second row; a contradiction makes the standing conclusion unresolved with a
+  contradicts link - and, for the rest, one model call at the task's end on the validator's route proposes
+  conclusions whose evidence quotes are checked, a missing quote kept unresolved as the agent's own; the
+  call's tokens are counted under their own role, and WORKER_CONCLUSION_SUMMARY=0 turns it off.
 - The record chain, phase B of the research loop (#89, #90, #93): schema v5 in findings.db - experiments
   (X-...), conclusions (C-...) and links (supports, contradicts, requires, next), observations carry their
   origin, and validations and evidence_pins move into the versioned migrations. Every task bound to a plan item

@@ -562,6 +562,7 @@ def handover(eng):
     obs = list_observations(eng, limit=100000)
     cov = coverage(eng)
     imps = imports(eng)
+    _capture_ready(eng)   # #118/#119: the records are current before the handover reads them
     objective = get_value(eng, "objective")
     note = get_value(eng, "handover")
     st = {s: [f for f in findings if f["status"] == s] for s in db.STATUSES}
@@ -661,6 +662,7 @@ def packet(eng, goal, pid=None, chars=6000, exclude_task=None):
     chars = max(int(chars or 6000), 500)
     if not os.path.isdir(db.engagement_dir(eng)):
         raise ValueError(f"no engagement {eng}")
+    _capture_ready(eng)   # #118/#119: facts captured and rules drawn before the records are read
     item = next((i for i in plan_list(eng) if i["id"] == pid), None) if pid else None
     cell, loose = None, ""
     if item:
@@ -964,6 +966,10 @@ def conclusion_record(eng, actor, claim, state, conditions="", experiment=None, 
                     (cid, str(claim or "")[:400].strip(), state, str(conditions or "")[:400], experiment,
                      plan_item, origin or db._actor(actor), 0, None, 1, _now(), _now(), db._actor(actor)))
         d = con.execute("SELECT * FROM conclusions WHERE id=?", (cid,)).fetchone()
+    m = _conclusion_mutations(eng, cid, str(claim or "")[:400].strip(), state,
+                              str(conditions or "")[:400], plan_item)
+    if m:   # #119: a reproduction returns the standing row; a contradiction marks the other one unresolved
+        return {**dict(d), **m}
     return dict(d)
 
 
@@ -1013,3 +1019,151 @@ def links_of(eng, src=None, dst=None):
         if dst:
             q += " AND dst=?"; a.append(dst)
         return [dict(r) for r in con.execute(q + " ORDER BY rowid", a)]
+
+
+# ------------------------------------------------- facts captured at every tool call (#118)
+def capture(eng, actor, rows, origin, evidence=None, limit=50):
+    """What a tool call's parsers extracted, stored as `new` observations with their origin (#118): the task or
+    conversation, the call, the identity, the build and the policy revision - without a planner import. A fact
+    seen again is the same row: its seen count grows and its evidence keeps the first sighting (the fingerprint
+    is the same one import_observations uses). Capturing confirms nothing; the planner still triages."""
+    if not rows:
+        return None
+    with db._db(eng) as con:
+        new, again = 0, 0
+        for r in rows[:max(1, min(int(limit or 50), 200))]:
+            fp = r.get("fingerprint") or obsparse.fingerprint(r.get("tool"), r.get("rule_id"),
+                                                              r.get("location"), None)
+            cur = con.execute("SELECT id FROM observations WHERE fingerprint=?", (fp,)).fetchone()
+            if cur:
+                con.execute("UPDATE observations SET seen=seen+1, updated=?, actor=? WHERE id=?",
+                            (_now(), db._actor(actor), cur["id"]))
+                again += 1
+                continue
+            oid = _next_id(con, "observations", "O")
+            con.execute("INSERT INTO observations (id, tool, rule_id, title, severity, location, fingerprint,"
+                        " group_key, evidence, detail, status, seen, created, updated, actor, origin_task,"
+                        " origin_call, identity, build, policy_revision) VALUES "
+                        "(:id, :tool, :rule, :title, :sev, :loc, :fp, :grp, :ev, :detail, 'new', 1,"
+                        " :created, :updated, :actor, :otask, :ocall, :ident, :build, :pol)",
+                        {"id": oid, "tool": r.get("tool"), "rule": r.get("rule_id"),
+                         "title": str(r.get("title"))[:300], "sev": r.get("severity"),
+                         "loc": r.get("location"), "fp": fp, "grp": r.get("group_key"),
+                         "ev": json.dumps([str(evidence)] if evidence else []),
+                         "detail": json.dumps(r.get("detail") or {}), "created": _now(), "updated": _now(),
+                         "actor": db._actor(actor), "otask": origin.get("task"), "ocall": origin.get("call"),
+                         "ident": origin.get("identity"), "build": origin.get("build"),
+                         "pol": origin.get("policy_revision")})
+            new += 1
+    return {"new": new, "seen_again": again}
+
+
+def sweep_audit(eng, actor="agent:planner"):
+    """#118: the planner's own calls, captured from the audit log - the harness runs the same parsers on the
+    saved outputs of calls it hasn't processed yet, deduplicated by the output's path in a workspace key, so
+    each file is parsed once. A call with no parser leaves its ledger entry and nothing more."""
+    from ledger import _audit_rows
+    try:
+        done = set(json.loads((get_value(eng, "captured_runs") or {}).get("value") or "[]"))
+    except (ValueError, TypeError):
+        done = set()
+    rows = []
+    for r in _audit_rows(eng):
+        rel = next(iter(r.get("outputs") or {}), None)
+        if not rel or rel in done:
+            continue
+        try:
+            body = open(os.path.join(db.engagement_dir(eng), rel), errors="replace").read()
+        except OSError:
+            continue
+        body = "\n".join(l for l in body.splitlines() if not l.startswith("#"))   # past the run header
+        try:
+            rows += obsparse.from_text("kali_run", {"command": r.get("command")}, body)
+        except Exception:  # noqa: BLE001  a capture never breaks the sweep
+            pass
+        done.add(rel)
+    if rows:
+        capture(eng, actor, rows, {"task": "conversation"}, limit=100)
+    if done:
+        set_value(eng, db._actor(actor), "captured_runs", json.dumps(sorted(done)))
+    return len(rows)
+
+
+def captured_of(eng, task):
+    """The observations a task's calls captured (#118), for its end-of-task summary (#119)."""
+    with db._db(eng) as con:
+        return [_orow(r) for r in con.execute("SELECT * FROM observations WHERE origin_task=? ORDER BY rowid",
+                                              (task,))]
+
+
+def _capture_ready(eng):
+    """Facts are captured and rule conclusions drawn before the packet and the handover are built (#118,
+    #119): both read the records, so the records must be current."""
+    try:
+        sweep_audit(eng)
+        rule_conclusions(eng)
+    except Exception:  # noqa: BLE001  a broken sweep never blocks the packet or the handover
+        pass
+
+
+# ------------------------------------------------- conclusions from facts, by rule (#119)
+def rule_conclusions(eng, actor="agent:planner"):
+    """Conclusions a rule can draw from the verification records, with no model (#119): an oracle record that
+    passed with a clean control supports the claim it tested, under the record's own conditions; an
+    identity_difference whose positive request and negative control behaved the same refutes the difference
+    claim, under those conditions. Each record is drawn once; the same outcome under the same conditions is
+    a reproduction, not a second conclusion (conclusion_record keeps that rule)."""
+    drawn = []
+    try:
+        done = set(json.loads((get_value(eng, "drawn_records") or {}).get("value") or "[]"))
+    except (ValueError, TypeError):
+        done = set()
+    d = os.path.join(db.engagement_dir(eng), "evidence", "verify")
+    for name in sorted(os.listdir(d)) if os.path.isdir(d) else []:
+        if name in done or not name.endswith(".json"):
+            continue
+        try:
+            rec = json.load(open(os.path.join(d, name), errors="replace"))
+        except (OSError, ValueError):
+            continue
+        rel = f"evidence/verify/{name}"
+        conds = f"oracle {rec.get('oracle')}, record {rel}" + (
+            f", marker {rec['marker']}" if rec.get("marker") else "")
+        if rec.get("result") == "pass" and rec.get("control_clean"):
+            drawn.append(conclusion_record(eng, actor, str(rec.get("reason") or "the oracle passed")[:300],
+                                           "supported", conditions=conds, origin="rule:oracle"))
+        elif (rec.get("oracle") == "identity_difference" and rec.get("result") == "fail"
+              and rec.get("control_clean")):
+            drawn.append(conclusion_record(eng, actor, "no difference between the identities on this request",
+                                           "refuted", conditions=conds + ", " + str(rec.get("reason")
+                                                                                     or "")[:200],
+                                           origin="rule:identity-difference"))
+        done.add(name)
+    if done:
+        set_value(eng, db._actor(actor), "drawn_records", json.dumps(sorted(done)))
+    return drawn
+
+
+def _conclusion_mutations(eng, cid, claim, state, conditions, plan_item):
+    """#119's guarantees on every conclusion: the same claim under the same conditions is a reproduction, not a
+    second row (the caller returns the standing one); and a new conclusion that contradicts a standing one for
+    the same question makes the standing one unresolved, with a contradicts link between them."""
+    with db._db(eng) as con:
+        same = con.execute("SELECT * FROM conclusions WHERE claim=? AND conditions=? AND stale=0",
+                           (claim, conditions)).fetchone()
+        if same and same["id"] != cid:
+            con.execute("DELETE FROM conclusions WHERE id=?", (cid,))     # a reproduction: the first stands
+            return {"reproduction_of": same["id"]}
+        if state not in ("supported", "refuted"):
+            return None                       # only a definite state contradicts its opposite (#119)
+        opposite = "refuted" if state == "supported" else "supported"
+        other = con.execute("SELECT * FROM conclusions WHERE plan_item=? AND state=? AND stale=0 AND id<>?",
+                            (plan_item, opposite, cid)).fetchone()
+        if other:
+            con.execute("UPDATE conclusions SET state='unresolved', stale_reason='contradicted by " + cid
+                        + "', revision=revision+1, updated=? WHERE id=?", (_now(), other["id"]))
+            con.execute("INSERT OR REPLACE INTO links VALUES (?,?,?,?,?,?)",
+                        (cid, other["id"], "contradicts", "rule:contradiction", _now(),
+                         "the standing conclusion became unresolved"))
+            return {"contradicts": other["id"]}
+    return None
