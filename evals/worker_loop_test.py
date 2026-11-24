@@ -1764,6 +1764,21 @@ class WorkKeysAndQueue(Loop):
         self.assertIn("REFUSED", self.delegate()[0])
         self.assertEqual(len(self.ws.queue_log_rows("eng")), 1)
 
+    def test_read_record_opens_a_method_and_never_crosses_engagements(self):
+        m = self.ws.method_record("eng", "agent:planner", "tenant isolation by identity difference",
+                                  "access-control", groups=["/api/v1/orders"], assumes="the same family",
+                                  access="identity bob",
+                                  procedure="identity_difference with the owner's fixture marker",
+                                  control="the owner gets it, the anonymous request doesn't")
+        body = worker.read_record({"engagement": "eng"}, m["id"])
+        self.assertIn("M-001 tenant isolation", body)
+        self.assertIn("identity_difference with the owner's fixture marker", body)
+        self.assertIn("negative control: the owner gets it", body)
+        self.assertIn("assumes: the same family", body)
+        os.makedirs(os.path.join(self.tmp.name, "other"), exist_ok=True)
+        self.assertIn("ids never cross engagements",
+                      worker.read_record({"engagement": "other"}, m["id"]))
+
 
 
 if __name__ == "__main__":

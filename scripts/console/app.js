@@ -1259,6 +1259,13 @@ async function paneInvestigation() {
             <span>${q.answered ? "answered already" : `<b>${q.readiness.ready ? "ready" : "waiting"}</b>`}<div class="rv-dim">${esc(q.reason)}</div></span></div>`).join("")}
         </div></div>
         <div class="rv-card-body"><p class="hint">Advisory (#96): the harness ranks, the agent still decides. ⬤ marks the hard, high-impact classes that keep a share of the top slots. Dispatches are logged against the queue.</p></div></div>` : ""}
+      ${r.proposals && r.proposals.length ? `<div class="rv-card"><div class="rv-card-head"><h3>Method reuse: proposed siblings <span class="rv-dim">${r.proposals.length}</span></h3></div>
+        <div class="rv-dl" style="--cols:120px minmax(0, 1fr) 260px;--minw:560px"><div class="rv-dl-in">
+          ${r.proposals.slice(0, 8).map((p) => `<div class="rv-dl-row"><span class="mono">${esc(p.method)}</span>
+            <span><b>${esc(p.operation)}</b><div class="rv-dim">plan: ${esc(p.title)}</div></span>
+            <span>${esc(p.finding || "")}<div class="rv-dim">${esc(p.why)}</div></span></div>`).join("")}
+        </div></div>
+        <div class="rv-card-body"><p class="hint">A verified method, offered for its related surfaces (#104). The method transfers, the result doesn't: each test runs its own negative control, a confirmed sibling becomes an instance of the finding, a protected one comes back refuted.</p></div></div>` : ""}
       ${h.board && h.board.length ? `<div class="rv-card"><div class="rv-card-head"><h3>Board: open questions <span class="rv-dim">${h.board.length}</span></h3></div>
         <div class="rv-dl" style="--cols:150px minmax(0, 1fr) 190px;--minw:560px"><div class="rv-dl-in">
           ${h.board.map((b) => `<div class="rv-dl-row"><span class="mono">${esc(b.item)} <span class="rv-dim">${esc(b.state)}${b.stale ? " (stale)" : ""}${b.queue_rank ? ` · queue #${b.queue_rank}` : ""}</span></span>

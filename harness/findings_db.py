@@ -35,7 +35,7 @@ METHODS = ("runtime-reproduction", "replay", "authorization-matrix", "source-rev
 PRIORITIES = ("P1", "P2", "P3", "P4")   # remediation priority: the client's order of work, not the severity
 NEEDS_REASON = ("false-positive", "accepted-risk")
 COVERAGE = ("planned", "tested", "failed", "blocked", "excluded", "not-applicable")
-SCHEMA_VERSION = 7
+SCHEMA_VERSION = 8
 ACTOR_RX = re.compile(r"^(console|cli|agent|test):[A-Za-z0-9._@-]{1,64}$")
 FIELDS = ("title", "severity", "cvss_vector", "cvss_score", "cwe", "asset", "description", "impact",
           "reproduction", "remediation", "evidence", "status", "source", "notes", "duplicate_of", "priority",
@@ -203,6 +203,14 @@ def _migrate(con: sqlite3.Connection) -> None:
         ecols = {r[1] for r in con.execute("PRAGMA table_info(experiments)")}
         if ecols and "reproduction" not in ecols:
             con.execute("ALTER TABLE experiments ADD COLUMN reproduction INTEGER NOT NULL DEFAULT 0")
+    if v < 8:  # method records (#102): what worked, under which conditions - engagement-local, never exported
+        script("""
+            CREATE TABLE IF NOT EXISTS methods (id TEXT PRIMARY KEY, title TEXT NOT NULL,
+                vclass TEXT NOT NULL, groups TEXT DEFAULT '[]', code TEXT DEFAULT '[]',
+                assumes TEXT NOT NULL, access TEXT NOT NULL, procedure TEXT NOT NULL, expect TEXT,
+                control TEXT, finding TEXT, experiment TEXT, origin TEXT, actor TEXT, created TEXT,
+                updated TEXT, revision INTEGER NOT NULL DEFAULT 1);
+        """)
     con.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
 
 

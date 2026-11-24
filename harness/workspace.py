@@ -729,7 +729,7 @@ def packet(eng, goal, pid=None, chars=6000, exclude_task=None):
                 f"rationale: {item['rationale']}" if item.get("rationale") else ""]
         open_.append((item["id"], f"{item['id']} {item['state']}" + (" (stale)" if item.get("stale") else "")
                       + f" - {item['title'][:110]}" + (" - " + "; ".join(b for b in bits if b) if any(bits) else "")))
-    tried, known_f, known_o = [], [], []
+    tried, known_f, known_o, known_m = [], [], [], []
     repeat = []
     for x in experiments_of(eng, plan_item=pid):   # #93: what was tried, from the experiment records
         conc = next((c for c in conclusions_of(eng, experiment=x["id"])), None)
@@ -785,8 +785,16 @@ def packet(eng, goal, pid=None, chars=6000, exclude_task=None):
             known_o.append((o["id"], f"{o['id']} {o['status']} ({o.get('severity')}) - {o['title'][:110]}"
                             + (f" - {o.get('location')}" if o.get("location") else "")
                             + (f" - dismissed: {o.get('reason')}" if o.get("reason") else "")))
+    for m in methods_matching(eng, cls, groups):   # #102: the methods that worked here, one line each
+        known_m.append((m["id"], f"{m['id']} method ({m.get('origin') or 'agent'}) - {m['title'][:110]}"
+                        + f" - assumes: {str(m.get('assumes') or '')[:160]}"
+                        + f" - access: {str(m.get('access') or '')[:120]}"
+                        + f" - procedure: {str(m.get('procedure') or '')[:260]}"
+                        + (f" - negative control: {str(m.get('control') or '')[:160]}" if m.get("control") else "")
+                        + (f" - proven by finding {m['finding']}" if m.get("finding") else "")))
 
     rows = ([("open", i, l) for i, l in open_] + [("tried", i, l) for i, l in tried]
+            + [("methods", i, l) for i, l in known_m]
             + [("findings", i, l) for i, l in known_f] + [("observations", i, l) for i, l in known_o])
     for x in entries:
         e = ents.get(x)
@@ -812,7 +820,8 @@ def packet(eng, goal, pid=None, chars=6000, exclude_task=None):
              + "\n".join(l for _, _, l in rows))
     if cut:
         text += f"\nNot included (budget): {', '.join(cut[:12])}" + (" ..." if len(cut) > 12 else "")
-    ids = {k: [r for kk, r, _ in rows if kk == k] for k in ("entries", "open", "tried", "findings", "observations")}
+    ids = {k: [r for kk, r, _ in rows if kk == k]
+           for k in ("entries", "open", "tried", "methods", "findings", "observations")}
     frev = {f["id"]: f["revision"] for f in db.list_(eng)}
     tstat = {t.get("id"): t.get("status") for t in _packet_tasks(eng)}
     return {"text": text, "ids": ids, "cut": cut, "chars": len(text), "budget": chars, "objective": bool(objective),
@@ -913,7 +922,7 @@ OUTCOMES = ("ran", "blocked", "inconclusive", "not run")
 CONCLUSION_STATES = ("supported", "refuted", "unresolved")
 LINK_KINDS = ("supports", "contradicts", "requires", "next")
 _LINK_PREFIXES = {"P": "plan_items", "X": "experiments", "C": "conclusions", "O": "observations",
-                  "F": "findings"}
+                  "F": "findings", "M": "methods"}
 
 
 def _pin(eng, paths):
@@ -1346,3 +1355,218 @@ def release_work(eng, task):
     """Release every work key a task holds (#98) - called on any ending, success included."""
     with db._db(eng) as con:
         con.execute("DELETE FROM work_claims WHERE task=?", (task,))
+
+
+# ------------------------------------------------- method records (#102) and reuse (#104)
+ORACLE_SHAPES = {   # what each oracle's own procedure is, in the worker's terms - the record proves it ran
+    "marker": "send the request with a fresh canary where the input goes, and the same request with another "
+              "canary as the control: the flaw holds when the first comes back in the response and the "
+              "control's doesn't",
+    "identity_difference": "request the record as the attacker identity, carrying the owner's fixture marker: "
+                            "the owner control gets the marker, the anonymous control doesn't, and the flaw "
+                            "holds when the attacker gets it too",
+    "read_back": "check the marker is absent, send the request that writes or moves it, then read the record "
+                 "back: the flaw holds when the marker is there after the proof and was not before",
+}
+
+
+def _mrow(r):
+    d = dict(r)
+    d["groups"] = _jl(d.get("groups"))
+    d["code"] = _jl(d.get("code"))
+    return d
+
+
+def method_record(eng, actor, title, vclass, groups=None, code=None, assumes="", access="", procedure="",
+                  expect="", control="", finding=None, experiment=None, origin=None):
+    """#102: one method - what worked, under which conditions, kept inside this engagement's database. There
+    is no promotion or export: a method from one client never reaches another. vclass is the vulnerability
+    class it applies to; groups and code are where it was proven (route groups, and the source files the map
+    names); procedure is the safe way to run it; control is the negative control that makes a result mean
+    something; finding or experiment is where it came from."""
+    title, vclass = str(title or "").strip(), str(vclass or "").strip()
+    if not title or not vclass:
+        raise ValueError("a method needs a title and a vulnerability class (its area)")
+    if not str(procedure or "").strip():
+        raise ValueError("a method needs its procedure: the safe way to run it")
+    with db._db(eng) as con:
+        mid = _next_id(con, "methods", "M")
+        con.execute("INSERT INTO methods (id, title, vclass, groups, code, assumes, access, procedure, expect,"
+                    " control, finding, experiment, origin, actor, created, updated, revision) VALUES "
+                    "(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                    (mid, title[:200], vclass[:60], json.dumps([str(g) for g in groups or []][:8]),
+                     json.dumps([str(c) for c in code or []][:8]), str(assumes or "")[:1000],
+                     str(access or "")[:1000], str(procedure or "")[:4000], str(expect or "")[:1000],
+                     str(control or "")[:1000], finding or None, experiment or None,
+                     str(origin or "")[:60] or db._actor(actor), db._actor(actor), _now(), _now(), 1))
+        d = con.execute("SELECT * FROM methods WHERE id=?", (mid,)).fetchone()
+    return _mrow(d)
+
+
+def method_update(eng, actor, mid, expected_revision=None, **f):
+    """#102: correct a method - the planner can add or amend one, with the revision it read."""
+    keep = ("title", "vclass", "groups", "code", "assumes", "access", "procedure", "expect", "control",
+            "experiment")
+    bad = set(f) - set(keep)
+    if bad:
+        raise ValueError(f"these fields can't be changed here: {', '.join(sorted(bad))}")
+    if not f:
+        raise ValueError("nothing to update")
+    with db._db(eng) as con:
+        cur = con.execute("SELECT * FROM methods WHERE id=?", (mid,)).fetchone()
+        if not cur:
+            raise ValueError(f"no method {mid}")
+        if expected_revision is not None and int(expected_revision) != cur["revision"]:
+            raise db.Conflict(f"{mid} was changed by someone else since you read it (now revision "
+                              f"{cur['revision']}, you had {expected_revision}): reload and apply your change again")
+        sets, vals = [], []
+        for k, v in f.items():
+            if k in ("groups", "code"):
+                v = json.dumps([str(x) for x in (v or [])][:8])
+            sets.append(f"{k}=?")
+            vals.append(str(v)[:4000] if isinstance(v, str) else v)
+        sets += ("updated=?", "revision=revision+1")
+        vals.append(_now())
+        con.execute(f"UPDATE methods SET {', '.join(sets)} WHERE id=?", [*vals, mid])
+        d = con.execute("SELECT * FROM methods WHERE id=?", (mid,)).fetchone()
+    return _mrow(d)
+
+
+def methods_of(eng, vclass=None, group=None):
+    """The engagement's own methods, oldest first (#102): engagement-local by construction - this reads only
+    this engagement's database, and no tool reads another's."""
+    with db._db(eng) as con:
+        rows = [_mrow(r) for r in con.execute("SELECT * FROM methods ORDER BY rowid")]
+    if vclass:
+        rows = [r for r in rows if r["vclass"] == vclass]
+    if group:
+        rows = [r for r in rows if group in (r.get("groups") or [])]
+    return rows
+
+
+def methods_matching(eng, vclass, groups=()):
+    """The methods that apply to a cell (#102): the same class, proven on one of the cell's route groups - or
+    with no map position at all, which applies wherever the class does (a source review, for instance)."""
+    return [m for m in methods_of(eng, vclass=vclass)
+            if not m.get("groups") or set(m.get("groups") or []) & set(groups or [])]
+
+
+def method_from_finding(eng, actor, fid):
+    """#102: the method a verified finding used, derived by the harness with no model from what actually backs
+    it - the oracle record that passed with a clean control, and the experiment that tested the cell. Returns
+    the method row, or None when the finding isn't confirmed, nothing checkable backs it, or no class can be
+    matched to a later surface. Never raises: a method is a convenience, not a dependency. Deriving twice
+    returns the method it already left, never a second row."""
+    try:
+        import reconmap, verification
+        f = db.get(eng, fid)
+        if f.get("status") != "confirmed":
+            return None
+        recs = verification.records(eng, f.get("evidence"))
+        hit = next(((p, r) for p, r in recs if r.get("result") == "pass" and r.get("control_clean")), None)
+        if not hit:
+            return None                      # no passing oracle with a clean control: nothing to re-run
+        existing = next((m for m in methods_of(eng) if m.get("finding") == fid), None)
+        if existing and (existing.get("groups") or existing.get("code")):
+            return existing                  # derived, and the plan link already gave it its position
+        path, rec = hit
+        item = next((i for i in plan_list(eng) if i.get("finding_id") == fid), None)
+        xs = experiments_of(eng, plan_item=item["id"]) if item else []
+        x = xs[-1] if xs else None
+        classes = reconmap_classes(item) if item else []
+        vclass = next(iter(classes), "") or next((c for c, keys in reconmap.CLASS_REFS.items()
+                                                 if (f.get("cwe") or "") in keys), "")
+        if not vclass:
+            return None                     # nothing to match a related surface by
+        ents = {e["id"]: e for e in reconmap.build(eng)["entries"]} if reconmap.has_map(eng) else {}
+        refs = (item or {}).get("refs") or []
+        groups = sorted({reconmap._group(ents[r]["path"]) for r in refs if r in ents and ents[r].get("path")})
+        code = sorted({str(ents[r].get("code") or "").split(":")[0] for r in refs if r in ents
+                       and ents[r].get("code")})
+        controls = [s for s in rec.get("steps") or [] if "control" in str(s.get("role") or "").lower()]
+        ident = (x or {}).get("identity") or ((item or {}).get("identity") or "")
+        fields = dict(
+            title=f"{vclass} by {rec['oracle']} on " + (", ".join(groups) or str(f.get("asset") or
+                                                                                "the surface")[:80]),
+            vclass=vclass, groups=groups, code=code,
+            assumes=("the surface shares the authorization of the route family it was proven on"
+                     + (f" ({', '.join(groups)})" if groups else "") + ", and reaches another tenant's record"
+                     if vclass in ("access-control", "mass-assignment") else
+                     f"the surface shares the shape of the one it was proven on"
+                     + (f" ({', '.join(groups)})" if groups else "")),
+            access=f"identity {ident}" if ident else "the identities the record's controls name",
+            procedure=f"{rec['oracle']} oracle ({ORACLE_SHAPES.get(rec['oracle'], rec['oracle'])}); "
+                      f"the record that proved it: {path}",
+            expect=f"{rec.get('reason')}", control="; ".join(f"{s.get('role')}: {s.get('status')}" for s in
+                                                            controls) or "the oracle's own negative control")
+        if existing:   # derived at confirmation, before the plan link named its position: complete that row
+            better = {k: v for k, v in fields.items() if v and v != existing.get(k)}
+            if (x or {}).get("id") and (x or {}).get("id") != existing.get("experiment"):
+                better["experiment"] = x["id"]     # the experiment that tested the cell, now that it's known
+            return method_update(eng, actor, existing["id"], **better) if better else existing
+        return method_record(eng, actor, finding=fid, experiment=(x or {}).get("id"),
+                             origin="derived:harness", **fields)
+    except Exception:   # noqa: BLE001
+        return None
+
+
+def method_proposals(eng):
+    """#104: for each method, the related surfaces it hasn't been proven on: the same route group, or the
+    operations the map names behind the same source code (the same authorization, on a framework map). Each
+    proposal is the plan item to add and the goal to send, using the identities the method already needed -
+    the method transfers, the result doesn't: every proposed test runs its own negative control at the new
+    surface, and a protected sibling comes back refuted with its conditions, never as a finding."""
+    import reconmap
+    out = []
+    if not reconmap.has_map(eng):
+        return out
+    ents = reconmap.build(eng)["entries"]
+    covered = set()
+    for it in plan_list(eng):
+        for c in reconmap_classes(it):
+            covered |= {(r, c) for r in it.get("refs") or []}
+    by_finding = {i.get("finding_id"): i for i in plan_list(eng)}
+    for m in methods_of(eng):
+        fam = {}
+        for e in ents:
+            same_group = set(m.get("groups") or []) & {reconmap._group(e.get("path") or "")}
+            same_code = set(m.get("code") or []) & {str(e.get("code") or "").split(":")[0]}
+            if (same_group or same_code) and m["vclass"] in (e.get("classes") or []):
+                fam[e["id"]] = e
+        ident = (by_finding.get(m.get("finding")) or {}).get("identity") or ""
+        for eid, e in sorted(fam.items()):
+            if (eid, m["vclass"]) in covered:
+                continue                  # a plan item already covers that cell
+            out.append({
+                "method": m["id"], "finding": m.get("finding"),
+                "entry": eid, "operation": f"{e.get('method')} {e.get('path')}".strip(),
+                "title": f"{m['vclass']} on {e.get('method')} {e.get('path')}".strip()[:200],
+                "area": m["vclass"], "refs": [eid],
+                **({"identity": ident} if ident else {}),   # the identities the method already needed
+                "goal": (f"Test {m['vclass']} on {e.get('method')} {e.get('host') or ''}{e.get('path')} using "
+                         f"method {m['id']} ({m['title'][:120]}): {m['procedure'][:400]} Its negative control "
+                         f"decides, not the similar look of the response: a correctly protected operation comes "
+                         f"back refuted with its conditions, never as a finding. Access: {m.get('access')}."),
+                "why": (f"{m['id']} proved the class on the same route family"
+                        + (f" ({', '.join(m.get('groups') or [])})" if m.get("groups") else "")
+                        + "; the method transfers, the result doesn't")})
+    return out
+
+
+def finding_add_instance(eng, actor, fid, where, evidence=None, experiment=None, note=""):
+    """#104: a confirmed result at a related surface becomes an instance of the finding that owns the root
+    cause, not a new finding - the count isn't inflated, the extent is recorded."""
+    f = db.get(eng, fid)
+    inst = f.get("instances") or []
+    if isinstance(inst, str):
+        try:
+            inst = json.loads(inst or "[]")
+        except ValueError:
+            inst = []
+    elif not isinstance(inst, list):
+        inst = []
+    one = {"location": str(where or "")[:300], "observation": str(note or "")[:300],
+           "evidence": evidence or None, "experiment": experiment or None, "at": _now()}
+    if any(str(i.get("location")) == one["location"] for i in inst):
+        return db.get(eng, fid)          # an instance is recorded once per location
+    return db.update(eng, fid, actor=actor, instances=inst + [one])

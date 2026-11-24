@@ -388,9 +388,10 @@ RECORD_CHARS = 4000          # read_record's bound: head and tail, like read_fil
 
 def read_record(task, id):
     """#85: one record of this engagement in full, by id - an observation (O-...), a finding (F-...), a plan
-    item (P-...), a recon map entry (E-...) or an earlier task record (its 20261123-122609-3599 id, as the
-    packet names it). The packet carries one line per record; this opens the one the task cares about. Bounded
-    head and tail; read_file opens the evidence it names. Read-only, and records never cross engagements."""
+    item (P-...), a recon map entry (E-...), a method (M-...) or an earlier task record (its
+    20261123-122609-3599 id, as the packet names it). The packet carries one line per record; this opens the
+    one the task cares about. Bounded head and tail; read_file opens the evidence it names. Read-only, and
+    records never cross engagements."""
     eng, rid = task["engagement"], str(id or "").strip()
     try:
         import workspace, reconmap
@@ -444,6 +445,21 @@ def read_record(task, id):
                               f"sources: {', '.join(e.get('sources') or [])}",
                               "seen as: " + (", ".join(e.get("seen_by") or []) or "no identity"),
                               "evidence: " + (", ".join(e.get("evidence") or []) or "none")])
+        elif re.fullmatch(r"M-[0-9a-zA-Z]+", rid):
+            m = next((x for x in workspace.methods_of(eng) if x["id"] == rid), None)
+            if not m:
+                return _no_record(eng, rid)
+            body = "\n".join([f"{m['id']} {m['title']}",
+                              f"class: {m['vclass']}; route groups: "
+                              + (", ".join(m.get("groups") or []) or "not mapped"),
+                              "assumes: " + (m.get("assumes") or "-"),
+                              "access: " + (m.get("access") or "-"),
+                              "procedure: " + (m.get("procedure") or "-"),
+                              "evidence to expect: " + (m.get("expect") or "-"),
+                              "negative control: " + (m.get("control") or "-"),
+                              "from: " + (", ".join(str(x) for x in (m.get("finding"), m.get("experiment"))
+                                                    if x) or "not recorded"),
+                              f"origin: {m.get('origin') or '-'}; revision: {m.get('revision')}"])
         elif re.fullmatch(r"\d{8}-\d{6}-[0-9a-f]+", rid):
             path = os.path.join(db.engagement_dir(eng), "evidence", "tasks", rid, "task.json")
             if not os.path.isfile(path):
@@ -463,8 +479,8 @@ def read_record(task, id):
                                                  else " [unsupported]") for n in t.get("notes") or []]
                          if t.get("notes") else []))
         else:
-            return ("unrecognised id " + rid + ": a record id looks like O-012, F-001, P-003, E-1a2b3c or a "
-                    "task id (20261123-122609-3599); the packet names the ids that matter for this task")
+            return ("unrecognised id " + rid + ": a record id looks like O-012, F-001, P-003, E-1a2b3c, M-001 "
+                    "or a task id (20261123-122609-3599); the packet names the ids that matter for this task")
     except Exception as e:   # noqa: BLE001  a broken record must not break the task
         return f"could not read {rid}: {type(e).__name__}: {e}"
     if len(body) > RECORD_CHARS:

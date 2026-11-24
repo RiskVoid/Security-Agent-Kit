@@ -258,6 +258,19 @@ changes to the harness are measured.
   counted from the records too (#95): a call resets the idle count only when it captured a new observation or
   recorded a candidate; output that merely looks new (a changed banner, a timestamp) doesn't, and the stall
   record names which of the two fired and the progress events the task did produce.
+- Method records and their reuse (#102, #104, phase D of the research loop): confirming a finding with a
+  passing oracle derives a method - what worked, under which conditions: the oracle's procedure, its negative
+  control, the evidence to expect, the access it needs - and the plan link completes it with the route group
+  (or the source files the map names) it was proven on; methods live in each engagement's own database
+  (schema v8), nothing reads another's, and there is no promotion or export. The packet of a task whose cell
+  matches carries one line per matching method and the worker's `read_record` opens one in full; the planner
+  can add or correct one (`record_method`, `list_methods`). Each method proposes the related surfaces it
+  hasn't been proven on - the same route group, or the operations the map puts behind the same source code -
+  as pre-shaped plan items with the `delegate_task` goal to send (`get_queue`'s proposals, the console's
+  Investigation tab): the method transfers, the result doesn't, every proposed test runs its own negative
+  control at the new surface, a confirmed sibling becomes an instance of the finding that owns the root cause
+  (`record_instance` - the extent is recorded, the count isn't inflated, and the report shows every
+  instance), and a correctly protected sibling comes back refuted with its conditions, never as a finding.
 - Facts at every tool call and conclusions from them (#118, #119, phase B of the research loop): after a worker
   call the kit's parsers store what they extract as new observations with their origin (task or conversation,
   call, identity, policy revision, the citable evidence path) - nmap's open ports, sqlmap's injection

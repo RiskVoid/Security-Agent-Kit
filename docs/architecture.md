@@ -319,6 +319,20 @@ task is counted from the records too (#95): a call only resets the idle count wh
 observation or recorded a candidate - output that merely looks new (a changed banner, a timestamp) doesn't,
 and the stall record says which fired.
 
+**What worked travels to its siblings (#102, #104):** confirming a finding with a passing oracle leaves a
+method record, derived by the harness from what actually backs the finding - the oracle's own procedure and
+negative control, the evidence to expect, the access it needs - and the plan link completes it with the
+route group (or the source files the map names) it was proven on. Methods are engagement-local: each lives
+in that engagement's database, nothing reads another's, and there is no promotion or export. The packet of a
+task whose cell matches carries one line per matching method, `read_record` opens one in full, and the
+planner can add or correct one (`record_method`). Each method proposes the related surfaces it hasn't been
+proven on - the same route group, or the operations the map puts behind the same source code - as pre-shaped
+plan items with the goal to send (`get_queue`'s proposals, the console's Investigation tab): the method
+transfers, the result doesn't, every proposed test runs its own negative control at the new surface, a
+confirmed sibling becomes an instance of the finding that owns the root cause (`record_instance` - one
+finding carries the extent, the count isn't inflated, and the report shows every instance), and a correctly
+protected sibling comes back refuted with its conditions, never as a finding.
+
 ### Worker task lifecycle
 
 `worker-mcp` saves each task (`task.json`: status, lease, steps; `messages.json`: the model conversation) next to

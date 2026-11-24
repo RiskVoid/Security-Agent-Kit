@@ -4372,6 +4372,197 @@ class Queue(unittest.TestCase):
         self.assertIsNone(self.ws.claim_work("acme2", "t-9", key))      # acme's claim doesn't reach into it
 
 
+class MethodRecords(unittest.TestCase):
+    """#102: a method is derived from a verified finding - from the oracle record that passed with a clean
+    control and the experiment that tested the cell - kept in the engagement's own database; the packet
+    carries it, read_record opens it, and the planner can add or correct one. #104: on the route-family lab
+    shape (#80), the method proposes the siblings it hasn't been proven on; a confirmed sibling becomes an
+    instance of the finding, the protected sibling comes back refuted with its conditions, and neither
+    becomes a second finding."""
+
+    def setUp(self):
+        import reconmap, workspace
+        import ops as ops_mod
+        self.ops = ops_mod
+        self.ws = workspace
+        self.tmp = tempfile.TemporaryDirectory()
+        self.saved = db.WORK
+        db.WORK = self.tmp.name
+        e = os.path.join(self.tmp.name, "acme")
+        for d in ("evidence/map", "evidence/verify"):
+            os.makedirs(os.path.join(e, d))
+        self.fam = ["http://10.250.0.21:8000/api/v1/orders/O-1001" + op
+                    for op in ("", "/export", "/download", "/audit")]
+        json.dump({"observations": [{"method": "GET", "url": u, "source": "openapi", "status": 200,
+                                     "auth": "required", "params": {}} for u in self.fam]},
+                  open(os.path.join(e, "evidence/map/map-1.json"), "w"))
+        self.eid = {u: next(x["id"] for x in reconmap.build("acme")["entries"] if x.get("example") == u)
+                    for u in self.fam}
+        self.pid = workspace.plan_add("acme", "agent:planner", [
+            {"title": "tenant isolation on the order read", "area": "access-control",
+             "refs": [self.eid[self.fam[0]]], "identity": "bob"}])[0]
+        self.ws.experiment_record("acme", "agent:worker", plan_item=self.pid, task="t-1",
+                                  method="access-control", identity="bob", outcome="ran",
+                                  summary="bob read alice's order")
+        self.vrec = "evidence/verify/20261124T120000-identity_difference-abc.json"
+        json.dump({"oracle": "identity_difference", "result": "pass", "control_clean": True,
+                   "reason": "bob gets alice's marker", "marker": "ACME-MARK-XYZ",
+                   "steps": [{"role": "probe as bob", "status": 200, "evidence": "evidence/http/p1.txt"},
+                             {"role": "control as alice (owner)", "status": 200,
+                              "evidence": "evidence/http/c1.txt"},
+                             {"role": "control without an identity", "status": 401,
+                              "evidence": "evidence/http/c2.txt"}]},
+                  open(os.path.join(e, self.vrec), "w"))
+        row, self.event = self.ops.call("finding.record", {
+            "engagement": "acme", "actor": "agent:planner", "method": "oracle",
+            "fields": dict(title="Cross-tenant order read", severity="high",
+                           asset="GET /api/v1/orders/O-1001", cwe="CWE-639", status="confirmed",
+                           evidence=[self.vrec],
+                           reproduction="bob requests alice's order with her marker and gets it back")})
+        self.fid = row["id"]
+
+    def tearDown(self):
+        db.WORK = self.saved
+        self.tmp.cleanup()
+
+    def test_a_method_is_derived_from_a_verified_finding(self):
+        self.assertEqual(self.fid, "F-001")
+        self.assertEqual(self.event.get("derived_method"), "M-001")   # the confirm says what it derived
+        ms = self.ws.methods_of("acme")
+        self.assertEqual(len(ms), 1)                    # deriving again never adds a second row
+        m = self.ws.method_from_finding("acme", "agent:planner", self.fid)
+        self.assertEqual(m["id"], "M-001")
+        self.assertEqual(m["vclass"], "access-control")            # from the CWE before the plan link
+        self.assertIn("identity_difference", m["procedure"])      # the oracle's own shape, and its record
+        self.assertIn(self.vrec, m["procedure"])
+        self.assertIn("control as alice (owner): 200", m["control"])
+        self.assertIn("bob gets alice's marker", m["expect"])
+        self.assertEqual(m["finding"], "F-001")
+        self.assertIsNone(m["experiment"])     # the cell's experiment isn't known until the plan link lands
+
+    def test_nothing_checkable_no_method(self):
+        # a confirm with no passing oracle record leaves no method: there is nothing to re-run elsewhere
+        row, _ = self.ops.call("finding.record", {
+            "engagement": "acme", "actor": "agent:planner", "method": "runtime-reproduction",
+            "fields": dict(title="Reflected input in the search field", severity="low",
+                           asset="GET /search", status="confirmed",
+                           evidence=["evidence/map/map-1.json"],       # not a verification record
+                           reproduction="the search term comes back in the page")})
+        self.assertIsNone(self.ws.method_from_finding("acme", "agent:planner", row["id"]))
+        self.assertEqual([m["id"] for m in self.ws.methods_of("acme")], ["M-001"])
+        # and neither does an unconfirmed finding, whatever its evidence
+        db.update("acme", self.fid, actor="agent:planner", status="candidate")
+        self.assertIsNone(self.ws.method_from_finding("acme", "agent:planner", self.fid))
+
+    def test_the_plan_link_completes_the_method_and_proposes_the_siblings(self):
+        # the plan link is what names the position: the derived method gains the route group and the identity
+        self.ops.call("plan.update", {"engagement": "acme", "actor": "agent:planner", "id": self.pid,
+                                      "fields": {"state": "failed", "finding_id": self.fid,
+                                                 "rationale": "the tenant check is missing on read"}})
+        m = self.ws.methods_of("acme")[0]
+        self.assertEqual(m["groups"], ["/api/v1"])
+        self.assertEqual(m["access"], "identity bob")
+        self.assertEqual(m["experiment"], "X-001")     # the experiment that tested the proven cell
+        # the proposals: the three siblings, with the identities and the goal to send - the method
+        # transfers, the result doesn't, and each test runs its own negative control
+        props = self.ws.method_proposals("acme")
+        self.assertEqual(sorted(p["operation"] for p in props),
+                         ["GET /api/v1/orders/O-1001/audit", "GET /api/v1/orders/O-1001/download",
+                          "GET /api/v1/orders/O-1001/export"])
+        for p in props:
+            self.assertEqual((p["method"], p["finding"], p["area"], p["identity"]),
+                             ("M-001", "F-001", "access-control", "bob"))
+            self.assertEqual([p["entry"]], p["refs"])
+            self.assertIn("negative control", p["goal"])
+        # the planner adds them; the queue ranks the new questions at the top (the reserved share's class)
+        pids = self.ws.plan_add("acme", "agent:planner", [
+            {"title": p["title"], "area": p["area"], "refs": p["refs"], "identity": p["identity"]}
+            for p in props])
+        self.assertEqual(self.ws.method_proposals("acme"), [])      # covered now: no proposal repeats itself
+        q = self.ws.queue("acme")
+        self.assertEqual({r["item"] for r in q[:3]}, set(pids))
+        self.assertTrue(all(r["hard"] and r["readiness"]["ready"] for r in q[:3]))
+        # the packet of a proposed task carries the method that suggested it (#102's one line per match)
+        pk = self.ws.packet("acme", "Test tenant isolation on the export operation", pids[0], chars=4000)
+        self.assertEqual(pk["ids"]["methods"], ["M-001"])
+        self.assertIn("M-001 method (derived:harness)", pk["text"])
+        self.assertIn("negative control", pk["text"])
+
+    def test_a_confirmed_sibling_is_an_instance_the_protected_one_is_refuted(self):
+        self.ops.call("plan.update", {"engagement": "acme", "actor": "agent:planner", "id": self.pid,
+                                      "fields": {"state": "failed", "finding_id": self.fid,
+                                                 "rationale": "the tenant check is missing on read"}})
+        props = self.ws.method_proposals("acme")
+        pids = self.ws.plan_add("acme", "agent:planner", [
+            {"title": p["title"], "area": p["area"], "refs": p["refs"], "identity": p["identity"]}
+            for p in props])
+        # the export and download siblings confirm: instances of the finding that owns the root cause
+        for i, p in enumerate(props[:2]):
+            self.ws.experiment_record("acme", "agent:worker", plan_item=pids[i], task=f"t-{i + 2}",
+                                      method="access-control", identity="bob", outcome="ran")
+            self.ops.call("finding.instance", {"engagement": "acme", "actor": "agent:planner",
+                                               "id": self.fid, "where": p["operation"],
+                                               "evidence": ["evidence/http/x.txt"],
+                                               "experiment": f"X-00{i + 2}",
+                                               "note": "the same missing tenant check"})
+        f = db.get("acme", self.fid)
+        self.assertEqual(sorted(i["location"] for i in f["instances"]),
+                         ["GET /api/v1/orders/O-1001/download", "GET /api/v1/orders/O-1001/export"])
+        self.assertEqual(f["revision"], 3)                       # recorded as the finding's own changes
+        again = self.ops.call("finding.instance", {"engagement": "acme", "actor": "agent:planner",
+                                                   "id": self.fid, "where": props[0]["operation"]})[0]
+        self.assertEqual(len(again["instances"]), 2)            # an instance is recorded once per location
+        # the protected sibling (the audit operation, #80's clean control) comes back refuted with its
+        # conditions - a result against it, never a finding about it
+        self.ws.experiment_record("acme", "agent:worker", plan_item=pids[2], task="t-4",
+                                  method="access-control", identity="bob", outcome="ran")
+        c = self.ws.conclusion_record("acme", "agent:worker", "the audit operation refuses another tenant",
+                                      "refuted", conditions="identity bob, status 403", experiment="X-004")
+        self.assertEqual((c["state"], c["conditions"]), ("refuted", "identity bob, status 403"))
+        # and the count isn't inflated: one finding, with its instances, and nothing about the audit
+        self.assertEqual(len(db.list_("acme")), 1)
+        self.assertFalse(any("audit" in (f2.get("title") or "") + (f2.get("asset") or "")
+                              for f2 in db.list_("acme")))
+
+    def test_methods_never_leave_their_engagement(self):
+        os.makedirs(os.path.join(self.tmp.name, "acme2"))        # a second engagement's own database
+        self.assertEqual(self.ws.methods_of("acme2"), [])        # nothing of acme's is readable there
+        m2 = self.ws.method_record("acme2", "agent:planner", "tenant isolation by identity difference",
+                                    "access-control", procedure="identity_difference with the owner's marker")
+        self.assertEqual(m2["id"], "M-001")                      # its own numbering, in its own database
+        self.assertEqual([m["id"] for m in self.ws.methods_of("acme")], ["M-001"])
+        # a link may name a method (its record exists), and its ends never cross engagements either
+        lk = self.ws.link_record("acme", "agent:planner", src=self.pid, dst="M-001", kind="supports")
+        self.assertEqual(lk, {"src": self.pid, "dst": "M-001", "kind": "supports"})
+
+    def test_the_planner_can_add_and_correct_a_method(self):
+        m = self.ws.method_record("acme", "agent:planner", "tenant isolation by identity difference",
+                                  "access-control", groups=["/api/v1/orders"], assumes="the same family",
+                                  access="identity bob", procedure="identity_difference with the owner's marker",
+                                  control="the owner gets it, the anonymous request doesn't")
+        self.assertEqual(m["origin"], "agent:planner")
+        with self.assertRaises(ValueError):
+            self.ws.method_record("acme", "agent:planner", "", "access-control", procedure="x")
+        with self.assertRaises(ValueError):
+            self.ws.method_record("acme", "agent:planner", "t", "access-control", procedure="")
+        fixed = self.ws.method_update("acme", "agent:planner", m["id"],
+                                      expected_revision=m["revision"],
+                                      procedure="identity_difference; the owner's fixture marker decides")
+        self.assertEqual(fixed["revision"], 2)
+        with self.assertRaises(db.Conflict):     # a stale revision never overwrites someone else's change
+            self.ws.method_update("acme", "agent:planner", m["id"], expected_revision=1,
+                                  procedure="something else")
+        with self.assertRaises(ValueError):     # and unknown fields never reach the table
+            self.ws.method_update("acme", "agent:planner", m["id"], vclassx="access-control")
+        # matching: a method with a map position applies to its route group; one without (the derived method,
+        # before its plan link) applies by class alone; and another class never matches
+        self.assertEqual([x["id"] for x in self.ws.methods_matching("acme", "access-control",
+                                                                    ["/api/v1/orders"])], ["M-001", m["id"]])
+        self.assertEqual([x["id"] for x in self.ws.methods_matching("acme", "access-control", ["/other"])],
+                         ["M-001"])
+        self.assertEqual(self.ws.methods_matching("acme", "xss", ["/api/v1/orders"]), [])
+
+
 class ResearchPacket(unittest.TestCase):
     """#83: the packet builder - selection by the cell's stable ids first, a budget that lists what didn't fit
     as ids, every line keeping its state, and the ids and revisions a resume diff (#84) compares against."""

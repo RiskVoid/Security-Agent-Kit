@@ -399,6 +399,18 @@ def build(eng, inp=None, out_dir=None):
             if f.get(key):
                 d.h3(label)
                 md(d, f[key])
+        inst = []
+        if isinstance(f.get("instances"), str):
+            try:
+                inst = json.loads(f.get("instances") or "[]")
+            except ValueError:
+                inst = []
+        if inst:   # #104: the same root cause proven at related surfaces - instances, not more findings
+            d.h3("Also affected (instances of the same root cause)")
+            d.table(["Operation", "Evidence", "Seen at"],
+                    rows=[[str(i.get("location") or i) + (f" — {i['observation']}" if i.get("observation") else ""),
+                           ", ".join(i.get("evidence") or []) or "not recorded", fmt_ts(i.get("at"))]
+                          for i in inst], col_weights=[3, 2.4, 1])
         d.h3("Evidence")
         lst = ev.get(f["id"], [])
         if lst:
