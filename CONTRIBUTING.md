@@ -252,7 +252,9 @@ Actions are pinned to a commit SHA, with the release tag in a comment.
   that matches `VERSION`. To release: bump `VERSION` and the `RVKIT_VERSION:-…` defaults in `docker-compose.yml`
   together (CI checks they match), add the version's notes to `CHANGELOG.md`, merge, then tag. After publishing,
   an install check on clean amd64 and arm64 runners runs `./rvkit setup --yes`, confirms the kit's images were
-  pulled rather than built, and runs the policy suite.
+  pulled rather than built, and runs the policy suite. When both pass, the GitHub Release for the tag is created
+  with the CHANGELOG's `## [X.Y.Z]` section as its notes (or updated, on a re-run); a version with no section in
+  the CHANGELOG fails that step, and a version with a `-` suffix is marked as a pre-release.
 - Dependabot (`.github/dependabot.yml`) proposes updates for GitHub Actions and the kit's own images once a release
   is two weeks old. It leaves the practice lab targets alone: their old versions are the point.
 

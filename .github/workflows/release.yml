@@ -1,6 +1,8 @@
 # Publishes the kit's images to GHCR for amd64 and arm64 when a version tag (v0.1.0, ...) is pushed. The tag must
 # match VERSION, which is also the default image tag in docker-compose.yml. Users' ./rvkit setup then pulls these
 # images instead of building them (it still builds any image it can't pull). The Integration tests run first.
+# Once a clean machine has installed from the published images, the GitHub Release is created from the tag, with
+# the CHANGELOG's section for the version as its notes.
 #
 # Native runners per architecture (no emulation: the Kali image takes hours under QEMU). ubuntu-24.04-arm runners
 # are free for public repositories only.
@@ -140,3 +142,29 @@ jobs:
       - name: Logs on failure
         if: failure()
         run: docker compose logs --tail 150
+
+  github-release:   # the release page, once the published images are known to install
+    needs: [version, install-check]
+    if: github.ref_type == 'tag'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      VERSION: ${{ needs.version.outputs.version }}
+      TAG: ${{ github.ref_name }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Notes from the CHANGELOG
+        run: |
+          awk -v h="## [$VERSION]" 'index($0, h) == 1 {p = 1; next} p && /^## \[/ {exit} p' CHANGELOG.md > notes.md
+          grep -q '[^[:space:]]' notes.md || { echo "CHANGELOG.md has no section for $VERSION"; exit 1; }
+      - name: Create or update the release
+        run: |
+          title="RiskVoid Security Agent Kit $VERSION"
+          pre=(); case "$VERSION" in *-*) pre=(--prerelease) ;; esac
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release edit "$TAG" --title "$title" --notes-file notes.md "${pre[@]}"
+          else
+            gh release create "$TAG" --verify-tag --title "$title" --notes-file notes.md "${pre[@]}"
+          fi
