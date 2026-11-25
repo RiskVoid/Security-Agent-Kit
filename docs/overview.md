@@ -24,7 +24,9 @@ dependencies and secrets". The agent then:
    that can reach only the authorised targets;
 4. records leads as **candidate** findings, verifies them, and marks each one **confirmed** or
    **false-positive**;
-5. writes an executive summary and generates a branded HTML / `.docx` / PDF report and an `.xlsx` findings register,
+5. keeps what it learns in the engagement's records (experiments, conclusions, methods that worked), so a new
+   task, a new conversation or a planner whose context was summarised picks up from the records, not from memory;
+6. writes an executive summary and generates a branded HTML / `.docx` / PDF report and an `.xlsx` findings register,
    with SHA-256 hashes for every evidence file and the audited command that produced each one.
 
 You watch from the browser UI at http://localhost:8000/ and from the terminal (`./rvkit watch`,
@@ -44,6 +46,12 @@ on `/src/acme`, check the top results in the code, record candidates with file:l
 `delegate_task` tool. The worker runs the tools, saves the raw output under
 `/work/<engagement>/evidence/tasks/<task_id>/`, and sends back a short summary with secrets redacted. If you run
 the worker on hardware you control, raw tool output and client code never leave your setup.
+
+Both models share the engagement's records. A worker task on a plan item starts from a **packet**: what the
+records already say about that one cell. The planner reads the same packet (`get_briefing`), the engagement-wide
+board (`get_handover`) and a ranked queue of open questions (`get_queue`), which is advice it can overrule. A
+delegation that repeats running or already-answered work is refused with the record that holds it. See
+[Running the agent](running-the-agent.md#how-the-agent-remembers).
 
 You can also run everything on the worker model alone with the `riskvoid-local` agent: no OpenRouter, nothing sent
 to a cloud model. Results are usually weaker, because a 27B model is a less capable planner. See
@@ -142,6 +150,12 @@ Use it only on systems you own or have written permission to test.
 | **Private worker** | `Worker model: private` in `RULES.md`: this engagement's tool work never uses the fallback, even when it's on. |
 | **Playbook** | A methodology checklist for one testing type (`harness/playbooks/`). |
 | **Candidate finding** | A lead recorded by the worker or planner, not yet verified. Candidates never appear in the report, and open ones keep it in DRAFT. |
+| **Observation** | A fact taken from tool output (a parser, an import or a hand entry), with where it came from. Triaged by the planner: linked to a finding or dismissed with a reason. |
+| **Experiment** | The record (`X-...`) of one worker task on a plan item: the question, the method, the identity, the outcome (negative and inconclusive ones too) and its evidence. Written by the harness, not the model. |
+| **Conclusion** | A claim (`C-...`) that is supported, refuted or unresolved, with the exact conditions it holds under. Marked stale when the target's build changes. |
+| **Method** | What worked to confirm a finding, with its negative control and the access it needs (`M-...`). Offered for related endpoints; a confirmed sibling becomes an instance of the same finding. Never leaves its engagement. |
+| **Packet** | The records about one plan item's cell that a worker task starts from, built with no model call. The planner sees it with `get_briefing`. |
+| **Queue** | The engagement's open questions ranked from the records, with the reason for each position (`get_queue`, the console's Investigation tab). Advisory. |
 | **Confirmed finding** | A finding the planner has verified. Findings can also be `false-positive`, `duplicate`, `fixed` or `accepted-risk`. |
 | **Evidence provenance** | The check that an evidence file's current SHA-256 matches what an audited Kali command produced. Shown per file in the report. |
 | **Audit log** | The authoritative record of every command, refusal, approval, halt and scope change. `./rvkit audit <engagement>` shows it. |

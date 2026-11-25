@@ -130,9 +130,10 @@ With `riskvoid-planner`, a typical run goes:
 2. **Plans.** `list_playbooks` and `get_playbook` for every playbook that fits, then writes `PLAN.md`
    (objectives, the playbooks' checklists adapted to the targets, tools per step) with `write_file`.
 3. **Works through the plan**, least intrusive first:
-   - hands focused tool work to the worker with `delegate_task` (one goal, a tier, what to return). The worker runs
-     the Kali commands, saves raw output under `evidence/tasks/<task_id>/`, records **candidate** findings and
-     returns a short summary with secrets redacted;
+   - hands focused tool work to the worker with `delegate_task` (one goal, a tier, what to return, usually one
+     plan item). The worker starts from what the records already say about that item, runs the Kali commands,
+     saves raw output under `evidence/tasks/<task_id>/`, records **candidate** findings and returns a short summary
+     with secrets redacted (see [How the agent remembers](#how-the-agent-remembers));
    - or runs a Kali command itself with the kali `run` tool, for small checks or when the worker is down;
    - looks up vulnerability ids with the intel tools and reads public pages with the web tools.
 4. **Asks you** before intrusive steps, and whenever scope or rules are unclear.
@@ -169,7 +170,9 @@ In the engagement folder (`~/riskvoid/engagements/acme-2026-11/` by default):
 - Tool output files written by Kali commands.
 
 You can also ask the agent: "list the worker tasks" (`list_tasks`), "what's the status of task …" (`get_task`),
-"list the findings so far" (`list_findings`).
+"list the findings so far" (`list_findings`), "where does the investigation stand" (`get_handover`), "what's next
+in the queue" (`get_queue`). The console's **Investigation** tab shows the same records without asking
+([How the agent remembers](#how-the-agent-remembers)).
 
 ---
 
@@ -188,15 +191,59 @@ You can also ask the agent: "list the worker tasks" (`list_tasks`), "what's the 
 
 ---
 
+## How the agent remembers
+
+The agent doesn't rely on the conversation to remember an engagement. What it learns goes into the engagement's
+records (`.rv/findings.db`): plan items, observations, findings, an **experiment** for each worker task on a plan
+item, **conclusions** with the exact conditions they hold under, and **methods** that worked. A new task, or a
+planner that lost detail to a context summary, picks up from those records.
+
+- **Each task starts from a packet.** A worker task on a plan item gets the records about that one cell: map
+  entries, observations and findings with their states, earlier tasks on it with their result (negative ones
+  too), and stale conclusions marked as stale. The planner reads the same packet with `get_briefing`. The task
+  result lists the record ids it started from.
+- **After a summary, the planner reads the board.** Long conversations get summarised to fit the context. The
+  planner is told to call `engagement_info`, then `get_handover` (one row per open question: last result,
+  blocker, budget used, next decision), then `get_briefing` for the cell it was about to work on. `recall`
+  searches everything the engagement knows.
+- **The queue is advice.** `get_queue` ranks the open questions from the records, with the reason for each
+  position, and keeps some top slots for authorization, tenant isolation and authentication. The planner still
+  chooses. Each delegation on a plan item logs the rank it went against, so what the queue proposed and what the
+  agent did can be compared.
+- **The same work isn't started twice.** A delegation that repeats work already running, or a question an
+  experiment already answered, is refused with the task or experiment (`X-...`) that holds it. The planner reads
+  that record instead. To re-test on purpose, it passes `independent_reproduction=true`; the run is recorded as a
+  reproduction, not a second confirmation.
+- **Repeated calls are pointed out.** When a command or request repeats an earlier one, the reply names the
+  earlier call and its evidence. The command still runs.
+- **A changed build makes results stale.** When the agent establishes a new build (`report_build`), conclusions
+  from the old build are marked stale for re-testing. Nothing is deleted.
+- **What worked is offered for its siblings.** A finding confirmed with an oracle leaves a method. The queue
+  proposes the related endpoints it hasn't been tried on; a confirmed sibling is added to the original finding as
+  an instance, not reported as a new finding.
+
+In the console (`./rvkit console`), the engagement's **Investigation** tab shows the same picture: the objective,
+the next actions, **Queue: what to run next** (the top questions, ready or waiting, with the reason), **Method
+reuse: proposed siblings**, **Board: open questions** (each with its last result, blocker, budget, queue rank and
+next decision), material findings and pending decisions. Its other sections hold coverage, observations, imports
+and the handover note the agent reads. See [console.md](console.md).
+
+Experiments, conclusions, staleness and the queue are described in detail in
+[architecture.md](architecture.md#the-record-chain-and-the-research-loop-schema-8-epic-77). The tools are in
+[tools-reference.md](tools-reference.md#what-a-task-starts-from).
+
+---
+
 ## Picking up again
 
-The engagement's state lives in its folder, not in the conversation: `PLAN.md`, `NOTES.md`, `.rv/findings.db`, the
-evidence files and the audit log. So you can always continue, in the same conversation or a new one.
+The engagement's state lives in its folder, not in the conversation: `PLAN.md`, `NOTES.md`, `.rv/findings.db` (with
+the research records described [above](#how-the-agent-remembers)), the evidence files and the audit log. So you can
+always continue, in the same conversation or a new one.
 
 | Situation | What to do |
 |---|---|
 | You closed the browser, or come back the next day | Open the same conversation (conversations are kept) and say "continue". |
-| `./rvkit down` / `./rvkit up`, or a computer restart | Conversations and engagement files are kept. Open the conversation and say "continue". Finished worker tasks can still be collected with `get_task`. A task that was running shows as `interrupted`; its partial evidence is under `evidence/tasks/`, so ask the agent to read it or rerun the task. |
+| `./rvkit down` / `./rvkit up`, or a computer restart | Conversations and engagement files are kept. Open the conversation and say "continue". Finished worker tasks can still be collected with `get_task`. A task that was running shows as `interrupted` with a recovery decision; ask the agent to continue it (`resume_task`), or to check its partial evidence under `evidence/tasks/` first when the decision is `needs_review`. |
 | The Colab worker stopped (idle shutdown, session ended) | Start it again (`/rv-start`, or the notebook and `./rvkit connect …`), check with `./rvkit test`. Then tell the agent to retry. If the conversation shows connection errors, start a new one. |
 | A command was refused | Read the reason. `REFUSED: targets not in scope` / `tier` / `window` / `halted`: fix the scope or rules with `./rvkit scope`, or tell the agent to work within them. Don't let it rephrase the command to get around a refusal. |
 | A tool failed or timed out | Ask the agent to run it again, narrower (fewer targets, a smaller wordlist) or with a longer timeout (up to 3,600 s; delegate runs longer than 30 minutes to the worker). |
@@ -205,8 +252,12 @@ evidence files and the audit log. So you can always continue, in the same conver
 
 Prompt for a new conversation on an existing engagement:
 
-> Engagement `acme-2026-11`: continue where the previous session stopped. Read `PLAN.md` and `NOTES.md`, call
-> `list_findings`, and tell me what's done and what's left before you continue.
+> Engagement `acme-2026-11`: continue where the previous session stopped. Call `engagement_info` and
+> `get_handover`, read `PLAN.md` and `NOTES.md`, and tell me what's done and what's left before you continue.
+
+The handover's board and the queue come from the records, so a new conversation starts from the same open
+questions, results and blockers as the old one. Before it delegates or tests a cell again, the planner reads that
+cell's briefing (`get_briefing`).
 
 Start a **new conversation** (rather than continuing) when:
 

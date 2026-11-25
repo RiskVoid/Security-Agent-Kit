@@ -118,7 +118,7 @@ setting.
 | `AGENT_CANVAS_TAG` | `1.37.0` (in `docker-compose.yml`) | OpenHands version. Change it only to test a newer release, or when its data volume was already used by a newer version. |
 | `LITELLM_TAG`, `SEARXNG_TAG`, `CADDY_TAG`, `VALKEY_TAG` | pinned in `docker-compose.yml` | Override a third-party image version. |
 | `RVKIT_REGISTRY` | `ghcr.io/riskvoid/security-agent-kit` | Where the kit's own images are pulled from (`-egress`, `-harness`, `-kali`, `-report`). |
-| `RVKIT_VERSION` | `0.1.0` | Which published version of the kit's images to pull. Normally matches the `VERSION` file. |
+| `RVKIT_VERSION` | `0.2.0` | Which published version of the kit's images to pull. Normally matches the `VERSION` file. |
 | `SEMGREP_RULES_COMMIT` | pinned in `docker-compose.yml` | Commit of the Semgrep community rules downloaded into the `semgrep-rules` volume on first start. |
 
 ### Tracing

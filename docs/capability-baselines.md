@@ -9,7 +9,7 @@ What the kit can do for each kind of target, as four separate claims that are ea
 | **Lab-verified** | a test in `evals/` runs the method against a seeded lab target, with protected controls, and passes in CI | a model running the method unattended finds the same issues |
 | **Measured model result** | a saved benchmark run of the real agent, scored as in [lab-and-benchmarks.md](lab-and-benchmarks.md#how-runs-are-scored) | the same result on other code, other models, or another run |
 
-Last checked 2026-11-19 (the out-of-band callback oracle, the probe_map sweep with its CORS and security-header checks, the response-difference and persistence oracles, the brokered race action and the service-enum tools added; no new measured runs).
+Last checked 2026-11-24 (the research loop and its engagement memory added, and the first two runs on it measured: [below](#the-research-loop-first-runs)).
 Re-check after changing the Kali image, a playbook or a
 benchmark: `./rvkit bench --history` for measured results, the tests in
 [regression-matrix.md](regression-matrix.md) for the lab-verified methods.
@@ -152,6 +152,55 @@ What the numbers say:
   `not_run` despite the free worker model's empty-reply rate.
 - **DVWA was cut by the daily request cap at minute 35** (4 of 8, both criticals found) and re-runs when the
   quota resets; `api-vampi` was measured on the pre-fix harness and re-runs for a like-for-like row.
+
+### The research loop, first runs
+
+On 2026-11-24 the first two runs on the research loop (epic #77: the research packet, the record chain, the
+queue, method reuse) ran with the same free nemotron pair, unattended, one run each, label `queue-spine`.
+`api-research` is the loop's own tuning target (Route Family Research Lab, #80) with two timed events: an admin
+identity supplied at minute 15 and the fixed build swapped in at minute 25. Both runs stopped at their time
+limit (45 and 90 minutes). The `web-juice-shop` run used a development commit after `44fcccc` whose changes are
+not in 0.2.0; the research loop itself is the same.
+
+| Benchmark | Found (scorer) | Found (reviewed) | With evidence | Precision (scorer) | Clean | Minutes | Planner/worker tokens | Worker tasks |
+|---|---|---|---|---|---|---|---|---|
+| `api-research` | 3 of 3 | 2 of 3 | 2 of 3 | 0.71 | 1, a scorer false alarm (below) | 45, time limit | 13.5M / 465k | 5 (3 done) |
+| `web-juice-shop` | 4 of 7 | 3 of 7 | 3 of 7 | 1.00 | 0 | 90, time limit | 28.7M / 1.0M | 22 (21 done) |
+
+"Reviewed" takes back one credit in each run that the scorer gave for a keyword in a finding's description
+alone ("invalid credentials" in a rate-limit finding, a missing CSP counted as the XSS); the precision column
+is the scorer's, so it counts those two findings as matches.
+
+The efficiency measures (#79), new in these runs:
+
+| Measure | `api-research` | `web-juice-shop` |
+|---|---|---|
+| Worker tool calls an earlier task already ran | 3 of 62 (4.8%) | 7 of 138 (5.1%) |
+| Minutes to the first finding confirmed with evidence | 10.2 | 3.5 |
+| Dispatches that took the queue's top suggestion | 1 of 5 | 2 of 22 |
+| Same goal delegated twice | 0 | 1 of 26 |
+| Coverage cells tested with evidence | n/a | 9 (46 per 1,000 target requests) |
+| Mean wait before a task's first model call | 0.1 s | 0.2 s |
+| Worker stalls | 5 | 9 |
+
+What the runs say:
+
+- **The loop's own cases mostly worked.** On `api-research` the route-family tenant-isolation defect was
+  confirmed with evidence, a second finding on the same family counted as a second instance of it, and the
+  reflected callback XSS was confirmed by the marker oracle. The admin case was never testable: the minute-15
+  identity event was refused by the control plane's actor check (the runner names its actor `bench`, which rvctl
+  doesn't accept; it needs `cli:bench`), so 2 of 3 is the run's true ceiling.
+- **The clean hit is the scorer's, not the agent's.** The finding the scorer matched against the protected
+  `/audit` sibling says that `/audit` *enforces* tenant isolation while the order routes don't. The agent got
+  the protected control right; the clean pattern reads the word order too loosely.
+- **Juice Shop ran out of time with its leads recorded but not triaged.** 60 imported observations were still
+  untriaged at the end, the exposed FTP folder and the metrics endpoint among them, and the runner's not-done
+  nudge lists only candidates and plan items. Seven of the nine stalls were no-progress stalls on ffuf and nikto
+  tasks, tools whose output has no parser yet, so the records-based progress count (#95) saw no progress. The 6
+  of 7 the same model reached on 2026-11-23 is the bar.
+- **Repeated tool work stayed low (about 5%) and the queue was advisory in practice**: the planner took its top
+  suggestion in 9-20% of dispatches. Whether following it more often pays is the next measurement, not a
+  conclusion from two runs.
 
 ### Repeated runs
 

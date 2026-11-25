@@ -4,7 +4,7 @@
 
 <p align="center">
   <a href="LICENSE"><img alt="License: Apache-2.0" src="https://img.shields.io/badge/license-Apache--2.0-47B6FF?style=flat-square"></a>
-  <img alt="Version 0.1.0" src="https://img.shields.io/badge/version-0.1.0-47B6FF?style=flat-square">
+  <img alt="Version 0.2.0" src="https://img.shields.io/badge/version-0.2.0-47B6FF?style=flat-square">
   <img alt="macOS and Linux" src="https://img.shields.io/badge/runs_on-macOS_%7C_Linux-1c1f26?style=flat-square&logo=linux&logoColor=white">
   <img alt="Docker" src="https://img.shields.io/badge/Docker-Compose-1c1f26?style=flat-square&logo=docker&logoColor=white">
   <img alt="Python" src="https://img.shields.io/badge/Python-3-1c1f26?style=flat-square&logo=python&logoColor=white">
@@ -59,6 +59,7 @@ It's built so you can **trust it on client work**:
 | <img src="docs/img/icons/lock.svg" width="20" height="20" alt=""> | **A locked sandbox.** Every tool runs in a Kali Linux sandbox with a firewall that only reaches the targets you authorised. Nothing else is reachable. |
 | <img src="docs/img/icons/shield-check.svg" width="20" height="20" alt=""> | **You stay in charge.** Risky (intrusive) steps wait for your approval. One command stops everything. |
 | <img src="docs/img/icons/file-text.svg" width="20" height="20" alt=""> | **Evidence you can defend.** Every command is logged, and every piece of evidence is hashed (SHA-256) and linked to the command that produced it. |
+| <img src="docs/img/icons/layers.svg" width="20" height="20" alt=""> | **It remembers what it learned.** Every tool call leaves facts in the engagement's records, every task leaves what it tried and what it concluded, and the next task starts from them. Work already done isn't repeated, and open questions are ranked with the reason for each. |
 
 Everything runs in Docker on your own computer. One command sets it up.
 
@@ -86,24 +87,27 @@ On top of that:
   See the [sample reports](docs/samples/) from the Laravel lab.
 - **Retests:** compare the original and the fixed build, with before and after evidence.
 
-**First measured results** (2026-11-10, one capped run each, GPT-6.1 planner and DeepSeek worker through OpenRouter).
-"With evidence" counts a finding only when it names the right place and has the required proof:
+**Measured results.** Each benchmark is a lab target with known issues, run unattended and scored on evidence:
+a finding counts as "with evidence" only when it names the right place and has the required proof. Two model
+pairs, one run each (found / with evidence):
 
-| Benchmark | Found | With evidence | Precision | Cost |
-|---|---|---|---|---|
-| Flask service (source) | 6 of 6 | 6 of 6 | 0.67 | $1.16 |
-| Express API (source) | 9 of 9 | 6 of 9 | 0.50 | $1.48 |
-| LLM app and MCP server | 8 of 10 | 6 of 10 | 1.00 | $1.10 |
-| DVWA | 8 of 8 | 8 of 8 | 0.40 | $3.13 |
-| OWASP Juice Shop | 3 of 7 | 2 of 7 | 0.25 | $1.85 |
-| DVGA (GraphQL) | 3 of 9 | 3 of 9 | 0.75 | $1.01 |
-| VAmPI (REST) | 3 of 9 | 2 of 9 | 1.00 | $0.52 |
-| Laravel lab, unattended | 1 of 6 | 1 of 6 | 1.00 | $1.10 |
-| Laravel lab, with a person approving | 3 of 6 | 3 of 6 | 1.00 | $1.44 |
+| Benchmark | GPT-6.1 + DeepSeek V4.1 Flash<br><sub>2026-11-10, about $1 a run</sub> | Nemotron 3 Ultra + 3.5 Super, free tier<br><sub>2026-11-23, $0</sub> |
+|---|---|---|
+| Flask service (source) | 6 / 6 of 6 | 6 / 6 of 6 |
+| Express API (source) | 9 / 6 of 9 | 9 / 6 of 9 |
+| LLM app and MCP server | 8 / 6 of 10 | 7 / 7 of 10 |
+| DVWA | 8 / 8 of 8 | 4 / 4 of 8 (cut at minute 35 by the free tier's daily cap) |
+| OWASP Juice Shop | 3 / 2 of 7 | 7 / 4 of 7 |
+| DVGA (GraphQL) | 3 / 3 of 9 | 4 / 4 of 9 |
+| VAmPI (REST) | 3 / 2 of 9 | 6 / 6 of 9 |
+| Laravel lab, unattended | 1 / 1 of 6 | 5 / 5 of 7 |
+| Parcel Tracker (attacks the agent) | not run | 5 / 3 of 5, no decoy confirmed |
 
-No run reported a protected control (a fixed build or a safe pattern) as vulnerable. Single runs vary; the
-details, including where the planner's provider refused and the fallback answered, are in
-[Capability baselines](docs/capability-baselines.md).
+With a person approving in the console, the Laravel lab gave 3 of 6 with evidence (the release acceptance run).
+The first runs on the research loop are measured too: 2 of 3 with evidence on its own lab, where the third case
+was never testable because the runner's mid-run identity event was refused. One run confirmed a finding against a
+protected control (missing headers on Ledgerly's fixed build). Single runs vary; per-run detail, cost, tokens and
+what each run says are in [Capability baselines](docs/capability-baselines.md).
 
 <details>
 <summary><b>See the full list of 45+ tools</b></summary>
@@ -133,7 +137,7 @@ The full list, with the tier of each tool (passive, active or intrusive), is in
 
 | Platform | How it's tested |
 |---|---|
-| Linux amd64, Docker Engine (Ubuntu 24.04) | A fresh machine in CI: `./rvkit setup` and all 16 integration suites, nightly, before every release and on pull requests that change code |
+| Linux amd64, Docker Engine (Ubuntu 24.04) | A fresh machine in CI: `./rvkit setup` and all 20 integration suites, nightly, before every release and on pull requests that change code |
 | macOS on Apple Silicon, OrbStack or Docker Desktop | Where the kit is developed: all suites, by hand before each change |
 | Linux arm64 | Images are built for it. Before every release, a clean arm64 runner installs them and runs the policy suite; the other suites aren't run there yet |
 | Windows | Not supported yet (WSL2 is on the [roadmap](ROADMAP.md)) |
@@ -323,11 +327,14 @@ flowchart LR
     kali -->|"scope firewall<br/>only authorised targets"| target[("Target")]
     console -.->|approve · halt| kali
     kali --> audit["Audit log<br/>+ hashed evidence"]
+    worker <--> memory["Engagement memory<br/>facts · experiments · conclusions · queue"]
+    planner <--> memory
 
     classDef rv fill:#14161b,stroke:#47B6FF,color:#f2f4f7
     classDef safe fill:#14161b,stroke:#5cc28c,color:#f2f4f7
     class ui,planner,worker,findings,console rv
     class kali,audit safe
+    class memory rv
 ```
 
 | Piece | What it does |
@@ -337,9 +344,32 @@ flowchart LR
 | **Worker** | Qwen3.8-27B on Colab, your GPU or any OpenAI-compatible endpoint. It runs the tools and reads the code. |
 | **Kali sandbox** | The tools, isolated per engagement, behind the scope firewall, with tiers, rate caps and approvals. |
 | **Console** | A local web page for engagements, the live run view, approvals, findings triage, reports and the audit log. |
+| **Engagement memory** | The records each engagement keeps in its own database: observations, experiments, conclusions, methods and the queue of open work. |
 | **LiteLLM** | One model gateway with a daily spend budget and fallbacks. |
 
-More detail: [Architecture](docs/architecture.md).
+### The research loop
+
+The planner and the worker don't rely on what fits in a model's context. The engagement's records carry the work:
+
+- **A task starts from what is known.** A worker task bound to a planned test starts from a *research packet*: the
+  map entries, observations, findings and earlier attempts for its coverage cell, picked by the kit with no
+  model. After a context summary the planner picks up from the *research board*, one row per open question.
+- **Facts at every tool call.** The kit's parsers turn tool output (nmap, sqlmap, nuclei,
+  semgrep, gitleaks and more) into observations with their origin and evidence path. A repeated call or file read is
+  answered from the call ledger instead of running again.
+- **Experiments and conclusions.** Each task leaves an *experiment*: what was tried, under which conditions,
+  with its evidence. *Conclusions* are drawn from it by rule where possible (an oracle passed with a clean
+  control, or a control behaved the same), each with the exact conditions it holds under. A new build marks
+  them stale for re-testing.
+- **A queue, not a guess.** Open questions are ranked with the reason for each position, with slots kept for
+  hard, high-impact classes such as authorization and tenant isolation. The queue is advisory; the planner
+  decides. A delegation that repeats work in progress or already answered is refused, with who holds it.
+- **Methods carry over.** A finding verified by an oracle leaves a *method*. The kit proposes it for the
+  sibling routes it hasn't been proven on, each with its own negative control. A confirmed sibling becomes
+  an instance of the same finding; a protected one is recorded as refuted.
+
+You see the same picture on the console's **Investigation** tab. More detail:
+[Architecture](docs/architecture.md#the-record-chain-and-the-research-loop-schema-8-epic-77).
 
 ---
 
@@ -379,8 +409,9 @@ Known limitations and how to report a vulnerability: [SECURITY.md](SECURITY.md).
 
 `./rvkit lab up` starts deliberately vulnerable targets on an **isolated network with no internet**:
 OWASP Juice Shop, DVWA, VAmPI (REST), DVGA (GraphQL), a RiskVoid LLM lab (AI agent + MCP), Ledgerly, a
-multi-tenant Laravel app with a fixed build to retest against, and Parcel Tracker, a target that attacks the agent
-testing it.
+multi-tenant Laravel app with a fixed build to retest against, an OAuth2 authorization server with a fixed build,
+Parcel Tracker, a target that attacks the agent testing it, and the Route Family Research Lab, whose identity
+arrives and whose build changes partway through a run.
 
 `./rvkit bench <name>` runs the agent unattended against a known target and scores it on evidence: a finding
 counts only if it names the right place and has the required proof, and confirmed findings on a clean control

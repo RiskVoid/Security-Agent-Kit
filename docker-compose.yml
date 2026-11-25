@@ -52,7 +52,7 @@ services:
   # The agent container's only way out: allowlisted package registries and vulnerability databases
   # (egress/allowlist.txt + EGRESS_EXTRA_DOMAINS in .env). Not reachable from the Kali sandbox.
   egress-proxy:
-    image: ${RVKIT_REGISTRY:-ghcr.io/riskvoid/security-agent-kit}-egress:${RVKIT_VERSION:-0.1.0}
+    image: ${RVKIT_REGISTRY:-ghcr.io/riskvoid/security-agent-kit}-egress:${RVKIT_VERSION:-0.2.0}
     build: ./egress
     environment:
       EGRESS_EXTRA_DOMAINS: ${EGRESS_EXTRA_DOMAINS:-}
@@ -116,7 +116,7 @@ services:
   # Web research for the planner: search (SearXNG) and fetch. fetch refuses engagement targets and non-public
   # addresses (harness/webfetch.py), so the planner can't use it to reach a target or a kit service.
   web-mcp:
-    image: ${RVKIT_REGISTRY:-ghcr.io/riskvoid/security-agent-kit}-harness:${RVKIT_VERSION:-0.1.0}
+    image: ${RVKIT_REGISTRY:-ghcr.io/riskvoid/security-agent-kit}-harness:${RVKIT_VERSION:-0.2.0}
     build: ./harness
     command: ["python3", "web.py"]
     expose: ["8094"]           # OpenHands reaches it as web-mcp:8094
@@ -130,7 +130,7 @@ services:
     restart: unless-stopped
 
   kali-mcp:
-    image: ${RVKIT_REGISTRY:-ghcr.io/riskvoid/security-agent-kit}-kali:${RVKIT_VERSION:-0.1.0}
+    image: ${RVKIT_REGISTRY:-ghcr.io/riskvoid/security-agent-kit}-kali:${RVKIT_VERSION:-0.2.0}
     build: ./kali-mcp
     expose: ["8090"]           # internal only; OpenHands reaches it as kali-mcp:8090
     volumes:
@@ -155,7 +155,7 @@ services:
 
   # Worker: runs focused tasks on the local Qwen model with Kali/search/fetch/file tools (Phase 2)
   worker-mcp:
-    image: ${RVKIT_REGISTRY:-ghcr.io/riskvoid/security-agent-kit}-harness:${RVKIT_VERSION:-0.1.0}
+    image: ${RVKIT_REGISTRY:-ghcr.io/riskvoid/security-agent-kit}-harness:${RVKIT_VERSION:-0.2.0}
     build: ./harness
     command: ["python3", "worker.py"]
     expose: ["8091"]           # OpenHands reaches it as worker-mcp:8091
@@ -186,7 +186,7 @@ services:
 
   # Findings store (SQLite per engagement), used by the planner (Phase 2)
   findings-mcp:                # also generates the branded report (report.py)
-    image: ${RVKIT_REGISTRY:-ghcr.io/riskvoid/security-agent-kit}-report:${RVKIT_VERSION:-0.1.0}
+    image: ${RVKIT_REGISTRY:-ghcr.io/riskvoid/security-agent-kit}-report:${RVKIT_VERSION:-0.2.0}
     build: {context: ./harness, dockerfile: Dockerfile.report}
     command: ["python3", "findings.py"]
     expose: ["8092"]           # OpenHands reaches it as findings-mcp:8092
@@ -208,7 +208,7 @@ services:
   # Plain-agent baseline for benchmarks (harness/plain.py): only the sandboxed run tool and record_finding.
   # Started by ./rvkit bench --agent riskvoid-plain; not part of a normal install.
   plain-mcp:
-    image: ${RVKIT_REGISTRY:-ghcr.io/riskvoid/security-agent-kit}-harness:${RVKIT_VERSION:-0.1.0}
+    image: ${RVKIT_REGISTRY:-ghcr.io/riskvoid/security-agent-kit}-harness:${RVKIT_VERSION:-0.2.0}
     build: ./harness
     command: ["python3", "plain.py"]
     profiles: ["baseline"]
@@ -221,7 +221,7 @@ services:
 
   # Vulnerability intelligence: OSV, NVD, EPSS, CISA KEV, cached (Phase 4)
   intel-mcp:
-    image: ${RVKIT_REGISTRY:-ghcr.io/riskvoid/security-agent-kit}-harness:${RVKIT_VERSION:-0.1.0}
+    image: ${RVKIT_REGISTRY:-ghcr.io/riskvoid/security-agent-kit}-harness:${RVKIT_VERSION:-0.2.0}
     build: ./harness
     command: ["python3", "intel.py"]
     expose: ["8093"]           # OpenHands reaches it as intel-mcp:8093

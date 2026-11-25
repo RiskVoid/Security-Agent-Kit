@@ -788,9 +788,6 @@ def export_findings(engagement: str, draft: bool = False) -> str:
     return _call("export.build", engagement=engagement, draft=draft)
 
 
-if __name__ == "__main__":
-    mcp.run(transport="streamable-http")
-
 
 @mcp.tool()
 def recall(engagement: str, query: str, kind: str = "", state: str = "", limit: int = 20) -> str:
@@ -866,3 +863,7 @@ def report_build(engagement: str, build: str) -> str:
         return json.dumps(r)
     except ValueError as e:
         return f"REFUSED: {e}"
+
+
+if __name__ == "__main__":
+    mcp.run(transport="streamable-http")

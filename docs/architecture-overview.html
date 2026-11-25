@@ -190,6 +190,7 @@ footer{margin-top:72px;padding-top:20px;border-top:1px solid var(--line);font-si
     <a href="#worker">Worker loop</a>
     <a href="#findings">Findings</a>
     <a href="#coverage">Coverage</a>
+    <a href="#memory">Research loop</a>
     <a href="#control">Control plane</a>
     <a href="#build">Source</a>
     <a href="#evals">Measurement</a>
@@ -518,7 +519,7 @@ footer{margin-top:72px;padding-top:20px;border-top:1px solid var(--line);font-si
     <div><span class="k">Contract</span><p><code>delegate_task</code> carries one goal with a contract: done when, stop when, inputs and one coverage cell. <code>finish</code> returns a typed status and candidates with their proof.</p></div>
     <div><span class="k">Context</span><p>The model gets a digest of each tool output: parsed counts and top items for tools the kit reads, otherwise the head and the tail. Older results shrink to one line with the evidence path. The full output is always on disk.</p></div>
     <div><span class="k">Malformed calls</span><p>A tool call that doesn't parse goes back to the model as an error and never runs. <code>./rvkit doctor --models</code> checks that a worker model makes well-formed calls.</p></div>
-    <div><span class="k">Stalls</span><p>Three identical calls, the same error three times, or eight calls without progress by default trigger a nudge, then advice from the planner model, then a stop with status stalled.</p></div>
+    <div><span class="k">Stalls</span><p>Three identical calls, the same error three times, or eight calls without progress in the records (a new observation or a candidate) by default trigger a nudge, then advice from the planner model, then a stop with status stalled. Output that only looks new doesn't count.</p></div>
     <div><span class="k">Durability</span><p>Each tool call is recorded as started before it runs and done after. After a restart, an action that was in flight is flagged for review. On resume the model is told its result is unknown. Nothing is repeated automatically.</p></div>
     <div><span class="k">Approval waits</span><p>A task waiting for an approval pauses without holding a model slot. Once you decide, it continues by itself and the approved action runs exactly once.</p></div>
   </div>
@@ -645,6 +646,23 @@ footer{margin-top:72px;padding-top:20px;border-top:1px solid var(--line);font-si
     </div>
     <figcaption>An illustrative matrix, not real data. The gap-fill pass delegates each gap as a worker task narrowed to that one cell, or records why it's skipped. Untested cells are flagged before delivery.</figcaption>
   </figure>
+</section>
+
+<!-- ───────────── MEMORY ───────────── -->
+<section id="memory">
+  <div class="head">
+    <p class="eyebrow">Research loop</p>
+    <h2>The engagement remembers, not the model</h2>
+    <p class="prose">Each engagement's <code>findings.db</code> keeps the research records next to the findings: what was observed, what was tried, what it showed. The kit selects from them with no model, so a small worker and a summarised planner start from the same facts.</p>
+  </div>
+  <div class="cells">
+    <div><span class="k">Packet</span><p>A worker task bound to a plan item starts from a research packet: the map entries, observations, findings and earlier attempts for its coverage cell, picked by stable ids in a fixed character budget. <code>get_briefing</code> gives the planner the same packet.</p></div>
+    <div><span class="k">Facts</span><p>After each tool call the kit's parsers store what they extract as observations with their origin and evidence path. The call ledger points out an earlier equivalent call, and answers an unchanged file read from it.</p></div>
+    <div><span class="k">Experiments</span><p>Every task bound to a plan item leaves an experiment: what was tried, under which conditions, the outcome, with evidence hashes. Negative and blocked results are kept too.</p></div>
+    <div><span class="k">Conclusions</span><p>Drawn by rule where a check decides (an oracle passed with a clean control), otherwise by one checked summary whose quotes must be in the evidence. A new build marks them stale; a contradiction makes them unresolved.</p></div>
+    <div><span class="k">Queue</span><p>Open questions are ranked with the reason for each position, with slots kept for authorization and tenant isolation. It is advisory. A delegation with the same work key (build, cell, method, identity) as live or answered work is refused, naming the holder.</p></div>
+    <div><span class="k">Methods</span><p>An oracle-verified finding leaves a method, proposed for sibling routes it hasn't been proven on. Each re-test runs its own negative control. A confirmed sibling becomes an instance of the same finding.</p></div>
+  </div>
 </section>
 
 <!-- ───────────── CONTROL ───────────── -->

@@ -188,7 +188,7 @@ Out of scope:
 | `main` | Yes |
 | Anything else | No |
 
-The only release so far is `v0.1.0` (see [CHANGELOG.md](CHANGELOG.md)). Fixes go to `main` and reach a release
+The latest release is `v0.2.0` (see [CHANGELOG.md](CHANGELOG.md)). Fixes go to `main` and reach a release
 with the next version; update with `git pull` and `./rvkit up`, and rebuild the images when a fix touches them.
 
 ---

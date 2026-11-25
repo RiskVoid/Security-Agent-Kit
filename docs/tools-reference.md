@@ -10,7 +10,7 @@ the agent did, to write better task prompts, or to extend the kit.
 |---|---|---|---|
 | `kali` | `kali-mcp:8090` | planner, worker, report generator | running tools in the engagement sandbox; scope, activity and evidence checks |
 | `worker` | `worker-mcp:8091` | planner (`riskvoid-planner` only) | handing focused tool work to the worker model |
-| `findings` | `findings-mcp:8092` | planner | findings, playbooks, writing engagement files, the report |
+| `findings` | `findings-mcp:8092` | planner | findings, playbooks, writing engagement files, the report, the research records (briefing, recall, queue, conclusions, methods) |
 | `intel` | `intel-mcp:8093` | planner, worker | vulnerability intelligence (OSV, NVD, EPSS, CISA KEV) |
 | `web` | `web-mcp:8094` | planner | web search and public page fetch |
 
@@ -72,7 +72,7 @@ Output notes:
 
 | Tool | Parameters | What it does |
 |---|---|---|
-| `delegate_task` | `goal`, `engagement`, `tier` (`passive` default, `active`, `intrusive`), `max_steps` (default 15, 1–40), `timeout_min` (default 30, 1–180), `wait_s` (default 240, max 600), `depends_on` (task ids), `done_when` (the result that ends the task), `stop_when` (conditions to stop and report), `inputs` (evidence paths or finding ids to start from), `plan_item` (the coverage plan item the task tests) | Starts one focused task on the worker model. Refuses if the engagement is halted or the tier isn't allowed by `RULES.md`. With `depends_on`, it waits until those tasks are done (and is `blocked` if one fails). The contract fields go into the worker's instructions, and every tool result the worker sees ends with the steps left and the `done_when`. A `stop_when` that names an approval ends the task as `blocked` at the first approval, with the approval in `needs`, instead of pausing. With `plan_item`, the item must name one vulnerability class and one recon map entry or route group (refused otherwise), and the worker is told to test only that cell. Returns the result, or a `task_id` with a note if it's still running after `wait_s`. |
+| `delegate_task` | `goal`, `engagement`, `tier` (`passive` default, `active`, `intrusive`), `max_steps` (default 15, 1–40), `timeout_min` (default 30, 1–180), `wait_s` (default 240, max 600), `depends_on` (task ids), `done_when` (the result that ends the task), `stop_when` (conditions to stop and report), `inputs` (evidence paths or finding ids to start from), `plan_item` (the coverage plan item the task tests), `independent_reproduction` (default false) | Starts one focused task on the worker model. Refuses if the engagement is halted or the tier isn't allowed by `RULES.md`. With `depends_on`, it waits until those tasks are done (and is `blocked` if one fails). The contract fields go into the worker's instructions, and every tool result the worker sees ends with the steps left and the `done_when`. A `stop_when` that names an approval ends the task as `blocked` at the first approval, with the approval in `needs`, instead of pausing. With a `plan_item` whose refs name one vulnerability class and one recon map entry or route group, the worker is told to test only that cell, and the task starts from the [research packet](#what-a-task-starts-from). A duplicate is refused: when another task holds the same work, or an experiment already answered the question, the reply names that task or experiment (`X-...`) instead of starting a second run. `independent_reproduction=true` runs it anyway; the run is recorded as a reproduction on its experiment, never as a second confirmation. Returns the result, or a `task_id` with a note if it's still running after `wait_s`. |
 | `get_task` | `task_id`, `wait_s` (default 240, max 600) | Waits for a task and returns its result. |
 | `cancel_task` | `task_id` | Stops a task; a running command is killed. |
 | `resume_task` | `task_id`, `wait_s` | Continues an interrupted task from its last checkpoint, after checking the engagement's policy again. An action that was in flight is not repeated: the model is told its result is unknown. |
@@ -83,12 +83,17 @@ A result has the typed fields first: `task_id`, `status` (`queued`, `waiting`, `
 `out_of_scope` from the worker; `budget_used`, `model_refused`, `tool_failure`, `provider_error`, `stalled` from the
 harness), `candidates` (each with `title`, `state` `hypothesis` or `reproduced`, `evidence` and `check`; a
 reproduced candidate must cite an evidence file of the engagement or `finish` is refused), `needs`, `errors` and
-the `recorded_findings` ids. Then `elapsed_s`, the `commands` it ran, the `evidence_dir`, the `contract`, the
-`model` that served it (shows when the fallback model was used), `worker_summary` and `worker_notes` (the worker's
-prose, marked as written by a model that read target content; the notes are what it wrote outside `finish`, or
-where its reasoning had got to when it stalled) and `result` (`confidence`, `open_questions`). A `plan_item` that
-isn't one class on one mapped endpoint doesn't refuse the task: it runs on its goal, and `contract.plan_item_note`
-says so. Secrets are redacted
+the `recorded_findings` ids. Then `elapsed_s`, the `commands` it ran, `run_evidence` (the verified-evidence files
+its commands produced: cite these), `transcripts_dir` (the step transcripts: records of the run, not evidence), the
+`contract`, the `model` that served it (shows when the fallback model was used), `worker_summary` and
+`worker_notes` (the worker's prose, marked as written by a model that read target content; the notes are what it
+wrote outside `finish`, or where its reasoning had got to when it stalled) and `result` (`confidence`,
+`open_questions`, the worker's proposed `conclusions`). Depending on the task, it also carries `packet_ids` (the
+record ids the task started from, pointers that survive a context summary), `experiment` (the `X-...` record the
+task left), `packet_repeat` (the cell was already tried and that result stands), `notes` (the worker's `note`s,
+its own words), `ledger` (how often the ledger pointed at earlier work or answered from it) and `captured_facts`
+(observations its calls captured, for the planner to triage). A `plan_item` that isn't one class on one mapped
+endpoint doesn't refuse the task: it runs on its goal, and `contract.plan_item_note` says so. Secrets are redacted
 from it. Task files from before these fields load as before; a finished one counts as `completed`.
 
 Things to know:
@@ -109,6 +114,44 @@ Things to know:
 - If the worker model can't be reached, the task ends with `error: worker model unreachable …`. The planner then
   tells you to start it, or runs small checks with the `kali` tool itself.
 
+### What a task starts from
+
+A task bound to a `plan_item` starts from the **research packet**: what the engagement's records already say about
+that coverage cell. It holds the map entries, the observations and findings with their states, earlier tasks for
+the same cell with their typed result (negative and inconclusive ones too), the item's hypothesis and blockers,
+conclusions (stale ones marked stale) and the [methods](#methods-and-related-surfaces) that match the cell. It is
+built from the records by stable id, with no model call, in a fixed character budget (`WORKER_PACKET_CHARS`,
+default 4,000). When a task resumes, the packet is rebuilt and only a material change is added. The planner sees
+the same packet with `get_briefing`. `WORKER_PACKET=0` turns it off.
+
+Inside a long task, what the worker writes down with `note` is kept in a pinned "established so far" block, with
+its recorded candidates and the identities it checked. Shrinking old tool results never shrinks that block.
+
+**The call ledger.** After a command or request runs (it always runs: a target can answer differently), the reply
+carries the ledger entry of an earlier equivalent call in the same engagement, so the model sees what is new. This
+covers the planner's own kali calls and the worker's. A worker `read_file` of an unchanged file and a repeated
+`vuln_intel` lookup are answered from the ledger with no new call; `fresh=true` runs them anyway. A stale entry is
+shown as stale and never reused. `RV_LEDGER=0` turns the ledger off.
+
+**Facts are captured at every call.** After each worker call, and for the planner's own kali calls from the audit
+log, the kit's parsers store what they extract as `new` observations, with the task or conversation, call,
+identity, policy revision and evidence path they came from. The parsers read the JSON of semgrep, OSV-Scanner,
+pip-audit, bandit and gitleaks, and the text of nmap (open ports), sqlmap (injection verdicts), nuclei (matches)
+and `check_identity`. A repeated call adds no new
+row. A call with no parser leaves only its ledger entry. The planner triages captured observations like imported
+ones.
+
+**Duplicates are refused.** The work key of a task is the current build, the coverage cell, the method and the
+identity. A second `delegate_task` with the same key gets the task that holds the work, or the experiment that
+already answered the question. Claims are kept in the engagement's database, so they survive a worker restart, and
+any ending of the task releases them. A stale answer never blocks a re-test.
+
+**Conclusions at the end of a task.** When a task bound to a plan item ends, the harness writes its experiment
+record (`X-...`) and draws conclusions by rule where it can. For what the rules can't decide, one model call
+proposes conclusions; each must quote its evidence, and a quote that isn't found leaves the conclusion unresolved.
+`WORKER_CONCLUSION_SUMMARY=0` turns that call off. How the records fit together:
+[architecture.md](architecture.md#the-record-chain-and-the-research-loop-schema-8-epic-77).
+
 ### The worker model's own tools
 
 Inside a task, the worker model has these tools (they aren't MCP tools; `worker-mcp` implements them):
@@ -118,16 +161,21 @@ Inside a task, the worker model has these tools (they aren't MCP tools; `worker-
 | `kali_run` | `command`, `timeout_s` (default 600, max 3600): calls the kali `run` tool for the task's engagement with the task's tier as `max_tier`. Same checks, same audit log. An intrusive command pauses the task until you decide; the model then gets the result or the denial. |
 | `http_request` | `method`, `url`, `headers`, `body`: calls the kali `http_request` tool with the task's tier as `max_tier`. |
 | `analyze_source` | `tool`, `path`, `rulesets`: calls the kali `analyze_source` tool (no network). |
-| `vuln_intel` | `ids`: ranks up to 50 vulnerability ids with the intel `prioritize` tool. |
+| `vuln_intel` | `ids`, `fresh` (default false): ranks up to 50 vulnerability ids with the intel `prioritize` tool. A lookup the engagement already made is answered from the call ledger; `fresh=true` asks again. |
 | `web_search` | `query`: SearXNG search through `web-mcp`, 8 results. |
 | `fetch_url` | `url`, `start` (default 0): reads a public page as text through `web-mcp`, in parts of 100,000 characters from `start`. When more follows, the reply ends with the `start` of the next part, and the model calls `fetch_url` again with it. The model sees the head and the tail of a part; the whole part is in the step file, which it can read with `read_file`. Refuses every engagement's targets and non-public addresses, on every redirect too. |
-| `read_file` | `path`, `start` (default 1), `lines` (default 200, max 500): numbered lines of a file under the engagement's in-scope code paths or its engagement folder. Nothing else. |
+| `read_file` | `path`, `start` (default 1), `lines` (default 200, max 500), `fresh` (default false): numbered lines of a file under the engagement's in-scope code paths or its engagement folder. Nothing else. A read of a file whose hash hasn't changed since an earlier read is answered from the call ledger; `fresh=true` reads it again. |
 | `record_candidate` | `title`, `severity`, `asset`, `description`, `evidence`, `cwe`: stores a **candidate** finding (source `worker:<task_id>`). Only the planner can confirm it. |
-| `finish` | `status` (`completed`, `partial`, `blocked`, `out_of_scope`), `summary` (1–5 sentences), `candidates`, `errors`, `needs`, `open_questions`, `confidence`: ends the task. A `reproduced` candidate without an evidence file of the engagement is refused and the model is asked again. |
+| `finish` | `status` (`completed`, `partial`, `blocked`, `out_of_scope`), `summary` (1–5 sentences), `candidates`, `errors`, `needs`, `open_questions`, `conclusions` (each a `claim`, its `state` `supported`, `refuted` or `unresolved`, the exact `conditions` and the `evidence` file), `confidence`: ends the task. A `reproduced` candidate without an evidence file of the engagement is refused and the model is asked again. |
+| `note` | `fact`, `evidence`: writes down one short fact the task established (a session that works, a parameter that reflects input), with the evidence path or call it rests on. Notes stay in the pinned "established so far" block, go back to the planner in the result, and reach later tasks through the packet and `recall` as agent notes: the worker's words, not verified facts. A note without evidence is kept and marked unsupported. |
+| `read_record` | `id`: one record of this engagement in full, by the id the packet names: an observation (`O-...`), a finding (`F-...`), a plan item (`P-...`), a recon map entry (`E-...`), a method (`M-...`) or an earlier task. Bounded head and tail, read-only; `read_file` opens the evidence it names. |
+| `recall` | `query`, `kind` (`observation`, `finding`, `plan`, `map`, `task`, `ledger`), `state`: one search across what this engagement knows, one line per hit with its state and age. `read_record` opens a hit. Same engagement only. |
 
-Each tool output is cut to 6,000 characters in the model's context (the full output is in the step file), and the
-oldest outputs are shrunk when the conversation passes about 90,000 characters, so a task fits the 32K context of
-the L4 profile.
+In the model's context, a long tool output keeps its first 4,000 and last 2,000 characters, or a digest for the
+tools the kit reads (the full output is in the step file). The oldest outputs are shrunk when the conversation
+passes about 90,000 characters (`WORKER_CONTEXT_CHARS`), so a task fits the 32K context of the L4 profile. The
+latest packet stays whole (older ones shrink to their id list), and the "established so far" block is rebuilt from
+the task record each time.
 
 ## `findings`: findings, playbooks, files and the report
 
@@ -167,6 +215,9 @@ when no model can be used, the verdict is `not_run` and the confirmation stands.
 as instructions. The console shows the verdict on the finding and in its history, the report shows it as
 "Independent review", and benchmarks count what survived and what was caught. `VALIDATOR=0` turns it off.
 People confirming in the console or with `./rvkit` are not sent to it.
+
+| Tool | Parameters | What it does |
+|---|---|---|
 | `validate_finding` | `engagement`, `finding_id` | Runs the validator again on a confirmed finding (it runs on its own on each confirmation). Returns the verdict, reason, evidence file and model. |
 | `list_findings` | `engagement`, optional `status`, `severity` | Findings, most severe first: id, title, severity, status, asset, source. |
 | `get_finding` | `engagement`, `finding_id`, `history` (default false) | One finding with every field; with `history`, every revision and decision with its reason. |
@@ -176,11 +227,20 @@ People confirming in the console or with `./rvkit` are not sent to it.
 | `triage_observations` | `engagement`, `ids`, `action` (`link` with `finding_id`, `duplicate` with `of`, `dismiss` with `reason`, `reopen`) | Decides about observations; linked ones become the finding's instances and evidence. |
 | `plan_tests` | `engagement`, `playbook` or `items` | Adds planned tests: one per checklist line of a playbook (once), or the given items with their standard references. |
 | `update_coverage` | `engagement`, `item`, `state`, and `evidence`, `finding_id` or `rationale` as the state needs; optional `build`, `policy_revision`. Or, for several items, `updates`: a list of objects with those fields (`[{"item": "P-001", "state": "tested", "evidence": [...]}, ...]`) | Records a planned test's outcome: `tested` (evidence), `failed` (finding), `blocked`, `excluded`, `not-applicable` (rationale). With `updates`, each item is checked and saved by itself, as if sent alone: a refused one doesn't stop the others, and a revision conflict refuses only that item. The reply has one line per item, its state or `REFUSED: <reason>`, under a head line (`saved 3 of 3:` or `REFUSED 1 of 3 (...)`). A batch of one replies as the single form does; an empty list, an entry without `item` or `state`, or an unknown key is refused before anything is saved. |
-| `get_coverage` | `engagement`, optional `state`, `matrix` | Planned tests, counts per state and per standard, stale and blocked items. With `matrix=true`, the coverage matrix: each recon map entry x each vulnerability class that applies to it (access-control, authentication, injection, xss, ssrf, open-redirect, mass-assignment, file-upload, user-enumeration, rate-limit, information-disclosure, redos, csrf, nosql-injection, cors-misconfig, security-headers, graphql-depth, graphql-batching, graphql-field-suggestions, oauth: by the entry's method, parameters, path and authentication), the plan items covering each cell, the cells a sweep tested, and the gaps no item or sweep covers. |
+| `get_coverage` | `engagement`, optional `state`, `matrix` | Planned tests, counts per state and per standard, stale and blocked items. With `matrix=true`, the coverage matrix: each recon map entry x each vulnerability class that applies to it (access-control, authentication, injection, xss, ssrf, open-redirect, mass-assignment, file-upload, user-enumeration, rate-limit, information-disclosure, redos, csrf, nosql-injection, cors-misconfig, security-headers, graphql-depth, graphql-batching, graphql-field-suggestions, oauth: by the entry's method, parameters, path and authentication), the plan items covering each cell, the cells a sweep tested, and the gaps no item or sweep covers. Plan items show as ready or waiting, with the reason (what a `requires` link still waits for). |
 | `skip_coverage_cells` | `engagement`, `cells` (`[{entry, class}]`), `state` (`not-applicable` or `excluded`), `rationale` | Records matrix cells that won't be tested, with the reason, as plan items with that outcome (the gap-fill pass). |
 | `get_map` | `engagement`, optional `host`, `path`, `auth`, `limit` | The recon map, merged from `recon_map`, `laravel_map`, imported captures and the agent's own requests: one entry per method and path template (numbers, UUIDs and `{params}` are one segment), with parameters, authentication (`required`, `none`, `unknown`, and the basis), the identities that saw it behind login (`seen_by`, from `recon_map` with an `identity`), statuses, sources, evidence and the classes that apply. Entry ids (`E-xxxxxx`) don't change when the map is rebuilt; plan items reference them in `refs`, and a reference to an id that isn't in the map is refused. The report readiness check lists matrix gaps (`coverage-gaps`, exceptable). |
 | `set_objective` | `engagement`, `text` | What the engagement must answer. |
-| `get_handover` | `engagement` | Where the investigation stands, built from the records, plus the researcher's note. |
+| `get_handover` | `engagement` | Where the investigation stands, built from the records: objective, findings, observations to triage, coverage, blocked and stale tests, pending decisions, the next useful actions, and the **board**: one row per open question with its last result, its blocker, the budget it used, its `queue_rank` and the next decision. Plus the researcher's note. The planner reads it when it resumes, including after a context summary. |
+| `get_briefing` | `engagement`, `plan_item`, `goal` | The [research packet](#what-a-task-starts-from) for one cell: the same packet a worker task with this goal and plan item would start from, with no model call. For use before delegating a cell or testing it, and again after a context summary. Every line keeps its state; summaries and agent notes are their writers' words, not verified facts. |
+| `recall` | `engagement`, `query`, optional `kind` (`observation`, `finding`, `plan`, `map`, `task`, `ledger`), `state`, `limit` (default 20, max 50) | One search across what this engagement knows: observations, findings, plan items, map entries, earlier worker task results with their agent notes, and the call ledger. One line per hit with its state and age; ids match first, then the route group or path, then words. Same engagement only. |
+| `get_queue` | `engagement`, `limit` (default 20) | The engagement's open questions, ranked with the reason for each position: readiness, whether a standing conclusion already answers it, the class's weight, how many experiments ran. A share of the top slots is kept for hard, high-impact classes (authorization, tenant isolation, authentication). Advisory: the planner still decides. Also returns the last 20 entries of the dispatch log (every `delegate_task` with a plan item records the rank it dispatched against) and the `proposals` from [methods](#methods-and-related-surfaces). Computed from the records, with no model. |
+| `record_conclusion` | `engagement`, `claim`, `state` (`supported`, `refuted`, `unresolved`), optional `conditions`, `evidence`, `plan_item`, `experiment` | Records a conclusion with the exact conditions it holds under ("rejected for identity A on build B", never widened). Name the experiment (`X-...`) it came from when there is one; the evidence file is pinned by hash. Its origin is `agent:planner`, so the records show it as the planner's own words. |
+| `link_records` | `engagement`, `src`, `dst`, `kind` (`supports`, `contradicts`, `requires`, `next`), optional `note` | Links two records among plan items (`P-...`), experiments (`X-...`), conclusions (`C-...`), observations (`O-...`) and findings (`F-...`). Both ends must exist. A `requires` link on a plan item names what the question waits for (`identity:alice`, `build:<digest>`, an observation id, `conclusion:P-002:supported`, `capability:intrusive`); readiness is computed from it, so the question becomes ready by itself when that appears. |
+| `report_build` | `engagement`, `build` | Records the target's current build (a source digest, a deployed build id) when the planner can establish one. A build change marks conclusions recorded against another build, and plan items tested on it, stale for re-testing; nothing is deleted. |
+| `list_methods` | `engagement`, optional `vclass` | The methods this engagement has proved: what worked, under which conditions, the access each needs, its procedure and negative control, and the related surfaces each hasn't been proven on. |
+| `record_method` | `engagement`, `title`, `vclass`, `procedure`, optional `assumes`, `access`, `groups` (route groups it was proven on), `expect`, `control` (the negative control), `finding`, `experiment`; `id` and `expected_revision` to correct one | Adds a method the harness couldn't derive, or corrects one it did. A correction based on an older revision is refused with a conflict. |
+| `record_instance` | `engagement`, `finding_id`, `where`, optional `evidence` (list), `experiment`, `note` | Records a confirmed result at a related surface as an instance of the finding that owns the root cause, instead of a second finding. `get_finding` and the report show every instance. |
 | `write_file` | `engagement`, `path`, `content`, `append` (default false) | Writes one of: `PLAN.md`, `NOTES.md`, `notes/<name>.md` or `.txt`, `report/executive-summary.md`, `report/methodology.md`, `report/conclusion.md`, `report/meta.txt`. Anything else, or content over 1 MB, is refused. |
 | `list_playbooks` | none | Each playbook's name, title, standard and tiers. |
 | `get_playbook` | `name` | The full text of one playbook. |
@@ -190,6 +250,21 @@ People confirming in the console or with `./rvkit` are not sent to it.
 | `cleanup` | `engagement`, `action` (`add` with `kind` and `what`; `update` with `item`, `state=done` and `note`; `list`) | Cleanup obligations to finish before close-out. Waiving one is the researcher's decision. |
 | `prepare_notice` | `engagement`, `finding_id` | Drafts a notice about a confirmed critical or high finding in `report/notices/`, for the researcher to review. Sends nothing. |
 | `export_findings` | `engagement`, `draft` (default false) | `findings.json`, `findings.sarif` and `issues/<id>.md` from the approved report revision (or the latest, marked DRAFT). Sends nothing. |
+
+### Methods and related surfaces
+
+When the planner confirms a finding with a passing [oracle](#kali-the-kali-sandbox) (`verify`), the harness derives a
+**method** record (`M-...`) from what backs the finding: the oracle's procedure and negative control, the evidence
+to expect and the access it needs. The plan link adds the route group, or the source files the map names, that it
+was proven on. Methods stay in the engagement's own database: nothing reads another engagement's methods, and
+there is no export.
+
+A method proposes the related surfaces it hasn't been proven on: the same route group, or the operations the map
+puts behind the same source code. Each proposal in `get_queue` is the plan item to add and the `delegate_task`
+goal to send. The method transfers, the result doesn't: each proposed test runs its own negative control at the
+new surface. A confirmed sibling becomes an instance of the original finding (`record_instance`), and a correctly
+protected sibling is recorded as refuted with its conditions, not as a finding. A task whose cell matches a method
+gets one line about it in its packet; the worker opens it with `read_record`.
 
 Findings are stored per engagement in `/work/<engagement>/.rv/findings.db` (SQLite). The report includes `confirmed`,
 `fixed` and `accepted-risk` findings. More: [findings-and-reports.md](findings-and-reports.md).
