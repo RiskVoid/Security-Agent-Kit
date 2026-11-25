@@ -205,8 +205,7 @@ planner that lost detail to a context summary, picks up from those records.
 - **After a summary, the planner reads the board.** Long conversations get summarised to fit the context. The
   planner is told to call `engagement_info`, then `get_handover` (one row per open question: last result,
   blocker, budget used, next decision), then `get_briefing` for the cell it was about to work on. `recall`
-  searches everything the engagement knows. (In 0.2.0 the planner's `get_briefing` and `recall` aren't offered
-  yet; see the CHANGELOG's known issues. The worker's packet and `recall` work.)
+  searches everything the engagement knows.
 - **The queue is advice.** `get_queue` ranks the open questions from the records, with the reason for each
   position, and keeps some top slots for authorization, tenant isolation and authentication. The planner still
   chooses. Each delegation on a plan item logs the rank it went against, so what the queue proposed and what the

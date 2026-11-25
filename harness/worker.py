@@ -533,9 +533,6 @@ LEDGER = os.environ.get("RV_LEDGER", "1") != "0"           # the call ledger (#1
 ESTABLISHED_CHARS = int(os.environ.get("WORKER_ESTABLISHED_CHARS", "2000") or 2000)   # #120's pinned block
 SUMMARY_CONCLUSIONS = os.environ.get("WORKER_CONCLUSION_SUMMARY", "1") != "0"   # #119's checked summary at a
                                                                               # task's end; 0: off
-LEDGER = os.environ.get("WORKER_LEDGER", "1") != "0"      # the call ledger (#115): earlier equivalent calls are
-                                                          # pointed out; unchanged reads answered from it
-ESTABLISHED_CHARS = int(os.environ.get("WORKER_ESTABLISHED_CHARS", "2000") or 2000)   # #120's pinned block
 ADVISOR_MODEL = os.environ.get("WORKER_ADVISOR_MODEL", "planner")
 ADVISOR_MAX = 2
 SAFE_METHODS = ("GET", "HEAD", "OPTIONS")

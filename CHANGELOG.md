@@ -25,13 +25,6 @@ how the kit holds up against hostile targets, and how changes to the harness are
   `WORKER_TOOL_WAIT_S`, `WORKER_MAX_TOKENS`, `VALIDATOR_MAX_TOKENS`, `WORKER_ADVISOR` and `OPENROUTER_ZDR` (see
   `docs/configuration.md`).
 
-### Known issues
-- Five planner tools are documented but not offered in 0.2.0: `recall`, `get_briefing`, `record_conclusion`,
-  `link_records` and `report_build` are defined after the findings server's `mcp.run()`, which doesn't return,
-  so they never register. The worker's own `recall` and the research packet are not affected.
-- `RV_LEDGER=0` turns off the kali server's call ledger but not the worker's, which reads `WORKER_LEDGER`.
-  Set both to turn the ledger off.
-
 ### The research loop and engagement memory (epic #77)
 - The research packet (#83, #84, #85, #86, phase A of the research loop #77): a worker task bound to a plan
   item starts from what the engagement's records already say about its coverage cell - map entries,
@@ -432,6 +425,12 @@ how the kit holds up against hostile targets, and how changes to the harness are
 - The first runs on the research loop are measured in `docs/capability-baselines.md`.
 
 ### Fixed
+- Five of the planner's research-loop tools were never offered: `recall`, `get_briefing`, `record_conclusion`,
+  `link_records` and `report_build` were defined after the findings server's `mcp.run()`, which doesn't return
+  when the server starts as `python3 findings.py`, so they never registered. The server now starts after every
+  tool is defined (34 tools, from 29).
+- `RV_LEDGER=0` didn't turn off the worker's call ledger: a later line read an undocumented `WORKER_LEDGER` and
+  overrode it. `RV_LEDGER` is the one setting for both sides, as documented.
 - Worker delegation didn't work with a reasoning model as the worker. A model call was capped at 2,048 output
   tokens, reasoning included, so the model spent the whole reply thinking and returned neither a tool call nor an
   answer; the worker dropped the reasoning, charged a step and asked again, up to the task's step limit. The cap is
